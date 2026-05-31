@@ -125,21 +125,21 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 /* ---- Advanced launcher grid -------------------------------------------- */
 .adv-home { max-width: 760px; margin: 0 auto; padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
 .adv-section { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 22px 4px 10px; }
-.adv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (min-width: 900px) { .adv-grid { grid-template-columns: 1fr 1fr 1fr; } }
+.adv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (min-width: 900px) { .adv-grid { grid-template-columns: repeat(4, 1fr); } }
 .adv-card {
   display: flex; flex-direction: column; align-items: flex-start; text-align: left;
-  aspect-ratio: 1 / 0.82; background: var(--bg-elev); border: 1px solid var(--border);
-  border-radius: 14px; padding: 16px; color: var(--text);
+  min-height: 104px; background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 14px; padding: 13px; color: var(--text);
   transition: border-color .12s ease, transform .1s ease;
 }
 .adv-card:hover { border-color: var(--accent); }
 .adv-card:active { transform: scale(0.98); }
 .adv-card .icon { color: var(--text-dim); transition: color .12s ease; }
 .adv-card:hover .icon { color: var(--accent); }
-.adv-card .sp { flex: 1; }
-.adv-card .title { font-weight: 600; font-size: 16px; }
-.adv-card .sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adv-card .sp { flex: 1; min-height: 14px; }
+.adv-card .title { font-weight: 600; font-size: 15px; }
+.adv-card .sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; line-height: 1.25; }
 @media (prefers-reduced-motion: reduce) { .adv-card { transition: none; } .adv-card:active { transform: none; } }
 
 /* ---- Full-height tool layout (Wiki tree, etc.) -------------------------- */

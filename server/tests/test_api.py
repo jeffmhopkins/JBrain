@@ -72,8 +72,8 @@ def test_entry_mode_creates_unique_notes(client):
 def test_research_mode_is_read_only(client):
     # Research mode must not expose write tools.
     from app.services import architect
-    research = {t["name"] for t in architect._tools_for("research")}
-    assisted = {t["name"] for t in architect._tools_for("assisted")}
+    research = {t.name for t in architect._tools_for("research")}
+    assisted = {t.name for t in architect._tools_for("assisted")}
     assert "propose_actions" not in research and "add_list_item" not in research
     assert "query_sql" in research and "query_sql" not in assisted
     assert "propose_actions" in assisted
@@ -106,7 +106,7 @@ def test_agent_config_complete_and_valid(client):
 
 def test_tool_descriptions_come_from_yaml():
     from app.services import architect
-    tools = {t["name"]: t["description"] for t in architect._tools_for("assisted")}
+    tools = {t.name: t.description for t in architect._tools_for("assisted")}
     assert tools["add_list_item"].startswith("Add an item to a checklist")
 
 
@@ -799,3 +799,37 @@ def test_claude_synthesize_via_pipeline(client, monkeypatch):
     assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
     assert client.get("/api/notes/summary").json()["content_md"] == "SYNTHESISED"
     assert any(i["title"] == "Check synthesis" for i in client.get("/api/reviews").json())
+
+
+# --- Provider-agnostic LLM layer -------------------------------------------
+
+def test_llm_settings_env_aliases(monkeypatch):
+    from app.config import Settings
+    # Canonical LLM_* names populate the fields.
+    monkeypatch.setenv("LLM_API_KEY", "newkey")
+    monkeypatch.setenv("LLM_MODEL", "model-x")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    s = Settings(_env_file=None)
+    assert s.llm_api_key == "newkey" and s.llm_model == "model-x"
+    assert s.has_llm and s.has_anthropic                       # alias property
+    assert s.anthropic_api_key == "newkey" and s.anthropic_model == "model-x"
+
+    # Legacy ANTHROPIC_* names still work (back-compat for existing .env files).
+    monkeypatch.delenv("LLM_API_KEY")
+    monkeypatch.delenv("LLM_MODEL")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "oldkey")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "old-model")
+    s2 = Settings(_env_file=None)
+    assert s2.llm_api_key == "oldkey" and s2.llm_model == "old-model" and s2.has_llm
+
+
+def test_llm_provider_basics():
+    from app.services import llm
+    p = llm.get_provider()
+    assert p.name == "anthropic" and p.supports_tools() is True
+    assert isinstance(p.default_model(), str) and p.default_model()
+    # Tool defs are neutral dataclasses now.
+    from app.services import architect
+    td = architect._tools_for("assisted")[0]
+    assert isinstance(td, llm.ToolDef) and td.name and isinstance(td.json_schema, dict)

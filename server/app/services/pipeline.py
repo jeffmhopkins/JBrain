@@ -24,9 +24,9 @@ from jinja2 import ChainableUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import embeddings
+from . import llm
 from . import notes as notes_svc
 from . import reviews as reviews_svc
-from ..config import get_settings
 from ..db import get_meta, set_meta
 
 
@@ -174,7 +174,7 @@ def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
 
 
 def _p_gather_context(ctx, source_title=None, context_query=None):
-    """Build context text from a named note or a semantic search (claude_synthesize)."""
+    """Build context text from a named note or a semantic search (synthesize)."""
     if source_title:
         row = notes_svc.get_by_title(ctx.conn, source_title)
         return row["content_md"] if row else ""
@@ -189,24 +189,16 @@ def _p_gather_context(ctx, source_title=None, context_query=None):
 
 
 def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise"):
-    """Run a Claude prompt over optional context. `on_no_key` controls behaviour
-    when no API key is configured: raise | fallback (return content) | skip ('')."""
-    settings = get_settings()
-    if not settings.has_anthropic:
+    """Run an LLM prompt over optional context. `on_no_key` controls behaviour
+    when no provider key is configured: raise | fallback (return content) | skip ('')."""
+    if not llm.has_credentials():
         if on_no_key == "raise":
-            raise RuntimeError("no Anthropic API key configured")
+            raise RuntimeError("no LLM API key configured")
         if on_no_key == "fallback":
             return content or ""
         return ""
-    from anthropic import Anthropic
-
     user = f"{prompt}\n\n<content>\n{content}\n</content>" if content else prompt
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    msg = client.messages.create(
-        model=settings.anthropic_model, max_tokens=int(max_tokens),
-        messages=[{"role": "user", "content": user}],
-    )
-    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    return llm.complete([{"role": "user", "content": user}], max_tokens=int(max_tokens))
 
 
 def _p_daylog_pending(ctx, log_title):

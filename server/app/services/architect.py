@@ -10,11 +10,10 @@ import json
 import re
 from typing import AsyncGenerator
 
-from anthropic import AsyncAnthropic
-
 from ..config import get_settings
 from ..db import get_conn
 from . import embeddings
+from . import llm
 from . import notes as notes_svc
 from . import prompts
 from . import quicktasks
@@ -99,11 +98,11 @@ def _mode_tool_names(mode: str) -> list[str]:
     return prompts.get_list(f"modes.{mode}.tools", _DEFAULT_MODE_TOOLS.get(mode, []))
 
 
-def _build_tool(name: str) -> dict:
-    return {"name": name, "description": prompts.get(f"tools.{name}", ""), "input_schema": _TOOL_SCHEMAS[name]}
+def _build_tool(name: str) -> llm.ToolDef:
+    return llm.ToolDef(name=name, description=prompts.get(f"tools.{name}", ""), json_schema=_TOOL_SCHEMAS[name])
 
 
-def _tools_for(mode: str) -> list[dict]:
+def _tools_for(mode: str) -> list[llm.ToolDef]:
     return [_build_tool(n) for n in _mode_tool_names(mode) if n in _TOOL_SCHEMAS]
 
 
@@ -304,12 +303,12 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
               mode: str = "assisted") -> AsyncGenerator[dict, None]:
     """Stream the architect's reply. `mode` = 'assisted' | 'research'."""
     settings = get_settings()
-    if not settings.has_anthropic:
-        yield {"type": "error", "message": "No Anthropic API key configured."}
+    provider = llm.get_provider()
+    if not provider.has_credentials():
+        yield {"type": "error", "message": "No LLM API key configured."}
         return
 
     conn = get_conn()
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     # Build message history from the DB, then append the new user turn.
     history = conn.execute(
@@ -328,44 +327,35 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
-    model = prompts.get("agent.model") or settings.anthropic_model
+    model = prompts.get("agent.model") or provider.default_model()
     max_tokens = prompts.get_int("agent.max_tokens", _DEFAULT_MAX_TOKENS)
     max_iterations = prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS)
     assistant_text_parts: list[str] = []
 
     for _ in range(max_iterations):
-        async with client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            tools=tools,
-            messages=messages,
-        ) as stream:
-            async for event in stream:
-                if (
-                    event.type == "content_block_delta"
-                    and getattr(event.delta, "type", None) == "text_delta"
-                ):
-                    assistant_text_parts.append(event.delta.text)
-                    yield {"type": "token", "text": event.delta.text}
-            final = await stream.get_final_message()
+        # The provider streams text deltas, records its own assistant turn into
+        # `messages`, and reports which tools the model wants to call.
+        calls: list[llm.ToolCall] = []
+        async for ev in provider.stream_turn(
+            messages, system=system, tools=tools, model=model, max_tokens=max_tokens
+        ):
+            if isinstance(ev, llm.TextDelta):
+                assistant_text_parts.append(ev.text)
+                yield {"type": "token", "text": ev.text}
+            elif isinstance(ev, llm.ToolCallEvent):
+                calls.append(ev.call)
+            # TurnEnd is the terminator; tool calls were collected above.
 
-        # Append the assistant turn (text + any tool_use blocks) to the context.
-        messages.append({"role": "assistant", "content": final.content})
-
-        tool_uses = [b for b in final.content if b.type == "tool_use"]
-        if not tool_uses:
+        if not calls:
             break
 
-        tool_results = []
-        for tu in tool_uses:
-            result_text, event = _run_tool(conn, conversation_id, tu.name, tu.input)
+        results = []
+        for call in calls:
+            result_text, event = _run_tool(conn, conversation_id, call.name, call.args)
             if event is not None:
                 yield event  # {"type": "staging"|"applied", ...}
-            tool_results.append(
-                {"type": "tool_result", "tool_use_id": tu.id, "content": result_text}
-            )
-        messages.append({"role": "user", "content": tool_results})
+            results.append(llm.ToolResult(tool_call_id=call.id, content=result_text))
+        provider.append_tool_results(messages, results)
 
     final_text = "".join(assistant_text_parts).strip()
     if final_text:

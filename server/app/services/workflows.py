@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from ..config import get_settings
+from . import llm
 from . import notes as notes_svc
 from . import prompts
 
@@ -120,36 +120,25 @@ _DEFAULT_WIKI_TEMPLATE = (
 
 
 def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
-    """Summarise a day's log entries. Uses Claude when configured, else a plain
-    recap so the workflow still works without an API key. The prompt is
-    overridable from the workflow YAML (config.prompt)."""
+    """Summarise a day's log entries. Uses the LLM when configured, else a plain
+    recap so the workflow still works without a key. The prompt is overridable
+    from the workflow YAML (config.prompt)."""
     joined = "\n".join(f"- {e}" for e in entries)
-    settings = get_settings()
-    if not settings.has_anthropic:
+    if not llm.has_credentials():
         return "Entries:\n" + joined
-    from anthropic import Anthropic
-    client = Anthropic(api_key=settings.anthropic_api_key)
     instruction = prompt or prompts.get("actions.daylog_summary", DEFAULT_DAYLOG_PROMPT)
-    msg = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=512,
-        messages=[{"role": "user", "content": f"{instruction}\n{joined}"}],
-    )
-    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    return llm.complete([{"role": "user", "content": f"{instruction}\n{joined}"}], max_tokens=512)
 
 
 def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None) -> list[dict]:
-    """Ask Claude to fold new entries into the knowledge base. Returns a list of
+    """Ask the LLM to fold new entries into the knowledge base. Returns a list of
     {op, title, content_md}. Factored out so it can be stubbed in tests.
 
     `instructions` (from the workflow YAML config) is extra guidance appended to
     the base prompt; the JSON-output contract is always enforced."""
-    settings = get_settings()
-    if not settings.has_anthropic:
-        raise RuntimeError("no Anthropic API key configured")
+    if not llm.has_credentials():
+        raise RuntimeError("no LLM API key configured")
     import json as _json
-
-    from anthropic import Anthropic
 
     entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
@@ -159,12 +148,7 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
               .replace("{instructions}", extra)
               .replace("{entries}", entries_text)
               .replace("{existing_kb}", kb_text))
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    msg = client.messages.create(
-        model=settings.anthropic_model, max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    text = llm.complete([{"role": "user", "content": prompt}], max_tokens=4096)
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end == -1:
         return []
@@ -182,19 +166,14 @@ DEFAULT_TAG_PROMPT = (
 
 
 def _suggest_tags(title: str, content: str, prompt: str | None = None) -> list[str]:
-    """Ask Claude for tags. Returns [] if no API key (graceful no-op)."""
-    settings = get_settings()
-    if not settings.has_anthropic:
+    """Ask the LLM for tags. Returns [] if no key (graceful no-op)."""
+    if not llm.has_credentials():
         return []
-    from anthropic import Anthropic
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    msg = client.messages.create(
-        model=settings.anthropic_model, max_tokens=80,
-        messages=[{"role": "user",
-                   "content": f"{prompt or prompts.get('actions.generate_tags', DEFAULT_TAG_PROMPT)}"
-                              f"\n\nTitle: {title}\n{content[:2000]}"}],
+    instruction = prompt or prompts.get("actions.generate_tags", DEFAULT_TAG_PROMPT)
+    text = llm.complete(
+        [{"role": "user", "content": f"{instruction}\n\nTitle: {title}\n{content[:2000]}"}],
+        max_tokens=80,
     )
-    text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
     return [t.strip().lower().lstrip("#") for t in text.replace("\n", ",").split(",") if t.strip()][:6]
 
 

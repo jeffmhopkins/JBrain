@@ -56,8 +56,12 @@ const NAV = [
 export default function Shell({ children }: { children: ReactNode }) {
   const isDesktop = useIsDesktop();
   const online = useOnline();
-  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion } = useAuth();
+  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion, demo } = useAuth();
   const reviewCount = useReviewCount();
+
+  const demoBanner = demo ? (
+    <div className="demo-banner">Demo mode — sample data, no server. “Disconnect” to exit.</div>
+  ) : null;
 
   const versionWarning = versionMismatch ? (
     <div className="version-banner">
@@ -86,6 +90,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
         </aside>
         <div className="main">
+          {demoBanner}
           <UpdateBanner />
           {versionWarning}
           {!online && <div className="offline-banner">Offline — reading cached notes. Chat & saving need a connection.</div>}
@@ -107,6 +112,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <button className="ghost" onClick={disconnect}>Disconnect</button>
           </div>
         </div>
+        {demoBanner}
         <UpdateBanner />
         {versionWarning}
         {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}

@@ -3,7 +3,7 @@ import { useAuth } from "../App";
 import { getServer } from "../api";
 
 export default function KeyEntry() {
-  const { brainName, connect, pwaVersion } = useAuth();
+  const { brainName, connect, exploreDemo, pwaVersion } = useAuth();
   const [server, setServerInput] = useState(getServer());
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
@@ -55,6 +55,9 @@ export default function KeyEntry() {
           {busy ? "Connecting…" : "Connect"}
         </button>
       </form>
+      <div style={{ textAlign: "center", marginTop: 14 }}>
+        <button type="button" className="ghost" onClick={exploreDemo}>Just exploring? View demo →</button>
+      </div>
       <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
         Stored only on this device, sent over HTTPS with each request. App v{pwaVersion}.
       </p>

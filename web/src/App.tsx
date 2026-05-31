@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { clearAccessKey, get, getAccessKey, getServer, setAccessKey, setServer } from "./api";
+import { isDemo, setDemo } from "./demo";
 import Shell from "./components/Shell";
 import KeyEntry from "./pages/KeyEntry";
 import Chat from "./pages/Chat";
@@ -19,7 +20,9 @@ interface AuthState {
   pwaVersion: string;
   serverVersion: string | null;
   versionMismatch: boolean;
+  demo: boolean;
   connect: (key: string, server: string) => Promise<void>;
+  exploreDemo: () => void;
   disconnect: () => void;
 }
 
@@ -50,12 +53,20 @@ export default function App() {
     setAuthed(true);
   }
 
+  function exploreDemo() {
+    setDemo(true);
+    setBrainName("Demo Brain");
+    setAuthed(true);
+  }
+
   function disconnect() {
+    setDemo(false);
     clearAccessKey();
     setAuthed(false);
   }
 
   useEffect(() => {
+    if (isDemo()) { setBrainName("Demo Brain"); setAuthed(true); setLoading(false); return; }
     loadInfo().catch(() => {});
     const stored = getAccessKey();
     if (stored) {
@@ -73,7 +84,8 @@ export default function App() {
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {
     authenticated: authed, brainName, server: getServer(),
-    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, connect, disconnect,
+    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, demo: isDemo(),
+    connect, exploreDemo, disconnect,
   };
 
   return (

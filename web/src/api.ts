@@ -1,5 +1,6 @@
 // Thin API client. Every request carries the access key (the "cert") as a
 // Bearer token; it is stored on-device and pasted in once on first run.
+import { demoResponse, demoStream, isDemo } from "./demo";
 
 const KEY_STORAGE = "jbrain_access_key";
 const SERVER_STORAGE = "jbrain_server";
@@ -39,6 +40,7 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
+  if (isDemo()) return demoResponse(path, (opts.method as string) || "GET") as T;
   const res = await fetch(u(path), {
     ...opts,
     headers: authHeaders(opts.headers),
@@ -71,6 +73,7 @@ export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
 export async function uploadAttachment<T = any>(slug: string, file: File): Promise<T> {
+  if (isDemo()) return { id: 1, filename: file.name } as T;
   const fd = new FormData();
   fd.append("file", file);
   const headers: Record<string, string> = {};
@@ -90,6 +93,7 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
 
 // Download a full DB backup (auth header can't ride on a plain <a>, so fetch+blob).
 export async function downloadBackup(): Promise<void> {
+  if (isDemo()) { alert("Demo mode — backup is disabled."); return; }
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
   const res = await fetch(u("/api/system/backup"), { headers });
@@ -107,6 +111,7 @@ export async function downloadBackup(): Promise<void> {
 }
 
 export async function restoreBackup<T = any>(file: File): Promise<T> {
+  if (isDemo()) return { ok: true } as T;
   const fd = new FormData();
   fd.append("file", file);
   const headers: Record<string, string> = {};
@@ -140,6 +145,7 @@ export async function streamChat(
   location?: { lat: number; lon: number } | null,
   mode: "assisted" | "research" = "assisted",
 ): Promise<void> {
+  if (isDemo()) { await demoStream(text, onEvent, mode); return; }
   const body: any = { text, mode };
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {

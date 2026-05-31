@@ -48,7 +48,7 @@ const GROUPS = [
 
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
-  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion, demo } = useAuth();
+  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const reviewCount = useReviewCount();
   const loc = useLocation();
   const nav = useNavigate();
@@ -66,7 +66,6 @@ export default function Shell({ children }: { children: ReactNode }) {
         </button>
       </div>
 
-      {demo && <div className="demo-banner">Demo mode — sample data, no server. “Disconnect” to exit.</div>}
       <UpdateBanner />
       {versionMismatch && (
         <div className="version-banner">App v{pwaVersion} vs server v{serverVersion} — versions differ; update so they match.</div>

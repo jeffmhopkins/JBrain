@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS notes (
   title      TEXT UNIQUE NOT NULL,
   slug       TEXT UNIQUE NOT NULL,
   content_md TEXT NOT NULL DEFAULT '',
+  lat            REAL,
+  lon            REAL,
+  location_label TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   deleted_at TEXT
@@ -63,6 +66,9 @@ CREATE TABLE IF NOT EXISTS messages (
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   role            TEXT NOT NULL,            -- 'user' | 'assistant'
   content         TEXT NOT NULL,
+  lat             REAL,
+  lon             REAL,
+  location_label  TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
@@ -83,6 +89,9 @@ CREATE TABLE IF NOT EXISTS inbox (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   source     TEXT NOT NULL DEFAULT 'capture',
   content    TEXT NOT NULL,
+  lat            REAL,
+  lon            REAL,
+  location_label TEXT,
   processed  INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

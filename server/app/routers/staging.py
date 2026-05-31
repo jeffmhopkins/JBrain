@@ -26,8 +26,12 @@ def list_pending():
 
 
 def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None) -> None:
-    # Architect-applied edits are attributed to 'architect' in the version history.
+    # Architect-applied edits are attributed to 'architect' in the version history,
+    # and stamped with where the user was when they had this conversation.
+    loc = notes_svc.conversation_location(conn, conversation_id)
     kw = {"source": "architect", "conversation_id": conversation_id}
+    if loc:
+        kw.update(lat=loc["lat"], lon=loc["lon"], location_label=loc["location_label"])
     if action_type in ("CREATE", "UPDATE"):
         notes_svc.upsert_note(conn, payload["title"], payload.get("content", ""), **kw)
     elif action_type == "LINK":

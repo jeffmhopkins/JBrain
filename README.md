@@ -43,6 +43,9 @@ and a graph.
 - **Day-log summaries** — log to a "Daily Log" throughout the day; the first
   entry of a new day auto-summarises the previous day into a "Daily Summaries"
   note and posts a review card (a built-in workflow).
+- **Location & time** — entries record when they were made (always) and, with the
+  opt-in 📍 toggle in the PWA, *where*: chat/quick-task/capture entries are
+  stamped with your coordinates and shown on the note (with a map link).
 
 ## Authentication
 

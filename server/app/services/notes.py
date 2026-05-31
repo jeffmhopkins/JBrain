@@ -59,6 +59,18 @@ def _prune_versions(conn, note_id: int) -> None:
     )
 
 
+def conversation_location(conn, conversation_id: int | None):
+    """Latest geolocation the user attached to a message in this conversation."""
+    if conversation_id is None:
+        return None
+    return conn.execute(
+        "SELECT lat, lon, location_label FROM messages "
+        "WHERE conversation_id = ? AND role = 'user' AND lat IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (conversation_id,),
+    ).fetchone()
+
+
 def upsert_note(
     conn,
     title: str,
@@ -68,6 +80,9 @@ def upsert_note(
     source: str = "user",
     conversation_id: int | None = None,
     version_note: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    location_label: str | None = None,
 ) -> int:
     """Create or update a note and append a version row for the new state.
 
@@ -82,6 +97,8 @@ def upsert_note(
     else:
         existing = get_by_title(conn, title)
 
+    has_location = lat is not None or lon is not None or location_label is not None
+
     if existing:
         note_id = existing["id"]
         slug = existing["slug"]
@@ -92,11 +109,17 @@ def upsert_note(
             "updated_at = datetime('now') WHERE id = ?",
             (title, slug, content_md, note_id),
         )
+        if has_location:  # only overwrite location when new coords are supplied
+            conn.execute(
+                "UPDATE notes SET lat = ?, lon = ?, location_label = ? WHERE id = ?",
+                (lat, lon, location_label, note_id),
+            )
     else:
         slug = _unique_slug(conn, title)
         cur = conn.execute(
-            "INSERT INTO notes (title, slug, content_md) VALUES (?, ?, ?)",
-            (title, slug, content_md),
+            "INSERT INTO notes (title, slug, content_md, lat, lon, location_label) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title, slug, content_md, lat, lon, location_label),
         )
         note_id = cur.lastrowid
         wikilinks.resolve_dangling_links(conn, note_id, title)

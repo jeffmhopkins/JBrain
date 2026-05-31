@@ -16,14 +16,17 @@ router = APIRouter(prefix="/api/capture", tags=["capture"], dependencies=[Curren
 class CaptureIn(BaseModel):
     content: str
     source: str = "capture"
+    lat: float | None = None
+    lon: float | None = None
+    location_label: str | None = None
 
 
 @router.post("")
 def capture(body: CaptureIn):
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO inbox (source, content) VALUES (?, ?)",
-        (body.source, body.content.strip()),
+        "INSERT INTO inbox (source, content, lat, lon, location_label) VALUES (?, ?, ?, ?, ?)",
+        (body.source, body.content.strip(), body.lat, body.lon, body.location_label),
     )
     conn.commit()
     return {"ok": True, "id": cur.lastrowid}
@@ -33,7 +36,7 @@ def capture(body: CaptureIn):
 def list_inbox(include_processed: bool = False):
     where = "" if include_processed else "WHERE processed = 0"
     rows = get_conn().execute(
-        f"SELECT id, source, content, processed, created_at FROM inbox {where} "
-        "ORDER BY created_at DESC LIMIT 200"
+        f"SELECT id, source, content, lat, lon, location_label, processed, created_at "
+        f"FROM inbox {where} ORDER BY created_at DESC LIMIT 200"
     ).fetchall()
     return [dict(r) for r in rows]

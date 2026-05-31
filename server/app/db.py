@@ -43,7 +43,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def init_db() -> None:
@@ -109,6 +109,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             "SELECT id, title, content_md, 'import', 'pre-migration snapshot' "
             "FROM notes WHERE deleted_at IS NULL"
         )
+
+    if current < 6:
+        # Location (+ time is already created_at) on entries and their sources.
+        for table in ("notes", "messages", "inbox"):
+            _add_column(conn, table, "lat", "REAL")
+            _add_column(conn, table, "lon", "REAL")
+            _add_column(conn, table, "location_label", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

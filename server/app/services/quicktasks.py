@@ -13,9 +13,15 @@ from datetime import datetime
 from . import notes as notes_svc
 
 
+def _loc_kwargs(location) -> dict:
+    if not location:
+        return {}
+    return {"lat": location["lat"], "lon": location["lon"], "location_label": location["location_label"]}
+
+
 def add_list_item(
     conn, list_title: str, item: str, checkbox: bool = True, *,
-    source: str = "architect", conversation_id: int | None = None,
+    source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
     """Append an item to a checklist note, creating the list if absent."""
     note = notes_svc.get_by_title(conn, list_title)
@@ -25,14 +31,14 @@ def add_list_item(
     new_body = body.rstrip() + "\n" + line + "\n"
     notes_svc.upsert_note(
         conn, list_title, new_body, source=source,
-        conversation_id=conversation_id, version_note="added list item",
+        conversation_id=conversation_id, version_note="added list item", **_loc_kwargs(location),
     )
     return {"note_title": list_title, "line": line, "created": created}
 
 
 def append_log(
     conn, target: str, text: str, date: str | None = None, *,
-    source: str = "architect", conversation_id: int | None = None,
+    source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
     """Append a dated bullet to a log/journal note, creating it if absent."""
     date = date or datetime.utcnow().strftime("%Y-%m-%d")
@@ -43,7 +49,7 @@ def append_log(
     new_body = body.rstrip() + "\n" + block + "\n"
     notes_svc.upsert_note(
         conn, target, new_body, source=source,
-        conversation_id=conversation_id, version_note="log entry",
+        conversation_id=conversation_id, version_note="log entry", **_loc_kwargs(location),
     )
     return {"note_title": target, "block": block, "created": created}
 

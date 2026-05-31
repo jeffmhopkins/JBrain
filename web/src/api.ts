@@ -86,11 +86,14 @@ export async function streamChat(
   conversationId: number,
   text: string,
   onEvent: (e: ChatEvent) => void,
+  location?: { lat: number; lon: number } | null,
 ): Promise<void> {
+  const body: any = { text };
+  if (location) { body.lat = location.lat; body.lon = location.lon; }
   const res = await fetch(`/api/chat/conversations/${conversationId}/message`, {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
   if (!res.body) throw new ApiError("No response stream", 500);
 

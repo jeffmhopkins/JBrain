@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { get, post, streamChat } from "../api";
-import { useIsDesktop, useOnline } from "../hooks";
+import { useGeo, useIsDesktop, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 
 interface Msg { role: "user" | "assistant"; content: string; }
@@ -8,6 +8,7 @@ interface Msg { role: "user" | "assistant"; content: string; }
 export default function Chat() {
   const isDesktop = useIsDesktop();
   const online = useOnline();
+  const geo = useGeo();
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -56,7 +57,7 @@ export default function Chat() {
             return copy;
           });
         }
-      });
+      }, geo.enabled ? geo.coords : null);
     } finally {
       setStreaming(false);
       setStagingTick((t) => t + 1);
@@ -98,6 +99,15 @@ export default function Chat() {
       )}
       {!isDesktop && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
       <form className="composer" onSubmit={send}>
+        <button
+          type="button"
+          className={geo.enabled ? "primary" : "ghost"}
+          title={geo.enabled
+            ? (geo.coords ? `Location on (${geo.coords.lat}, ${geo.coords.lon})` : "Location on (acquiring…)")
+            : "Tag entries with your location"}
+          onClick={geo.toggle}
+          style={{ padding: "0 12px" }}
+        >📍</button>
         <textarea
           rows={1}
           placeholder={online ? "Talk to your brain…" : "Offline — reconnect to chat"}

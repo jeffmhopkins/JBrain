@@ -8,7 +8,9 @@ import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 
 interface Note {
-  id: number; title: string; slug: string; content_md: string; updated_at: string;
+  id: number; title: string; slug: string; content_md: string;
+  created_at: string; updated_at: string;
+  lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
 }
@@ -55,6 +57,15 @@ export default function NotePage() {
   const article = (
     <div className="content">
       <h1>{note.title}</h1>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <span>🕐 {note.created_at}{note.updated_at !== note.created_at ? ` · updated ${note.updated_at}` : ""}</span>
+        {note.lat != null && note.lon != null && (
+          <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
+             target="_blank" rel="noreferrer">
+            📍 {note.location_label || `${note.lat}, ${note.lon}`}
+          </a>
+        )}
+      </div>
       {note.tags.length > 0 && (
         <div className="row" style={{ gap: 6, marginBottom: 8 }}>
           {note.tags.map((t) => <span key={t} className="badge">#{t}</span>)}

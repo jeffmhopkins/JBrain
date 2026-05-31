@@ -281,14 +281,16 @@ def _record_applied(conn, conversation_id, action_type: str, display: str, undo:
 
 
 def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True):
-    r = quicktasks.add_list_item(conn, list_title, item, checkbox, conversation_id=conversation_id)
+    loc = notes_svc.conversation_location(conn, conversation_id)
+    r = quicktasks.add_list_item(conn, list_title, item, checkbox, conversation_id=conversation_id, location=loc)
     display = f"Added “{item}” to [[{r['note_title']}]]" + (" (new list)" if r["created"] else "")
     undo = {"op": "remove_line", "title": r["note_title"], "line": r["line"]}
     return f"applied: {display}", _record_applied(conn, conversation_id, "ADD_ITEM", display, undo)
 
 
 def _tool_log_entry(conn, conversation_id, target, text, date=None):
-    r = quicktasks.append_log(conn, target, text, date, conversation_id=conversation_id)
+    loc = notes_svc.conversation_location(conn, conversation_id)
+    r = quicktasks.append_log(conn, target, text, date, conversation_id=conversation_id, location=loc)
     display = f"Logged to [[{r['note_title']}]]" + (" (new log)" if r["created"] else "")
     undo = {"op": "remove_line", "title": r["note_title"], "line": r["block"]}
     event = _record_applied(conn, conversation_id, "LOG", display, undo)
@@ -346,7 +348,7 @@ def _run_tool(conn, conversation_id, name: str, args: dict):
 
 # --- Agent loop -------------------------------------------------------------
 
-async def run(conversation_id: int, user_text: str) -> AsyncGenerator[dict, None]:
+async def run(conversation_id: int, user_text: str, location: dict | None = None) -> AsyncGenerator[dict, None]:
     """Stream the architect's reply. Yields event dicts: {type, ...}."""
     settings = get_settings()
     if not settings.has_anthropic:
@@ -363,9 +365,11 @@ async def run(conversation_id: int, user_text: str) -> AsyncGenerator[dict, None
     ).fetchall()
     messages = [{"role": r["role"], "content": r["content"]} for r in history]
     messages.append({"role": "user", "content": user_text})
+    loc = location or {}
     conn.execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?)",
-        (conversation_id, user_text),
+        "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
+        "VALUES (?, 'user', ?, ?, ?, ?)",
+        (conversation_id, user_text, loc.get("lat"), loc.get("lon"), loc.get("location_label")),
     )
     conn.commit()
 

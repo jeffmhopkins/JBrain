@@ -14,6 +14,9 @@ router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[CurrentUser]
 
 class MessageIn(BaseModel):
     text: str
+    lat: float | None = None
+    lon: float | None = None
+    location_label: str | None = None
 
 
 @router.post("/conversations")
@@ -62,9 +65,15 @@ def send_message(conversation_id: int, body: MessageIn):
         )
         conn.commit()
 
+    location = (
+        {"lat": body.lat, "lon": body.lon, "location_label": body.location_label}
+        if body.lat is not None and body.lon is not None
+        else None
+    )
+
     async def event_stream():
         try:
-            async for event in architect.run(conversation_id, body.text):
+            async for event in architect.run(conversation_id, body.text, location):
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
         except Exception as exc:  # surface to the client rather than hanging
             yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"

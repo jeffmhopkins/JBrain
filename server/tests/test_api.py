@@ -353,6 +353,32 @@ def test_day_log_summary_workflow(client):
     assert client.get("/api/notes/daily-summaries").json()["content_md"].count("## 2026-05-30") == 1
 
 
+def test_capture_with_location(client):
+    client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
+    item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")
+    assert item["lat"] == 40.0 and item["lon"] == -73.0
+
+
+def test_staging_apply_stamps_location(client):
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO conversations (id, title) VALUES (77, 't')")
+    conn.execute(
+        "INSERT INTO messages (conversation_id, role, content, lat, lon) "
+        "VALUES (77, 'user', 'hi', 12.34, 56.78)"
+    )
+    conn.execute(
+        "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (77, 'CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "title": "Placed Note", "content": "x", "summary": "s"}),),
+    )
+    conn.commit()
+    pending = client.get("/api/staging").json()
+    client.post(f"/api/staging/{pending[0]['id']}/apply")
+    note = client.get("/api/notes/placed-note").json()
+    assert note["lat"] == 12.34 and note["lon"] == 56.78
+
+
 def test_append_action_with_review_block(client):
     wf = client.post("/api/workflows", json={
         "name": "Append+review", "trigger_type": "event", "trigger_config": {"event": "noop"},

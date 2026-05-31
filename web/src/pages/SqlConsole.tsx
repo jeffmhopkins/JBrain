@@ -38,8 +38,8 @@ export default function SqlConsole() {
     setError("");
     try {
       const r = await post("/api/sql", { sql });
-      setColumns(r.columns);
-      setRows(r.rows);
+      setColumns(r.columns || []);
+      setRows(r.rows || []);
     } catch (err: any) {
       setError(err.message);
       setColumns([]); setRows([]);

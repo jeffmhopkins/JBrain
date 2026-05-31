@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { del, get, post, put } from "../api";
-import PromptsPanel from "../components/PromptsPanel";
 
 interface Workflow {
   id: number;
@@ -26,7 +25,6 @@ const BLANK = {
 };
 
 export default function WorkflowsPage() {
-  const [view, setView] = useState<"flows" | "prompts">("flows");
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
   const [runs, setRuns] = useState<Record<number, any[]>>({});
@@ -100,12 +98,6 @@ export default function WorkflowsPage() {
 
   return (
     <div className="content">
-      <div className="row" style={{ gap: 6, marginBottom: 12 }}>
-        <button className={view === "flows" ? "primary" : "ghost"} onClick={() => setView("flows")}>Workflows</button>
-        <button className={view === "prompts" ? "primary" : "ghost"} onClick={() => setView("prompts")}>Prompts</button>
-      </div>
-
-      {view === "prompts" ? <PromptsPanel /> : <>
       <div className="row">
         <h2 style={{ margin: 0 }}>Workflows</h2>
         <div className="spacer" />
@@ -194,7 +186,6 @@ export default function WorkflowsPage() {
           </div>
         </div>
       )}
-      </>}
     </div>
   );
 }

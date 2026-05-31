@@ -12,7 +12,9 @@ import SearchPage from "./pages/SearchPage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
-import BrowsePage from "./pages/BrowsePage";
+import AdvancedHome from "./pages/AdvancedHome";
+import SystemPage from "./pages/SystemPage";
+import PromptsPanel from "./components/PromptsPanel";
 
 interface AuthState {
   authenticated: boolean;
@@ -98,12 +100,14 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
-            <Route path="/browse" element={<BrowsePage />} />
+            <Route path="/advanced" element={<AdvancedHome />} />
             <Route path="/wiki" element={<Wiki />} />
             <Route path="/note/:slug" element={<NotePage />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/prompts" element={<div className="content"><PromptsPanel /></div>} />
             <Route path="/flows" element={<WorkflowsPage />} />
+            <Route path="/system" element={<SystemPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/sql" element={<SqlConsole />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />

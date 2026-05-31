@@ -48,7 +48,7 @@ export default function PromptsPanel() {
               {r.override !== null && <span className="badge" style={{ marginLeft: 8 }}>overridden</span>}
             </div>
             <textarea
-              rows={Math.min(10, Math.max(3, Math.ceil(val.length / 60)))}
+              rows={Math.min(22, Math.max(6, Math.ceil(val.length / 50)))}
               value={val}
               onChange={(e) => setEdited((m) => ({ ...m, [r.key]: e.target.value }))}
               style={{ marginTop: 8, fontFamily: "monospace", fontSize: 13 }}

@@ -28,7 +28,7 @@ export default function GraphPage() {
   }, []);
 
   return (
-    <div className="content" style={{ maxWidth: "none", height: "calc(100vh - 40px)", display: "flex", flexDirection: "column" }}>
+    <div className="content" style={{ maxWidth: "none", height: "100%", display: "flex", flexDirection: "column" }}>
       <h2 style={{ marginTop: 0 }}>Knowledge graph</h2>
       {data.nodes.length === 0 && <p className="muted">No notes to graph yet.</p>}
       <div ref={wrapRef} style={{ flex: 1, minHeight: 0 }}>

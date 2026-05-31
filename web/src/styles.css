@@ -113,8 +113,42 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .bolt.active { color: var(--accent); }
 .review-bell { position: relative; }
 .review-bell .count-badge { position: absolute; top: 0; right: -2px; }
+.utop .back { background: transparent; border: none; color: var(--text-dim); padding: 6px; cursor: pointer; display: inline-flex; border-radius: 8px; }
+.utop .back:hover { color: var(--text); }
+.utop .back .icon { transform: rotate(180deg); }   /* chevron points back (‹) */
+.utop .tool-title { font-weight: 600; font-size: 15px; color: var(--text); }
 /* Scroll region for non-chat pages; chat manages its own internal scroll. */
 .ubody { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; }
+/* Advanced tools run full-width (the 860px reading cap steals editing room). */
+.ubody.adv .content { max-width: none; }
+
+/* ---- Advanced launcher grid -------------------------------------------- */
+.adv-home { max-width: 760px; margin: 0 auto; padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
+.adv-section { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 22px 4px 10px; }
+.adv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (min-width: 900px) { .adv-grid { grid-template-columns: 1fr 1fr 1fr; } }
+.adv-card {
+  display: flex; flex-direction: column; align-items: flex-start; text-align: left;
+  aspect-ratio: 1 / 0.82; background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px; color: var(--text);
+  transition: border-color .12s ease, transform .1s ease;
+}
+.adv-card:hover { border-color: var(--accent); }
+.adv-card:active { transform: scale(0.98); }
+.adv-card .icon { color: var(--text-dim); transition: color .12s ease; }
+.adv-card:hover .icon { color: var(--accent); }
+.adv-card .sp { flex: 1; }
+.adv-card .title { font-weight: 600; font-size: 16px; }
+.adv-card .sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (prefers-reduced-motion: reduce) { .adv-card { transition: none; } .adv-card:active { transform: none; } }
+
+/* ---- Full-height tool layout (Wiki tree, etc.) -------------------------- */
+.tool { height: 100%; display: flex; flex-direction: column; }
+.tool-bar { flex-shrink: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.tool-filter { flex: 1; min-width: 160px; width: auto; }
+.tool-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); }
+/* Near-full-screen note editor that shrinks with the mobile keyboard. */
+.note-edit-area { min-height: calc(var(--app-height, 100vh) - 300px); resize: vertical; }
 
 /* Compose box (rounded), pinned to the bottom of the chat view. */
 .composer-box {

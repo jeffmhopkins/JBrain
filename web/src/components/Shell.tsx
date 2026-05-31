@@ -39,28 +39,49 @@ function UpdateBanner() {
   );
 }
 
-const GROUPS = [
-  { to: "/browse", label: "Browse", icon: "wiki", match: ["/browse", "/wiki", "/graph", "/search", "/note"] },
-  { to: "/flows", label: "Automate", icon: "flows", match: ["/flows"] },
-  { to: "/sql", label: "Data", icon: "sql", match: ["/sql"] },
-];
+// Titles shown in the top bar when a tool is open full-screen (the tool itself
+// no longer renders a big heading — the title lives here instead).
+const TOOL_TITLES: Record<string, string> = {
+  "/wiki": "Wiki",
+  "/search": "Search",
+  "/graph": "Graph",
+  "/prompts": "Prompts",
+  "/flows": "Workflows",
+  "/sql": "Data",
+  "/system": "System",
+};
+
+function toolTitle(pathname: string): string {
+  if (pathname.startsWith("/note")) return "Note";
+  return TOOL_TITLES[pathname] || "Advanced";
+}
 
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
-  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion } = useAuth();
+  const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const reviewCount = useReviewCount();
   const loc = useLocation();
   const nav = useNavigate();
-  const capture = loc.pathname === "/chat";
-  const review = loc.pathname === "/review";
-  const advanced = !capture && !review;  // the grouped section pages
+  const path = loc.pathname;
+  const capture = path === "/chat";
+  const review = path === "/review";
+  const advHome = path === "/advanced";              // the launcher grid
+  const advTool = !capture && !review && !advHome;   // a tool open full-screen
+  const advanced = advHome || advTool;
 
   return (
     <div className="ushell">
       <div className="utop">
-        <span className="brand">{brainName}<span className="dot">.</span></span>
+        {advTool ? (
+          <>
+            {/* Back to wherever you came from — the grid, or chat if you deep-linked a note. */}
+            <button className="back" title="Back" onClick={() => nav(-1)}><Icon name="chevron" size={20} /></button>
+            <span className="tool-title">{toolTitle(path)}</span>
+          </>
+        ) : (
+          <span className="brand">{brainName}<span className="dot">.</span></span>
+        )}
         <span className="spacer" />
-        {advanced && <button className="ghost" style={{ padding: "4px 10px" }} onClick={disconnect}>Disconnect</button>}
         {capture && reviewCount > 0 && (
           <button className="bolt review-bell" title={`${reviewCount} to review`} onClick={() => nav("/review")}>
             <Icon name="bell" size={20} />
@@ -69,8 +90,8 @@ export default function Shell({ children }: { children: ReactNode }) {
         )}
         {review && <button className="ghost" style={{ padding: "4px 10px" }} onClick={() => nav("/chat")}>Done</button>}
         {!review && (
-          <button className={"bolt" + (advanced ? " active" : "")} title="Advanced"
-                  onClick={() => nav(advanced ? "/chat" : "/browse")}>
+          <button className={"bolt" + (advanced ? " active" : "")} title={advanced ? "Back to compose" : "Advanced"}
+                  onClick={() => nav(advanced ? "/chat" : "/advanced")}>
             <Icon name="bolt" size={20} />
           </button>
         )}
@@ -83,21 +104,6 @@ export default function Shell({ children }: { children: ReactNode }) {
       {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
 
       <div className={"ubody" + (advanced ? " adv" : "")}>{children}</div>
-
-      {advanced && (
-        <nav className="mbottom">
-          {GROUPS.map((g) => {
-            const active = g.match.some((p) => loc.pathname.startsWith(p));
-            return (
-              <button key={g.to} className={active ? "active" : ""} onClick={() => nav(g.to)}>
-                <Icon name={g.icon} size={20} />
-                <span>{g.label}</span>
-                {g.label === "Review" && reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
-              </button>
-            );
-          })}
-        </nav>
-      )}
     </div>
   );
 }

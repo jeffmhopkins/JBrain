@@ -95,7 +95,7 @@ export default function NotePage() {
       )}
       {editing !== null ? (
         <div>
-          <textarea rows={16} style={{ fontFamily: "monospace" }} value={editing}
+          <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={editing}
                     onChange={(e) => setEditing(e.target.value)} />
           <div className="row" style={{ marginTop: 10 }}>
             <button className="primary" onClick={saveEdit} disabled={saving}>{saving ? "Saving…" : "Save"}</button>

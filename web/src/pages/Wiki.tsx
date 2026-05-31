@@ -85,21 +85,20 @@ export default function Wiki() {
   const top = Object.values(tree.children);
 
   return (
-    <div className="content">
-      <h2>Wiki</h2>
-      <div className="row" style={{ gap: 6, marginBottom: 10 }}>
+    <div className="tool">
+      <div className="tool-bar">
         {TABS.map((t) => (
           <button key={t.key} className={kind === t.key ? "primary" : "ghost"} onClick={() => setKind(t.key)}>{t.label}</button>
         ))}
+        <input className="tool-filter" placeholder="Filter notes by title…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      <input placeholder="Filter notes by title…" value={q} onChange={(e) => setQ(e.target.value)} />
-      <div style={{ marginTop: 14 }}>
+      <div className="tool-body">
         {top.length === 0 && <p className="muted">Nothing here yet.</p>}
         {renderNodes(top, 0, "")}
+        <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>
+          Tip: name a note like <code>Work/Q3 Planning</code> to nest it under <code>Work</code>.
+        </p>
       </div>
-      <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>
-        Tip: name a note like <code>Work/Q3 Planning</code> to nest it under <code>Work</code>.
-      </p>
     </div>
   );
 }

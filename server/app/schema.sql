@@ -161,6 +161,19 @@ CREATE TABLE IF NOT EXISTS workflows (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- PWA-editable action recipes (declarative multi-step pipelines). Repo recipes
+-- are seeded from actions/*.yaml by type; a user edit sets locked=1 so repo
+-- re-ingest won't clobber it. source='user' rows are custom actions with no repo
+-- file behind them. The recipe body is stored verbatim (YAML text).
+CREATE TABLE IF NOT EXISTS action_defs (
+  type        TEXT PRIMARY KEY,                 -- canonical action type
+  recipe_yaml TEXT NOT NULL,                    -- full recipe as authored (YAML)
+  source      TEXT NOT NULL DEFAULT 'repo',      -- 'repo' | 'user'
+  locked      INTEGER NOT NULL DEFAULT 0,        -- 1 = user-edited, freeze from re-ingest
+  origin_hash TEXT,                              -- sha256 of repo file last ingested
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- PWA-editable prompt overrides (take precedence over prompts.yaml defaults).
 CREATE TABLE IF NOT EXISTS prompt_overrides (
   key        TEXT PRIMARY KEY,

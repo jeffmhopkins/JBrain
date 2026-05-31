@@ -852,3 +852,29 @@ def test_prompt_key_alias_preserves_legacy_override(client):
     prompts.set_override(conn, "actions.synthesize", "NEW CUSTOM")
     conn.commit()
     assert prompts.get("actions.synthesize") == "NEW CUSTOM"
+
+
+def test_action_def_db_first_and_custom_type(client):
+    # Recipes resolve from the action_defs table (seeded at boot), custom types
+    # appear in the catalog, and edits are reflected (updated_at-keyed cache).
+    import yaml
+    from app.db import get_conn
+    from app.services import pipeline
+    conn = get_conn()
+    assert "synthesize" in pipeline.action_types()
+    assert pipeline.get_action_def("synthesize") is not None
+    # legacy alias still resolves to the canonical recipe via the file alias map
+    assert pipeline.get_action_def("claude_synthesize")["type"] == "synthesize"
+
+    recipe = {"type": "say_hi", "steps": [{"do": "create_review", "with": {"title": "hi"}}]}
+    conn.execute("INSERT INTO action_defs (type, recipe_yaml, source, locked) VALUES (?,?,'user',1)",
+                 ("say_hi", yaml.safe_dump(recipe)))
+    conn.commit()
+    assert "say_hi" in pipeline.action_types()
+    assert pipeline.get_action_def("say_hi")["type"] == "say_hi"
+
+    recipe["steps"][0]["with"]["title"] = "bye"
+    conn.execute("UPDATE action_defs SET recipe_yaml=?, updated_at=datetime('now','+2 seconds') "
+                 "WHERE type='say_hi'", (yaml.safe_dump(recipe),))
+    conn.commit()
+    assert pipeline.get_action_def("say_hi")["steps"][0]["with"]["title"] == "bye"

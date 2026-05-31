@@ -43,7 +43,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def init_db() -> None:

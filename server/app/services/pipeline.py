@@ -15,8 +15,10 @@ Python fallback, so both can coexist during migration.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 import yaml
@@ -27,7 +29,7 @@ from . import embeddings
 from . import llm
 from . import notes as notes_svc
 from . import reviews as reviews_svc
-from ..db import get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta
 
 
 def _today() -> str:
@@ -326,8 +328,14 @@ class _PromptsProxy:
 
 # --- Definition loading & validation ---------------------------------------
 
-_DEFS: dict | None = None
+# Repo files are the seed; the action_defs DB table is the editable source of
+# truth (DB-first). _REPO_DEFS / _ALIASES are the file layer (read-only, used for
+# seeding, fallback, and alias resolution). _cache is a per-thread parsed-recipe
+# cache keyed by (type -> (updated_at, recipe)) so we don't re-parse YAML each run
+# but still see committed edits (we read updated_at from the DB every time).
+_REPO_DEFS: dict | None = None
 _ALIASES: dict[str, str] = {}  # legacy action_type -> canonical type
+_cache = threading.local()
 
 
 def _actions_dir() -> Path | None:
@@ -341,11 +349,9 @@ def _actions_dir() -> Path | None:
     return None
 
 
-def load_action_defs() -> dict:
-    """Parse actions/*.yaml into {type: recipe} and rebuild the alias map (a
-    recipe's `aliases:` are legacy names that still dispatch). Malformed files
-    are skipped."""
-    global _ALIASES
+def _load_repo() -> dict:
+    """Parse actions/*.yaml into {type: recipe} and rebuild the alias map."""
+    global _REPO_DEFS, _ALIASES
     defs: dict = {}
     aliases: dict[str, str] = {}
     d = _actions_dir()
@@ -359,29 +365,101 @@ def load_action_defs() -> dict:
                 defs[doc["type"]] = doc
                 for a in (doc.get("aliases") or []):
                     aliases[a] = doc["type"]
+    _REPO_DEFS = defs
     _ALIASES = aliases
     return defs
 
 
+def _repo_defs() -> dict:
+    if _REPO_DEFS is None:
+        _load_repo()
+    return _REPO_DEFS
+
+
+# Public names kept for tests/validation that operate on the repo files.
+def load_action_defs() -> dict:
+    return _load_repo()
+
+
 def reload_action_defs() -> dict:
-    global _DEFS
-    _DEFS = load_action_defs()
-    return _DEFS
+    return _load_repo()
+
+
+def ingest_repo_action_defs(conn) -> int:
+    """Seed/update the action_defs table from actions/*.yaml. Mirrors the
+    workflows ingest: insert new types, refresh unlocked ones whose repo file
+    changed, leave user-locked rows untouched. Stores the raw YAML verbatim."""
+    d = _actions_dir()
+    if not d:
+        return 0
+    count = 0
+    for path in sorted(d.glob("*.yaml")):
+        try:
+            text = path.read_text()
+            doc = yaml.safe_load(text)
+        except Exception:
+            continue
+        if not (doc and doc.get("type") and isinstance(doc.get("steps"), list)):
+            continue
+        t = doc["type"]
+        h = hashlib.sha256(text.encode()).hexdigest()
+        existing = conn.execute(
+            "SELECT locked, origin_hash FROM action_defs WHERE type = ?", (t,)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO action_defs (type, recipe_yaml, source, locked, origin_hash) "
+                "VALUES (?, ?, 'repo', 0, ?)", (t, text, h),
+            )
+            count += 1
+        elif not existing["locked"] and existing["origin_hash"] != h:
+            conn.execute(
+                "UPDATE action_defs SET recipe_yaml = ?, origin_hash = ?, "
+                "updated_at = datetime('now') WHERE type = ?", (text, h, t),
+            )
+            count += 1
+    conn.commit()
+    return count
 
 
 def get_action_def(action_type: str) -> dict | None:
-    """Resolve a recipe, honouring legacy aliases so existing DB rows still run."""
-    global _DEFS
-    if _DEFS is None:
-        _DEFS = load_action_defs()
-    return _DEFS.get(_ALIASES.get(action_type, action_type))
+    """Resolve a recipe (DB-first, alias-aware). Falls back to the repo file only
+    before the table is seeded. Uses a per-thread (type, updated_at) cache to
+    avoid re-parsing YAML while still reflecting committed edits."""
+    _repo_defs()  # ensure the alias map is loaded
+    canonical = _ALIASES.get(action_type, action_type)
+    try:
+        row = get_conn().execute(
+            "SELECT recipe_yaml, updated_at FROM action_defs WHERE type = ?", (canonical,)
+        ).fetchone()
+    except Exception:
+        row = None
+    if row is None:
+        return _repo_defs().get(canonical)
+    cache = getattr(_cache, "d", None)
+    if cache is None:
+        cache = {}
+        _cache.d = cache
+    hit = cache.get(canonical)
+    if hit and hit[0] == row["updated_at"]:
+        return hit[1]
+    try:
+        recipe = yaml.safe_load(row["recipe_yaml"]) or {}
+    except Exception:
+        recipe = _repo_defs().get(canonical)
+    cache[canonical] = (row["updated_at"], recipe)
+    return recipe
 
 
 def action_types() -> list[str]:
-    global _DEFS
-    if _DEFS is None:
-        _DEFS = load_action_defs()
-    return sorted(_DEFS.keys())
+    """Every action type: DB rows ∪ repo files (DB is authoritative once seeded)."""
+    types = set(_repo_defs().keys())
+    try:
+        for r in get_conn().execute("SELECT type FROM action_defs"):
+            types.add(r["type"])
+    except Exception:
+        pass
+    return sorted(types)
 
 
 def validate_action_defs() -> list[str]:

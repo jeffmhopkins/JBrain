@@ -63,6 +63,9 @@ async def lifespan(app: FastAPI):
 
     wf_svc.ingest_repo_workflows(get_conn())  # seed/update repo workflows
 
+    from .services import pipeline as _pipeline
+    _pipeline.ingest_repo_action_defs(get_conn())  # seed/update action recipes
+
     from .services import architect
     for w in architect.validate_agent_config(get_conn()):
         print(f"[agent] config warning: {w}", flush=True)

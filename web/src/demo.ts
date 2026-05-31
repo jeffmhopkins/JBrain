@@ -106,6 +106,7 @@ function match(path: string): any {
 export function demoResponse(path: string, method = "GET"): any {
   if (method !== "GET") {
     if (/\/conversations$/.test(path)) return { id: 1 };
+    if (/\/notes\/entry$/.test(path)) return { id: Date.now(), title: "Demo entry", slug: "health-habits" };
     return { ok: true, id: 1 };
   }
   return match(path) ?? [];

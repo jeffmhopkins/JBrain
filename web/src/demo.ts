@@ -59,11 +59,34 @@ const WORKFLOWS = [
     action_config: {}, enabled: false, locked: false, source: "repo", last_status: null, last_run_at: null },
 ];
 
-const PROMPTS = [
-  { key: "architect.assisted", default: "You are the Chief Knowledge Architect…", override: null, effective: "You are the Chief Knowledge Architect…" },
-  { key: "architect.research", default: "You are the read-only Researcher…", override: null, effective: "You are the read-only Researcher…" },
-  { key: "actions.generate_tags", default: "Suggest 3-6 short lowercase tags…", override: null, effective: "Suggest 3-6 short lowercase tags…" },
-];
+// Mirrors the shipped prompts.yaml (the real /api/prompts is that file flattened
+// to its string leaves: modes.*, tools.*, actions.*, agent.model).
+const PROMPT_DEFAULTS: Record<string, string> = {
+  "agent.model": "",
+  "modes.assisted.system":
+    'You are the Conversational Facade and Chief Knowledge Architect for "{brain_name}", a personal wiki stored in a SQL database. You operate in two sub-modes; decide which on every message.\n\nQUICK TASKS (act fast): short imperative commands that want a small additive change — add to a list, log an event, jot a fleeting reminder. Use the additive tools (add_list_item, log_entry, capture_inbox, mark_inbox_processed); they apply immediately and are versioned/undoable.\n\nKNOWLEDGE CAPTURE (Socratic): the user is exploring with depth. Be curious; clarify one concept at a time. Ground yourself with search_notes / read_note before proposing, prefer updating over near-duplicates, and call propose_actions to STAGE changes for the user to confirm. Use [[Note Title]] wiki-links.',
+  "modes.research.system":
+    'You are the Researcher for "{brain_name}", a personal knowledge base. Answer questions by querying the user\'s own notes. You are STRICTLY READ-ONLY — never create, edit, or delete.\n\nUse search_notes / read_note / list_recent_notes / search_attachments / read_attachment, and query_sql (SELECT-only) for structured questions. Tables you can query: {tables}. Cite notes as [[Title]]. If the answer isn\'t in the brain, say so plainly.',
+  "tools.search_notes": "Search existing notes by keyword and meaning. Use to avoid duplicates and find related notes.",
+  "tools.read_note": "Read the full markdown content of a note by its exact title.",
+  "tools.list_recent_notes": "List the most recently updated notes to orient at the start of a session.",
+  "tools.read_inbox": "Read unprocessed quick-capture inbox items to fold into the wiki.",
+  "tools.add_list_item": "Add an item to a checklist note, creating the list if it doesn't exist. Applied immediately (additive, undoable).",
+  "tools.log_entry": "Append a dated entry to a log/journal note, creating it if absent. Applied immediately (additive, undoable).",
+  "tools.capture_inbox": "Save a fleeting fragment to the capture inbox (processed later). Applied immediately.",
+  "tools.mark_inbox_processed": "Mark inbox items processed once folded into the wiki.",
+  "tools.search_attachments": "Search the text of uploaded file attachments by meaning.",
+  "tools.read_attachment": "Read the full text of an uploaded attachment by its id.",
+  "tools.query_sql": "Run a READ-ONLY SQL query (SELECT/WITH only) over the brain's database.",
+  "tools.propose_actions": "Stage wiki changes for the user to confirm. Does NOT apply them.",
+  "actions.daylog_summary": "Summarise this day's log entries into a tight paragraph plus a few key bullets:",
+  "actions.generate_tags": "Suggest 3-6 short, lowercase topic tags (comma-separated, no '#') that classify this note. Reply with ONLY the comma-separated tags.",
+  "actions.synthesize": "Summarise the following:",
+  "actions.wiki_synthesis": "You maintain a personal KNOWLEDGE BASE synthesized from raw entries. Fold the NEW ENTRIES into topic notes (update existing, else create), cite sources as [[Entry Title]], and return ONLY a JSON array of {op,title,content_md} actions.",
+};
+const PROMPTS = Object.entries(PROMPT_DEFAULTS).map(
+  ([key, d]) => ({ key, default: d, override: null as string | null, effective: d }),
+);
 
 const REVIEWS = [
   { id: 1, title: "Daily review — 2026-05-31", message: "Summarised 1 day of 'Daily Log'.", link_slug: "daily-log", created_at: "2026-05-31 07:00" },
@@ -247,7 +270,7 @@ function match(path: string): any {
   return null;
 }
 
-export function demoResponse(path: string, method = "GET"): any {
+export function demoResponse(path: string, method = "GET", body?: any): any {
   if (method !== "GET") {
     // Persist a dismiss for the session so the item doesn't reappear on re-fetch
     // (mirrors the real server marking it dismissed).
@@ -255,6 +278,16 @@ export function demoResponse(path: string, method = "GET"): any {
     if (dis) {
       const i = REVIEWS.findIndex((r) => r.id === Number(dis[1]));
       if (i >= 0) REVIEWS.splice(i, 1);
+      return { ok: true };
+    }
+    // Prompt override (PUT) / reset (DELETE) — persist for the session.
+    const pk = path.match(/^\/api\/prompts\/(.+)$/);
+    if (pk) {
+      const row = PROMPTS.find((r) => r.key === decodeURIComponent(pk[1]));
+      if (row) {
+        if (method === "DELETE") { row.override = null; row.effective = row.default; }
+        else { try { row.override = JSON.parse(body).value; row.effective = row.override!; } catch { /* ignore */ } }
+      }
       return { ok: true };
     }
     if (/\/conversations$/.test(path)) return { id: 1 };

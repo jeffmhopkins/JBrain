@@ -40,7 +40,7 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  if (isDemo()) return demoResponse(path, (opts.method as string) || "GET") as T;
+  if (isDemo()) return demoResponse(path, (opts.method as string) || "GET", opts.body) as T;
   const res = await fetch(u(path), {
     ...opts,
     headers: authHeaders(opts.headers),

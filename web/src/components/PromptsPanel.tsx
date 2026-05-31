@@ -33,6 +33,7 @@ export default function PromptsPanel() {
 
   return (
     <div>
+      <h2 style={{ marginTop: 0 }}>Prompts</h2>
       <p className="muted" style={{ fontSize: 13 }}>
         Edit the prompts that drive the AI modes and actions. Overrides are
         stored in your database (they survive updates); Reset returns to the shipped default.

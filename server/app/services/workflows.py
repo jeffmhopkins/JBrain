@@ -333,12 +333,50 @@ def _action_synthesize_wiki(conn, cfg: dict, workflow_id, context=None) -> str:
     return f"synthesised {len(entries)} entr(y/ies) into {len(changed)} KB note(s)"
 
 
+DEFAULT_TAG_PROMPT = (
+    "Suggest 3-6 short, lowercase topic tags (comma-separated, no '#') that "
+    "classify this note. Reply with ONLY the comma-separated tags."
+)
+
+
+def _suggest_tags(title: str, content: str, prompt: str | None = None) -> list[str]:
+    """Ask Claude for tags. Returns [] if no API key (graceful no-op)."""
+    settings = get_settings()
+    if not settings.has_anthropic:
+        return []
+    from anthropic import Anthropic
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=settings.anthropic_model, max_tokens=80,
+        messages=[{"role": "user",
+                   "content": f"{prompt or DEFAULT_TAG_PROMPT}\n\nTitle: {title}\n{content[:2000]}"}],
+    )
+    text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    return [t.strip().lower().lstrip("#") for t in text.replace("\n", ",").split(",") if t.strip()][:6]
+
+
+def _action_generate_tags(conn, cfg: dict, workflow_id, context=None) -> str:
+    """Auto-tag the entry that triggered this workflow (from entry_created)."""
+    note_id = (context or {}).get("note_id")
+    if not note_id:
+        return "no entry in context"
+    row = conn.execute("SELECT id, title, content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if not row:
+        return "entry not found"
+    tags = _suggest_tags(row["title"], row["content_md"], cfg.get("prompt"))
+    if not tags:
+        return "no tags (no API key or empty result)"
+    notes_svc.set_tags(conn, row["id"], tags)
+    return "tagged: " + ", ".join(tags)
+
+
 _ACTIONS = {
     "append_to_note": _action_append_to_note,
     "claude_synthesize": _action_claude_synthesize,
     "create_review_item": _action_create_review_item,
     "summarize_day_log": _action_summarize_day_log,
     "synthesize_wiki": _action_synthesize_wiki,
+    "generate_tags": _action_generate_tags,
 }
 
 

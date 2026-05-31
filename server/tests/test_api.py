@@ -528,6 +528,36 @@ action: { type: append_to_note, config: { title: T, text: x } }
     assert client.post(f"/api/workflows/{wf['id']}/reset").json()["locked"] is False
 
 
+def test_entry_created_triggers_autotag(client, monkeypatch):
+    from app.services import workflows as wf_svc
+    monkeypatch.setattr(wf_svc, "_suggest_tags", lambda title, content, prompt=None: ["work", "planning"])
+    client.post("/api/workflows", json={
+        "name": "Autotag", "trigger_type": "event", "trigger_config": {"event": "entry_created"},
+        "action_type": "generate_tags", "action_config": {}, "enabled": True,
+    })
+    # Creating a NEW entry fires entry_created -> the workflow tags it.
+    client.post("/api/notes", json={"title": "Project Kickoff", "content_md": "plan the launch"})
+    tags = set(client.get("/api/notes/project-kickoff").json()["tags"])
+    assert {"work", "planning"} <= tags
+
+
+def test_entry_created_not_fired_for_kb(client, monkeypatch):
+    # Synthesized kb notes (source=workflow, kind=kb) must NOT trigger entry_created.
+    calls = {"n": 0}
+    from app.services import workflows as wf_svc
+    monkeypatch.setattr(wf_svc, "_suggest_tags", lambda *a, **k: calls.update(n=calls["n"] + 1) or ["x"])
+    client.post("/api/workflows", json={
+        "name": "Autotag", "trigger_type": "event", "trigger_config": {"event": "entry_created"},
+        "action_type": "generate_tags", "action_config": {}, "enabled": True,
+    })
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "KB X", "body", kind="kb", source="workflow")
+    conn.commit()
+    assert calls["n"] == 0  # kb/workflow write did not fire the entry hook
+
+
 def test_capture_with_location(client):
     client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
     item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")

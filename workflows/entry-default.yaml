@@ -1,0 +1,21 @@
+# Default "on every new entry" workflow.
+#
+# Built-in ingest already happens for EVERY note automatically (version snapshot,
+# full-text index, wiki-link resolution, vector embedding) — that's core, not a
+# workflow. This optional workflow adds AI auto-tagging on top.
+#
+# Disabled by default because it calls Claude on each new entry (adds a little
+# latency/cost). Enable it in the PWA (Workflows → toggle) or set enabled: true.
+key: entry-autotag
+name: Auto-tag new entries
+enabled: false
+
+trigger:
+  type: event
+  event: entry_created   # fired when a user/architect creates a new entry note
+
+action:
+  type: generate_tags
+  config:
+    # Editable prompt (omit to use the built-in default).
+    prompt: "Suggest 3-6 short lowercase topic tags (comma-separated, no '#') for this note. Reply with ONLY the tags."

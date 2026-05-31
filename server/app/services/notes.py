@@ -14,6 +14,40 @@ from . import embeddings, wikilinks
 # are tiny, so this is generous; it just bounds runaway growth on churny notes.
 MAX_VERSIONS_PER_NOTE = 50
 
+# Guard so an entry-event workflow that writes can't recursively re-fire.
+_suppress_entry_events = False
+
+
+def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
+    """Replace a note's tags (lower-cased, de-duped). Populates tags/note_tags."""
+    norm: list[str] = []
+    for t in tags:
+        t = (t or "").strip().lower()
+        if t and t not in norm:
+            norm.append(t)
+    conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+    for name in norm:
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+        tid = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()["id"]
+        conn.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)", (note_id, tid)
+        )
+    return norm
+
+
+def _fire_entry_created(conn, note_id: int, title: str) -> None:
+    global _suppress_entry_events
+    if _suppress_entry_events:
+        return
+    _suppress_entry_events = True
+    try:
+        from . import workflows as wf_svc  # lazy import avoids a cycle
+        wf_svc.fire_event(conn, "entry_created", {"note_title": title, "note_id": note_id})
+    except Exception:  # noqa: BLE001 — a workflow must never break note creation
+        pass
+    finally:
+        _suppress_entry_events = False
+
 
 def slugify(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
@@ -117,7 +151,9 @@ def upsert_note(
             )
         if kind is not None:  # only change kind when explicitly set
             conn.execute("UPDATE notes SET kind = ? WHERE id = ?", (kind, note_id))
+        created = False
     else:
+        created = True
         slug = _unique_slug(conn, title)
         cur = conn.execute(
             "INSERT INTO notes (title, slug, content_md, kind, lat, lon, location_label) "
@@ -137,6 +173,12 @@ def upsert_note(
     _sync_fts(conn, note_id, title, content_md)
     wikilinks.reconcile_links(conn, note_id, content_md)
     embeddings.upsert_note_embedding(conn, note_id, title, content_md)
+
+    # "On every new entry" hook — fires for human/architect-created entry notes
+    # only (not kb/workflow/restore writes), so workflows can enrich them.
+    effective_kind = kind if kind is not None else (existing["kind"] if existing else "entry")
+    if created and effective_kind == "entry" and source in ("user", "architect"):
+        _fire_entry_created(conn, note_id, title)
     return note_id
 
 

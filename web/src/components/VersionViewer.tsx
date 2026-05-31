@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { get, post } from "../api";
 import { makeLinkRenderer } from "../util";
+import Modal from "./Modal";
 
 export interface TimelineEntry {
   version_id: number;
@@ -53,7 +54,7 @@ export function HistoryTimeline({
   );
 }
 
-/** Modal-ish overlay that views a version and offers restore. */
+/** Modal that views a version and offers restore. */
 export function VersionViewer({
   slug, version, onClose, onRestored,
 }: {
@@ -84,30 +85,22 @@ export function VersionViewer({
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="overlay-card" onClick={(e) => e.stopPropagation()}>
-        <div className="row">
-          <strong>{version.is_current ? "Current version" : `Version from ${rel(version.created_at)}`}</strong>
-          <span className="badge" style={{ marginLeft: 8 }}>{version.source}</span>
-          <span className="spacer" />
-          <button className="ghost" onClick={onClose}>Close</button>
-        </div>
-        <div className="md" style={{ marginTop: 12 }}>
-          <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{content}</ReactMarkdown>
-        </div>
-        {!version.is_current && (
-          <div className="row" style={{ marginTop: 16 }}>
-            <button className="primary" onClick={restore} disabled={busy}>
-              {busy ? "Restoring…" : "Restore this version"}
-            </button>
-          </div>
-        )}
+    <Modal
+      title={version.is_current ? "Current version" : `Version from ${rel(version.created_at)}`}
+      headerExtra={<span className="badge">{version.source}</span>}
+      onClose={onClose}
+      footer={!version.is_current
+        ? <button className="primary" onClick={restore} disabled={busy}>{busy ? "Restoring…" : "Restore this version"}</button>
+        : undefined}
+    >
+      <div className="md">
+        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{content}</ReactMarkdown>
       </div>
-    </div>
+    </Modal>
   );
 }
 
-/** Inline unified diff overlay between two versions. */
+/** Unified diff modal between two versions. */
 export function DiffView({
   slug, from, to, onClose,
 }: {
@@ -127,22 +120,15 @@ export function DiffView({
 
   const sym = (t: string) => (t === "insert" ? "+" : t === "delete" ? "−" : " ");
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="overlay-card" onClick={(e) => e.stopPropagation()}>
-        <div className="row">
-          <strong>Changes → current</strong>
-          <span className="spacer" />
-          <button className="ghost" onClick={onClose}>Close</button>
-        </div>
-        {titleChanged && <p className="muted">Title changed: “{from.title}” → “{to.title}”</p>}
-        <pre className="diff">
-          {hunks.flatMap((h, hi) =>
-            h.lines.map((ln, li) => (
-              <div key={`${hi}-${li}`} className={`diff-${h.type}`}>{sym(h.type)} {ln}</div>
-            )),
-          )}
-        </pre>
-      </div>
-    </div>
+    <Modal title="Changes → current" onClose={onClose}>
+      {titleChanged && <p className="muted">Title changed: “{from.title}” → “{to.title}”</p>}
+      <pre className="diff">
+        {hunks.flatMap((h, hi) =>
+          h.lines.map((ln, li) => (
+            <div key={`${hi}-${li}`} className={`diff-${h.type}`}>{sym(h.type)} {ln}</div>
+          )),
+        )}
+      </pre>
+    </Modal>
   );
 }

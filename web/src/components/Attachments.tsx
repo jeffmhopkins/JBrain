@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { attachmentObjectUrl, del, downloadAttachment, get, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
 import { Icon } from "./Icon";
+import Modal from "./Modal";
 
 interface Attachment { id: number; filename: string; mime: string; byte_size: number; created_at: string; }
 type Viewing =
@@ -82,22 +83,13 @@ export default function Attachments({ slug }: { slug: string }) {
       ))}
 
       {viewing && (
-        <div className="overlay" onClick={() => setViewing(null)}>
-          <div className="overlay-card" onClick={(e) => e.stopPropagation()}>
-            <div className="row">
-              <strong>{viewing.filename}</strong>
-              <span className="spacer" />
-              <button className="ghost" onClick={() => setViewing(null)}>Close</button>
-            </div>
-            <div style={{ marginTop: 12 }}>
-              {viewing.kind === "image"
-                ? <img src={viewing.url} alt={viewing.filename} style={{ maxWidth: "100%", borderRadius: 8 }} />
-                : viewing.kind === "md"
-                  ? <div className="md"><ReactMarkdown>{viewing.text}</ReactMarkdown></div>
-                  : <pre style={{ whiteSpace: "pre-wrap" }}>{viewing.text}</pre>}
-            </div>
-          </div>
-        </div>
+        <Modal title={viewing.filename} onClose={() => setViewing(null)}>
+          {viewing.kind === "image"
+            ? <img src={viewing.url} alt={viewing.filename} style={{ maxWidth: "100%", borderRadius: 8 }} />
+            : viewing.kind === "md"
+              ? <div className="md"><ReactMarkdown>{viewing.text}</ReactMarkdown></div>
+              : <pre style={{ whiteSpace: "pre-wrap" }}>{viewing.text}</pre>}
+        </Modal>
       )}
     </div>
   );

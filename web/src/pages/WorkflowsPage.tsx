@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { del, get, post, put } from "../api";
+import Modal from "../components/Modal";
 
 interface Workflow {
   id: number;
@@ -73,19 +74,16 @@ export default function WorkflowsPage() {
   }
 
   async function save() {
-    let payload: any;
-    try {
-      payload = {
-        name: editing.name, trigger_type: editing.trigger_type,
-        trigger_config: JSON.parse(editing.trigger_config),
-        action_type: editing.action_type,
-        action_config: JSON.parse(editing.action_config),
-        enabled: editing.enabled,
-      };
-    } catch {
-      setError("Trigger/action config must be valid JSON.");
-      return;
-    }
+    let triggerCfg: any, actionCfg: any;
+    try { triggerCfg = JSON.parse(editing.trigger_config); }
+    catch { setError("Trigger config isn’t valid JSON — fix it and try again."); return; }
+    try { actionCfg = JSON.parse(editing.action_config); }
+    catch { setError("Action config isn’t valid JSON — fix it and try again."); return; }
+    const payload: any = {
+      name: editing.name, trigger_type: editing.trigger_type,
+      trigger_config: triggerCfg, action_type: editing.action_type,
+      action_config: actionCfg, enabled: editing.enabled,
+    };
     try {
       if (editing.id) await put(`/api/workflows/${editing.id}`, payload);
       else await post("/api/workflows", payload);
@@ -142,49 +140,50 @@ export default function WorkflowsPage() {
       ))}
 
       {editing && (
-        <div className="overlay" onClick={() => setEditing(null)}>
-          <div className="overlay-card" onClick={(e) => e.stopPropagation()}>
-            <div className="row"><strong>{editing.id ? "Edit" : "New"} workflow</strong>
-              <span className="spacer" /><button className="ghost" onClick={() => setEditing(null)}>Close</button></div>
-            <label className="muted">Name</label>
-            <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
-            <div className="row" style={{ gap: 8, marginTop: 8 }}>
-              <div style={{ flex: 1 }}>
-                <label className="muted">Trigger type</label>
-                <select value={editing.trigger_type} onChange={(e) => setEditing({ ...editing, trigger_type: e.target.value })}
-                        style={{ width: "100%", padding: 9, background: "var(--bg-elev)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8 }}>
-                  <option value="event">event</option>
-                  <option value="schedule">schedule</option>
-                </select>
-              </div>
-              <div style={{ flex: 1 }}>
-                <label className="muted">Action type</label>
-                <select value={editing.action_type} onChange={(e) => setEditing({ ...editing, action_type: e.target.value })}
-                        style={{ width: "100%", padding: 9, background: "var(--bg-elev)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8 }}>
-                  <option value="append_to_note">append_to_note</option>
-                  <option value="claude_synthesize">claude_synthesize</option>
-                  <option value="create_review_item">create_review_item</option>
-                  <option value="generate_tags">generate_tags</option>
-                  <option value="summarize_day_log">summarize_day_log</option>
-                  <option value="synthesize_wiki">synthesize_wiki</option>
-                </select>
-              </div>
+        <Modal
+          title={`${editing.id ? "Edit" : "New"} workflow`}
+          size="wide"
+          onClose={() => setEditing(null)}
+          footer={<>
+            <button className="primary" onClick={save}>Save</button>
+            <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+            {error && <span className="spacer" />}
+            {error && <span style={{ color: "var(--danger)", fontSize: 13 }}>{error}</span>}
+          </>}
+        >
+          <label className="muted">Name</label>
+          <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+          <div className="row" style={{ gap: 8, marginTop: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label className="muted">Trigger type</label>
+              <select className="modal-select" value={editing.trigger_type} onChange={(e) => setEditing({ ...editing, trigger_type: e.target.value })}>
+                <option value="event">event</option>
+                <option value="schedule">schedule</option>
+              </select>
             </div>
-            <label className="muted" style={{ marginTop: 8, display: "block" }}>Trigger config (JSON)</label>
-            <textarea rows={3} style={{ fontFamily: "monospace" }} value={editing.trigger_config}
-                      onChange={(e) => setEditing({ ...editing, trigger_config: e.target.value })} />
-            <label className="muted" style={{ marginTop: 8, display: "block" }}>Action config (JSON)</label>
-            <textarea rows={4} style={{ fontFamily: "monospace" }} value={editing.action_config}
-                      onChange={(e) => setEditing({ ...editing, action_config: e.target.value })} />
-            <label className="row" style={{ marginTop: 10, gap: 8 }}>
-              <input type="checkbox" style={{ width: "auto" }} checked={editing.enabled}
-                     onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} /> Enabled
-            </label>
-            <div className="row" style={{ marginTop: 14 }}>
-              <button className="primary" onClick={save}>Save</button>
+            <div style={{ flex: 1 }}>
+              <label className="muted">Action type</label>
+              <select className="modal-select" value={editing.action_type} onChange={(e) => setEditing({ ...editing, action_type: e.target.value })}>
+                <option value="append_to_note">append_to_note</option>
+                <option value="claude_synthesize">claude_synthesize</option>
+                <option value="create_review_item">create_review_item</option>
+                <option value="generate_tags">generate_tags</option>
+                <option value="summarize_day_log">summarize_day_log</option>
+                <option value="synthesize_wiki">synthesize_wiki</option>
+              </select>
             </div>
           </div>
-        </div>
+          <label className="muted" style={{ marginTop: 12, display: "block" }}>Trigger config (JSON)</label>
+          <textarea className="wf-textarea-lg" value={editing.trigger_config}
+                    onChange={(e) => setEditing({ ...editing, trigger_config: e.target.value })} />
+          <label className="muted" style={{ marginTop: 12, display: "block" }}>Action config (JSON)</label>
+          <textarea className="wf-textarea-lg" value={editing.action_config}
+                    onChange={(e) => setEditing({ ...editing, action_config: e.target.value })} />
+          <label className="row" style={{ marginTop: 12, gap: 8 }}>
+            <input type="checkbox" style={{ width: "auto" }} checked={editing.enabled}
+                   onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} /> Enabled
+          </label>
+        </Modal>
       )}
     </div>
   );

@@ -289,15 +289,45 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .login { max-width: 360px; margin: 12vh auto; padding: 24px; }
 .login h1 { text-align: center; }
 
-/* ---- Overlays ----------------------------------------------------------- */
-.overlay {
+/* ---- Modal / sheet ------------------------------------------------------ */
+/* Phone: full-height keyboard-aware bottom sheet. Header + footer are fixed;
+   only the body scrolls. Sized to --app-height so the footer (Save) rides
+   above the on-screen keyboard. Desktop (≥900px): centered card. */
+.modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
-  display: flex; align-items: flex-start; justify-content: center;
-  padding: 24px; padding-top: calc(24px + env(safe-area-inset-top)); overflow-y: auto;
+  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
 }
-.overlay-card {
-  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px; width: 100%; max-width: 760px;
+.modal {
+  display: flex; flex-direction: column; width: 100%;
+  height: var(--app-height, 100%);
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0; overflow: hidden;
+}
+.modal-head {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 14px 16px; padding-top: calc(14px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { font-weight: 600; font-size: 15px; color: var(--text); }
+.modal-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 16px; }
+.modal-foot {
+  flex-shrink: 0; display: flex; gap: 8px; align-items: center;
+  padding: 12px 16px; padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+.modal-select {
+  width: 100%; padding: 9px; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+/* Big keyboard-aware config editor (mirrors .note-edit-area). */
+.wf-textarea-lg { min-height: calc(var(--app-height, 100vh) - 380px); resize: vertical; font-family: monospace; font-size: 13px; }
+@media (min-width: 900px) {
+  .modal-backdrop { align-items: center; padding: 24px; }
+  .modal { height: auto; max-height: min(var(--app-height, 88vh), 88vh); max-width: 640px; border-radius: var(--radius); }
+  .modal-wide { max-width: 860px; }
+  .modal-head { padding-top: 14px; }
+  .modal-foot { padding-bottom: 12px; }
+  .wf-textarea-lg { min-height: 220px; }
 }
 pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
 .diff-insert { color: var(--ok); }

@@ -97,7 +97,57 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   position: sticky; top: 0; z-index: 40;
 }
 
-/* ---- Phone shell (top mode buttons + contextual bottom) ----------------- */
+/* ---- Unified shell ------------------------------------------------------ */
+.ushell { display: flex; flex-direction: column; min-height: 100vh; }
+.utop {
+  position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--bg);
+}
+.bolt {
+  background: transparent; border: none; color: var(--text-dim); padding: 6px;
+  cursor: pointer; display: inline-flex; border-radius: 8px;
+}
+.bolt:hover { color: var(--text); }
+.bolt.active { color: var(--accent); }
+.ubody { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.ubody.adv { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); }
+
+/* Compose box (rounded), shared across capture modes. */
+.composer-box {
+  margin: 8px 0 12px; flex-shrink: 0;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 18px; padding: 12px 14px;
+}
+.composer-box textarea {
+  background: transparent; border: none; padding: 0; width: 100%; resize: none;
+  color: var(--text); font-size: 16px;
+}
+.composer-box textarea:focus { outline: none; border: none; }
+.composer-box textarea::placeholder { color: var(--text-dim); }
+.composer-row { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.mode-wrap { position: relative; }
+.mode-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: transparent; border: none;
+  color: var(--text); padding: 5px 6px; cursor: pointer; font-size: 14px;
+}
+.mode-chip .icon { color: var(--text-dim); }
+.mode-menu {
+  position: absolute; bottom: 100%; left: 0; margin-bottom: 6px; min-width: 150px;
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 10px; padding: 4px; z-index: 60;
+}
+.mode-menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%; background: transparent; border: none;
+  color: var(--text); padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 14px;
+}
+.mode-menu button:hover { background: var(--bg-elev); }
+.icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
+.icon-btn:hover { color: var(--text); }
+.icon-btn.active { color: var(--accent); }
+.icon-btn.send:not(:disabled) { color: var(--accent); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.attach-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+
+/* ---- Phone shell (legacy bottom group nav, reused in Advanced) ----------- */
 .mshell { display: flex; flex-direction: column; min-height: 100vh; }
 .mtop {
   position: sticky; top: 0; z-index: 40; display: flex; gap: 6px;
@@ -167,8 +217,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 a.tree-label:hover { text-decoration: none; color: var(--accent); }
 
 /* ---- Chat --------------------------------------------------------------- */
-.chat-wrap { display: flex; flex-direction: column; height: 100%; }
-.messages { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.chat-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  width: 100%; max-width: 860px; margin: 0 auto; padding: 0 16px;
+}
+.messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
 .msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }
 .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
 .msg.assistant { align-self: flex-start; background: var(--bg-elev); }

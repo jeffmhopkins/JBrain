@@ -96,7 +96,7 @@ export default function App() {
       ) : (
         <Shell>
           <Routes>
-            <Route path="/" element={<Navigate to="/chat?m=entry" replace />} />
+            <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/browse" element={<BrowsePage />} />
             <Route path="/wiki" element={<Wiki />} />
@@ -106,7 +106,7 @@ export default function App() {
             <Route path="/flows" element={<WorkflowsPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/sql" element={<SqlConsole />} />
-            <Route path="*" element={<Navigate to="/chat?m=entry" replace />} />
+            <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
         </Shell>
       )}

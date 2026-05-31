@@ -1,55 +1,52 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { createEntry, post, streamChat } from "../api";
-import { useGeo, useIsDesktop, useOnline } from "../hooks";
+import { Link } from "react-router-dom";
+import { createEntry, post, streamChat, uploadAttachment } from "../api";
+import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import { Icon } from "../components/Icon";
 
 interface Msg { role: "user" | "assistant"; content: string; }
 type Mode = "entry" | "assisted" | "research";
 
-const MODES: { key: Mode; label: string; hint: string; icon: string }[] = [
-  { key: "entry", label: "Entry", hint: "Store text directly as a note.", icon: "plus" },
-  { key: "assisted", label: "Assisted", hint: "Talk it out; I propose the note.", icon: "robot" },
-  { key: "research", label: "Research", hint: "Ask questions across your brain (read-only).", icon: "search" },
+const MODES: { key: Mode; label: string; icon: string }[] = [
+  { key: "entry", label: "Entry", icon: "plus" },
+  { key: "assisted", label: "Assisted", icon: "robot" },
+  { key: "research", label: "Research", icon: "search" },
 ];
-
 const PLACEHOLDER: Record<Mode, string> = {
-  entry: "Write an entry — it's saved directly as a note.",
-  assisted: "Talk to your brain…",
+  entry: "Write an entry…",
+  assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };
 
 export default function Chat() {
-  const isDesktop = useIsDesktop();
   const online = useOnline();
   const geo = useGeo();
-  const [sp] = useSearchParams();
-  // Desktop has its own mode selector; phone is driven by the shell's top buttons (?m=).
-  const [deskMode, setDeskMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
-  const mode: Mode = isDesktop ? deskMode : ((sp.get("m") as Mode) || "entry");
+  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [entries, setEntries] = useState<{ title: string; slug: string }[]>([]);
   const [input, setInput] = useState("");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
   const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
+  const [listening, setListening] = useState(false);
+
   const endRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const recRef = useRef<any>(null);
 
-  function pickDesktopMode(m: Mode) { setDeskMode(m); localStorage.setItem("jbrain_mode", m); }
+  function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
-  // A fresh conversation when entering / switching a chat mode (entry needs none).
   async function newConversation() {
     const { id } = await post("/api/chat/conversations");
     setConvId(id); setMessages([]); setApplied([]);
   }
-  useEffect(() => {
-    if (mode === "entry") return;
-    newConversation();
-  }, [mode]);
+  useEffect(() => { if (mode !== "entry") newConversation(); }, [mode]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, entries]);
 
   async function undo(id: number) {
@@ -57,27 +54,57 @@ export default function Chat() {
     setApplied((a) => a.map((x) => (x.id === id ? { ...x, undone: true } : x)));
   }
 
-  async function send(e: FormEvent) {
-    e.preventDefault();
+  function toggleMic() {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { alert("Voice input isn't supported in this browser."); return; }
+    if (listening) { recRef.current?.stop(); return; }
+    const r = new SR();
+    recRef.current = r;
+    r.lang = "en-US"; r.interimResults = true; r.continuous = true;
+    const base = input ? input + " " : "";
+    r.onresult = (e: any) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      setInput(base + t);
+    };
+    r.onend = () => setListening(false);
+    r.onerror = () => setListening(false);
+    r.start();
+    setListening(true);
+  }
+
+  async function send(e?: FormEvent) {
+    e?.preventDefault();
     const text = input.trim();
-    if (!text || streaming || busy || !online) return;
-    setInput("");
+    if ((!text && !pendingFile) || streaming || busy || !online) return;
     const coords = geo.enabled ? geo.coords : null;
+    const file = pendingFile;
+    setInput(""); setPendingFile(null);
+    if (listening) recRef.current?.stop();
 
     if (mode === "entry") {
       setBusy(true);
       try {
-        const r = await createEntry(text, undefined, coords);
+        const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords);
+        if (file) await uploadAttachment(r.slug, file);
         setEntries((xs) => [{ title: r.title, slug: r.slug }, ...xs]);
       } finally { setBusy(false); }
       return;
     }
 
     if (!convId) return;
-    setMessages((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
+    let extra = "";
+    if (mode === "assisted" && file) {
+      // Save the file to a note so there's something to attach it to.
+      const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
+      await uploadAttachment(r.slug, file);
+      extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
+    }
+    const msg = (text + extra).trim();
+    setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setStreaming(true);
     try {
-      await streamChat(convId, text, (ev) => {
+      await streamChat(convId, msg, (ev) => {
         if (ev.type === "token") {
           setMessages((m) => {
             const c = [...m];
@@ -102,31 +129,16 @@ export default function Chat() {
     }
   }
 
-  return (
-    <div className="content chat-wrap">
-      {isDesktop && (
-        <div style={{ marginBottom: 4 }}>
-          <div className="row" style={{ gap: 6 }}>
-            {MODES.map((m) => (
-              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pickDesktopMode(m.key)}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <Icon name={m.icon} size={16} /> {m.label}
-              </button>
-            ))}
-          </div>
-          <p className="muted" style={{ fontSize: 12, margin: "6px 2px 0" }}>{MODES.find((m) => m.key === mode)!.hint}</p>
-        </div>
-      )}
+  const cur = MODES.find((m) => m.key === mode)!;
 
-      {/* The area ABOVE the composer is the only thing that changes between modes. */}
+  return (
+    <div className="chat-wrap">
       <div className="messages">
         {mode === "entry" ? (
           entries.length === 0
-            ? <div className="msg assistant muted">Type below and press Send — it's saved straight to your wiki.</div>
+            ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>
             : entries.map((en, i) => (
-                <Link key={i} to={`/note/${en.slug}`} className="msg user" style={{ textDecoration: "none" }}>
-                  Saved: {en.title}
-                </Link>
+                <Link key={i} to={`/note/${en.slug}`} className="msg user" style={{ textDecoration: "none" }}>Saved: {en.title}</Link>
               ))
         ) : (
           <>
@@ -154,21 +166,49 @@ export default function Chat() {
         <div ref={endRef} />
       </div>
 
-      {/* Shared composer — identical across Entry / Assisted / Research. */}
-      <form className="composer" onSubmit={send}>
-        <button type="button" className={geo.enabled ? "primary" : "ghost"} onClick={geo.toggle}
-                title={geo.enabled ? "Location on" : "Tag entries with your location"} style={{ padding: "0 12px" }}>
-          <Icon name="pin" />
-        </button>
+      {/* Compose box (rounded), shared across modes. */}
+      <div className="composer-box">
+        {pendingFile && (
+          <div className="attach-chip">
+            <Icon name="clip" size={14} /> {pendingFile.name}
+            <button className="icon-btn" style={{ padding: 2 }} onClick={() => setPendingFile(null)}>✕</button>
+          </div>
+        )}
         <textarea
-          rows={1}
+          rows={2}
           placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); } }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
         />
-        <button className="primary" type="submit" disabled={streaming || busy || !online}>Send</button>
-      </form>
+        <div className="composer-row">
+          <span className="mode-wrap">
+            <button className="mode-chip" onClick={() => setMenuOpen((o) => !o)}>
+              <Icon name={cur.icon} size={18} /> {cur.label}
+            </button>
+            {menuOpen && (
+              <div className="mode-menu">
+                {MODES.map((m) => (
+                  <button key={m.key} onClick={() => pick(m.key)}>
+                    <Icon name={m.icon} size={16} /> {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </span>
+          <span className="spacer" />
+          {mode !== "research" && (
+            <>
+              <input ref={fileRef} type="file" style={{ display: "none" }}
+                     onChange={(e) => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.currentTarget.value = ""; }} />
+              <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" /></button>
+            </>
+          )}
+          <button className={"icon-btn" + (listening ? " active" : "")} title="Voice input" onClick={toggleMic}><Icon name="mic" /></button>
+          <button className="icon-btn send" title="Send" onClick={() => send()}
+                  disabled={streaming || busy || !online || (!input.trim() && !pendingFile)}><Icon name="send" /></button>
+        </div>
+      </div>
     </div>
   );
 }

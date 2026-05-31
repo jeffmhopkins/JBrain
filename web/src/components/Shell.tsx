@@ -1,8 +1,8 @@
 import { ReactNode, useEffect, useState } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
-import { useIsDesktop, useOnline } from "../hooks";
+import { useOnline } from "../hooks";
 import { Icon } from "./Icon";
 
 function useReviewCount(): number {
@@ -19,22 +19,16 @@ function useReviewCount(): number {
 function UpdateBanner() {
   const [info, setInfo] = useState<any>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => {
-    get("/api/system/version").then(setInfo).catch(() => {});
-  }, []);
-
+  useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
   async function doUpdate() {
     setMsg("Requesting update…");
     const r = await post("/api/system/update");
-    setMsg(r.message || (r.started ? "Updating… the server will restart shortly." : "Update requested."));
+    setMsg(r.message || (r.started ? "Updating…" : "Update requested."));
   }
-
   if (!info?.update_available) return null;
   return (
     <div className="update-banner">
-      {msg ? (
-        <span>{msg}</span>
-      ) : (
+      {msg ? <span>{msg}</span> : (
         <>
           <span>Update available: {info.current} → {info.latest}</span>
           {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
@@ -45,70 +39,6 @@ function UpdateBanner() {
   );
 }
 
-const NAV = [
-  { to: "/chat", label: "Chat", icon: "chat" },
-  { to: "/wiki", label: "Wiki", icon: "wiki" },
-  { to: "/graph", label: "Graph", icon: "graph" },
-  { to: "/search", label: "Search", icon: "search" },
-  { to: "/flows", label: "Flows", icon: "flows" },
-  { to: "/sql", label: "SQL", icon: "sql" },
-];
-
-export default function Shell({ children }: { children: ReactNode }) {
-  const isDesktop = useIsDesktop();
-  const online = useOnline();
-  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion, demo } = useAuth();
-  const reviewCount = useReviewCount();
-
-  const demoBanner = demo ? (
-    <div className="demo-banner">Demo mode — sample data, no server. “Disconnect” to exit.</div>
-  ) : null;
-
-  const versionWarning = versionMismatch ? (
-    <div className="version-banner">
-      App v{pwaVersion} vs server v{serverVersion} — versions differ; update so they match.
-    </div>
-  ) : null;
-
-  if (isDesktop) {
-    return (
-      <div className="app">
-        <aside className="sidebar">
-          <div className="brand">{brainName}<span className="dot">.</span></div>
-          <nav className="nav">
-            {NAV.map((n) => (
-              <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "active" : "")}>
-                <Icon name={n.icon} /> {n.label}
-              </NavLink>
-            ))}
-            <NavLink to="/review" className={({ isActive }) => (isActive ? "active" : "")}>
-              <Icon name="bell" /> Review
-              {reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
-            </NavLink>
-          </nav>
-          <div style={{ marginTop: "auto", paddingTop: 16 }}>
-            <button className="ghost" style={{ width: "100%" }} onClick={disconnect}>Disconnect</button>
-          </div>
-        </aside>
-        <div className="main">
-          {demoBanner}
-          <UpdateBanner />
-          {versionWarning}
-          {!online && <div className="offline-banner">Offline — reading cached notes. Chat & saving need a connection.</div>}
-          {children}
-        </div>
-      </div>
-    );
-  }
-
-  return <MobileShell {...{ children, brainName, disconnect, reviewCount, online, demoBanner, versionWarning }} />;
-}
-
-const CAPTURE = [
-  { key: "entry", label: "Entry", icon: "plus" },
-  { key: "assisted", label: "Assisted", icon: "robot" },
-  { key: "research", label: "Research", icon: "search" },
-];
 const GROUPS = [
   { to: "/browse", label: "Browse", icon: "wiki", match: ["/browse", "/wiki", "/graph", "/search", "/note"] },
   { to: "/flows", label: "Automate", icon: "flows", match: ["/flows"] },
@@ -116,40 +46,34 @@ const GROUPS = [
   { to: "/review", label: "Review", icon: "bell", match: ["/review"] },
 ];
 
-function MobileShell({ children, brainName, disconnect, reviewCount, online, demoBanner, versionWarning }: any) {
+export default function Shell({ children }: { children: ReactNode }) {
+  const online = useOnline();
+  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion, demo } = useAuth();
+  const reviewCount = useReviewCount();
   const loc = useLocation();
   const nav = useNavigate();
-  const mode = new URLSearchParams(loc.search).get("m") || "entry";
   const advanced = loc.pathname !== "/chat";
 
   return (
-    <div className="mshell">
-      <div className="mtop">
-        {CAPTURE.map((c) => (
-          <button key={c.key} className={"mtab" + (!advanced && mode === c.key ? " active" : "")}
-                  onClick={() => nav(`/chat?m=${c.key}`)}>
-            <Icon name={c.icon} size={20} /><span>{c.label}</span>
-          </button>
-        ))}
-        <button className={"mtab" + (advanced ? " active" : "")} onClick={() => nav("/browse")}>
-          <Icon name="cog" size={20} /><span>Advanced</span>
+    <div className="ushell">
+      <div className="utop">
+        <span className="brand">{brainName}<span className="dot">.</span></span>
+        <span className="spacer" />
+        {advanced && <button className="ghost" style={{ padding: "4px 10px" }} onClick={disconnect}>Disconnect</button>}
+        <button className={"bolt" + (advanced ? " active" : "")} title="Advanced"
+                onClick={() => nav(advanced ? "/chat" : "/browse")}>
+          <Icon name="bolt" size={20} />
         </button>
       </div>
 
-      {demoBanner}
+      {demo && <div className="demo-banner">Demo mode — sample data, no server. “Disconnect” to exit.</div>}
       <UpdateBanner />
-      {versionWarning}
+      {versionMismatch && (
+        <div className="version-banner">App v{pwaVersion} vs server v{serverVersion} — versions differ; update so they match.</div>
+      )}
       {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
 
-      {advanced && (
-        <div className="madv-head">
-          <span className="brand">{brainName}<span className="dot">.</span></span>
-          <span className="spacer" />
-          <button className="ghost" onClick={disconnect}>Disconnect</button>
-        </div>
-      )}
-
-      <div className={"mbody" + (advanced ? " adv" : "")}>{children}</div>
+      <div className={"ubody" + (advanced ? " adv" : "")}>{children}</div>
 
       {advanced && (
         <nav className="mbottom">

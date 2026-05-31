@@ -89,6 +89,16 @@ async def lifespan(app: FastAPI):
     for w in pipeline.validate_action_defs():
         print(f"[pipeline] action warning: {w}", flush=True)
 
+    # Warm the local embedding model in the background so the first capture/search
+    # doesn't block on its (one-time) download/load.
+    async def _warm_embeddings():
+        try:
+            from .services import embeddings
+            await asyncio.to_thread(embeddings._get_model)
+        except Exception:  # noqa: BLE001
+            pass
+    asyncio.create_task(_warm_embeddings())
+
     task = asyncio.create_task(_scheduler_loop())
     try:
         yield

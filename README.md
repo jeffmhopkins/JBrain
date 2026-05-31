@@ -125,7 +125,8 @@ call rather than adding a second encryption layer.
 ## Quick start (Linux VM)
 
 Prerequisites: **Docker Engine + Compose v2**, a **domain** whose A record points
-at the VM, and ports **80/443** open.
+at the VM (set this up *before* installing so Caddy can issue the cert), ports
+**80/443** open, and **≥ 2 GB RAM** (the local embedding model loads into memory).
 
 ```bash
 git clone <your-fork-url> JBrain && cd JBrain
@@ -150,8 +151,16 @@ docker compose logs -f           # follow logs
 docker compose down              # stop
 ```
 
-> First boot downloads the local embedding model (~tens of MB) and needs a bit
-> of RAM. Semantic search works without any embedding API key.
+> First boot downloads the local embedding model (a few hundred MB) from
+> Hugging Face and loads it into memory — it's warmed in the background, so the
+> server is usable immediately and only the very first semantic search may wait.
+> Needs runtime network egress on first boot and **≥ 2 GB RAM**. Semantic search
+> works without any embedding API key.
+>
+> Running a **fork**? Set `JBRAIN_REPO=owner/name` in `.env` so the in-app update
+> checker points at your repo. The auto-update sidecar (`COMPOSE_PROFILES=autoupdate`)
+> mounts the Docker socket (host-root-equivalent) — leave it **off** unless you
+> want PWA-triggered updates, and use `./update.sh` for manual updates instead.
 
 ## SQL access
 

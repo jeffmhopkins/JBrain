@@ -1,0 +1,5 @@
+# Dev/test-only dependencies. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# These are intentionally NOT in the runtime Docker image.
+pytest==8.3.4
+httpx==0.28.1

@@ -10,5 +10,4 @@ croniter==3.0.3
 tzdata==2024.2
 pypdf==5.1.0
 Pillow==11.0.0
-pytest==8.3.4
-httpx==0.28.1
+# Test-only deps (pytest, httpx) live in requirements-dev.txt — not in the image.

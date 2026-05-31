@@ -26,7 +26,9 @@ from ..version import APP_VERSION
 
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[CurrentUser])
 
-GITHUB_REPO = "jeffmhopkins/jbrain"
+# Override with JBRAIN_REPO=owner/name if you run a fork (so update checks point
+# at your repo, not upstream).
+GITHUB_REPO = os.environ.get("JBRAIN_REPO", "jeffmhopkins/JBrain")
 _cache: dict = {"ts": 0.0, "data": None}
 
 

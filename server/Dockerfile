@@ -1,8 +1,10 @@
 # --- Stage 1: build the React PWA -------------------------------------------
 FROM node:20-slim AS web
 WORKDIR /web
-COPY web/package.json web/package-lock.json* ./
-RUN npm install
+COPY web/package.json web/package-lock.json ./
+# Deterministic install from the lockfile — fails loudly if it drifts, instead
+# of silently resolving newer (possibly breaking) deps and killing the build.
+RUN npm ci
 COPY web/ ./
 RUN npm run build
 

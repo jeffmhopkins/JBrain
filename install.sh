@@ -26,6 +26,7 @@ fi
 # --- Don't clobber an existing config without consent -----------------------
 if [[ -f .env ]]; then
   warn "An .env already exists."
+  warn "Overwriting generates a NEW access key — every device you've connected will need to re-paste it."
   read -r -p "Overwrite it and reconfigure? [y/N] " ans
   [[ "${ans,,}" == "y" ]] || { info "Keeping existing .env. Run 'docker compose up -d --build' to (re)start."; exit 0; }
 fi

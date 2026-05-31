@@ -23,6 +23,7 @@ from pathlib import Path
 
 import yaml
 from jinja2 import ChainableUndefined
+from jinja2 import meta as _jinja_meta
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import embeddings
@@ -248,6 +249,68 @@ _PRIMITIVES = {
 }
 
 
+# Machine-readable contract for each primitive — drives the editor's step palette
+# and the recipe validator. Hand-maintained; a test pins its keys + input names to
+# _PRIMITIVES (and the function signatures) so it can't drift.
+_PRIMITIVE_META: dict[str, dict] = {
+    "read_note": {"summary": "Read a note by title or id.",
+                  "inputs": [{"name": "title", "type": "str"}, {"name": "id", "type": "int"}],
+                  "output": "object"},
+    "write_note": {"summary": "Create or update a note (versioned).",
+                   "inputs": [{"name": "title", "type": "str", "required": True},
+                              {"name": "content_md", "type": "str"}, {"name": "text", "type": "str"},
+                              {"name": "mode", "type": "enum", "choices": ["replace", "append"]},
+                              {"name": "kind", "type": "str"}, {"name": "version_note", "type": "str"}],
+                   "output": "object"},
+    "create_review": {"summary": "Post a card to the Review inbox.",
+                      "inputs": [{"name": "title", "type": "str", "required": True},
+                                 {"name": "message", "type": "str"}, {"name": "link_title", "type": "str"}],
+                      "output": "object"},
+    "semantic_search": {"summary": "Vector search over notes.",
+                        "inputs": [{"name": "query", "type": "str", "required": True},
+                                   {"name": "limit", "type": "int"}], "output": "list"},
+    "query_notes": {"summary": "List notes by kind / since id.",
+                    "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
+                               {"name": "limit", "type": "int"}], "output": "list"},
+    "get_meta": {"summary": "Read a stored key (e.g. a watermark).",
+                 "inputs": [{"name": "key", "type": "str", "required": True}, {"name": "default", "type": "str"}],
+                 "output": "scalar"},
+    "set_meta": {"summary": "Write a stored key.",
+                 "inputs": [{"name": "key", "type": "str", "required": True}, {"name": "value", "type": "str", "required": True}],
+                 "output": "none"},
+    "set_tags": {"summary": "Set a note's tags.",
+                 "inputs": [{"name": "note_id", "type": "int", "required": True}, {"name": "tags", "type": "list"}],
+                 "output": "list"},
+    "suggest_tags": {"summary": "Ask the LLM for tags for a note.",
+                     "inputs": [{"name": "title", "type": "str", "required": True},
+                                {"name": "content", "type": "str", "required": True}, {"name": "prompt", "type": "str"}],
+                     "output": "list"},
+    "summarise_entries": {"summary": "Summarise a list of log lines (LLM, with no-key fallback).",
+                          "inputs": [{"name": "entries", "type": "list", "required": True}, {"name": "prompt", "type": "str"}],
+                          "output": "scalar"},
+    "wiki_plan": {"summary": "Ask the LLM to fold entries into KB notes; returns [{op,title,content_md}].",
+                  "inputs": [{"name": "entries", "type": "list", "required": True},
+                             {"name": "existing_kb", "type": "list", "required": True}, {"name": "instructions", "type": "str"}],
+                  "output": "list"},
+    "daylog_pending": {"summary": "Days of a log still to summarise (+ watermark).",
+                       "inputs": [{"name": "log_title", "type": "str", "required": True}], "output": "object"},
+    "gather_context": {"summary": "Build context text from a note or a semantic search.",
+                       "inputs": [{"name": "source_title", "type": "str"}, {"name": "context_query", "type": "str"}],
+                       "output": "scalar"},
+    "llm": {"summary": "Run an LLM prompt over optional context.",
+            "inputs": [{"name": "prompt", "type": "str", "required": True}, {"name": "content", "type": "str"},
+                       {"name": "max_tokens", "type": "int"},
+                       {"name": "on_no_key", "type": "enum", "choices": ["raise", "fallback", "skip"]}],
+            "output": "scalar"},
+}
+
+
+def primitive_catalog() -> list[dict]:
+    """The step palette: each primitive + its declared inputs + output shape."""
+    return [{"name": n, **_PRIMITIVE_META.get(n, {"inputs": [], "output": "scalar"})}
+            for n in sorted(_PRIMITIVES)]
+
+
 # --- Interpreter ------------------------------------------------------------
 
 class _Stop(Exception):
@@ -462,23 +525,81 @@ def action_types() -> list[str]:
     return sorted(types)
 
 
-def validate_action_defs() -> list[str]:
-    """Warn on steps referencing unknown primitives or malformed for_each."""
-    warnings: list[str] = []
+_SCOPE_BASE = {"config", "trigger", "today", "prompts"}
 
-    def _walk(type_name, steps):
-        for step in steps or []:
+
+def _expr_names(text) -> set:
+    """Top-level variable names referenced in a value/expression (bare or {{ }})."""
+    s = str(text).strip()
+    if "{{" not in s and "{%" not in s:
+        s = "{{ " + s + " }}"  # bare expr (when / for_each / stop_when)
+    try:
+        return set(_jinja_meta.find_undeclared_variables(_env.parse(s)))
+    except Exception:
+        return set()
+
+
+def _value_names(val) -> set:
+    if isinstance(val, str):
+        return _expr_names(val) if "{{" in val else set()
+    if isinstance(val, dict):
+        return set().union(*(_value_names(v) for v in val.values())) if val else set()
+    if isinstance(val, list):
+        return set().union(*(_value_names(v) for v in val)) if val else set()
+    return set()
+
+
+def validate_recipe(recipe) -> list[str]:
+    """Soft lint of a recipe: unknown primitive, unknown input, malformed
+    for_each, and references to variables not yet in scope. Warnings only — the
+    Jinja runtime tolerates missing names (ChainableUndefined → None)."""
+    if not isinstance(recipe, dict):
+        return ["recipe must be a mapping"]
+    warnings: list[str] = []
+    if not recipe.get("type"):
+        warnings.append("missing 'type'")
+    steps = recipe.get("steps")
+    if not isinstance(steps, list):
+        return warnings + ["'steps' must be a list"]
+
+    def walk(steps, scope: set):
+        scope = set(scope)
+        for step in steps:
+            if not isinstance(step, dict):
+                warnings.append("each step must be a mapping")
+                continue
+            refs: set = set()
+            for k in ("when", "for_each", "stop_when"):
+                if step.get(k) is not None:
+                    refs |= _expr_names(step[k])
+            refs |= _value_names(step.get("with") or {})
+            for name in sorted(refs - scope):
+                warnings.append(f"references unknown variable '{name}'")
             if "for_each" in step:
                 if not isinstance(step.get("steps"), list):
-                    warnings.append(f"{type_name}: for_each step missing nested 'steps'")
-                _walk(type_name, step.get("steps"))
-                continue
-            do = step.get("do")
-            if do is None:
-                continue  # control-only step (when/stop_when)
-            if do not in _PRIMITIVES:
-                warnings.append(f"{type_name}: unknown primitive '{do}'")
+                    warnings.append("for_each step missing nested 'steps'")
+                else:
+                    walk(step["steps"], scope | {"item"})
+            else:
+                do = step.get("do")
+                if do is not None:
+                    if do not in _PRIMITIVES:
+                        warnings.append(f"unknown primitive '{do}'")
+                    else:
+                        valid = {i["name"] for i in _PRIMITIVE_META.get(do, {}).get("inputs", [])}
+                        for k in (step.get("with") or {}):
+                            if valid and k not in valid:
+                                warnings.append(f"{do}: unknown input '{k}'")
+            if step.get("id"):
+                scope.add(step["id"])
 
-    for name, recipe in (reload_action_defs()).items():
-        _walk(name, recipe.get("steps"))
+    walk(steps, set(_SCOPE_BASE))
     return warnings
+
+
+def validate_action_defs() -> list[str]:
+    """Boot lint over the shipped repo recipes (warnings printed at startup)."""
+    out: list[str] = []
+    for name, recipe in _load_repo().items():
+        out += [f"{name}: {w}" for w in validate_recipe(recipe)]
+    return out

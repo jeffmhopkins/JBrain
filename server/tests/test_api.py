@@ -878,3 +878,37 @@ def test_action_def_db_first_and_custom_type(client):
                  "WHERE type='say_hi'", (yaml.safe_dump(recipe),))
     conn.commit()
     assert pipeline.get_action_def("say_hi")["steps"][0]["with"]["title"] == "bye"
+
+
+def test_primitive_meta_pinned_to_primitives():
+    # CI guard: metadata can't drift from the actual primitive functions.
+    import inspect
+    from app.services import pipeline
+    assert set(pipeline._PRIMITIVE_META) == set(pipeline._PRIMITIVES)
+    for name, meta in pipeline._PRIMITIVE_META.items():
+        params = set(inspect.signature(pipeline._PRIMITIVES[name]).parameters)
+        for inp in meta["inputs"]:
+            assert inp["name"] in params, f"{name}: input {inp['name']} not a real param"
+
+
+def test_action_defs_api(client):
+    client.post("/api/action-defs/sync")  # seed the table from repo (lifespan does this in prod)
+    defs = {d["type"]: d for d in client.get("/api/action-defs").json()}
+    assert defs["synthesize"]["source"] == "repo" and defs["synthesize"]["num_steps"] >= 3
+    assert any(p["name"] == "write_note" for p in client.get("/api/action-defs/primitives").json())
+
+    got = client.get("/api/action-defs/synthesize").json()
+    assert got["recipe"]["type"] == "synthesize" and got["warnings"] == []
+    # Shipped recipes are read-only.
+    assert client.put("/api/action-defs/synthesize", json={"recipe_yaml": got["recipe_yaml"]}).status_code == 403
+
+    # Validate surfaces lint warnings without saving.
+    bad = "type: x\nsteps:\n  - do: write_note\n    with: {title: '{{ missing }}'}\n"
+    assert any("missing" in w for w in client.post("/api/action-defs/validate", json={"recipe_yaml": bad}).json()["warnings"])
+
+    # Create a custom action -> it appears in the Workflows picker (regression guard).
+    recipe = "type: my_custom\nsteps:\n  - do: create_review\n    with: {title: hi}\n"
+    assert client.post("/api/action-defs", json={"recipe_yaml": recipe}).json()["type"] == "my_custom"
+    assert client.post("/api/action-defs", json={"recipe_yaml": recipe}).status_code == 409  # duplicate
+    assert "my_custom" in {a["type"] for a in client.get("/api/workflows/action-types").json()}
+    assert client.delete("/api/action-defs/my_custom").status_code == 200

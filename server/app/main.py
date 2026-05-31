@@ -12,6 +12,7 @@ from .auth import ensure_access_key
 from .config import get_settings
 from .db import get_conn, init_db
 from .routers import (
+    action_defs,
     attachments,
     auth_router,
     capture,
@@ -93,7 +94,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs):
     app.include_router(r.router)
 
 

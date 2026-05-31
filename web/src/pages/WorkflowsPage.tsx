@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { del, get, post, put } from "../api";
 import Modal from "../components/Modal";
+import ConfigFields from "../components/ConfigFields";
 
 interface Workflow {
   id: number;
@@ -179,9 +180,19 @@ export default function WorkflowsPage() {
           <label className="muted" style={{ marginTop: 12, display: "block" }}>Trigger config (JSON)</label>
           <textarea className="wf-textarea-lg" value={editing.trigger_config}
                     onChange={(e) => setEditing({ ...editing, trigger_config: e.target.value })} />
-          <label className="muted" style={{ marginTop: 12, display: "block" }}>Action config (JSON)</label>
-          <textarea className="wf-textarea-lg" value={editing.action_config}
-                    onChange={(e) => setEditing({ ...editing, action_config: e.target.value })} />
+
+          <div className="muted" style={{ marginTop: 14, fontWeight: 600, color: "var(--text)" }}>Action settings</div>
+          <ConfigFields
+            schema={actionTypes.find((a) => a.type === editing.action_type)?.config || []}
+            value={editing.action_config}
+            onChange={(s) => setEditing({ ...editing, action_config: s })}
+          />
+          <details style={{ marginTop: 12 }}>
+            <summary className="muted" style={{ fontSize: 13, cursor: "pointer" }}>Advanced — raw JSON</summary>
+            <textarea className="wf-textarea-lg" style={{ marginTop: 8 }} value={editing.action_config}
+                      onChange={(e) => setEditing({ ...editing, action_config: e.target.value })} />
+          </details>
+
           <label className="row" style={{ marginTop: 12, gap: 8 }}>
             <input type="checkbox" style={{ width: "auto" }} checked={editing.enabled}
                    onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} /> Enabled

@@ -13,7 +13,7 @@ config:
   - { key: log_title, label: Log note title, type: text, required: true }
   - { key: summary_title, label: Summary note title, type: text }
   - { key: prompt, label: Summary prompt (optional), type: textarea }
-  - { key: review, label: Post a review card, type: review }
+  - { key: review, label: Post a review card, type: review, default: true }
 steps:
   - id: pending
     do: daylog_pending

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { del, get, put } from "../api";
 import Modal from "./Modal";
+import { Icon } from "./Icon";
 
 interface PromptRow {
   key: string;
@@ -26,8 +27,13 @@ function friendlyLabel(key: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 const groupOf = (key: string) => key.split(".")[0];
-// Long, multi-paragraph prompts get the big editor; the rest are one-liners.
-const isBig = (key: string) => key.startsWith("modes.") || key.startsWith("actions.");
+// agent.model is a one-line id; modes/actions are long prompts (big editor);
+// tool descriptions are full sentences → a medium textarea, not a single line.
+function fieldKind(key: string): "line" | "area" | "big" {
+  if (key === "agent.model") return "line";
+  if (key.startsWith("modes.") || key.startsWith("actions.")) return "big";
+  return "area";
+}
 
 export default function PromptsPanel() {
   const [rows, setRows] = useState<PromptRow[]>([]);
@@ -35,6 +41,11 @@ export default function PromptsPanel() {
   const [modifiedOnly, setModifiedOnly] = useState(false);
   const [editing, setEditing] = useState<PromptRow | null>(null);
   const [draft, setDraft] = useState("");
+  // Collapsible sections; Modes open by default.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["tools", "actions", "agent"]));
+  const toggleGroup = (id: string) => setCollapsed((s) => {
+    const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
 
   async function load() {
     try { setRows(await get<PromptRow[]>("/api/prompts")); } catch { /* ignore */ }
@@ -78,10 +89,15 @@ export default function PromptsPanel() {
           const items = visible.filter((r) => groupOf(r.key) === g.id)
             .sort((a, b) => friendlyLabel(a.key).localeCompare(friendlyLabel(b.key)));
           if (items.length === 0) return null;
+          const open = !!q || !collapsed.has(g.id);   // a filter force-opens groups
           return (
             <div key={g.id}>
-              <div className="adv-section">{g.label}</div>
-              {items.map((r) => (
+              <div className="adv-section prompt-section" onClick={() => toggleGroup(g.id)}>
+                <span className={"chev" + (open ? " open" : "")}><Icon name="chevron" size={12} /></span>
+                {g.label}
+                <span className="prompt-count">{items.length}</span>
+              </div>
+              {open && items.map((r) => (
                 <div className="list-item" style={{ cursor: "pointer" }} onClick={() => openEdit(r)} key={r.key}>
                   <div className="row">
                     <strong style={{ fontSize: 14 }}>{friendlyLabel(r.key)}</strong>
@@ -102,7 +118,7 @@ export default function PromptsPanel() {
       {editing && (
         <Modal
           title={friendlyLabel(editing.key)}
-          size={isBig(editing.key) ? "wide" : "default"}
+          size={fieldKind(editing.key) === "big" ? "wide" : "default"}
           headerExtra={editing.override !== null ? <span className="badge">overridden</span> : undefined}
           onClose={guardedClose}
           footer={<>
@@ -112,13 +128,19 @@ export default function PromptsPanel() {
           </>}
         >
           <code className="muted" style={{ fontSize: 11 }}>{editing.key}</code>
-          {isBig(editing.key) ? (
-            <textarea className="wf-textarea-lg" style={{ marginTop: 8, fontFamily: "monospace", fontSize: 13 }}
-                      value={draft} onChange={(e) => setDraft(e.target.value)} />
-          ) : (
-            <input style={{ marginTop: 8 }} value={draft} onChange={(e) => setDraft(e.target.value)}
-                   placeholder={editing.key === "agent.model" ? "Blank = use the provider default model" : ""} />
-          )}
+          {(() => {
+            const kind = fieldKind(editing.key);
+            if (kind === "line") {
+              return <input style={{ marginTop: 8 }} value={draft} onChange={(e) => setDraft(e.target.value)}
+                            placeholder="Blank = use the provider default model" />;
+            }
+            if (kind === "area") {
+              return <textarea style={{ marginTop: 8, minHeight: 130, resize: "vertical", fontFamily: "monospace", fontSize: 13 }}
+                               value={draft} onChange={(e) => setDraft(e.target.value)} />;
+            }
+            return <textarea className="wf-textarea-lg" style={{ marginTop: 8, fontFamily: "monospace", fontSize: 13 }}
+                             value={draft} onChange={(e) => setDraft(e.target.value)} />;
+          })()}
           <details style={{ marginTop: 12 }}>
             <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>Shipped default</summary>
             <pre style={{ marginTop: 6, whiteSpace: "pre-wrap", fontSize: 12, color: "var(--text-dim)" }}>{editing.default || "(blank)"}</pre>

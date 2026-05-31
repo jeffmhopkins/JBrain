@@ -143,6 +143,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 /* ---- Advanced launcher grid -------------------------------------------- */
 .adv-home { max-width: 760px; margin: 0 auto; padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
 .adv-section { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 22px 4px 10px; }
+/* Collapsible prompt-group header. */
+.prompt-section { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.prompt-section .chev { display: inline-flex; color: var(--text-dim); transition: transform .12s ease; }
+.prompt-section .chev.open { transform: rotate(90deg); }
+.prompt-section .prompt-count { margin-left: auto; }
 .adv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 @media (min-width: 900px) { .adv-grid { grid-template-columns: repeat(4, 1fr); } }
 .adv-card {

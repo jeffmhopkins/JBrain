@@ -1,0 +1,26 @@
+# Secrets / generated config
+.env
+Caddyfile
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Node / web
+node_modules/
+web/dist/
+*.tsbuildinfo
+*.local
+
+# Data & runtime
+data/
+*.db
+*.db-*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

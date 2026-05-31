@@ -1,0 +1,134 @@
+:root {
+  --bg: #0f172a;
+  --bg-elev: #1e293b;
+  --bg-elev-2: #273449;
+  --border: #334155;
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --accent: #38bdf8;
+  --accent-2: #a78bfa;
+  --danger: #f87171;
+  --ok: #34d399;
+  --radius: 12px;
+  --tabbar-h: 60px;
+  --sidebar-w: 250px;
+  --rail-w: 300px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8fafc; --bg-elev: #ffffff; --bg-elev-2: #f1f5f9;
+    --border: #e2e8f0; --text: #0f172a; --text-dim: #64748b;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font: inherit; cursor: pointer; border: 1px solid var(--border);
+  background: var(--bg-elev-2); color: var(--text);
+  border-radius: 8px; padding: 8px 14px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #06283d; border-color: var(--accent); font-weight: 600; }
+button.ghost { background: transparent; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+input, textarea {
+  font: inherit; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; width: 100%;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+
+/* ---- App shell ---------------------------------------------------------- */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0; border-right: 1px solid var(--border);
+  background: var(--bg-elev); padding: 16px 12px; position: sticky; top: 0;
+  height: 100vh; overflow-y: auto; display: flex; flex-direction: column;
+}
+
+/* Pages that pair a content column with a desktop context rail. */
+.with-rail { display: flex; flex: 1; min-height: 0; }
+.with-rail .content { flex: 1; }
+.brand { font-size: 20px; font-weight: 700; padding: 6px 10px 16px; }
+.brand .dot { color: var(--accent); }
+.nav a {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: 8px; color: var(--text); font-weight: 500;
+}
+.nav a:hover { background: var(--bg-elev-2); text-decoration: none; }
+.nav a.active { background: var(--bg-elev-2); color: var(--accent); }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.content { flex: 1; padding: 22px; max-width: 860px; width: 100%; margin: 0 auto; }
+
+/* Right context rail (desktop only) */
+.rail {
+  width: var(--rail-w); flex-shrink: 0; border-left: 1px solid var(--border);
+  background: var(--bg-elev); padding: 16px; height: 100vh; position: sticky;
+  top: 0; overflow-y: auto;
+}
+
+/* Phone: bottom tab bar */
+.tabbar {
+  position: fixed; bottom: 0; left: 0; right: 0; height: var(--tabbar-h);
+  display: flex; background: var(--bg-elev); border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 50;
+}
+.tabbar a {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 2px; color: var(--text-dim); font-size: 11px;
+}
+.tabbar a.active { color: var(--accent); }
+.tabbar .ico { font-size: 20px; }
+.has-tabbar .content { padding-bottom: calc(var(--tabbar-h) + 20px); }
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  padding-top: calc(12px + env(safe-area-inset-top)); background: var(--bg-elev);
+  position: sticky; top: 0; z-index: 40;
+}
+
+/* ---- Cards / misc ------------------------------------------------------- */
+.card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.muted { color: var(--text-dim); }
+.row { display: flex; gap: 10px; align-items: center; }
+.spacer { flex: 1; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--bg-elev-2); color: var(--text-dim); }
+.tag-create { color: var(--ok); } .tag-update { color: var(--accent); } .tag-link { color: var(--accent-2); }
+.offline-banner { background: var(--danger); color: #3b0a0a; text-align: center; padding: 6px; font-size: 13px; font-weight: 600; }
+.list-item { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--bg-elev); }
+.list-item:hover { border-color: var(--accent); text-decoration: none; }
+
+/* ---- Chat --------------------------------------------------------------- */
+.chat-wrap { display: flex; flex-direction: column; height: 100%; }
+.messages { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 80%; padding: 12px 14px; border-radius: 14px; white-space: pre-wrap; line-height: 1.5; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #06283d; }
+.msg.assistant { align-self: flex-start; background: var(--bg-elev); border: 1px solid var(--border); }
+.composer { display: flex; gap: 8px; padding: 12px 0; position: sticky; bottom: 0; background: var(--bg); }
+.has-tabbar .composer { bottom: var(--tabbar-h); }
+
+/* ---- Markdown ----------------------------------------------------------- */
+.md { line-height: 1.65; }
+.md h1, .md h2, .md h3 { line-height: 1.25; }
+.md pre { background: var(--bg-elev-2); padding: 12px; border-radius: 8px; overflow-x: auto; }
+.md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
+.wikilink { color: var(--accent-2); border-bottom: 1px dashed var(--accent-2); }
+
+/* ---- Login -------------------------------------------------------------- */
+.login { max-width: 360px; margin: 12vh auto; padding: 24px; }
+.login h1 { text-align: center; }
+
+table.sql-result { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.sql-result th, table.sql-result td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+table.sql-result th { background: var(--bg-elev-2); }

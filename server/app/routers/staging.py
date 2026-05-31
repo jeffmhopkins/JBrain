@@ -1,0 +1,75 @@
+"""The staging area: list, apply, and reject proposed wiki changes.
+
+Nothing the architect proposes touches the wiki until it is applied here.
+"""
+import json
+
+from fastapi import APIRouter, HTTPException
+
+from ..auth import CurrentUser
+from ..db import get_conn
+from ..services import notes as notes_svc
+
+router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[CurrentUser])
+
+
+@router.get("")
+def list_pending():
+    rows = get_conn().execute(
+        "SELECT id, conversation_id, type, payload_json, status, created_at "
+        "FROM staging_actions WHERE status = 'pending' ORDER BY id"
+    ).fetchall()
+    return [
+        {**dict(r), "payload": json.loads(r["payload_json"])} for r in rows
+    ]
+
+
+def _apply_action(conn, action_type: str, payload: dict) -> None:
+    if action_type in ("CREATE", "UPDATE"):
+        notes_svc.upsert_note(conn, payload["title"], payload.get("content", ""))
+    elif action_type == "LINK":
+        source = notes_svc.get_by_title(conn, payload["source_title"])
+        target_title = payload["target_title"]
+        if source and f"[[{target_title}]]" not in source["content_md"]:
+            new_content = source["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
+            notes_svc.upsert_note(conn, source["title"], new_content)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
+
+
+@router.post("/{action_id}/apply")
+def apply_action(action_id: int):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM staging_actions WHERE id = ? AND status = 'pending'", (action_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pending action not found")
+    _apply_action(conn, row["type"], json.loads(row["payload_json"]))
+    conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (action_id,))
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/apply-all")
+def apply_all():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM staging_actions WHERE status = 'pending' ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        _apply_action(conn, r["type"], json.loads(r["payload_json"]))
+        conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (r["id"],))
+    conn.commit()
+    return {"ok": True, "applied": len(rows)}
+
+
+@router.post("/{action_id}/reject")
+def reject_action(action_id: int):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE staging_actions SET status = 'rejected' WHERE id = ? AND status = 'pending'",
+        (action_id,),
+    )
+    conn.commit()
+    return {"ok": True}

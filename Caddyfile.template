@@ -1,0 +1,18 @@
+# Rendered to ./Caddyfile by install.sh ({{DOMAIN}} / {{ACME_EMAIL}} injected).
+# Caddy automatically obtains and renews a Let's Encrypt certificate for the
+# domain, then reverse-proxies everything to the API container.
+{
+	email {{ACME_EMAIL}}
+}
+
+{{DOMAIN}} {
+	encode zstd gzip
+
+	# Stream Server-Sent Events (chat) without buffering.
+	@sse path /api/chat/*
+	reverse_proxy @sse api:8000 {
+		flush_interval -1
+	}
+
+	reverse_proxy api:8000
+}

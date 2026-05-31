@@ -110,7 +110,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   cursor: pointer; display: inline-flex; border-radius: 8px;
 }
 .bolt:hover { color: var(--text); }
-.bolt.active { color: var(--accent); }
+/* Advanced mode: the bolt becomes a brighter, solid-filled lightning. */
+.bolt.active { color: var(--text); }
+.bolt.active .icon { color: var(--text); fill: currentColor; }
+/* Center the brand text with the bolt (drop the sidebar's bottom-heavy padding). */
+.utop .brand { padding: 0; }
 .review-bell { position: relative; }
 .review-bell .count-badge { position: absolute; top: 0; right: -2px; }
 .utop .back { background: transparent; border: none; color: var(--text-dim); padding: 6px; cursor: pointer; display: inline-flex; border-radius: 8px; }

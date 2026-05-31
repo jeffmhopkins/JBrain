@@ -1,0 +1,46 @@
+# Declarative action: gather context (a note or a semantic search), run a Claude
+# prompt, and write the result to a note (+ optional review). Equivalent to the
+# former _action_claude_synthesize. Requires an Anthropic API key.
+#
+# config keys:
+#   target_title   (required) — note to write the synthesis into
+#   prompt                     — override the synthesis prompt
+#   source_title               — gather context from this note, OR
+#   context_query              — gather context from a semantic search
+#   mode                       — replace (default) | append
+#   review                     — {title?, message?} to post a review card
+type: claude_synthesize
+config:
+  - { key: target_title, label: Target note title, type: text, required: true }
+  - { key: prompt, label: Prompt (optional), type: textarea }
+  - { key: source_title, label: Source note title, type: text }
+  - { key: context_query, label: Context search query, type: text }
+  - { key: mode, label: Write mode, type: select, options: [replace, append] }
+  - { key: review, label: Post a review card, type: review }
+steps:
+  - id: ctx
+    do: gather_context
+    with:
+      source_title: "{{ config.source_title | default(none) }}"
+      context_query: "{{ config.context_query | default(none) }}"
+
+  - id: out
+    do: llm
+    with:
+      prompt: "{{ config.prompt | default(prompts.actions.claude_synthesize) }}"
+      content: "{{ ctx }}"
+      max_tokens: 1024
+      on_no_key: raise
+
+  - do: write_note
+    with:
+      title: "{{ config.target_title }}"
+      content_md: "{{ out }}"
+      mode: "{{ config.mode | default('replace') }}"
+
+  - do: create_review
+    when: "{{ config.review }}"
+    with:
+      title: "{{ config.review.title | default('Review: ' ~ config.target_title) }}"
+      message: "{{ config.review.message | default('') }}"
+      link_title: "{{ config.target_title }}"

@@ -173,6 +173,42 @@ def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
     return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions)
 
 
+def _p_gather_context(ctx, source_title=None, context_query=None):
+    """Build context text from a named note or a semantic search (claude_synthesize)."""
+    if source_title:
+        row = notes_svc.get_by_title(ctx.conn, source_title)
+        return row["content_md"] if row else ""
+    if context_query:
+        out = ""
+        for r in embeddings.semantic_search(ctx.conn, context_query, 8):
+            n = notes_svc.get_by_title(ctx.conn, r["title"])
+            if n:
+                out += f"\n\n## {n['title']}\n{n['content_md']}"
+        return out
+    return ""
+
+
+def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise"):
+    """Run a Claude prompt over optional context. `on_no_key` controls behaviour
+    when no API key is configured: raise | fallback (return content) | skip ('')."""
+    settings = get_settings()
+    if not settings.has_anthropic:
+        if on_no_key == "raise":
+            raise RuntimeError("no Anthropic API key configured")
+        if on_no_key == "fallback":
+            return content or ""
+        return ""
+    from anthropic import Anthropic
+
+    user = f"{prompt}\n\n<content>\n{content}\n</content>" if content else prompt
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=settings.anthropic_model, max_tokens=int(max_tokens),
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
+
 def _p_daylog_pending(ctx, log_title):
     """Parse a log note's dated lines and the per-log watermark; return the days
     still to summarise (encapsulates summarize_day_log's irregular front-end)."""
@@ -213,6 +249,8 @@ _PRIMITIVES = {
     "summarise_entries": _p_summarise_entries,
     "wiki_plan": _p_wiki_plan,
     "daylog_pending": _p_daylog_pending,
+    "gather_context": _p_gather_context,
+    "llm": _p_llm,
 }
 
 

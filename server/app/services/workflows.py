@@ -382,18 +382,10 @@ _ACTIONS = {
     "generate_tags": _action_generate_tags,
 }
 
-# Config-form schemas for actions still implemented in Python (YAML-defined
-# actions declare their own `config:` in actions/*.yaml).
-_PY_ACTION_SCHEMAS = {
-    "claude_synthesize": [
-        {"key": "target_title", "label": "Target note title", "type": "text", "required": True},
-        {"key": "prompt", "label": "Prompt (optional)", "type": "textarea"},
-        {"key": "source_title", "label": "Source note title", "type": "text"},
-        {"key": "context_query", "label": "Context search query", "type": "text"},
-        {"key": "mode", "label": "Write mode", "type": "select", "options": ["replace", "append"]},
-        {"key": "review", "label": "Post a review card", "type": "review"},
-    ],
-}
+# Config-form schemas for actions still implemented in Python. All shipped
+# actions are now YAML-defined (they declare their own `config:` in
+# actions/*.yaml); this stays as the extension point for future Python actions.
+_PY_ACTION_SCHEMAS: dict[str, list] = {}
 
 
 def action_catalog() -> list[dict]:

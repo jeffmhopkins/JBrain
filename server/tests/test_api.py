@@ -781,3 +781,21 @@ def test_action_types_endpoint(client):
     # Schemas come through for the picker/forms.
     assert any(f["key"] == "title" for f in by_type["append_to_note"]["config"])
     assert any(f["key"] == "target_title" for f in by_type["claude_synthesize"]["config"])
+
+
+def test_claude_synthesize_via_pipeline(client, monkeypatch):
+    # The last action converted to YAML. Mock the llm primitive (no API key in CI).
+    from app.services import pipeline
+    client.post("/api/notes", json={"title": "Src", "content_md": "raw material"})
+    monkeypatch.setitem(pipeline._PRIMITIVES, "llm", lambda ctx, **k: "SYNTHESISED")
+
+    wf = client.post("/api/workflows", json={
+        "name": "CS", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "claude_synthesize",
+        "action_config": {"target_title": "Summary", "source_title": "Src",
+                          "review": {"title": "Check synthesis"}},
+        "enabled": True,
+    }).json()
+    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert client.get("/api/notes/summary").json()["content_md"] == "SYNTHESISED"
+    assert any(i["title"] == "Check synthesis" for i in client.get("/api/reviews").json())

@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { useIsDesktop, useOnline } from "../hooks";
@@ -101,32 +101,66 @@ export default function Shell({ children }: { children: ReactNode }) {
     );
   }
 
+  return <MobileShell {...{ children, brainName, disconnect, reviewCount, online, demoBanner, versionWarning }} />;
+}
+
+const CAPTURE = [
+  { key: "entry", label: "Entry" },
+  { key: "assisted", label: "Assisted" },
+  { key: "research", label: "Research" },
+];
+const GROUPS = [
+  { to: "/browse", label: "Browse", icon: "wiki", match: ["/browse", "/wiki", "/graph", "/search", "/note"] },
+  { to: "/flows", label: "Automate", icon: "flows", match: ["/flows"] },
+  { to: "/sql", label: "Data", icon: "sql", match: ["/sql"] },
+  { to: "/review", label: "Review", icon: "bell", match: ["/review"] },
+];
+
+function MobileShell({ children, brainName, disconnect, reviewCount, online, demoBanner, versionWarning }: any) {
+  const loc = useLocation();
+  const nav = useNavigate();
+  const mode = new URLSearchParams(loc.search).get("m") || "entry";
+  const advanced = loc.pathname !== "/chat";
+
   return (
-    <div className="app">
-      <div className="main has-tabbar" style={{ width: "100%" }}>
-        <div className="topbar">
-          <strong>{brainName}</strong>
-          <div className="row" style={{ gap: 8 }}>
-            <NavLink to="/review" className="bell">
-              <Icon name="bell" />{reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
-            </NavLink>
-            <button className="ghost" onClick={disconnect}>Disconnect</button>
-          </div>
-        </div>
-        {demoBanner}
-        <UpdateBanner />
-        {versionWarning}
-        {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
-        {children}
-      </div>
-      <nav className="tabbar">
-        {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "active" : "")}>
-            <Icon name={n.icon} size={20} />
-            <span>{n.label}</span>
-          </NavLink>
+    <div className="mshell">
+      <div className="mtop">
+        {CAPTURE.map((c) => (
+          <button key={c.key} className={"mtab" + (!advanced && mode === c.key ? " active" : "")}
+                  onClick={() => nav(`/chat?m=${c.key}`)}>{c.label}</button>
         ))}
-      </nav>
+        <button className={"mtab" + (advanced ? " active" : "")} onClick={() => nav("/browse")}>Advanced</button>
+      </div>
+
+      {demoBanner}
+      <UpdateBanner />
+      {versionWarning}
+      {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
+
+      {advanced && (
+        <div className="madv-head">
+          <span className="brand">{brainName}<span className="dot">.</span></span>
+          <span className="spacer" />
+          <button className="ghost" onClick={disconnect}>Disconnect</button>
+        </div>
+      )}
+
+      <div className={"mbody" + (advanced ? " adv" : "")}>{children}</div>
+
+      {advanced && (
+        <nav className="mbottom">
+          {GROUPS.map((g) => {
+            const active = g.match.some((p) => loc.pathname.startsWith(p));
+            return (
+              <button key={g.to} className={active ? "active" : ""} onClick={() => nav(g.to)}>
+                <Icon name={g.icon} size={20} />
+                <span>{g.label}</span>
+                {g.label === "Review" && reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 }

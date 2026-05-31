@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { createEntry, post, streamChat } from "../api";
 import { useGeo, useIsDesktop, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
@@ -16,28 +17,35 @@ const MODES: { key: Mode; label: string; hint: string }[] = [
 export default function Chat() {
   const isDesktop = useIsDesktop();
   const geo = useGeo();
-  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "assisted");
+  const [sp] = useSearchParams();
+  // Desktop has its own mode selector; phone is driven by the shell's top buttons (?m=).
+  const [deskMode, setDeskMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
+  const mode: Mode = isDesktop ? deskMode : ((sp.get("m") as Mode) || "entry");
 
   function pick(m: Mode) {
-    setMode(m);
+    setDeskMode(m);
     localStorage.setItem("jbrain_mode", m);
   }
 
   return (
-    <div className={isDesktop && mode === "assisted" ? "" : ""}>
-      <div className="content" style={{ paddingBottom: 0 }}>
-        <div className="row" style={{ gap: 6 }}>
-          {MODES.map((m) => (
-            <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pick(m.key)}>
-              {m.label}
-            </button>
-          ))}
+    <div>
+      {isDesktop && (
+        <div className="content" style={{ paddingBottom: 0 }}>
+          <div className="row" style={{ gap: 6 }}>
+            {MODES.map((m) => (
+              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pick(m.key)}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: 12, margin: "6px 2px 0" }}>
+            {MODES.find((m) => m.key === mode)!.hint}
+          </p>
         </div>
-        <p className="muted" style={{ fontSize: 12, margin: "6px 2px 0" }}>
-          {MODES.find((m) => m.key === mode)!.hint}
-        </p>
-      </div>
-      {mode === "entry" ? <EntryForm geo={geo} /> : <ChatPane mode={mode} geo={geo} isDesktop={isDesktop} />}
+      )}
+      {mode === "entry"
+        ? <EntryForm geo={geo} />
+        : <ChatPane key={mode} mode={mode} geo={geo} isDesktop={isDesktop} />}
     </div>
   );
 }

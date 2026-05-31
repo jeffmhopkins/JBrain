@@ -15,7 +15,10 @@ and a graph.
 
 - **Conversational capture** — a curious, Socratic Claude agent that draws ideas
   out of you one concept at a time.
-- **Three modes** (pick in the app):
+- **Modes** — on phones the home screen is four top buttons: **Entry · Assisted ·
+  Research · Advanced**, with a text compose at the bottom; **Advanced** reveals a
+  grouped nav (Browse · Automate · Data · Review). Desktop keeps the full sidebar.
+  The three capture modes:
   - **Entry** — type a note; it's stored directly (no LLM) and runs the
     `entry_created` hooks (auto-tag, etc.).
   - **Assisted** — the Socratic architect talks a topic out, then proposes a note

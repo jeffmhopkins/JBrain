@@ -97,6 +97,34 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   position: sticky; top: 0; z-index: 40;
 }
 
+/* ---- Phone shell (top mode buttons + contextual bottom) ----------------- */
+.mshell { display: flex; flex-direction: column; min-height: 100vh; }
+.mtop {
+  position: sticky; top: 0; z-index: 40; display: flex; gap: 6px;
+  padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.mtab {
+  flex: 1; padding: 9px 4px; font-size: 12.5px; border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text-dim); border-radius: var(--radius);
+}
+.mtab.active { background: var(--bg-elev-2); color: var(--text); border-color: var(--accent); }
+.madv-head { display: flex; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.mbody { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mbody.adv { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); }
+.mbottom {
+  position: fixed; bottom: 0; left: 0; right: 0; height: var(--tabbar-h);
+  display: flex; background: var(--bg-elev); border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom); z-index: 50;
+}
+.mbottom button {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; background: transparent; border: none; color: var(--text-dim); font-size: 11px; position: relative;
+}
+.mbottom button.active { color: var(--text); }
+.mbottom button.active .icon { color: var(--accent); }
+.mbottom .count-badge { position: absolute; top: 6px; right: 26%; }
+
 /* ---- Cards / misc ------------------------------------------------------- */
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .muted { color: var(--text-dim); }

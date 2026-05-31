@@ -12,6 +12,7 @@ import SearchPage from "./pages/SearchPage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
+import BrowsePage from "./pages/BrowsePage";
 
 interface AuthState {
   authenticated: boolean;
@@ -95,8 +96,9 @@ export default function App() {
       ) : (
         <Shell>
           <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
+            <Route path="/" element={<Navigate to="/chat?m=entry" replace />} />
             <Route path="/chat" element={<Chat />} />
+            <Route path="/browse" element={<BrowsePage />} />
             <Route path="/wiki" element={<Wiki />} />
             <Route path="/note/:slug" element={<NotePage />} />
             <Route path="/graph" element={<GraphPage />} />
@@ -104,7 +106,7 @@ export default function App() {
             <Route path="/flows" element={<WorkflowsPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/sql" element={<SqlConsole />} />
-            <Route path="*" element={<Navigate to="/chat" replace />} />
+            <Route path="*" element={<Navigate to="/chat?m=entry" replace />} />
           </Routes>
         </Shell>
       )}

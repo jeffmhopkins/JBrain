@@ -28,13 +28,18 @@ function ReviewBell() {
 
   async function toggle() {
     if (open) { setOpen(false); return; }
-    try { setItems(await get("/api/reviews")); } catch { setItems([]); }
-    setOpen(true);
+    let list: ReviewItem[] = [];
+    try { list = await get("/api/reviews"); } catch { /* ignore */ }
+    setItems(list);
+    setCount(list.length);
+    if (list.length) setOpen(true);   // nothing to review → don't show the popup
   }
   async function dismiss(id: number) {
     await post(`/api/reviews/${id}/dismiss`);
-    setItems((xs) => xs.filter((x) => x.id !== id));
-    setCount((c) => Math.max(0, c - 1));
+    const remaining = items.filter((x) => x.id !== id);
+    setItems(remaining);
+    setCount(remaining.length);
+    if (remaining.length === 0) setOpen(false);   // all cleared → hide the popup
   }
 
   if (count === 0 && !open) return null;
@@ -47,7 +52,6 @@ function ReviewBell() {
       {open && (
         <div className="review-menu">
           <div className="review-menu-head">Review</div>
-          {items.length === 0 && <div className="muted" style={{ padding: "10px 8px", fontSize: 13 }}>Nothing to review. 🎉</div>}
           {items.map((r) => (
             <div className="review-item" key={r.id}>
               <strong style={{ fontSize: 14 }}>{r.title}</strong>

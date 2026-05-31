@@ -130,11 +130,14 @@ docker compose down              # stop
 
 ## Updating
 
-JBrain checks the latest GitHub release; when a newer one exists the PWA shows an
-**Update** banner. Updating is **non-destructive**: the database and Caddy certs
-are on Docker named volumes and your `.env` (access key, API keys) is untouched —
-only code is replaced, and schema changes are applied by the migration runner on
-boot.
+JBrain shows an **Update** banner in the PWA when a newer version exists. By
+default it **tracks `main` by commit** (the image is built with its git commit
+baked in, compared against the latest commit on `main`) — so you don't need to
+cut releases; just push to `main`. If you prefer versioned releases, a published
+GitHub Release/tag newer than `APP_VERSION` takes precedence. Updating is
+**non-destructive**: the database and Caddy certs are on Docker named volumes and
+your `.env` (access key, API keys) is untouched — only code is replaced, and
+schema changes are applied by the migration runner on boot.
 
 **Fully automatic (recommended):** enable the updater sidecar — answer "yes" to
 automatic updates in `install.sh`, or set `COMPOSE_PROFILES=autoupdate` in `.env`

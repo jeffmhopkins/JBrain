@@ -29,6 +29,7 @@ git checkout "$TARGET"
 git pull --ff-only origin "$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true
 
 echo "==> Rebuilding and restarting (volumes + .env preserved)…"
+export GIT_SHA="$(git rev-parse HEAD)"
 docker compose up -d --build
 
 # Clear any pending update marker.

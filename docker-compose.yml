@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     env_file: .env
     environment:

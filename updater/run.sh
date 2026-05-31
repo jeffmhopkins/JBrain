@@ -28,6 +28,7 @@ while true; do
       echo "[updater] git fetch failed (offline?); skipping this cycle"
     fi
     echo "[updater] rebuilding api…"
+    export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
     if docker compose build api && docker compose up -d api; then
       echo "[updater] update applied -> ${TARGET:-unknown}"
     else

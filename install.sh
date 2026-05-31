@@ -109,6 +109,7 @@ echo
 read -r -p "Build and start JBrain now? [Y/n] " go
 if [[ "${go,,}" != "n" ]]; then
   info "Building and starting (first run downloads the embedding model)…"
+  export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
   docker compose up -d --build
   echo
   bold "JBrain is starting. In a minute, open: https://$JBRAIN_DOMAIN"

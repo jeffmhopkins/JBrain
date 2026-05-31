@@ -410,6 +410,19 @@ def test_system_version_check(client, monkeypatch):
     assert client.get("/api/system/version").json()["update_available"] is True
 
 
+def test_system_version_tracks_main_commit(client, monkeypatch):
+    from app.routers import system
+    monkeypatch.setattr(system, "_latest_release", lambda: None)  # no tags/releases
+    monkeypatch.setattr(system, "_latest_main_commit", lambda: {"sha": "abcdef1234567890", "url": "u"})
+    monkeypatch.setenv("JBRAIN_BUILD_REF", "0000000deadbeef")
+    monkeypatch.setattr(system, "_main_is_ahead", lambda ref: True)
+    v = client.get("/api/system/version").json()
+    assert v["update_available"] is True and v["latest"] == "main@abcdef1"
+    # Up to date with main -> no banner.
+    monkeypatch.setattr(system, "_main_is_ahead", lambda ref: False)
+    assert client.get("/api/system/version").json()["update_available"] is False
+
+
 def test_system_update_schedules_when_no_cmd(client, monkeypatch):
     import os
     monkeypatch.delenv("JBRAIN_UPDATE_CMD", raising=False)

@@ -10,6 +10,11 @@ RUN npm run build
 FROM python:3.12-slim AS api
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
+# The git commit this image was built from (for update detection). Passed by
+# install.sh / update.sh / the updater via the GIT_SHA build arg.
+ARG GIT_SHA=""
+ENV JBRAIN_BUILD_REF=$GIT_SHA
+
 WORKDIR /app
 COPY server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

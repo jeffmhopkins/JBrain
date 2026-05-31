@@ -73,17 +73,58 @@ def _latest_release() -> dict | None:
     return data
 
 
+_main_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _latest_main_commit() -> dict | None:
+    """Newest commit on main, cached for an hour. None on failure."""
+    if time.time() - _main_cache["ts"] < 3600 and _main_cache["data"] is not None:
+        return _main_cache["data"]
+    data = None
+    try:
+        j = _http_json("/commits/main")
+        data = {"sha": j["sha"], "url": j.get("html_url")}
+    except Exception:
+        data = None
+    _main_cache.update(ts=time.time(), data=data)
+    return data
+
+
+def _main_is_ahead(build_ref: str) -> bool:
+    """True if main has commits the deployed build doesn't (i.e. an update exists)."""
+    try:
+        j = _http_json(f"/compare/{build_ref}...main")
+        return int(j.get("ahead_by", 0)) > 0
+    except Exception:
+        m = _latest_main_commit()
+        return bool(m and not m["sha"].startswith(build_ref) and not build_ref.startswith(m["sha"]))
+
+
+def _current_label(build_ref: str | None) -> str:
+    return f"{APP_VERSION} ({build_ref[:7]})" if build_ref else APP_VERSION
+
+
 @router.get("/version")
 def version():
+    build_ref = os.environ.get("JBRAIN_BUILD_REF") or None
+
+    # A published release/tag newer than this build wins (if you use tags).
     rel = _latest_release()
-    latest = rel["tag"] if rel else None
-    available = bool(latest and _parse(latest) > _parse(APP_VERSION))
+    if rel and _parse(rel["tag"]) > _parse(APP_VERSION):
+        return {
+            "current": _current_label(build_ref), "latest": rel["tag"],
+            "update_available": True, "release_url": rel["url"], "release_name": rel.get("name"),
+        }
+
+    # Otherwise track main by commit: update available when main is ahead.
+    main = _latest_main_commit()
+    avail = bool(build_ref and main and _main_is_ahead(build_ref))
     return {
-        "current": APP_VERSION,
-        "latest": latest,
-        "update_available": available,
-        "release_url": rel["url"] if rel else None,
-        "release_name": rel["name"] if rel else None,
+        "current": _current_label(build_ref),
+        "latest": ("main@" + main["sha"][:7]) if (avail and main) else None,
+        "update_available": avail,
+        "release_url": main["url"] if (avail and main) else (rel["url"] if rel else None),
+        "release_name": None,
     }
 
 

@@ -40,6 +40,8 @@ jobs:
           npm run build
           cp dist/index.html dist/404.html   # SPA fallback for deep links
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true   # auto-enable Pages (Source: GitHub Actions) if it isn't yet
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist

@@ -20,10 +20,12 @@ COPY server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server/app ./app
-# Repo-defined workflows + central prompt store.
+# Repo-defined workflows, action recipes, and central prompt store.
 COPY workflows ./workflows
+COPY actions ./actions
 COPY prompts.yaml ./prompts.yaml
 ENV JBRAIN_WORKFLOWS_DIR=/app/workflows
+ENV JBRAIN_ACTIONS_DIR=/app/actions
 ENV JBRAIN_PROMPTS_FILE=/app/prompts.yaml
 # Built front-end goes where FastAPI serves static files from.
 COPY --from=web /web/dist ./static

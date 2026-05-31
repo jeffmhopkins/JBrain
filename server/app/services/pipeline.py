@@ -83,11 +83,20 @@ def _truthy(v) -> bool:
 # Each primitive is (ctx, **kwargs) -> value. They are the ONLY effecting code;
 # YAML can compose them but never bypass them.
 
+_MAX_CALL_DEPTH = 5     # call_action nesting depth
+_MAX_STEPS = 1000       # total steps executed per top-level run (runaway backstop)
+
+
 class _Ctx:
-    def __init__(self, conn, workflow_id, trigger):
+    def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None):
         self.conn = conn
         self.workflow_id = workflow_id
         self.trigger = trigger or {}
+        self.call_stack = call_stack or []          # action types currently on the stack
+        self.depth = depth                          # call_action nesting depth
+        # Shared, mutable across nested call_action sub-runs so the step cap is
+        # global (a [remaining] one-element list passed by reference).
+        self.budget = budget if budget is not None else [_MAX_STEPS]
 
 
 def _p_read_note(ctx, title=None, id=None):
@@ -231,8 +240,37 @@ def _p_daylog_pending(ctx, log_title):
     }
 
 
+def _p_call_action(ctx, action, config=None, trigger=None):
+    """Run another action recipe as a nested sub-pipeline (composition / chaining).
+    The sub-recipe gets a FRESH variable scope (its own config/trigger), but the
+    recursion depth and step budget are SHARED with the parent so cycles and
+    runaways are bounded. A recipe may declare top-level `returns: "{{ expr }}"`
+    to hand a value back; otherwise a small summary object is returned."""
+    if ctx.depth >= _MAX_CALL_DEPTH:
+        raise RuntimeError("call_action: max call depth exceeded")
+    recipe = get_action_def(action)
+    if recipe is None:
+        raise RuntimeError(f"call_action: unknown action '{action}'")
+    target = recipe.get("type", action)
+    if target in ctx.call_stack:
+        raise RuntimeError(f"call_action: cycle through '{target}'")
+
+    sub = _Ctx(ctx.conn, ctx.workflow_id, trigger or {},
+               call_stack=ctx.call_stack + [target], depth=ctx.depth + 1, budget=ctx.budget)
+    scope = {"config": config or {}, "trigger": trigger or {}, "today": _today(), "prompts": _PromptsProxy()}
+    trace: list = []
+    stopped = None
+    try:
+        _run_steps(sub, recipe.get("steps", []), scope, trace)
+    except _Stop as s:
+        stopped = s.message
+    ret = _render_value(recipe["returns"], scope) if recipe.get("returns") is not None else None
+    return {"type": target, "steps": len(trace), "stopped": stopped, "return": ret}
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
+    "call_action": _p_call_action,
     "write_note": _p_write_note,
     "create_review": _p_create_review,
     "semantic_search": _p_semantic_search,
@@ -256,6 +294,10 @@ _PRIMITIVE_META: dict[str, dict] = {
     "read_note": {"summary": "Read a note by title or id.",
                   "inputs": [{"name": "title", "type": "str"}, {"name": "id", "type": "int"}],
                   "output": "object"},
+    "call_action": {"summary": "Run another action recipe as a sub-pipeline (chaining).",
+                    "inputs": [{"name": "action", "type": "str", "required": True},
+                               {"name": "config", "type": "object"}, {"name": "trigger", "type": "object"}],
+                    "output": "object"},
     "write_note": {"summary": "Create or update a note (versioned).",
                    "inputs": [{"name": "title", "type": "str", "required": True},
                               {"name": "content_md", "type": "str"}, {"name": "text", "type": "str"},
@@ -331,6 +373,10 @@ def _run_steps(ctx, steps, scope, trace):
 
         if step.get("do") is None and "for_each" not in step:
             continue  # control-only step (when/stop_when)
+
+        ctx.budget[0] -= 1
+        if ctx.budget[0] < 0:
+            raise RuntimeError("step budget exceeded (runaway recipe?)")
 
         if "for_each" in step:
             coll = _eval(step["for_each"], scope) or []

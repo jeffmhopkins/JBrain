@@ -912,3 +912,34 @@ def test_action_defs_api(client):
     assert client.post("/api/action-defs", json={"recipe_yaml": recipe}).status_code == 409  # duplicate
     assert "my_custom" in {a["type"] for a in client.get("/api/workflows/action-types").json()}
     assert client.delete("/api/action-defs/my_custom").status_code == 200
+
+
+def test_call_action_chaining_cycle_and_returns(client):
+    import yaml
+    import pytest as _pytest
+    from app.db import get_conn
+    from app.services import pipeline
+    conn = get_conn()
+
+    def put(recipe):
+        conn.execute("INSERT INTO action_defs (type, recipe_yaml, source, locked) VALUES (?,?,'user',1)",
+                     (recipe["type"], yaml.safe_dump(recipe)))
+    put({"type": "inner_act", "steps": [{"do": "create_review", "with": {"title": "from inner"}}]})
+    put({"type": "outer_act", "steps": [{"do": "call_action", "with": {"action": "inner_act"}}]})
+    put({"type": "cyc", "steps": [{"do": "call_action", "with": {"action": "cyc"}}]})
+    put({"type": "greet", "returns": "{{ config.who }}",
+         "steps": [{"do": "create_review", "with": {"title": "hi"}}]})
+    conn.commit()
+
+    # Composition: outer runs inner, whose review is created.
+    pipeline.run_pipeline(conn, pipeline.get_action_def("outer_act"), {}, None, None)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) c FROM review_items WHERE title='from inner'").fetchone()["c"] == 1
+
+    # Cycle guard: a self-referential recipe raises (bounded, never hangs).
+    with _pytest.raises(RuntimeError):
+        pipeline.run_pipeline(conn, pipeline.get_action_def("cyc"), {}, None, None)
+
+    # returns: channel hands a value back to the caller.
+    out = pipeline._p_call_action(pipeline._Ctx(conn, None, None), "greet", config={"who": "world"})
+    assert out["return"] == "world" and out["type"] == "greet"

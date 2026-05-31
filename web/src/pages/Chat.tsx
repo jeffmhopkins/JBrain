@@ -27,7 +27,7 @@ export default function Chat() {
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [entries, setEntries] = useState<{ title: string; slug: string }[]>([]);
+  const [entries, setEntries] = useState<{ text: string; title: string; slug: string }[]>([]);
   const [input, setInput] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -87,7 +87,7 @@ export default function Chat() {
       try {
         const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords);
         if (file) await uploadAttachment(r.slug, file);
-        setEntries((xs) => [{ title: r.title, slug: r.slug }, ...xs]);
+        setEntries((xs) => [...xs, { text: text || (file ? `📎 ${file.name}` : ""), title: r.title, slug: r.slug }]);
       } finally { setBusy(false); }
       return;
     }
@@ -138,7 +138,10 @@ export default function Chat() {
           entries.length === 0
             ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>
             : entries.map((en, i) => (
-                <Link key={i} to={`/note/${en.slug}`} className="msg user" style={{ textDecoration: "none" }}>Saved: {en.title}</Link>
+                <div key={i} style={{ display: "contents" }}>
+                  {en.text && <div className="msg user">{en.text}</div>}
+                  <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {en.title}</Link>
+                </div>
               ))
         ) : (
           <>

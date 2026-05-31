@@ -99,7 +99,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 }
 
 /* ---- Unified shell (fixed viewport; only inner regions scroll) ---------- */
-.ushell { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.ushell { display: flex; flex-direction: column; height: var(--app-height, 100%); overflow: hidden; }
 .utop {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top));
@@ -228,6 +228,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }
 .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
 .msg.assistant { align-self: flex-start; background: var(--bg-elev); }
+.saved-chip {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-dim); background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; max-width: 80%;
+}
+.saved-chip:hover { text-decoration: none; border-color: var(--accent); color: var(--text); }
+.saved-chip .icon { color: var(--ok); }
 .composer { display: flex; gap: 8px; padding: 12px 0; position: sticky; bottom: 0; background: var(--bg); }
 .has-tabbar .composer { bottom: var(--tabbar-h); }
 

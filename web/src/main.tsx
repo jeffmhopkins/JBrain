@@ -15,6 +15,18 @@ registerSW({
   },
 });
 
+// Keep the shell sized to the actual visible viewport (handles the mobile
+// keyboard and toolbars, which shrink the visual viewport but not the layout).
+function syncAppHeight() {
+  const h = window.visualViewport?.height ?? window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${Math.round(h)}px`);
+}
+syncAppHeight();
+window.visualViewport?.addEventListener("resize", syncAppHeight);
+window.visualViewport?.addEventListener("scroll", syncAppHeight);
+window.addEventListener("resize", syncAppHeight);
+window.addEventListener("orientationchange", syncAppHeight);
+
 // Route under the deploy base path (e.g. "/JBrain/" on GitHub Pages, "/" when
 // the API serves the app) so links/refreshes keep the correct prefix.
 const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";

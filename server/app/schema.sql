@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS workflows (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- PWA-editable prompt overrides (take precedence over prompts.yaml defaults).
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Review items: workflow-posted (or manual) cards surfaced in the PWA Review
 -- inbox — a title, a message, an optional link to an entry, and a dismiss.
 CREATE TABLE IF NOT EXISTS review_items (

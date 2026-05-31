@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { del, get, post, put } from "../api";
+import PromptsPanel from "../components/PromptsPanel";
 
 interface Workflow {
   id: number;
@@ -25,6 +26,7 @@ const BLANK = {
 };
 
 export default function WorkflowsPage() {
+  const [view, setView] = useState<"flows" | "prompts">("flows");
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
   const [runs, setRuns] = useState<Record<number, any[]>>({});
@@ -98,6 +100,12 @@ export default function WorkflowsPage() {
 
   return (
     <div className="content">
+      <div className="row" style={{ gap: 6, marginBottom: 12 }}>
+        <button className={view === "flows" ? "primary" : "ghost"} onClick={() => setView("flows")}>Workflows</button>
+        <button className={view === "prompts" ? "primary" : "ghost"} onClick={() => setView("prompts")}>Prompts</button>
+      </div>
+
+      {view === "prompts" ? <PromptsPanel /> : <>
       <div className="row">
         <h2 style={{ margin: 0 }}>Workflows</h2>
         <div className="spacer" />
@@ -163,6 +171,10 @@ export default function WorkflowsPage() {
                         style={{ width: "100%", padding: 9, background: "var(--bg-elev)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8 }}>
                   <option value="append_to_note">append_to_note</option>
                   <option value="claude_synthesize">claude_synthesize</option>
+                  <option value="create_review_item">create_review_item</option>
+                  <option value="generate_tags">generate_tags</option>
+                  <option value="summarize_day_log">summarize_day_log</option>
+                  <option value="synthesize_wiki">synthesize_wiki</option>
                 </select>
               </div>
             </div>
@@ -182,6 +194,7 @@ export default function WorkflowsPage() {
           </div>
         </div>
       )}
+      </>}
     </div>
   );
 }

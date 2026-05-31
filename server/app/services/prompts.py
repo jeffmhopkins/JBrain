@@ -38,7 +38,7 @@ def _load() -> dict:
     return _cache["data"]
 
 
-def get(dotted_key: str, default: str = "") -> str:
+def _file_value(dotted_key: str, default: str = "") -> str:
     node = _load()
     for part in dotted_key.split("."):
         if isinstance(node, dict) and part in node:
@@ -46,3 +46,60 @@ def get(dotted_key: str, default: str = "") -> str:
         else:
             return default
     return node if isinstance(node, str) else default
+
+
+def _override(key: str) -> str | None:
+    """DB override, if any. Best-effort (returns None if the table isn't ready)."""
+    try:
+        from ..db import get_conn
+        row = get_conn().execute(
+            "SELECT value FROM prompt_overrides WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+    except Exception:
+        return None
+
+
+def get(dotted_key: str, default: str = "") -> str:
+    """Effective prompt: DB override → prompts.yaml → code default."""
+    ov = _override(dotted_key)
+    return ov if ov is not None else _file_value(dotted_key, default)
+
+
+def _flatten(d: dict, prefix: str = "") -> dict:
+    out: dict = {}
+    for k, v in (d or {}).items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(_flatten(v, key + "."))
+        elif isinstance(v, str):
+            out[key] = v
+    return out
+
+
+def list_all(conn) -> list[dict]:
+    """Merged view for the editor: key, file default, override (if any), effective."""
+    defaults = _flatten(_load())
+    overrides = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM prompt_overrides")}
+    keys = sorted(set(defaults) | set(overrides))
+    return [
+        {
+            "key": k,
+            "default": defaults.get(k, ""),
+            "override": overrides.get(k),
+            "effective": overrides.get(k, defaults.get(k, "")),
+        }
+        for k in keys
+    ]
+
+
+def set_override(conn, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO prompt_overrides (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')",
+        (key, value),
+    )
+
+
+def clear_override(conn, key: str) -> None:
+    conn.execute("DELETE FROM prompt_overrides WHERE key = ?", (key,))

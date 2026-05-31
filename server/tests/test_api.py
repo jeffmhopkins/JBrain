@@ -95,6 +95,21 @@ def test_prompts_yaml_loads():
     assert isinstance(prompts.get("architect.research", "x"), str)
 
 
+def test_prompt_editor_override_and_reset(client):
+    from app.services import prompts
+    listing = client.get("/api/prompts").json()
+    assert any(p["key"] == "actions.generate_tags" for p in listing)
+
+    client.put("/api/prompts/actions.generate_tags", json={"value": "CUSTOM TAG PROMPT"})
+    assert prompts.get("actions.generate_tags") == "CUSTOM TAG PROMPT"
+    row = next(p for p in client.get("/api/prompts").json() if p["key"] == "actions.generate_tags")
+    assert row["override"] == "CUSTOM TAG PROMPT" and row["effective"] == "CUSTOM TAG PROMPT"
+
+    client.delete("/api/prompts/actions.generate_tags")
+    assert next(p for p in client.get("/api/prompts").json()
+                if p["key"] == "actions.generate_tags")["override"] is None
+
+
 def test_health_is_public(client):
     from fastapi.testclient import TestClient
     from app.main import app

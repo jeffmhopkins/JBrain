@@ -26,7 +26,9 @@ and a graph.
   - **Research** — a **read-only** Q&A over your brain (semantic/keyword search +
     a SELECT-only `query_sql`); it never modifies anything.
 - **Editable prompts** — every prompt (the architect modes and the workflow AI
-  actions) lives in `prompts.yaml`, hot-reloaded on change.
+  actions) lives in `prompts.yaml`, hot-reloaded on change, and is editable from
+  the app (**Flows → Prompts**). In-app edits are stored in the DB (so they
+  survive updates); "Reset to default" returns to the shipped `prompts.yaml`.
 - **Wiki** — markdown notes with `[[wiki-links]]`, automatic **backlinks**, and
   full **revision history**: every edit is versioned and attributed (you vs. the
   AI vs. a restore), with **line diffs** and one-click **restore** (which snapshots

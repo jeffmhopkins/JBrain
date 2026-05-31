@@ -34,12 +34,9 @@ export default function Chat() {
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
   const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
-  const [listening, setListening] = useState(false);
 
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const recRef = useRef<any>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
@@ -55,26 +52,6 @@ export default function Chat() {
     setApplied((a) => a.map((x) => (x.id === id ? { ...x, undone: true } : x)));
   }
 
-  function toggleMic() {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { alert("Voice input isn't supported in this browser."); return; }
-    if (listening) { recRef.current?.stop(); return; }
-    taRef.current?.focus();  // keep the keyboard open for manual edits too
-    const r = new SR();
-    recRef.current = r;
-    r.lang = "en-US"; r.interimResults = true; r.continuous = true;
-    const base = input ? input + " " : "";
-    r.onresult = (e: any) => {
-      let t = "";
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-      setInput(base + t);
-    };
-    r.onend = () => setListening(false);
-    r.onerror = () => setListening(false);
-    r.start();
-    setListening(true);
-  }
-
   async function send(e?: FormEvent) {
     e?.preventDefault();
     const text = input.trim();
@@ -82,7 +59,6 @@ export default function Chat() {
     const coords = geo.enabled ? geo.coords : null;
     const file = pendingFile;
     setInput(""); setPendingFile(null);
-    if (listening) recRef.current?.stop();
 
     if (mode === "entry") {
       setBusy(true);
@@ -180,7 +156,6 @@ export default function Chat() {
           </div>
         )}
         <textarea
-          ref={taRef}
           rows={2}
           placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}
@@ -209,7 +184,6 @@ export default function Chat() {
               <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" /></button>
             </>
           )}
-          <button className={"icon-btn" + (listening ? " active" : "")} title="Voice input" onClick={toggleMic}><Icon name="mic" /></button>
           <button className="icon-btn send" title="Send" onClick={() => send()}
                   disabled={streaming || busy || !online || (!input.trim() && !pendingFile)}><Icon name="send" /></button>
         </div>

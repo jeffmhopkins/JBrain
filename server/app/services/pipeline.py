@@ -327,6 +327,7 @@ class _PromptsProxy:
 # --- Definition loading & validation ---------------------------------------
 
 _DEFS: dict | None = None
+_ALIASES: dict[str, str] = {}  # legacy action_type -> canonical type
 
 
 def _actions_dir() -> Path | None:
@@ -341,17 +342,24 @@ def _actions_dir() -> Path | None:
 
 
 def load_action_defs() -> dict:
-    """Parse actions/*.yaml into {type: recipe}. Malformed files are skipped."""
+    """Parse actions/*.yaml into {type: recipe} and rebuild the alias map (a
+    recipe's `aliases:` are legacy names that still dispatch). Malformed files
+    are skipped."""
+    global _ALIASES
     defs: dict = {}
+    aliases: dict[str, str] = {}
     d = _actions_dir()
     if d:
         for path in sorted(d.glob("*.yaml")):
             try:
                 doc = yaml.safe_load(path.read_text())
-                if doc and doc.get("type") and isinstance(doc.get("steps"), list):
-                    defs[doc["type"]] = doc
             except Exception:
                 continue
+            if doc and doc.get("type") and isinstance(doc.get("steps"), list):
+                defs[doc["type"]] = doc
+                for a in (doc.get("aliases") or []):
+                    aliases[a] = doc["type"]
+    _ALIASES = aliases
     return defs
 
 
@@ -362,10 +370,11 @@ def reload_action_defs() -> dict:
 
 
 def get_action_def(action_type: str) -> dict | None:
+    """Resolve a recipe, honouring legacy aliases so existing DB rows still run."""
     global _DEFS
     if _DEFS is None:
         _DEFS = load_action_defs()
-    return _DEFS.get(action_type)
+    return _DEFS.get(_ALIASES.get(action_type, action_type))
 
 
 def action_types() -> list[str]:

@@ -71,10 +71,23 @@ def _node(dotted_key: str):
     return node
 
 
+# Renamed prompt keys: new canonical -> legacy. An override saved under the old
+# key still applies after the rename (existing customisations are preserved).
+_KEY_ALIASES = {"actions.synthesize": "actions.claude_synthesize"}
+
+
 def get(dotted_key: str, default: str = "") -> str:
-    """Effective prompt string: DB override → prompts.yaml → code default."""
+    """Effective prompt string: DB override (new key → legacy key) → prompts.yaml
+    → code default."""
     ov = _override(dotted_key)
-    return ov if ov is not None else _file_value(dotted_key, default)
+    if ov is not None:
+        return ov
+    legacy = _KEY_ALIASES.get(dotted_key)
+    if legacy is not None:
+        ov = _override(legacy)          # honour a customisation saved under the old key
+        if ov is not None:
+            return ov
+    return _file_value(dotted_key, default)
 
 
 def get_list(dotted_key: str, default: list | None = None) -> list:

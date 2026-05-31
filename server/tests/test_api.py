@@ -97,7 +97,7 @@ def test_agent_config_complete_and_valid(client):
     assert prompts.get_int("agent.max_iterations", 0) > 0
     for t in architect._TOOL_SCHEMAS:
         assert prompts.get(f"tools.{t}"), f"missing description for tool {t}"
-    for a in ("daylog_summary", "generate_tags", "claude_synthesize", "wiki_synthesis"):
+    for a in ("daylog_summary", "generate_tags", "synthesize", "wiki_synthesis"):
         assert prompts.get(f"actions.{a}")
     # No drift: tools referenced exist + are available where mentioned.
     from app.db import get_conn
@@ -774,17 +774,21 @@ def test_pipeline_action_runs_via_engine(client):
 def test_action_types_endpoint(client):
     cat = client.get("/api/workflows/action-types").json()
     by_type = {c["type"]: c for c in cat}
-    # Every runnable action appears, YAML-defined and Python alike.
+    # Every runnable action appears under its canonical (agnostic) name; the
+    # legacy alias `claude_synthesize` is NOT surfaced in the picker.
     for t in ("append_to_note", "create_review_item", "generate_tags",
-              "summarize_day_log", "synthesize_wiki", "claude_synthesize"):
+              "summarize_day_log", "synthesize_wiki", "synthesize"):
         assert t in by_type, f"{t} missing from action catalog"
+    assert "claude_synthesize" not in by_type
     # Schemas come through for the picker/forms.
     assert any(f["key"] == "title" for f in by_type["append_to_note"]["config"])
-    assert any(f["key"] == "target_title" for f in by_type["claude_synthesize"]["config"])
+    assert any(f["key"] == "target_title" for f in by_type["synthesize"]["config"])
 
 
 def test_claude_synthesize_via_pipeline(client, monkeypatch):
-    # The last action converted to YAML. Mock the llm primitive (no API key in CI).
+    # Uses the LEGACY action_type 'claude_synthesize' on purpose: proves an
+    # existing DB row still dispatches to the renamed 'synthesize' recipe via the
+    # alias. Mock the llm primitive (no API key in CI).
     from app.services import pipeline
     client.post("/api/notes", json={"title": "Src", "content_md": "raw material"})
     monkeypatch.setitem(pipeline._PRIMITIVES, "llm", lambda ctx, **k: "SYNTHESISED")
@@ -833,3 +837,18 @@ def test_llm_provider_basics():
     from app.services import architect
     td = architect._tools_for("assisted")[0]
     assert isinstance(td, llm.ToolDef) and td.name and isinstance(td.json_schema, dict)
+
+
+def test_prompt_key_alias_preserves_legacy_override(client):
+    # A customisation saved under the old key (actions.claude_synthesize) must
+    # still apply after the rename to actions.synthesize.
+    from app.services import prompts
+    from app.db import get_conn
+    conn = get_conn()
+    prompts.set_override(conn, "actions.claude_synthesize", "LEGACY CUSTOM")
+    conn.commit()
+    assert prompts.get("actions.synthesize") == "LEGACY CUSTOM"
+    # A new-key override takes precedence over the legacy one.
+    prompts.set_override(conn, "actions.synthesize", "NEW CUSTOM")
+    conn.commit()
+    assert prompts.get("actions.synthesize") == "NEW CUSTOM"

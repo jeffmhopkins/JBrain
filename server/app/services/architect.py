@@ -123,7 +123,7 @@ def validate_agent_config(conn=None) -> list[str]:
     for t in known:
         if not prompts.get(f"tools.{t}", ""):
             warnings.append(f"tool '{t}' has no description")
-    for a in ("daylog_summary", "generate_tags", "claude_synthesize", "wiki_synthesis"):
+    for a in ("daylog_summary", "generate_tags", "synthesize", "wiki_synthesis"):
         if not prompts.get(f"actions.{a}", ""):
             warnings.append(f"action prompt 'actions.{a}' is missing")
     return warnings

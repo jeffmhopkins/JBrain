@@ -9,7 +9,7 @@
 # override the action defaults below.
 
 agent:
-  model: ""            # blank => the ANTHROPIC_MODEL env value
+  model: ""            # blank => the LLM_MODEL env value (provider default)
   max_tokens: 2048
   max_iterations: 8
 
@@ -79,7 +79,7 @@ tools:
 actions:
   daylog_summary: "Summarise this day's log entries into a tight paragraph plus a few key bullets:"
   generate_tags: "Suggest 3-6 short, lowercase topic tags (comma-separated, no '#') that classify this note. Reply with ONLY the comma-separated tags."
-  claude_synthesize: "Summarise the following:"
+  synthesize: "Summarise the following:"
   wiki_synthesis: |
     You maintain a personal KNOWLEDGE BASE synthesized from raw journal/note
     entries. Read the NEW ENTRIES and fold their durable knowledge into topic

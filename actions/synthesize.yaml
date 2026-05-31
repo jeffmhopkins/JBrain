@@ -1,6 +1,6 @@
-# Declarative action: gather context (a note or a semantic search), run a Claude
-# prompt, and write the result to a note (+ optional review). Equivalent to the
-# former _action_claude_synthesize. Requires an Anthropic API key.
+# Declarative action: gather context (a note or a semantic search), run an LLM
+# prompt, and write the result to a note (+ optional review). Requires an LLM key.
+# (Formerly `claude_synthesize`; that name still dispatches via `aliases`.)
 #
 # config keys:
 #   target_title   (required) — note to write the synthesis into
@@ -9,7 +9,8 @@
 #   context_query              — gather context from a semantic search
 #   mode                       — replace (default) | append
 #   review                     — {title?, message?} to post a review card
-type: claude_synthesize
+type: synthesize
+aliases: [claude_synthesize]
 config:
   - { key: target_title, label: Target note title, type: text, required: true }
   - { key: prompt, label: Prompt (optional), type: textarea }
@@ -27,7 +28,7 @@ steps:
   - id: out
     do: llm
     with:
-      prompt: "{{ config.prompt | default(prompts.actions.claude_synthesize) }}"
+      prompt: "{{ config.prompt | default(prompts.actions.synthesize) }}"
       content: "{{ ctx }}"
       max_tokens: 1024
       on_no_key: raise

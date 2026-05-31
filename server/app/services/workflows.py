@@ -1,0 +1,226 @@
+"""Workflow engine: trigger + action automations.
+
+Workflows are seeded from repo YAML (server/.. /workflows/*.yaml) into the DB on
+boot, and are editable in the PWA. A PWA edit sets `locked=1` so re-ingesting the
+repo definition won't clobber the user's version.
+
+Triggers: 'event' (fired from app code, e.g. log_appended) and 'schedule'
+(interval-based, polled by a background loop). Actions run through the same
+write funnel as everything else (notes_svc.upsert_note) so they're versioned and
+attributed source='workflow'. All workflow runs are logged for audit.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import yaml
+
+from ..config import get_settings
+from . import notes as notes_svc
+
+_TODAY = lambda: __import__("datetime").date.today().isoformat()
+
+
+# --- Repo YAML ingestion ----------------------------------------------------
+
+def _workflows_dir() -> Path | None:
+    candidates = [
+        os.environ.get("JBRAIN_WORKFLOWS_DIR"),
+        Path(__file__).resolve().parents[3] / "workflows",  # repo root (local/dev)
+        Path("/app/workflows"),                              # container
+    ]
+    for c in candidates:
+        if c and Path(c).is_dir():
+            return Path(c)
+    return None
+
+
+def _normalise(doc: dict) -> dict:
+    trig = doc.get("trigger", {}) or {}
+    act = doc.get("action", {}) or {}
+    trigger_type = trig.get("type", "event")
+    trigger_config = {k: v for k, v in trig.items() if k != "type"}
+    return {
+        "key": doc["key"],
+        "name": doc.get("name", doc["key"]),
+        "trigger_type": trigger_type,
+        "trigger_config": json.dumps(trigger_config, sort_keys=True),
+        "action_type": act.get("type", ""),
+        "action_config": json.dumps(act.get("config", {}), sort_keys=True),
+        "enabled": 1 if doc.get("enabled", True) else 0,
+    }
+
+
+def _hash(defn: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(defn, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def ingest_repo_workflows(conn) -> int:
+    """Seed/update repo workflows by key. User-locked rows are left untouched."""
+    directory = _workflows_dir()
+    if not directory:
+        return 0
+    count = 0
+    for path in sorted(directory.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(path.read_text())
+            if not doc or "key" not in doc:
+                continue
+            defn = _normalise(doc)
+        except Exception:
+            continue
+        h = _hash(defn)
+        existing = conn.execute(
+            "SELECT id, locked, origin_hash FROM workflows WHERE key = ?", (defn["key"],)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO workflows (key, name, trigger_type, trigger_config, "
+                "action_type, action_config, enabled, source, origin_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'repo', ?)",
+                (defn["key"], defn["name"], defn["trigger_type"], defn["trigger_config"],
+                 defn["action_type"], defn["action_config"], defn["enabled"], h),
+            )
+            count += 1
+        elif not existing["locked"] and existing["origin_hash"] != h:
+            conn.execute(
+                "UPDATE workflows SET name=?, trigger_type=?, trigger_config=?, "
+                "action_type=?, action_config=?, enabled=?, origin_hash=?, "
+                "updated_at=datetime('now') WHERE id=?",
+                (defn["name"], defn["trigger_type"], defn["trigger_config"],
+                 defn["action_type"], defn["action_config"], defn["enabled"], h, existing["id"]),
+            )
+            count += 1
+    conn.commit()
+    return count
+
+
+# --- Actions ----------------------------------------------------------------
+
+def _action_append_to_note(conn, cfg: dict) -> str:
+    title = cfg["title"]
+    text = (cfg.get("text") or "").replace("{date}", _TODAY())
+    note = notes_svc.get_by_title(conn, title)
+    body = note["content_md"] if note else f"# {title}\n"
+    notes_svc.upsert_note(
+        conn, title, body.rstrip() + "\n" + text + "\n",
+        source="workflow", version_note="workflow append",
+    )
+    return f"appended to '{title}'"
+
+
+def _action_claude_synthesize(conn, cfg: dict, context: dict | None) -> str:
+    """Gather context, run a Claude prompt, write the result. (Foundation for the
+    day-log summariser.) Requires an Anthropic key."""
+    settings = get_settings()
+    if not settings.has_anthropic:
+        raise RuntimeError("no Anthropic API key configured")
+
+    from anthropic import Anthropic
+    from . import embeddings
+
+    target = cfg["target_title"]
+    prompt = cfg.get("prompt", "Summarise the following:")
+    gathered = ""
+    if cfg.get("source_title"):
+        row = notes_svc.get_by_title(conn, cfg["source_title"])
+        gathered = row["content_md"] if row else ""
+    elif cfg.get("context_query"):
+        for r in embeddings.semantic_search(conn, cfg["context_query"], 8):
+            n = notes_svc.get_by_title(conn, r["title"])
+            if n:
+                gathered += f"\n\n## {n['title']}\n{n['content_md']}"
+
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": f"{prompt}\n\n<content>\n{gathered}\n</content>"}],
+    )
+    result = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
+    note = notes_svc.get_by_title(conn, target)
+    if cfg.get("mode") == "append" and note:
+        result = note["content_md"].rstrip() + "\n\n" + result
+    notes_svc.upsert_note(conn, target, result, source="workflow", version_note="workflow synthesis")
+    return f"synthesised into '{target}'"
+
+
+_ACTIONS = {
+    "append_to_note": _action_append_to_note,
+    "claude_synthesize": lambda conn, cfg, ctx=None: _action_claude_synthesize(conn, cfg, ctx),
+}
+
+
+# --- Execution --------------------------------------------------------------
+
+def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
+    conn.execute(
+        "INSERT INTO workflow_runs (workflow_id, status, detail) VALUES (?, ?, ?)",
+        (workflow_id, status, (detail or "")[:1000]),
+    )
+
+
+def run_workflow(conn, wf, context: dict | None = None) -> tuple[str, str]:
+    cfg = json.loads(wf["action_config"] or "{}")
+    action = _ACTIONS.get(wf["action_type"])
+    try:
+        if action is None:
+            status, detail = "error", f"unknown action '{wf['action_type']}'"
+        else:
+            detail = action(conn, cfg, context) if wf["action_type"] == "claude_synthesize" else action(conn, cfg)
+            status = "ok"
+    except Exception as exc:  # noqa: BLE001 — record any failure, never crash a trigger
+        status, detail = "error", str(exc)
+
+    conn.execute(
+        "UPDATE workflows SET last_run_at=datetime('now'), last_status=? WHERE id=?",
+        (status, wf["id"]),
+    )
+    _log_run(conn, wf["id"], status, detail)
+    conn.commit()
+    return status, detail
+
+
+def fire_event(conn, event: str, context: dict | None = None) -> None:
+    """Run enabled event-workflows whose trigger matches `event` (+ optional match)."""
+    rows = conn.execute(
+        "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'event'"
+    ).fetchall()
+    for wf in rows:
+        tc = json.loads(wf["trigger_config"] or "{}")
+        if tc.get("event") != event:
+            continue
+        match = tc.get("match") or {}
+        if match and context and not all(context.get(k) == v for k, v in match.items()):
+            continue
+        run_workflow(conn, wf, context)
+
+
+def run_due_scheduled(conn) -> int:
+    """Run interval-scheduled workflows that are due. Returns count run."""
+    rows = conn.execute(
+        "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'schedule'"
+    ).fetchall()
+    ran = 0
+    for wf in rows:
+        tc = json.loads(wf["trigger_config"] or "{}")
+        interval = int(tc.get("interval_seconds", 0) or 0)
+        if interval <= 0:
+            continue
+        if wf["last_run_at"] is None:
+            due = True
+        else:
+            secs = conn.execute(
+                "SELECT (julianday('now') - julianday(?)) * 86400 AS s", (wf["last_run_at"],)
+            ).fetchone()["s"]
+            due = secs is not None and secs >= interval
+        if due:
+            run_workflow(conn, wf)
+            ran += 1
+    return ran

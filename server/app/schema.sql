@@ -129,3 +129,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
   filename,
   content
 );
+
+-- Workflows: trigger + action automations. Seeded from repo YAML, then editable
+-- in the PWA (a user edit sets `locked` so repo re-ingest won't clobber it).
+CREATE TABLE IF NOT EXISTS workflows (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  key           TEXT UNIQUE,                       -- stable id for repo workflows
+  name          TEXT NOT NULL,
+  trigger_type  TEXT NOT NULL,                     -- 'event' | 'schedule'
+  trigger_config TEXT NOT NULL DEFAULT '{}',       -- json
+  action_type   TEXT NOT NULL,
+  action_config TEXT NOT NULL DEFAULT '{}',        -- json
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  source        TEXT NOT NULL DEFAULT 'repo',       -- 'repo' | 'user'
+  locked        INTEGER NOT NULL DEFAULT 0,         -- 1 = user-edited, freeze from re-ingest
+  origin_hash   TEXT,
+  last_run_at   TEXT,
+  last_status   TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Audit log of workflow executions.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  status      TEXT NOT NULL,                        -- 'ok' | 'error' | 'skipped'
+  detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);

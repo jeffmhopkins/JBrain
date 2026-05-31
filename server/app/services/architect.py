@@ -291,7 +291,14 @@ def _tool_log_entry(conn, conversation_id, target, text, date=None):
     r = quicktasks.append_log(conn, target, text, date, conversation_id=conversation_id)
     display = f"Logged to [[{r['note_title']}]]" + (" (new log)" if r["created"] else "")
     undo = {"op": "remove_line", "title": r["note_title"], "line": r["block"]}
-    return f"applied: {display}", _record_applied(conn, conversation_id, "LOG", display, undo)
+    event = _record_applied(conn, conversation_id, "LOG", display, undo)
+    # Let event-driven workflows react (e.g. the day-log summariser).
+    try:
+        from . import workflows as wf_svc
+        wf_svc.fire_event(conn, "log_appended", {"note_title": r["note_title"]})
+    except Exception:  # noqa: BLE001 — a workflow failure must not break logging
+        pass
+    return f"applied: {display}", event
 
 
 def _tool_capture_inbox(conn, conversation_id, content):

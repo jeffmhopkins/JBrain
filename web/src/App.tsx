@@ -9,6 +9,7 @@ import NotePage from "./pages/NotePage";
 import GraphPage from "./pages/GraphPage";
 import SearchPage from "./pages/SearchPage";
 import SqlConsole from "./pages/SqlConsole";
+import WorkflowsPage from "./pages/WorkflowsPage";
 
 interface AuthState {
   authenticated: boolean;
@@ -70,6 +71,7 @@ export default function App() {
             <Route path="/note/:slug" element={<NotePage />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/flows" element={<WorkflowsPage />} />
             <Route path="/sql" element={<SqlConsole />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>

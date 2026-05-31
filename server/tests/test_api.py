@@ -233,3 +233,73 @@ def test_attachments_rejects_non_text(client):
         files={"file": ("image.png", b"\x89PNG\r\n", "image/png")},
     )
     assert bad.status_code == 415
+
+
+def _write_workflow(tmp, name, body):
+    import os
+    os.makedirs(tmp, exist_ok=True)
+    with open(os.path.join(tmp, name), "w") as fh:
+        fh.write(body)
+
+
+def test_workflow_ingest_and_event_trigger(client, monkeypatch, tmp_path):
+    from app.db import get_conn
+    from app.services import workflows as wf_svc
+    _write_workflow(str(tmp_path), "evt.yaml", """
+key: test-evt
+name: Test event
+enabled: true
+trigger:
+  type: event
+  event: log_appended
+action:
+  type: append_to_note
+  config:
+    title: Workflow Output
+    text: "fired"
+""")
+    monkeypatch.setenv("JBRAIN_WORKFLOWS_DIR", str(tmp_path))
+    conn = get_conn()
+    assert wf_svc.ingest_repo_workflows(conn) == 1
+    # Re-ingest is idempotent (hash unchanged -> no further upserts).
+    assert wf_svc.ingest_repo_workflows(conn) == 0
+
+    wf_svc.fire_event(conn, "log_appended", {"note_title": "Running Log"})
+    conn.commit()
+    assert "fired" in client.get("/api/notes/workflow-output").json()["content_md"]
+
+
+def test_workflow_scheduled_due(client):
+    from app.db import get_conn
+    from app.services import workflows as wf_svc
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO workflows (key, name, trigger_type, trigger_config, action_type, "
+        "action_config, enabled) VALUES ('sched','S','schedule', ?, 'append_to_note', ?, 1)",
+        ('{"interval_seconds": 3600}', '{"title": "Sched Out", "text": "tick"}'),
+    )
+    conn.commit()
+    assert wf_svc.run_due_scheduled(conn) == 1  # never run -> due
+    assert "tick" in client.get("/api/notes/sched-out").json()["content_md"]
+    # Just ran -> not due again.
+    assert wf_svc.run_due_scheduled(conn) == 0
+
+
+def test_workflow_crud_via_api(client):
+    created = client.post("/api/workflows", json={
+        "name": "Manual", "trigger_type": "event",
+        "trigger_config": {"event": "noop"}, "action_type": "append_to_note",
+        "action_config": {"title": "Manual Out", "text": "hello"}, "enabled": True,
+    }).json()
+    wid = created["id"]
+    assert created["locked"] is True  # user-created -> locked from repo re-ingest
+
+    run = client.post(f"/api/workflows/{wid}/run").json()
+    assert run["status"] == "ok"
+    assert "hello" in client.get("/api/notes/manual-out").json()["content_md"]
+
+    toggled = client.post(f"/api/workflows/{wid}/toggle").json()
+    assert toggled["enabled"] is False
+
+    assert len(client.get(f"/api/workflows/{wid}/runs").json()) >= 1
+    assert client.delete(f"/api/workflows/{wid}").status_code == 200

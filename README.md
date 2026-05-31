@@ -34,6 +34,9 @@ and a graph.
   with offline reading of notes you've already viewed.
 - **Quick-capture inbox** — a tiny `/api/capture` endpoint so a phone shortcut
   or a Wear OS tile can dictate thoughts the architect folds in later.
+- **Workflows** — trigger→action automations (event or scheduled), defined as
+  repo YAML (`workflows/`), ingested into the DB on boot, and editable in the PWA.
+  Runs are logged; writes are versioned and attributed `source='workflow'`.
 
 ## Authentication
 

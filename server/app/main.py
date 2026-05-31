@@ -1,4 +1,5 @@
 """JBrain API entrypoint: middleware, routers, health, and PWA static serving."""
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import ensure_access_key
 from .config import get_settings
-from .db import init_db
+from .db import get_conn, init_db
 from .routers import (
     attachments,
     auth_router,
@@ -19,9 +20,23 @@ from .routers import (
     search,
     sql_console,
     staging,
+    workflows,
 )
+from .services import workflows as wf_svc
 
 settings = get_settings()
+
+SCHEDULER_INTERVAL_SECONDS = 60
+
+
+async def _scheduler_loop():
+    """Poll for due scheduled workflows. Errors are swallowed per-iteration."""
+    while True:
+        await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
+        try:
+            wf_svc.run_due_scheduled(get_conn())
+        except Exception:  # noqa: BLE001 — never let the loop die
+            pass
 
 
 @asynccontextmanager
@@ -41,12 +56,18 @@ async def lifespan(app: FastAPI):
         print(f"    {generated}", flush=True)
         print("Saved to /data/access-key.txt", flush=True)
         print("=" * 60 + "\n", flush=True)
-    yield
+
+    wf_svc.ingest_repo_workflows(get_conn())  # seed/update repo workflows
+    task = asyncio.create_task(_scheduler_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows):
     app.include_router(r.router)
 
 

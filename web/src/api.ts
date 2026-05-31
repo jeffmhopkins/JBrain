@@ -48,6 +48,8 @@ export class ApiError extends Error {
 export const get = <T = any>(p: string) => api<T>(p);
 export const post = <T = any>(p: string, body?: unknown) =>
   api<T>(p, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+export const put = <T = any>(p: string, body?: unknown) =>
+  api<T>(p, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
 export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so

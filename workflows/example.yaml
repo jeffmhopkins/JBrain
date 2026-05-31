@@ -1,0 +1,18 @@
+# Example JBrain workflow. Files here are ingested into the DB on boot and can
+# then be edited in the PWA (an edit there locks the row from repo re-ingest).
+#
+# Disabled by default — enable it in the PWA, or set `enabled: true` and redeploy.
+key: example-daily-note
+name: Example — daily note stub
+enabled: false
+
+# Triggers: either an event fired by the app, or an interval schedule.
+trigger:
+  type: schedule
+  interval_seconds: 86400   # ~daily
+
+action:
+  type: append_to_note
+  config:
+    title: Daily Note
+    text: "## {date}\n\n- "

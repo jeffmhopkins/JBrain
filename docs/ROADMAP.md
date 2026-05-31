@@ -50,7 +50,10 @@ the access key or any tokens**.
 
 ---
 
-## 2. Day-log auto-summarisation workflow
+## 2. Day-log auto-summarisation workflow  — NEXT (built on #3)
+
+> Ordering decision: build this **after** #3 (the workflow engine), as a single
+> workflow definition on top of it — not as bespoke code.
 
 **Goal:** build up granular log entries throughout a day; when the **first log of
 a new day** arrives, summarise the **previous day's** entries into a single
@@ -79,7 +82,20 @@ a new day** arrives, summarise the **previous day's** entries into a single
 
 ---
 
-## 3. Workflow authoring & deployment system
+## 3. Workflow authoring & deployment system  — IMPLEMENTED (v1)
+
+Shipped: `workflows` + `workflow_runs` tables; a YAML→DB ingest on boot (repo
+files in `workflows/`, editable in the PWA where an edit sets `locked` to freeze
+it from re-ingest); **event** triggers (`fire_event`, wired to `log_appended`)
+and **interval schedule** triggers (background scheduler loop); actions
+`append_to_note` and `claude_synthesize`; a `/api/workflows` CRUD + run + history
+API; and a **Workflows** page in the PWA. All workflow writes funnel through
+`upsert_note` (versioned, attributed `source='workflow'`) and every run is logged.
+
+Still to do: **cron** schedules (v1 is interval-only — `croniter`), a richer/safer
+PWA editor (validation, dry-run), more event types (`note_saved`, `inbox_added`),
+async embedding so workflow writes don't stall, and a "reset to repo" (unlock)
+action. Original design notes below.
 
 **Goal:** a clean way to define recurring/triggered workflows (like the day-log
 summariser) and **push them to the server easily**.

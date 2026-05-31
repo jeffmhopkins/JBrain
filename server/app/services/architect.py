@@ -7,6 +7,7 @@ router. Tools are executed server-side against SQLite.
 from __future__ import annotations
 
 import json
+import re
 from typing import AsyncGenerator
 
 from anthropic import AsyncAnthropic
@@ -19,180 +20,114 @@ from . import prompts
 from . import quicktasks
 from . import sqlsafe
 
-MAX_TOOL_ITERATIONS = 8
+_DEFAULT_MAX_TOKENS = 2048
+_DEFAULT_MAX_ITERATIONS = 8
 
 # Minimal fallbacks if prompts.yaml is missing; prompts.yaml is the source of truth.
-_FALLBACK = {
-    "assisted": 'You are the Chief Knowledge Architect for "{brain_name}". Help the '
-                "user capture knowledge: ask Socratic questions, then propose_actions to "
-                "stage notes for confirmation; use additive tools for quick list/log ops.",
-    "research": 'You are the read-only Researcher for "{brain_name}". Answer questions '
-                "using search_notes/read_note/search_attachments/query_sql; never modify "
-                "anything; cite notes as [[Title]].",
+_FALLBACK_SYSTEM = {
+    "assisted": 'You are the Chief Knowledge Architect for "{brain_name}". Ask Socratic '
+                "questions, then propose_actions to stage notes for confirmation; use additive "
+                "tools for quick list/log ops.",
+    "research": 'You are the read-only Researcher for "{brain_name}". Answer using the search/'
+                "read/query_sql tools; never modify anything; cite notes as [[Title]].",
+}
+_DEFAULT_MODE_TOOLS = {
+    "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
+                 "read_attachment", "add_list_item", "log_entry", "capture_inbox", "mark_inbox_processed",
+                 "propose_actions"],
+    "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
+                 "read_attachment", "query_sql"],
 }
 
-# Which tools each chat mode may use.
-_RESEARCH_TOOLS = {
-    "search_notes", "read_note", "list_recent_notes",
-    "search_attachments", "read_attachment", "query_sql",
+# Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
+_TOOL_SCHEMAS = {
+    "search_notes": {"type": "object", "properties": {
+        "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
+    "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+    "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
+    "read_inbox": {"type": "object", "properties": {}},
+    "add_list_item": {"type": "object", "properties": {
+        "list_title": {"type": "string"},
+        "item": {"type": "string", "description": "Item text, no bullet/checkbox prefix."},
+        "checkbox": {"type": "boolean", "default": True}}, "required": ["list_title", "item"]},
+    "log_entry": {"type": "object", "properties": {
+        "target": {"type": "string", "description": "Log note title."},
+        "text": {"type": "string"},
+        "date": {"type": "string", "description": "ISO date; defaults to today."}}, "required": ["target", "text"]},
+    "capture_inbox": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
+    "mark_inbox_processed": {"type": "object", "properties": {
+        "ids": {"type": "array", "items": {"type": "integer"}}}, "required": ["ids"]},
+    "search_attachments": {"type": "object", "properties": {
+        "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
+    "read_attachment": {"type": "object", "properties": {"attachment_id": {"type": "integer"}}, "required": ["attachment_id"]},
+    "query_sql": {"type": "object", "properties": {
+        "sql": {"type": "string"}, "limit": {"type": "integer", "default": 50}}, "required": ["sql"]},
+    "propose_actions": {"type": "object", "properties": {"actions": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["CREATE", "UPDATE", "LINK"]},
+            "title": {"type": "string", "description": "Note title (CREATE/UPDATE)"},
+            "content": {"type": "string", "description": "Full markdown content (CREATE/UPDATE)"},
+            "source_title": {"type": "string", "description": "LINK: note that links out"},
+            "target_title": {"type": "string", "description": "LINK: note being linked to"},
+            "summary": {"type": "string", "description": "Short human-readable description"},
+        },
+        "required": ["type", "summary"]}}}, "required": ["actions"]},
 }
 
 
-def _system_prompt(brain_name: str, mode: str) -> str:
-    tmpl = prompts.get(f"architect.{mode}") or _FALLBACK.get(mode, _FALLBACK["assisted"])
-    return tmpl.replace("{brain_name}", brain_name)
+def _schema_tables(conn) -> str:
+    """Live, user-facing table list for the research prompt (excludes fts/vec shadows)."""
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+        names = [r[0] for r in rows
+                 if not r[0].startswith("sqlite_") and "fts" not in r[0] and not r[0].startswith("vec_")]
+        return ", ".join(names)
+    except Exception:
+        return ""
+
+
+def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
+    tmpl = prompts.get(f"modes.{mode}.system") or _FALLBACK_SYSTEM.get(mode, _FALLBACK_SYSTEM["assisted"])
+    tmpl = tmpl.replace("{brain_name}", brain_name)
+    if "{tables}" in tmpl and conn is not None:
+        tmpl = tmpl.replace("{tables}", _schema_tables(conn))
+    return tmpl
+
+
+def _mode_tool_names(mode: str) -> list[str]:
+    return prompts.get_list(f"modes.{mode}.tools", _DEFAULT_MODE_TOOLS.get(mode, []))
+
+
+def _build_tool(name: str) -> dict:
+    return {"name": name, "description": prompts.get(f"tools.{name}", ""), "input_schema": _TOOL_SCHEMAS[name]}
 
 
 def _tools_for(mode: str) -> list[dict]:
-    if mode == "research":
-        return [t for t in TOOLS if t["name"] in _RESEARCH_TOOLS]
-    return [t for t in TOOLS if t["name"] != "query_sql"]  # assisted: everything else
+    return [_build_tool(n) for n in _mode_tool_names(mode) if n in _TOOL_SCHEMAS]
 
 
-TOOLS = [
-    {
-        "name": "search_notes",
-        "description": "Search existing notes by keyword and meaning. Use to avoid duplicates and find related notes.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer", "default": 8},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "read_note",
-        "description": "Read the full markdown content of a note by its exact title.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"title": {"type": "string"}},
-            "required": ["title"],
-        },
-    },
-    {
-        "name": "list_recent_notes",
-        "description": "List the most recently updated notes to orient at the start of a session.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 10}},
-        },
-    },
-    {
-        "name": "read_inbox",
-        "description": "Read unprocessed quick-capture inbox items (e.g. dictations) to fold into the wiki.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "add_list_item",
-        "description": (
-            "Add an item to a checklist note (shopping list, todo, etc.), creating the "
-            "list if it doesn't exist. APPLIED IMMEDIATELY (additive, undoable). Use for "
-            "'add milk to the shopping list'. Always name the resolved list back to the user."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "list_title": {"type": "string"},
-                "item": {"type": "string", "description": "Item text, no bullet/checkbox prefix."},
-                "checkbox": {"type": "boolean", "default": True},
-            },
-            "required": ["list_title", "item"],
-        },
-    },
-    {
-        "name": "log_entry",
-        "description": (
-            "Append a dated entry to a log/journal note (e.g. 'Running Log', 'Daily Journal'), "
-            "creating it if absent. APPLIED IMMEDIATELY (additive, undoable). Use for "
-            "'log a 5k run', 'journal: …'."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string", "description": "Log note title."},
-                "text": {"type": "string"},
-                "date": {"type": "string", "description": "ISO date; defaults to today."},
-            },
-            "required": ["target", "text"],
-        },
-    },
-    {
-        "name": "capture_inbox",
-        "description": (
-            "Save a fleeting fragment to the capture inbox (a holding pen processed later). "
-            "APPLIED IMMEDIATELY (does not touch the wiki). Use for 'remember to…', 'note to self'."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"content": {"type": "string"}},
-            "required": ["content"],
-        },
-    },
-    {
-        "name": "mark_inbox_processed",
-        "description": "Mark inbox items processed once folded into the wiki. Pass ids from read_inbox.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ids": {"type": "array", "items": {"type": "integer"}}},
-            "required": ["ids"],
-        },
-    },
-    {
-        "name": "search_attachments",
-        "description": "Search the text of uploaded file attachments by meaning. Returns matching files and their parent note.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 6}},
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "read_attachment",
-        "description": "Read the full text of an uploaded attachment by its id (from search_attachments).",
-        "input_schema": {
-            "type": "object",
-            "properties": {"attachment_id": {"type": "integer"}},
-            "required": ["attachment_id"],
-        },
-    },
-    {
-        "name": "query_sql",
-        "description": "Run a READ-ONLY SQL query (SELECT/WITH only) over the brain's "
-                       "database for structured/aggregate questions. Returns rows as text.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"sql": {"type": "string"}, "limit": {"type": "integer", "default": 50}},
-            "required": ["sql"],
-        },
-    },
-    {
-        "name": "propose_actions",
-        "description": "Stage wiki changes for the user to confirm. Does NOT apply them.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "type": {"type": "string", "enum": ["CREATE", "UPDATE", "LINK"]},
-                            "title": {"type": "string", "description": "Note title (CREATE/UPDATE)"},
-                            "content": {"type": "string", "description": "Full markdown content (CREATE/UPDATE)"},
-                            "source_title": {"type": "string", "description": "LINK: note that links out"},
-                            "target_title": {"type": "string", "description": "LINK: note being linked to"},
-                            "summary": {"type": "string", "description": "Short human-readable description"},
-                        },
-                        "required": ["type", "summary"],
-                    },
-                }
-            },
-            "required": ["actions"],
-        },
-    },
-]
+def validate_agent_config(conn=None) -> list[str]:
+    """Flag drift: unknown tools in a mode, prompts naming unavailable tools, empty
+    descriptions / action prompts. Used at startup and in tests."""
+    warnings: list[str] = []
+    known = set(_TOOL_SCHEMAS)
+    for mode in ("assisted", "research"):
+        names = _mode_tool_names(mode)
+        for n in names:
+            if n not in known:
+                warnings.append(f"mode '{mode}' lists unknown tool '{n}'")
+        sysp = prompts.get(f"modes.{mode}.system", "")
+        for t in known:
+            if re.search(rf"\b{re.escape(t)}\b", sysp) and t not in names:
+                warnings.append(f"mode '{mode}' prompt mentions tool '{t}' not available in that mode")
+    for t in known:
+        if not prompts.get(f"tools.{t}", ""):
+            warnings.append(f"tool '{t}' has no description")
+    for a in ("daylog_summary", "generate_tags", "claude_synthesize", "wiki_synthesis"):
+        if not prompts.get(f"actions.{a}", ""):
+            warnings.append(f"action prompt 'actions.{a}' is missing")
+    return warnings
 
 
 # --- Tool implementations ---------------------------------------------------
@@ -391,14 +326,17 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     )
     conn.commit()
 
-    system = _system_prompt(settings.brain_name, mode)
+    system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
+    model = prompts.get("agent.model") or settings.anthropic_model
+    max_tokens = prompts.get_int("agent.max_tokens", _DEFAULT_MAX_TOKENS)
+    max_iterations = prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS)
     assistant_text_parts: list[str] = []
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for _ in range(max_iterations):
         async with client.messages.stream(
-            model=settings.anthropic_model,
-            max_tokens=2048,
+            model=model,
+            max_tokens=max_tokens,
             system=system,
             tools=tools,
             messages=messages,

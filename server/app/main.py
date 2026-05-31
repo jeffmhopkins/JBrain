@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n", flush=True)
 
     wf_svc.ingest_repo_workflows(get_conn())  # seed/update repo workflows
+
+    from .services import architect
+    for w in architect.validate_agent_config(get_conn()):
+        print(f"[agent] config warning: {w}", flush=True)
+
     task = asyncio.create_task(_scheduler_loop())
     try:
         yield

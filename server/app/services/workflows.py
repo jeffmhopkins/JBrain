@@ -152,7 +152,7 @@ def _action_claude_synthesize(conn, cfg: dict, workflow_id, context=None) -> str
     from . import embeddings
 
     target = cfg["target_title"]
-    prompt = cfg.get("prompt", "Summarise the following:")
+    prompt = cfg.get("prompt") or prompts.get("actions.claude_synthesize", DEFAULT_CLAUDE_PROMPT)
     gathered = ""
     if cfg.get("source_title"):
         row = notes_svc.get_by_title(conn, cfg["source_title"])
@@ -187,6 +187,14 @@ def _action_create_review_item(conn, cfg: dict, workflow_id, context=None) -> st
 
 
 DEFAULT_DAYLOG_PROMPT = "Summarise this day's log entries into a tight paragraph or a few bullets:"
+DEFAULT_CLAUDE_PROMPT = "Summarise the following:"
+_DEFAULT_WIKI_TEMPLATE = (
+    "You maintain a personal KNOWLEDGE BASE synthesized from raw entries. Fold the "
+    "NEW ENTRIES into topic notes (update existing, else create). Cite sources as "
+    "[[Entry Title]].{instructions}\n\nNEW ENTRIES:\n{entries}\n\nEXISTING KB NOTES:\n"
+    "{existing_kb}\n\nReturn ONLY a JSON array: "
+    '[{"op":"create"|"update","title":"Topic","content_md":"markdown with [[links]]"}].'
+)
 
 
 def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
@@ -268,21 +276,12 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
 
     entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
-    instructions = instructions or prompts.get("actions.wiki_synthesis", "")
-    extra = f"\n\nAdditional guidance:\n{instructions}" if instructions else ""
-    prompt = (
-        "You maintain a personal KNOWLEDGE BASE synthesized from raw journal/note "
-        "entries. Read the NEW ENTRIES and fold their durable knowledge into "
-        "topic notes. Update an existing KB note when the topic already exists; "
-        "otherwise create one. Cite the source entries inline as [[Entry Title]] "
-        "wiki-links, and cross-link related KB topics as [[KB Title]]."
-        f"{extra}\n\n"
-        f"NEW ENTRIES:\n{entries_text}\n\n"
-        f"EXISTING KB NOTES:\n{kb_text}\n\n"
-        "Return ONLY a JSON array (no prose) of actions:\n"
-        '[{"op":"create"|"update","title":"Topic","content_md":"full markdown '
-        'with [[links]] to sources"}]. For updates, return the FULL merged content.'
-    )
+    extra = f"\nAdditional guidance: {instructions}" if instructions else ""
+    template = prompts.get("actions.wiki_synthesis", _DEFAULT_WIKI_TEMPLATE)
+    prompt = (template
+              .replace("{instructions}", extra)
+              .replace("{entries}", entries_text)
+              .replace("{existing_kb}", kb_text))
     client = Anthropic(api_key=settings.anthropic_api_key)
     msg = client.messages.create(
         model=settings.anthropic_model, max_tokens=4096,

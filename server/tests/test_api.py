@@ -89,10 +89,32 @@ def test_query_sql_guard():
         sqlsafe.run_select(get_conn(), "DELETE FROM notes", 10)
 
 
-def test_prompts_yaml_loads():
-    from app.services import prompts
-    # Falls back gracefully; with the repo prompts.yaml present, research prompt resolves.
-    assert isinstance(prompts.get("architect.research", "x"), str)
+def test_agent_config_complete_and_valid(client):
+    from app.services import architect, prompts
+    # The shipped prompts.yaml is the full agent config.
+    assert prompts.get("modes.assisted.system") and prompts.get("modes.research.system")
+    assert prompts.get_list("modes.assisted.tools") and prompts.get_list("modes.research.tools")
+    assert prompts.get_int("agent.max_iterations", 0) > 0
+    for t in architect._TOOL_SCHEMAS:
+        assert prompts.get(f"tools.{t}"), f"missing description for tool {t}"
+    for a in ("daylog_summary", "generate_tags", "claude_synthesize", "wiki_synthesis"):
+        assert prompts.get(f"actions.{a}")
+    # No drift: tools referenced exist + are available where mentioned.
+    from app.db import get_conn
+    assert architect.validate_agent_config(get_conn()) == []
+
+
+def test_tool_descriptions_come_from_yaml():
+    from app.services import architect
+    tools = {t["name"]: t["description"] for t in architect._tools_for("assisted")}
+    assert tools["add_list_item"].startswith("Add an item to a checklist")
+
+
+def test_research_prompt_injects_live_tables(client):
+    from app.services import architect
+    from app.db import get_conn
+    sysp = architect._system_prompt("Demo", "research", get_conn())
+    assert "{tables}" not in sysp and "notes" in sysp  # placeholder replaced with real tables
 
 
 def test_prompt_editor_override_and_reset(client):

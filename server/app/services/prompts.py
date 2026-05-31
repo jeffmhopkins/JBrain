@@ -60,10 +60,34 @@ def _override(key: str) -> str | None:
         return None
 
 
+def _node(dotted_key: str):
+    """Raw node from the YAML (any type). Used for non-string config (lists/ints)."""
+    node = _load()
+    for part in dotted_key.split("."):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        else:
+            return None
+    return node
+
+
 def get(dotted_key: str, default: str = "") -> str:
-    """Effective prompt: DB override → prompts.yaml → code default."""
+    """Effective prompt string: DB override → prompts.yaml → code default."""
     ov = _override(dotted_key)
     return ov if ov is not None else _file_value(dotted_key, default)
+
+
+def get_list(dotted_key: str, default: list | None = None) -> list:
+    node = _node(dotted_key)
+    return node if isinstance(node, list) else (default or [])
+
+
+def get_int(dotted_key: str, default: int) -> int:
+    node = _node(dotted_key)
+    try:
+        return int(node)
+    except (TypeError, ValueError):
+        return default
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:

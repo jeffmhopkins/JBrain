@@ -46,7 +46,7 @@ export default function ActionsPage() {
     if (!editing) return;
     try {
       const r = await post("/api/action-defs/validate", { recipe_yaml: editing.recipe_yaml });
-      setEditing({ ...editing, recipe: r.recipe, warnings: r.warnings, error: "" });
+      setEditing({ ...editing, recipe: r.recipe ?? editing.recipe, warnings: r.warnings, error: "" });
     } catch (e: any) {
       setEditing({ ...editing, error: e.message });
     }

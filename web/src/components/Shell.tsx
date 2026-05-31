@@ -43,7 +43,6 @@ const GROUPS = [
   { to: "/browse", label: "Browse", icon: "wiki", match: ["/browse", "/wiki", "/graph", "/search", "/note"] },
   { to: "/flows", label: "Automate", icon: "flows", match: ["/flows"] },
   { to: "/sql", label: "Data", icon: "sql", match: ["/sql"] },
-  { to: "/review", label: "Review", icon: "bell", match: ["/review"] },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -52,7 +51,9 @@ export default function Shell({ children }: { children: ReactNode }) {
   const reviewCount = useReviewCount();
   const loc = useLocation();
   const nav = useNavigate();
-  const advanced = loc.pathname !== "/chat";
+  const capture = loc.pathname === "/chat";
+  const review = loc.pathname === "/review";
+  const advanced = !capture && !review;  // the grouped section pages
 
   return (
     <div className="ushell">
@@ -60,16 +61,19 @@ export default function Shell({ children }: { children: ReactNode }) {
         <span className="brand">{brainName}<span className="dot">.</span></span>
         <span className="spacer" />
         {advanced && <button className="ghost" style={{ padding: "4px 10px" }} onClick={disconnect}>Disconnect</button>}
-        {!advanced && reviewCount > 0 && (
+        {capture && reviewCount > 0 && (
           <button className="bolt review-bell" title={`${reviewCount} to review`} onClick={() => nav("/review")}>
             <Icon name="bell" size={20} />
             <span className="count-badge">{reviewCount}</span>
           </button>
         )}
-        <button className={"bolt" + (advanced ? " active" : "")} title="Advanced"
-                onClick={() => nav(advanced ? "/chat" : "/browse")}>
-          <Icon name="bolt" size={20} />
-        </button>
+        {review && <button className="ghost" style={{ padding: "4px 10px" }} onClick={() => nav("/chat")}>Done</button>}
+        {!review && (
+          <button className={"bolt" + (advanced ? " active" : "")} title="Advanced"
+                  onClick={() => nav(advanced ? "/chat" : "/browse")}>
+            <Icon name="bolt" size={20} />
+          </button>
+        )}
       </div>
 
       <UpdateBanner />

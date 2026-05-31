@@ -1,4 +1,4 @@
-"""The Chief Knowledge Architect: a Socratic Claude agent that grounds itself in
+"""The Chief Knowledge Architect: a Socratic LLM agent that grounds itself in
 your existing notes and proposes (never silently applies) wiki changes.
 
 Exposes an async generator that streams SSE-friendly event dicts to the chat

@@ -56,8 +56,8 @@ echo
 ask        JBRAIN_DOMAIN  "Public domain (A record must point at this VM)" "brain.example.com"
 ask        ACME_EMAIL     "Email for Let's Encrypt cert notices"
 ask        BRAIN_NAME     "Name for your brain"                            "My Brain"
-ask        ANTHROPIC_MODEL "Claude model"                                  "claude-sonnet-4-6"
-ask_secret ANTHROPIC_API_KEY "Anthropic Claude API key (hidden)"
+ask        LLM_MODEL      "LLM model"                                      "claude-sonnet-4-6"
+ask_secret LLM_API_KEY    "LLM API key (hidden)"
 echo
 ask        TZ             "Timezone"                                       "UTC"
 echo
@@ -77,8 +77,9 @@ umask 077
 cat > .env <<EOF
 JBRAIN_DOMAIN=$JBRAIN_DOMAIN
 ACME_EMAIL=$ACME_EMAIL
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-ANTHROPIC_MODEL=$ANTHROPIC_MODEL
+LLM_PROVIDER=anthropic
+LLM_API_KEY=$LLM_API_KEY
+LLM_MODEL=$LLM_MODEL
 BRAIN_NAME=$BRAIN_NAME
 JBRAIN_ACCESS_KEY=$JBRAIN_ACCESS_KEY
 EMBEDDING_MODEL=$EMBEDDING_MODEL

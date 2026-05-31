@@ -248,8 +248,9 @@ cd server && pytest
 
 ## Configuration
 
-All config is environment-driven (`.env`, see `.env.example`): `ANTHROPIC_API_KEY`,
-`ANTHROPIC_MODEL`, `BRAIN_NAME`, `JBRAIN_ACCESS_KEY`, `EMBEDDING_MODEL`,
+All config is environment-driven (`.env`, see `.env.example`): `LLM_PROVIDER`,
+`LLM_API_KEY`, `LLM_MODEL` (the legacy `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`
+still work), `BRAIN_NAME`, `JBRAIN_ACCESS_KEY`, `EMBEDDING_MODEL`,
 `JBRAIN_DOMAIN`, `DB_PATH`.
 
 ## Roadmap

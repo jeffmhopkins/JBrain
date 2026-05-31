@@ -42,7 +42,6 @@ function ReviewBell() {
     if (remaining.length === 0) setOpen(false);   // all cleared → hide the popup
   }
 
-  if (count === 0 && !open) return null;
   return (
     <div className="review-wrap" ref={ref}>
       <button className={"bolt review-bell" + (open ? " active" : "")} title={`${count} to review`} onClick={toggle}>
@@ -134,7 +133,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           <span className="brand">{brainName}<span className="dot">.</span></span>
         )}
         <span className="spacer" />
-        {capture && <ReviewBell />}
+        <ReviewBell />
         {review && <button className="ghost" style={{ padding: "4px 10px" }} onClick={() => nav("/chat")}>Done</button>}
         {!review && (
           <button className={"bolt" + (advanced ? " active" : "")} title={advanced ? "Back to compose" : "Advanced"}

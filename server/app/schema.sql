@@ -150,6 +150,20 @@ CREATE TABLE IF NOT EXISTS workflows (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Review items: workflow-posted (or manual) cards surfaced in the PWA Review
+-- inbox — a title, a message, an optional link to an entry, and a dismiss.
+CREATE TABLE IF NOT EXISTS review_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id  INTEGER REFERENCES workflows(id) ON DELETE SET NULL,
+  title        TEXT NOT NULL,
+  message      TEXT,
+  link_slug    TEXT,                                -- note slug to open, if any
+  status       TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'dismissed'
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  dismissed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_review_status ON review_items(status);
+
 -- Audit log of workflow executions.
 CREATE TABLE IF NOT EXISTS workflow_runs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

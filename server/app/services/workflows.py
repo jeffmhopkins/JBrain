@@ -20,6 +20,7 @@ import yaml
 
 from ..config import get_settings
 from . import notes as notes_svc
+from . import reviews as reviews_svc
 
 _TODAY = lambda: __import__("datetime").date.today().isoformat()
 
@@ -101,8 +102,28 @@ def ingest_repo_workflows(conn) -> int:
 
 
 # --- Actions ----------------------------------------------------------------
+# All actions share the signature (conn, cfg, workflow_id, context).
 
-def _action_append_to_note(conn, cfg: dict) -> str:
+def _slug_for(conn, title: str | None) -> str | None:
+    if not title:
+        return None
+    n = notes_svc.get_by_title(conn, title)
+    return n["slug"] if n else None
+
+
+def _maybe_review(conn, cfg: dict, workflow_id, default_title: str, link_slug: str | None) -> str:
+    """If the action config has a `review` block, post a Review item linking to
+    the written entry. Optional — not every workflow uses it."""
+    rev = cfg.get("review")
+    if not rev:
+        return ""
+    title = (rev.get("title") or default_title).replace("{date}", _TODAY())
+    message = (rev.get("message") or "").replace("{date}", _TODAY())
+    reviews_svc.create_review_item(conn, workflow_id, title, message, link_slug)
+    return " (+review)"
+
+
+def _action_append_to_note(conn, cfg: dict, workflow_id, context=None) -> str:
     title = cfg["title"]
     text = (cfg.get("text") or "").replace("{date}", _TODAY())
     note = notes_svc.get_by_title(conn, title)
@@ -111,10 +132,10 @@ def _action_append_to_note(conn, cfg: dict) -> str:
         conn, title, body.rstrip() + "\n" + text + "\n",
         source="workflow", version_note="workflow append",
     )
-    return f"appended to '{title}'"
+    return f"appended to '{title}'" + _maybe_review(conn, cfg, workflow_id, f"Review: {title}", _slug_for(conn, title))
 
 
-def _action_claude_synthesize(conn, cfg: dict, context: dict | None) -> str:
+def _action_claude_synthesize(conn, cfg: dict, workflow_id, context=None) -> str:
     """Gather context, run a Claude prompt, write the result. (Foundation for the
     day-log summariser.) Requires an Anthropic key."""
     settings = get_settings()
@@ -148,12 +169,21 @@ def _action_claude_synthesize(conn, cfg: dict, context: dict | None) -> str:
     if cfg.get("mode") == "append" and note:
         result = note["content_md"].rstrip() + "\n\n" + result
     notes_svc.upsert_note(conn, target, result, source="workflow", version_note="workflow synthesis")
-    return f"synthesised into '{target}'"
+    return f"synthesised into '{target}'" + _maybe_review(conn, cfg, workflow_id, f"Review: {target}", _slug_for(conn, target))
+
+
+def _action_create_review_item(conn, cfg: dict, workflow_id, context=None) -> str:
+    link_slug = _slug_for(conn, cfg.get("link_title"))
+    title = (cfg["title"]).replace("{date}", _TODAY())
+    message = (cfg.get("message") or "").replace("{date}", _TODAY())
+    reviews_svc.create_review_item(conn, workflow_id, title, message, link_slug)
+    return "created review item"
 
 
 _ACTIONS = {
     "append_to_note": _action_append_to_note,
-    "claude_synthesize": lambda conn, cfg, ctx=None: _action_claude_synthesize(conn, cfg, ctx),
+    "claude_synthesize": _action_claude_synthesize,
+    "create_review_item": _action_create_review_item,
 }
 
 
@@ -173,7 +203,7 @@ def run_workflow(conn, wf, context: dict | None = None) -> tuple[str, str]:
         if action is None:
             status, detail = "error", f"unknown action '{wf['action_type']}'"
         else:
-            detail = action(conn, cfg, context) if wf["action_type"] == "claude_synthesize" else action(conn, cfg)
+            detail = action(conn, cfg, wf["id"], context)
             status = "ok"
     except Exception as exc:  # noqa: BLE001 — record any failure, never crash a trigger
         status, detail = "error", str(exc)

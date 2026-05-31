@@ -10,6 +10,7 @@ import GraphPage from "./pages/GraphPage";
 import SearchPage from "./pages/SearchPage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
+import ReviewPage from "./pages/ReviewPage";
 
 interface AuthState {
   authenticated: boolean;
@@ -72,6 +73,7 @@ export default function App() {
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/flows" element={<WorkflowsPage />} />
+            <Route path="/review" element={<ReviewPage />} />
             <Route path="/sql" element={<SqlConsole />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>

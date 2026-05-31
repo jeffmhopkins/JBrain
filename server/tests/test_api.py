@@ -303,3 +303,35 @@ def test_workflow_crud_via_api(client):
 
     assert len(client.get(f"/api/workflows/{wid}/runs").json()) >= 1
     assert client.delete(f"/api/workflows/{wid}").status_code == 200
+
+
+def test_workflow_creates_review_item_and_dismiss(client):
+    client.post("/api/notes", json={"title": "Daily Summary", "content_md": "today"})
+    # A create_review_item action linking to the entry.
+    wf = client.post("/api/workflows", json={
+        "name": "Daily review", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "create_review_item",
+        "action_config": {"title": "Review your day", "message": "Summary ready", "link_title": "Daily Summary"},
+        "enabled": True,
+    }).json()
+    client.post(f"/api/workflows/{wf['id']}/run")
+
+    assert client.get("/api/reviews/count").json()["pending"] == 1
+    items = client.get("/api/reviews").json()
+    assert items[0]["title"] == "Review your day"
+    assert items[0]["link_slug"] == "daily-summary"
+
+    client.post(f"/api/reviews/{items[0]['id']}/dismiss")
+    assert client.get("/api/reviews/count").json()["pending"] == 0
+
+
+def test_append_action_with_review_block(client):
+    wf = client.post("/api/workflows", json={
+        "name": "Append+review", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "append_to_note",
+        "action_config": {"title": "Journal", "text": "entry", "review": {"title": "Check journal"}},
+        "enabled": True,
+    }).json()
+    client.post(f"/api/workflows/{wf['id']}/run")
+    items = client.get("/api/reviews").json()
+    assert any(i["title"] == "Check journal" and i["link_slug"] == "journal" for i in items)

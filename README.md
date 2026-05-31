@@ -37,6 +37,9 @@ and a graph.
 - **Workflows** — trigger→action automations (event or scheduled), defined as
   repo YAML (`workflows/`), ingested into the DB on boot, and editable in the PWA.
   Runs are logged; writes are versioned and attributed `source='workflow'`.
+- **Review inbox** — workflows can post **review items** (title, message, link to
+  an entry, dismiss) surfaced in a PWA **Review** tab with a count badge — e.g.
+  daily-review messages — for easy visibility of what automations produced.
 
 ## Authentication
 

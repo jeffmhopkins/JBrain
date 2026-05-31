@@ -17,6 +17,7 @@ from .routers import (
     chat,
     graph,
     notes,
+    reviews,
     search,
     sql_console,
     staging,
@@ -67,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews):
     app.include_router(r.router)
 
 

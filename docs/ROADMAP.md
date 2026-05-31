@@ -91,6 +91,10 @@ and **interval schedule** triggers (background scheduler loop); actions
 `append_to_note` and `claude_synthesize`; a `/api/workflows` CRUD + run + history
 API; and a **Workflows** page in the PWA. All workflow writes funnel through
 `upsert_note` (versioned, attributed `source='workflow'`) and every run is logged.
+Also shipped: a **Review inbox** — workflows can post review items (title,
+message, link to an entry, dismiss) via the `create_review_item` action or an
+optional `review:` block on any action; surfaced in a PWA **Review** tab with a
+live count badge (`/api/reviews`).
 
 Still to do: **cron** schedules (v1 is interval-only — `croniter`), a richer/safer
 PWA editor (validation, dry-run), more event types (`note_saved`, `inbox_added`),

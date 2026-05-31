@@ -1,7 +1,19 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../App";
+import { get } from "../api";
 import { useIsDesktop, useOnline } from "../hooks";
+
+function useReviewCount(): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const tick = () => get("/api/reviews/count").then((r) => setN(r.pending)).catch(() => {});
+    tick();
+    const id = setInterval(tick, 60000);
+    return () => clearInterval(id);
+  }, []);
+  return n;
+}
 
 const NAV = [
   { to: "/chat", label: "Chat", ico: "💬" },
@@ -16,6 +28,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   const isDesktop = useIsDesktop();
   const online = useOnline();
   const { brainName, disconnect } = useAuth();
+  const reviewCount = useReviewCount();
 
   if (isDesktop) {
     return (
@@ -28,6 +41,10 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <span className="ico">{n.ico}</span> {n.label}
               </NavLink>
             ))}
+            <NavLink to="/review" className={({ isActive }) => (isActive ? "active" : "")}>
+              <span className="ico">🔔</span> Review
+              {reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
+            </NavLink>
           </nav>
           <div style={{ marginTop: "auto", paddingTop: 16 }}>
             <button className="ghost" style={{ width: "100%" }} onClick={disconnect}>Disconnect</button>
@@ -46,7 +63,12 @@ export default function Shell({ children }: { children: ReactNode }) {
       <div className="main has-tabbar" style={{ width: "100%" }}>
         <div className="topbar">
           <strong>{brainName}</strong>
-          <button className="ghost" onClick={disconnect}>Disconnect</button>
+          <div className="row" style={{ gap: 8 }}>
+            <NavLink to="/review" className="bell">
+              🔔{reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
+            </NavLink>
+            <button className="ghost" onClick={disconnect}>Disconnect</button>
+          </div>
         </div>
         {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
         {children}

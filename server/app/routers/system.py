@@ -192,4 +192,10 @@ async def restore(file: UploadFile = File(...)):
         os.path.exists(tmp.name) and os.unlink(tmp.name)
     # Keep the configured access key valid even if the backup carried a different one.
     ensure_access_key()
+    # Re-seed repo workflows + action recipes so the engine doesn't run a stale
+    # (or empty) recipe set carried in from an older backup.
+    from ..db import get_conn
+    from ..services import pipeline, workflows as wf_svc
+    wf_svc.ingest_repo_workflows(get_conn())
+    pipeline.ingest_repo_action_defs(get_conn())
     return {"ok": True, "message": "Database restored."}

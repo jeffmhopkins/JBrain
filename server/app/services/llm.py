@@ -24,6 +24,10 @@ from ..config import get_settings
 # provider-owned elements appended via the provider — the app never inspects them.
 Message = dict[str, Any]
 
+# Cap how long a single LLM request can block (a hung provider must not freeze a
+# scheduled workflow / the request handling it).
+_LLM_TIMEOUT = 120.0
+
 
 @dataclass
 class ToolDef:
@@ -99,7 +103,7 @@ class AnthropicProvider:
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
         from anthropic import Anthropic
 
-        client = Anthropic(api_key=get_settings().llm_api_key)
+        client = Anthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
         kwargs: dict = {"model": model or self.default_model(), "max_tokens": max_tokens, "messages": messages}
         if system:
             kwargs["system"] = system
@@ -109,7 +113,7 @@ class AnthropicProvider:
     async def stream_turn(self, messages, *, system, tools, model, max_tokens):
         from anthropic import AsyncAnthropic
 
-        client = AsyncAnthropic(api_key=get_settings().llm_api_key)
+        client = AsyncAnthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
         wire_tools = [
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}
             for t in tools

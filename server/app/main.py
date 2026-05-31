@@ -35,11 +35,13 @@ SCHEDULER_INTERVAL_SECONDS = 60
 
 
 async def _scheduler_loop():
-    """Poll for due scheduled workflows. Errors are swallowed per-iteration."""
+    """Poll for due scheduled workflows. Runs in a worker THREAD so a slow/blocking
+    LLM call inside an action can't freeze the event loop (and all HTTP traffic).
+    Errors are swallowed per-iteration."""
     while True:
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
         try:
-            wf_svc.run_due_scheduled(get_conn())
+            await asyncio.to_thread(lambda: wf_svc.run_due_scheduled(get_conn()))
         except Exception:  # noqa: BLE001 — never let the loop die
             pass
 

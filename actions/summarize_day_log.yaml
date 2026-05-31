@@ -35,11 +35,13 @@ steps:
           title: "{{ config.summary_title | default(config.log_title ~ ' — Daily Summaries') }}"
           text: "\n## {{ item.date }}\n\n{{ s }}"
           mode: append
-
-  - do: set_meta
-    with:
-      key: "{{ pending.watermark_key }}"
-      value: "{{ pending.last_date }}"
+      # Advance the watermark per-day, right after each day's summary is written.
+      # If a later day's LLM call fails, the already-done days stay summarised and
+      # are not reprocessed on retry (no duplicate sections).
+      - do: set_meta
+        with:
+          key: "{{ pending.watermark_key }}"
+          value: "{{ item.date }}"
 
   - do: create_review
     when: "{{ config.review != false }}"

@@ -136,10 +136,22 @@ are on Docker named volumes and your `.env` (access key, API keys) is untouched 
 only code is replaced, and schema changes are applied by the migration runner on
 boot.
 
-- Manual: `./update.sh` (optionally `./update.sh v0.2.0`) on the host.
-- From the PWA: set `JBRAIN_UPDATE_CMD` (run in the api container) so the
-  **Update** button runs your updater, or wire a host watcher to the
-  `data/update-requested.json` marker the server writes.
+**Fully automatic (recommended):** enable the updater sidecar — answer "yes" to
+automatic updates in `install.sh`, or set `COMPOSE_PROFILES=autoupdate` in `.env`
+and `docker compose up -d`. Then tapping **Update** in the PWA is end-to-end: the
+server writes an update request, the `updater` container pulls the latest release,
+rebuilds the `api` image, and restarts it (Caddy and the updater keep running).
+The updater needs the Docker socket and the project directory — that's the
+trade-off for hands-off updates.
+
+**Manual alternatives** (if you don't enable the updater):
+- Run `./update.sh` (optionally `./update.sh v0.2.0`) on the host.
+- Or set `JBRAIN_UPDATE_CMD` so the **Update** button runs it in the api
+  container, or wire your own host watcher to the `data/update-requested.json`
+  marker the server writes.
+
+> Keep `COMPOSE_PROJECT_NAME` stable (set by `install.sh`) so the updater targets
+> the same stack you launched.
 
 Workflows can be turned on/off, edited, and **re-synced from the repo** anytime
 (Workflows → *Sync from repo*); a workflow you edited shows *Reset to repo* to

@@ -17,28 +17,29 @@ function useReviewCount(): number {
 
 function UpdateBanner() {
   const [info, setInfo] = useState<any>(null);
-  const [state, setState] = useState<"idle" | "updating" | "scheduled">("idle");
+  const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
     get("/api/system/version").then(setInfo).catch(() => {});
   }, []);
 
   async function doUpdate() {
+    setMsg("Requesting update…");
     const r = await post("/api/system/update");
-    setState(r.started ? "updating" : "scheduled");
+    setMsg(r.message || (r.started ? "Updating… the server will restart shortly." : "Update requested."));
   }
 
   if (!info?.update_available) return null;
   return (
     <div className="update-banner">
-      {state === "idle" && (
+      {msg ? (
+        <span>{msg}</span>
+      ) : (
         <>
           <span>Update available: {info.current} → {info.latest}</span>
           {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
           <button className="primary" style={{ padding: "4px 12px" }} onClick={doUpdate}>Update</button>
         </>
       )}
-      {state === "updating" && <span>Updating… the server will restart shortly.</span>}
-      {state === "scheduled" && <span>Update requested — run ./update.sh on the host to finish.</span>}
     </div>
   );
 }

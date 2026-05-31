@@ -60,6 +60,12 @@ ask        ANTHROPIC_MODEL "Claude model"                                  "clau
 ask_secret ANTHROPIC_API_KEY "Anthropic Claude API key (hidden)"
 echo
 ask        TZ             "Timezone"                                       "UTC"
+echo
+echo "Automatic updates run an 'updater' sidecar that applies updates you trigger"
+echo "from the app — it mounts the Docker socket and the project directory."
+read -r -p "Enable automatic updates? [y/N] " autoupd
+COMPOSE_PROFILES=""
+[[ "${autoupd,,}" == "y" ]] && COMPOSE_PROFILES="autoupdate"
 
 # The pasteable access key (the "cert"). Generated here; you paste it into the
 # app (and watch) on first run. Treat it like a password.
@@ -78,6 +84,8 @@ JBRAIN_ACCESS_KEY=$JBRAIN_ACCESS_KEY
 EMBEDDING_MODEL=$EMBEDDING_MODEL
 DB_PATH=/data/brain.db
 TZ=$TZ
+COMPOSE_PROJECT_NAME=jbrain
+COMPOSE_PROFILES=$COMPOSE_PROFILES
 EOF
 info "Wrote .env (permissions 600)."
 

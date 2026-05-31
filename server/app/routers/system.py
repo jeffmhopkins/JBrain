@@ -81,8 +81,16 @@ def update():
         }))
     except OSError:
         pass
+
+    auto = "autoupdate" in os.environ.get("COMPOSE_PROFILES", "")
     return {
         "scheduled": True,
-        "message": "Update requested. Run ./update.sh on the host, or set "
-                   "JBRAIN_UPDATE_CMD to automate it.",
+        "auto": auto,
+        "message": (
+            "Update requested — the auto-updater will apply it within ~30s and "
+            "restart the server."
+            if auto else
+            "Update requested. Run ./update.sh on the host (or enable the "
+            "auto-updater / set JBRAIN_UPDATE_CMD) to finish."
+        ),
     }

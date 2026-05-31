@@ -33,6 +33,22 @@ services:
       - caddy-data:/data
       - caddy-config:/config
 
+  # Optional auto-updater. Enabled via COMPOSE_PROFILES=autoupdate in .env.
+  # Applies updates requested from the PWA without any host intervention.
+  # Trade-off: it mounts the Docker socket and the project directory.
+  updater:
+    image: docker:27-cli
+    profiles: ["autoupdate"]
+    restart: unless-stopped
+    working_dir: /repo
+    command: sh /repo/updater/run.sh
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-jbrain}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/repo
+      - brain-data:/data
+
 volumes:
   brain-data:
   caddy-data:

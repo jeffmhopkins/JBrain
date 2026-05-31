@@ -15,6 +15,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      injectRegister: false,   // we register manually (main.tsx) to poll for updates
       includeAssets: ["icon.svg"],
       manifest: {
         name: "JBrain",
@@ -29,6 +30,11 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Activate a new version immediately and drop old caches, so a deploy
+        // is picked up on the next load rather than after a second visit.
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
         navigateFallback: base + "index.html",
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [

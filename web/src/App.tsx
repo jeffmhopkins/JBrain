@@ -114,7 +114,7 @@ export default function App() {
             <Route path="/note/:slug" element={<NotePage />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />
-            <Route path="/prompts" element={<div className="content"><PromptsPanel /></div>} />
+            <Route path="/prompts" element={<PromptsPanel />} />
             <Route path="/actions" element={<ActionsPage />} />
             <Route path="/flows" element={<WorkflowsPage />} />
             <Route path="/system" element={<SystemPage />} />

@@ -30,26 +30,47 @@ GITHUB_REPO = "jeffmhopkins/jbrain"
 _cache: dict = {"ts": 0.0, "data": None}
 
 
-def _latest_release() -> dict | None:
-    """Fetch the latest GitHub release, cached for an hour. None on any failure."""
-    if time.time() - _cache["ts"] < 3600 and _cache["data"] is not None:
-        return _cache["data"]
-    try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            headers={"User-Agent": "jbrain", "Accept": "application/vnd.github+json"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as r:
-            j = json.load(r)
-        data = {"tag": j.get("tag_name"), "url": j.get("html_url"), "name": j.get("name")}
-    except Exception:
-        data = None
-    _cache.update(ts=time.time(), data=data)
-    return data
+def _http_json(path: str):
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{GITHUB_REPO}{path}",
+        headers={"User-Agent": "jbrain", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
 
 
 def _parse(v: str | None) -> tuple:
     return tuple(int(x) for x in re.findall(r"\d+", v)) if v else ()
+
+
+def _fetch_latest() -> dict | None:
+    # Prefer a published Release…
+    try:
+        j = _http_json("/releases/latest")
+        if j.get("tag_name"):
+            return {"tag": j["tag_name"], "url": j.get("html_url"), "name": j.get("name")}
+    except Exception:
+        pass
+    # …otherwise fall back to the newest git tag (so a pushed tag is enough).
+    try:
+        tags = _http_json("/tags?per_page=100")
+        names = [t["name"] for t in tags if t.get("name")]
+        if names:
+            top = max(names, key=_parse)
+            return {"tag": top, "name": top,
+                    "url": f"https://github.com/{GITHUB_REPO}/releases/tag/{top}"}
+    except Exception:
+        pass
+    return None
+
+
+def _latest_release() -> dict | None:
+    """Latest release tag (or newest git tag), cached for an hour. None on failure."""
+    if time.time() - _cache["ts"] < 3600 and _cache["data"] is not None:
+        return _cache["data"]
+    data = _fetch_latest()
+    _cache.update(ts=time.time(), data=data)
+    return data
 
 
 @router.get("/version")

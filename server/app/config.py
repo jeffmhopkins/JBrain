@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
-    admin_username: str = "admin"
-    admin_password: str = "change-me-please"
-    session_secret: str = "dev-insecure-secret-change-me"
+    # The pasteable access key (the "cert"). If set, it is authoritative and
+    # seeded/rotated into the DB on boot. If empty, the server generates one on
+    # first run and reveals it once (logs + /data/access-key.txt).
+    jbrain_access_key: str = ""
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     db_path: str = "/data/brain.db"

@@ -14,7 +14,7 @@ const NAV = [
 export default function Shell({ children }: { children: ReactNode }) {
   const isDesktop = useIsDesktop();
   const online = useOnline();
-  const { brainName, username, logout } = useAuth();
+  const { brainName, disconnect } = useAuth();
 
   if (isDesktop) {
     return (
@@ -29,10 +29,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div style={{ marginTop: "auto", paddingTop: 16 }}>
-            <div className="muted" style={{ padding: "0 12px 8px", fontSize: 13 }}>
-              {username}
-            </div>
-            <button className="ghost" style={{ width: "100%" }} onClick={logout}>Log out</button>
+            <button className="ghost" style={{ width: "100%" }} onClick={disconnect}>Disconnect</button>
           </div>
         </aside>
         <div className="main">
@@ -48,7 +45,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <div className="main has-tabbar" style={{ width: "100%" }}>
         <div className="topbar">
           <strong>{brainName}</strong>
-          <button className="ghost" onClick={logout}>Log out</button>
+          <button className="ghost" onClick={disconnect}>Disconnect</button>
         </div>
         {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
         {children}

@@ -1,4 +1,4 @@
-"""Integration tests for notes, wiki-links, backlinks, staging, and auth.
+"""Integration tests for access-key auth, notes, wiki-links, and staging.
 
 Embedding calls are monkeypatched so the suite runs without downloading the
 local model. Skipped automatically if native deps aren't installed.
@@ -12,23 +12,21 @@ pytest.importorskip("sqlite_vec")
 pytest.importorskip("fastapi")
 pytest.importorskip("anthropic")
 
+TEST_KEY = "test-access-key-1234567890"
+
 
 @pytest.fixture()
 def client(monkeypatch):
-    # Isolated temp DB + known admin creds before anything imports settings.
     tmp = tempfile.mkdtemp()
     os.environ.update(
         DB_PATH=os.path.join(tmp, "test.db"),
-        ADMIN_USERNAME="admin",
-        ADMIN_PASSWORD="secret",
-        SESSION_SECRET="test-secret",
+        JBRAIN_ACCESS_KEY=TEST_KEY,
         BRAIN_NAME="Test Brain",
         JBRAIN_DOMAIN="localhost",
     )
     from app.config import get_settings
     get_settings.cache_clear()
 
-    # Neutralise the embedding model (no network / no heavy download).
     from app.services import embeddings
     monkeypatch.setattr(embeddings, "upsert_note_embedding", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "delete_note_embedding", lambda *a, **k: None)
@@ -39,23 +37,39 @@ def client(monkeypatch):
     db._local.__dict__.clear()
     db.init_db()
 
+    from app import auth
+    auth.ensure_access_key()  # seed the key hash from the env
+
     from fastapi.testclient import TestClient
     from app.main import app
 
-    c = TestClient(app)
-    c.post("/api/auth/login", json={"username": "admin", "password": "secret"})
-    return c
+    return TestClient(app, headers={"Authorization": f"Bearer {TEST_KEY}"})
 
 
-def test_health(client):
-    assert client.get("/api/health").json()["ok"] is True
+def test_health_is_public(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    anon = TestClient(app)
+    assert anon.get("/api/health").json()["ok"] is True
+    assert anon.get("/api/auth/info").json()["brain_name"] == "Test Brain"
 
 
-def test_requires_auth():
+def test_rejects_missing_key():
     from fastapi.testclient import TestClient
     from app.main import app
     anon = TestClient(app)
     assert anon.get("/api/notes").status_code == 401
+
+
+def test_rejects_wrong_key():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    bad = TestClient(app, headers={"Authorization": "Bearer nope"})
+    assert bad.get("/api/notes").status_code == 401
+
+
+def test_verify_with_valid_key(client):
+    assert client.get("/api/auth/verify").json()["ok"] is True
 
 
 def test_create_note_and_backlinks(client):
@@ -64,7 +78,6 @@ def test_create_note_and_backlinks(client):
 
     beta = client.get("/api/notes/beta").json()
     assert beta["title"] == "Beta"
-    # Alpha links to Beta -> Beta should show Alpha as a backlink.
     assert any(b["title"] == "Alpha" for b in beta["backlinks"])
 
 
@@ -76,18 +89,13 @@ def test_versioning_on_update(client):
 
 
 def test_sql_console_rejects_writes(client):
-    bad = client.post("/api/sql", json={"sql": "DELETE FROM notes"})
-    assert bad.status_code == 400
-    ok = client.post("/api/sql", json={"sql": "SELECT count(*) FROM notes"})
-    assert ok.status_code == 200
+    assert client.post("/api/sql", json={"sql": "DELETE FROM notes"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT count(*) FROM notes"}).status_code == 200
 
 
 def test_staging_apply(client):
-    conn_resp = client.post("/api/sql", json={"sql": "SELECT 1"})
-    assert conn_resp.status_code == 200
-    # Manually stage a CREATE (mimicking the architect) via a direct insert path:
-    from app.db import get_conn
     import json as _json
+    from app.db import get_conn
     conn = get_conn()
     conn.execute(
         "INSERT INTO staging_actions (type, payload_json) VALUES ('CREATE', ?)",
@@ -97,8 +105,5 @@ def test_staging_apply(client):
 
     pending = client.get("/api/staging").json()
     assert len(pending) == 1
-    action_id = pending[0]["id"]
-
-    client.post(f"/api/staging/{action_id}/apply")
-    note = client.get("/api/notes/staged").json()
-    assert note["title"] == "Staged"
+    client.post(f"/api/staging/{pending[0]['id']}/apply")
+    assert client.get("/api/notes/staged").json()["title"] == "Staged"

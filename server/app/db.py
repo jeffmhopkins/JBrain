@@ -5,7 +5,6 @@ import threading
 from pathlib import Path
 
 import sqlite_vec
-from argon2 import PasswordHasher
 
 from .config import get_settings
 
@@ -13,7 +12,6 @@ _local = threading.local()
 _init_lock = threading.Lock()
 _initialized = False
 
-ph = PasswordHasher()
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
@@ -61,23 +59,15 @@ def init_db() -> None:
         )
 
         settings = get_settings()
-        _set_meta(conn, "brain_name", settings.brain_name)
-        _set_meta(conn, "embedding_dim", str(dim))
-        _set_meta(conn, "schema_version", "1")
-
-        # Seed the single admin user if none exists.
-        row = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
-        if row["c"] == 0 and settings.admin_username:
-            conn.execute(
-                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                (settings.admin_username, ph.hash(settings.admin_password)),
-            )
+        set_meta(conn, "brain_name", settings.brain_name)
+        set_meta(conn, "embedding_dim", str(dim))
+        set_meta(conn, "schema_version", "2")
 
         conn.commit()
         _initialized = True
 
 
-def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

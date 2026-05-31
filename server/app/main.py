@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.sessions import SessionMiddleware
 
+from .auth import ensure_access_key
 from .config import get_settings
 from .db import init_db
 from .routers import (
@@ -26,18 +26,24 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    generated = ensure_access_key()
+    if generated:
+        # No key was configured; reveal the generated one once so it can be
+        # pasted into the PWA/watch. Also persisted to /data for retrieval.
+        try:
+            with open("/data/access-key.txt", "w") as fh:
+                fh.write(generated + "\n")
+        except OSError:
+            pass
+        print("\n" + "=" * 60, flush=True)
+        print("JBrain generated an access key (paste this into the app):", flush=True)
+        print(f"    {generated}", flush=True)
+        print("Saved to /data/access-key.txt", flush=True)
+        print("=" * 60 + "\n", flush=True)
     yield
 
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
-
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.session_secret,
-    same_site="lax",
-    https_only=settings.jbrain_domain not in ("localhost", "127.0.0.1", ""),
-    max_age=60 * 60 * 24 * 30,  # 30 days
-)
 
 for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture):
     app.include_router(r.router)

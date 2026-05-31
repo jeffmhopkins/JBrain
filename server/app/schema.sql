@@ -6,13 +6,6 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  username      TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS notes (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   title      TEXT UNIQUE NOT NULL,

@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { get, post } from "./api";
+import { clearAccessKey, get, getAccessKey, setAccessKey } from "./api";
 import Shell from "./components/Shell";
-import Login from "./pages/Login";
+import KeyEntry from "./pages/KeyEntry";
 import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
 import NotePage from "./pages/NotePage";
@@ -12,10 +12,9 @@ import SqlConsole from "./pages/SqlConsole";
 
 interface AuthState {
   authenticated: boolean;
-  username?: string;
   brainName: string;
-  refresh: () => Promise<void>;
-  logout: () => Promise<void>;
+  connect: (key: string) => Promise<void>;
+  disconnect: () => void;
 }
 
 const AuthCtx = createContext<AuthState>(null!);
@@ -24,33 +23,44 @@ export const useAuth = () => useContext(AuthCtx);
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [authed, setAuthed] = useState(false);
-  const [username, setUsername] = useState<string>();
   const [brainName, setBrainName] = useState("JBrain");
 
-  async function refresh() {
-    const me = await get("/api/auth/me");
-    setAuthed(me.authenticated);
-    setUsername(me.username);
-    setBrainName(me.brain_name || "JBrain");
+  // Validate a key against the server (throws on invalid).
+  async function connect(key: string) {
+    setAccessKey(key);
+    await get("/api/auth/verify"); // 401 -> throws ApiError
+    setAuthed(true);
   }
 
-  async function logout() {
-    await post("/api/auth/logout");
+  function disconnect() {
+    clearAccessKey();
     setAuthed(false);
   }
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false));
+    // Brain name for the key-entry screen (public endpoint).
+    get("/api/auth/info").then((i) => setBrainName(i.brain_name || "JBrain")).catch(() => {});
+
+    // If a key is already stored, verify it silently.
+    const stored = getAccessKey();
+    if (stored) {
+      get("/api/auth/verify")
+        .then(() => setAuthed(true))
+        .catch(() => clearAccessKey())
+        .finally(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
   }, []);
 
   if (loading) return <div className="content muted">Loading…</div>;
 
-  const auth: AuthState = { authenticated: authed, username, brainName, refresh, logout };
+  const auth: AuthState = { authenticated: authed, brainName, connect, disconnect };
 
   return (
     <AuthCtx.Provider value={auth}>
       {!authed ? (
-        <Login />
+        <KeyEntry />
       ) : (
         <Shell>
           <Routes>

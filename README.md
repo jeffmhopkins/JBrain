@@ -28,6 +28,23 @@ and a graph.
 - **Quick-capture inbox** — a tiny `/api/capture` endpoint so a phone shortcut
   or a Wear OS tile can dictate thoughts the architect folds in later.
 
+## Authentication
+
+There are no usernames or passwords. A single high-entropy **access key** (the
+"cert") is the only credential:
+
+- It's generated at install (or by the server on first run, printed to the logs
+  and saved to `/data/access-key.txt`).
+- You **paste it once** into the PWA on first run; it's stored on that device and
+  sent as `Authorization: Bearer <key>` over HTTPS with every request. The watch
+  uses the same key.
+- The server stores only a SHA-256 hash and compares in constant time.
+- **Rotate** the key by editing `JBRAIN_ACCESS_KEY` in `.env` and restarting; old
+  devices simply re-paste the new key.
+
+Transport is already encrypted by Caddy's TLS, so the key authenticates each
+call rather than adding a second encryption layer.
+
 ## Architecture
 
 ```
@@ -55,11 +72,12 @@ git clone <your-fork-url> JBrain && cd JBrain
 ./install.sh
 ```
 
-The installer asks for your domain, Anthropic API key, brain name, admin
-login/password, and timezone, then writes `.env` + `Caddyfile` and offers to
-start everything. When it's up:
+The installer asks for your domain, Anthropic API key, brain name, and
+timezone, generates a high-entropy **access key** (printed at the end — save
+it), then writes `.env` + `Caddyfile` and offers to start everything. When it's
+up:
 
-1. Open `https://<your-domain>` and log in as the admin you created.
+1. Open `https://<your-domain>` and **paste your access key** to connect.
 2. Use the browser's **Install app** / **Add to Home Screen** to install the PWA.
 3. Go to **Chat** and start talking. When the architect proposes a
    **Staging area**, tap **Apply** to write notes.
@@ -102,10 +120,20 @@ docker compose restart api
 ## Dictate from a watch / phone shortcut
 
 Wear OS can't run the PWA, so capture goes through `POST /api/capture` with a
-JSON body `{"content": "..."}` (session-authenticated). Wire it up with a phone
-shortcut, a share-sheet target, or a Wear tile via Tasker/AutoWear. Captures land
-in an inbox the architect reviews in your next chat. A polished native Wear OS
-app is a planned v2 add-on.
+JSON body `{"content": "..."}` and the same access key as a header:
+
+```
+POST https://<your-domain>/api/capture
+Authorization: Bearer <your-access-key>
+Content-Type: application/json
+
+{"content": "remember to follow up on the budget idea"}
+```
+
+Wire it up with a phone shortcut, a share-sheet target, or a Wear tile via
+Tasker/AutoWear (add a static `Authorization` header). Captures land in an inbox
+the architect reviews in your next chat. A polished native Wear OS app is a
+planned v2 add-on.
 
 ## Development
 
@@ -121,8 +149,8 @@ cd server && pytest
 ## Configuration
 
 All config is environment-driven (`.env`, see `.env.example`): `ANTHROPIC_API_KEY`,
-`ANTHROPIC_MODEL`, `BRAIN_NAME`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`,
-`SESSION_SECRET`, `EMBEDDING_MODEL`, `JBRAIN_DOMAIN`, `DB_PATH`.
+`ANTHROPIC_MODEL`, `BRAIN_NAME`, `JBRAIN_ACCESS_KEY`, `EMBEDDING_MODEL`,
+`JBRAIN_DOMAIN`, `DB_PATH`.
 
 ## Roadmap
 

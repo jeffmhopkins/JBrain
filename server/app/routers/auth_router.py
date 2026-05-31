@@ -1,45 +1,21 @@
-"""Login / logout / current-user endpoints."""
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+"""Auth endpoints for access-key login.
 
-from ..auth import require_user, verify_credentials
+- GET  /api/auth/info   (public) — brain name, for the key-entry screen.
+- GET  /api/auth/verify (key-gated) — confirms a pasted key is valid.
+"""
+from fastapi import APIRouter
+
+from ..auth import CurrentUser
 from ..config import get_settings
-from ..db import get_conn
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-class LoginIn(BaseModel):
-    username: str
-    password: str
+@router.get("/info")
+def info():
+    return {"brain_name": get_settings().brain_name}
 
 
-@router.post("/login")
-def login(body: LoginIn, request: Request):
-    user_id = verify_credentials(body.username, body.password)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    request.session["user_id"] = user_id
-    request.session["username"] = body.username
-    return {"ok": True, "username": body.username}
-
-
-@router.post("/logout")
-def logout(request: Request):
-    request.session.clear()
-    return {"ok": True}
-
-
-@router.get("/me")
-def me(request: Request):
-    user_id = request.session.get("user_id")
-    if not user_id:
-        return {"authenticated": False, "brain_name": get_settings().brain_name}
-    row = get_conn().execute(
-        "SELECT username FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    return {
-        "authenticated": True,
-        "username": row["username"] if row else None,
-        "brain_name": get_settings().brain_name,
-    }
+@router.get("/verify", dependencies=[CurrentUser])
+def verify():
+    return {"ok": True, "brain_name": get_settings().brain_name}

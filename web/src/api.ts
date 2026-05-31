@@ -1,10 +1,31 @@
-// Thin API client. Cookies (the session) ride along automatically.
+// Thin API client. Every request carries the access key (the "cert") as a
+// Bearer token; it is stored on-device and pasted in once on first run.
+
+const KEY_STORAGE = "jbrain_access_key";
+let accessKey: string | null = localStorage.getItem(KEY_STORAGE);
+
+export function setAccessKey(key: string) {
+  accessKey = key;
+  localStorage.setItem(KEY_STORAGE, key);
+}
+export function getAccessKey(): string | null {
+  return accessKey;
+}
+export function clearAccessKey() {
+  accessKey = null;
+  localStorage.removeItem(KEY_STORAGE);
+}
+
+function authHeaders(extra: HeadersInit = {}): HeadersInit {
+  const h: Record<string, string> = { "Content-Type": "application/json", ...(extra as any) };
+  if (accessKey) h["Authorization"] = `Bearer ${accessKey}`;
+  return h;
+}
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    credentials: "same-origin",
     ...opts,
+    headers: authHeaders(opts.headers),
   });
   if (res.status === 401) throw new ApiError("Not authenticated", 401);
   if (!res.ok) {
@@ -45,8 +66,7 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch(`/api/chat/conversations/${conversationId}/message`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
+    headers: authHeaders(),
     body: JSON.stringify({ text }),
   });
   if (!res.body) throw new ApiError("No response stream", 500);

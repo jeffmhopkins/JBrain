@@ -59,12 +59,11 @@ ask        BRAIN_NAME     "Name for your brain"                            "My B
 ask        ANTHROPIC_MODEL "Claude model"                                  "claude-sonnet-4-6"
 ask_secret ANTHROPIC_API_KEY "Anthropic Claude API key (hidden)"
 echo
-ask        ADMIN_USERNAME "Admin username"                                 "admin"
-ask_secret ADMIN_PASSWORD "Admin password (hidden)"
-echo
 ask        TZ             "Timezone"                                       "UTC"
 
-SESSION_SECRET="$(gen_secret)"
+# The pasteable access key (the "cert"). Generated here; you paste it into the
+# app (and watch) on first run. Treat it like a password.
+JBRAIN_ACCESS_KEY="$(gen_secret)"
 EMBEDDING_MODEL="BAAI/bge-small-en-v1.5"
 
 # --- Render .env ------------------------------------------------------------
@@ -75,9 +74,7 @@ ACME_EMAIL=$ACME_EMAIL
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ANTHROPIC_MODEL=$ANTHROPIC_MODEL
 BRAIN_NAME=$BRAIN_NAME
-ADMIN_USERNAME=$ADMIN_USERNAME
-ADMIN_PASSWORD=$ADMIN_PASSWORD
-SESSION_SECRET=$SESSION_SECRET
+JBRAIN_ACCESS_KEY=$JBRAIN_ACCESS_KEY
 EMBEDDING_MODEL=$EMBEDDING_MODEL
 DB_PATH=/data/brain.db
 TZ=$TZ
@@ -96,13 +93,18 @@ echo "  1. DNS: an A record for $JBRAIN_DOMAIN points at this VM's public IP."
 echo "  2. Firewall: TCP ports 80 and 443 are open to the internet."
 echo
 
+bold "Your access key (paste this into the app on first run):"
+printf '\033[1;32m    %s\033[0m\n' "$JBRAIN_ACCESS_KEY"
+echo "Keep it safe — it's the only credential. It's also stored in .env."
+echo
+
 read -r -p "Build and start JBrain now? [Y/n] " go
 if [[ "${go,,}" != "n" ]]; then
   info "Building and starting (first run downloads the embedding model)…"
   docker compose up -d --build
   echo
   bold "JBrain is starting. In a minute, open: https://$JBRAIN_DOMAIN"
-  echo "Log in as '$ADMIN_USERNAME', then use your browser's 'Install app' / 'Add to Home Screen'."
+  echo "Paste the access key above, then use your browser's 'Install app' / 'Add to Home Screen'."
   echo "Logs:  docker compose logs -f"
 else
   info "Skipped startup. When ready run:  docker compose up -d --build"

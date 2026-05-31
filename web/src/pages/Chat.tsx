@@ -39,6 +39,7 @@ export default function Chat() {
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<any>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
@@ -58,6 +59,7 @@ export default function Chat() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { alert("Voice input isn't supported in this browser."); return; }
     if (listening) { recRef.current?.stop(); return; }
+    taRef.current?.focus();  // keep the keyboard open for manual edits too
     const r = new SR();
     recRef.current = r;
     r.lang = "en-US"; r.interimResults = true; r.continuous = true;
@@ -178,6 +180,7 @@ export default function Chat() {
           </div>
         )}
         <textarea
+          ref={taRef}
           rows={2}
           placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}

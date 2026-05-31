@@ -24,9 +24,13 @@ export default defineConfig({
         theme_color: "#111315",
         background_color: "#111315",
         display: "standalone",
-        start_url: "/",
+        // Must live within the deploy base (e.g. "/JBrain/") or the installed app
+        // launches out of scope and opens in the browser instead of standalone.
+        id: base,
+        scope: base,
+        start_url: base,
         icons: [
-          { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" },
+          { src: `${base}icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any maskable" },
         ],
       },
       workbox: {

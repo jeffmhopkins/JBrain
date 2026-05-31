@@ -50,10 +50,16 @@ the access key or any tokens**.
 
 ---
 
-## 2. Day-log auto-summarisation workflow  — NEXT (built on #3)
+## 2. Day-log auto-summarisation workflow  — IMPLEMENTED (on #3)
 
-> Ordering decision: build this **after** #3 (the workflow engine), as a single
-> workflow definition on top of it — not as bespoke code.
+Shipped as `workflows/daily-log-summary.yaml` + a `summarize_day_log` action:
+an **event** workflow on `log_appended` (matched to the "Daily Log" note) that,
+when a new day's entry arrives, summarises each completed prior day into a
+"Daily Summaries" note (once each, tracked by a per-log `meta` watermark) and
+posts a **Review** card linking to it. Works without an API key (plain recap
+fallback). Future: scheduled variant (run at end of day), configurable per log.
+
+Original notes below.
 
 **Goal:** build up granular log entries throughout a day; when the **first log of
 a new day** arrives, summarise the **previous day's** entries into a single

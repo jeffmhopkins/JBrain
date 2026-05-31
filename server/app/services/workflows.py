@@ -18,9 +18,14 @@ from pathlib import Path
 
 import yaml
 
+import re
+
 from ..config import get_settings
+from ..db import get_meta, set_meta
 from . import notes as notes_svc
 from . import reviews as reviews_svc
+
+_DATED_LINE = re.compile(r"^- \*\*(\d{4}-\d{2}-\d{2})\*\* (.*)$")
 
 _TODAY = lambda: __import__("datetime").date.today().isoformat()
 
@@ -180,10 +185,75 @@ def _action_create_review_item(conn, cfg: dict, workflow_id, context=None) -> st
     return "created review item"
 
 
+def _summarise_entries(entries: list[str]) -> str:
+    """Summarise a day's log entries. Uses Claude when configured, else a plain
+    recap so the workflow still works without an API key."""
+    joined = "\n".join(f"- {e}" for e in entries)
+    settings = get_settings()
+    if not settings.has_anthropic:
+        return "Entries:\n" + joined
+    from anthropic import Anthropic
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=512,
+        messages=[{"role": "user", "content":
+                   "Summarise this day's log entries into a tight paragraph or a "
+                   f"few bullets:\n{joined}"}],
+    )
+    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
+
+def _action_summarize_day_log(conn, cfg: dict, workflow_id, context=None) -> str:
+    """On a new day, summarise each completed prior day of a log into a summary
+    note (once each, tracked by a per-log watermark in meta)."""
+    log_title = cfg["log_title"]
+    note = notes_svc.get_by_title(conn, log_title)
+    if not note:
+        return f"no log note '{log_title}' yet"
+
+    by_date: dict[str, list[str]] = {}
+    for line in note["content_md"].splitlines():
+        m = _DATED_LINE.match(line.strip())
+        if m:
+            by_date.setdefault(m.group(1), []).append(m.group(2))
+    if not by_date:
+        return "no dated entries"
+
+    dates = sorted(by_date)
+    current_day = dates[-1]  # the day currently being logged into
+    wm_key = f"daylog_summarized:{log_title.lower()}"
+    last = get_meta(wm_key)
+    todo = [d for d in dates if d < current_day and (last is None or d > last)]
+    if not todo:
+        return "nothing new to summarise"
+
+    summary_title = cfg.get("summary_title") or f"{log_title} — Daily Summaries"
+    for d in todo:
+        text = _summarise_entries(by_date[d])
+        snote = notes_svc.get_by_title(conn, summary_title)
+        body = snote["content_md"] if snote else f"# {summary_title}\n"
+        notes_svc.upsert_note(
+            conn, summary_title, body.rstrip() + f"\n\n## {d}\n\n{text}\n",
+            source="workflow", version_note=f"day summary {d}",
+        )
+    set_meta(conn, wm_key, todo[-1])
+
+    if cfg.get("review") is not False:
+        rev = cfg.get("review") if isinstance(cfg.get("review"), dict) else {}
+        title = (rev.get("title") or f"Daily review — {todo[-1]}")
+        reviews_svc.create_review_item(
+            conn, workflow_id, title,
+            f"Summarised {len(todo)} day(s) of '{log_title}'.", _slug_for(conn, summary_title),
+        )
+    return f"summarised {', '.join(todo)}"
+
+
 _ACTIONS = {
     "append_to_note": _action_append_to_note,
     "claude_synthesize": _action_claude_synthesize,
     "create_review_item": _action_create_review_item,
+    "summarize_day_log": _action_summarize_day_log,
 }
 
 

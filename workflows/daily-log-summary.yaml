@@ -1,0 +1,26 @@
+# Day-log auto-summarisation.
+#
+# Log throughout the day to a "Daily Log" note (e.g. tell the architect
+# "log that ..."). When the first entry of a NEW day arrives, this workflow
+# summarises each completed prior day into the "Daily Summaries" note (once each,
+# tracked by a watermark) and posts a Review card linking to it.
+#
+# Fires only when the "Daily Log" note receives an entry. Without an Anthropic
+# key it still works (it writes a plain recap instead of an AI summary).
+key: daily-log-summary
+name: Daily log summary
+enabled: true
+
+trigger:
+  type: event
+  event: log_appended
+  match:
+    note_title: Daily Log
+
+action:
+  type: summarize_day_log
+  config:
+    log_title: Daily Log
+    summary_title: Daily Summaries
+    review:
+      title: "Daily review — {date}"

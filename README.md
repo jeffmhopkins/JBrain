@@ -40,6 +40,9 @@ and a graph.
 - **Review inbox** — workflows can post **review items** (title, message, link to
   an entry, dismiss) surfaced in a PWA **Review** tab with a count badge — e.g.
   daily-review messages — for easy visibility of what automations produced.
+- **Day-log summaries** — log to a "Daily Log" throughout the day; the first
+  entry of a new day auto-summarises the previous day into a "Daily Summaries"
+  note and posts a review card (a built-in workflow).
 
 ## Authentication
 

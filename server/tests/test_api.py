@@ -325,6 +325,34 @@ def test_workflow_creates_review_item_and_dismiss(client):
     assert client.get("/api/reviews/count").json()["pending"] == 0
 
 
+def test_day_log_summary_workflow(client):
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    quicktasks.append_log(conn, "Daily Log", "woke up", date="2026-05-30")
+    quicktasks.append_log(conn, "Daily Log", "shipped a feature", date="2026-05-30")
+    quicktasks.append_log(conn, "Daily Log", "new day begins", date="2026-05-31")
+    conn.commit()
+
+    wf = client.post("/api/workflows", json={
+        "name": "Day log", "trigger_type": "event", "trigger_config": {"event": "log_appended"},
+        "action_type": "summarize_day_log",
+        "action_config": {"log_title": "Daily Log", "summary_title": "Daily Summaries",
+                          "review": {"title": "Daily review"}},
+        "enabled": True,
+    }).json()
+
+    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    summ = client.get("/api/notes/daily-summaries").json()["content_md"]
+    assert "## 2026-05-30" in summ and "woke up" in summ   # completed day summarised
+    assert "2026-05-31" not in summ                         # current day left alone
+    assert any("Daily review" in i["title"] for i in client.get("/api/reviews").json())
+
+    # Idempotent: re-running doesn't re-summarise the same day.
+    client.post(f"/api/workflows/{wf['id']}/run")
+    assert client.get("/api/notes/daily-summaries").json()["content_md"].count("## 2026-05-30") == 1
+
+
 def test_append_action_with_review_block(client):
     wf = client.post("/api/workflows", json={
         "name": "Append+review", "trigger_type": "event", "trigger_config": {"event": "noop"},

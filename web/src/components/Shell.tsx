@@ -60,6 +60,12 @@ export default function Shell({ children }: { children: ReactNode }) {
         <span className="brand">{brainName}<span className="dot">.</span></span>
         <span className="spacer" />
         {advanced && <button className="ghost" style={{ padding: "4px 10px" }} onClick={disconnect}>Disconnect</button>}
+        {!advanced && reviewCount > 0 && (
+          <button className="bolt review-bell" title={`${reviewCount} to review`} onClick={() => nav("/review")}>
+            <Icon name="bell" size={20} />
+            <span className="count-badge">{reviewCount}</span>
+          </button>
+        )}
         <button className={"bolt" + (advanced ? " active" : "")} title="Advanced"
                 onClick={() => nav(advanced ? "/chat" : "/browse")}>
           <Icon name="bolt" size={20} />

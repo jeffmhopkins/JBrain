@@ -27,7 +27,7 @@ export default function ReviewPage() {
     <div className="content">
       <h2>Review</h2>
       <p className="muted" style={{ fontSize: 13 }}>
-        Items workflows have flagged for your attention (e.g. daily reviews). Dismiss when handled.
+        Items triggers have flagged for your attention (e.g. daily reviews). Dismiss when handled.
       </p>
       {items.length === 0 && <p className="muted">Nothing to review. 🎉</p>}
       {items.map((r) => (

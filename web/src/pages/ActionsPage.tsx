@@ -106,7 +106,7 @@ export default function ActionsPage() {
       </div>
       <p className="muted" style={{ fontSize: 13 }}>
         The step recipe behind each action type. <em>Prompts</em> = what the AI is told ·
-        <em> Actions</em> = the recipe · <em>Workflows</em> = when it runs.
+        <em> Actions</em> = the recipe · <em>Triggers</em> = when it runs.
       </p>
 
       {group("Shipped", shipped)}

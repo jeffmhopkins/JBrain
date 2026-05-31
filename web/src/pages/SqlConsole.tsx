@@ -52,7 +52,7 @@ export default function SqlConsole() {
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Backup &amp; restore</h3>
         <p className="muted" style={{ fontSize: 13 }}>
-          Your whole brain — notes, attachments, history, workflows — is one SQLite file.
+          Your whole brain — notes, attachments, history, triggers — is one SQLite file.
           Export it to back up; import a backup to restore (replaces everything).
         </p>
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>

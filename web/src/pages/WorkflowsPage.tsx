@@ -18,7 +18,7 @@ interface Workflow {
 }
 
 const BLANK = {
-  name: "New workflow",
+  name: "New trigger",
   trigger_type: "event",
   trigger_config: { event: "log_appended" },
   action_type: "append_to_note",
@@ -54,7 +54,7 @@ export default function WorkflowsPage() {
     setRuns((m) => ({ ...m, [id]: r }));
   }
   async function remove(w: Workflow) {
-    if (confirm(`Delete workflow “${w.name}”?`)) { await del(`/api/workflows/${w.id}`); load(); }
+    if (confirm(`Delete trigger “${w.name}”?`)) { await del(`/api/workflows/${w.id}`); load(); }
   }
   async function syncRepo() {
     const r = await post("/api/workflows/sync");
@@ -104,13 +104,13 @@ export default function WorkflowsPage() {
   return (
     <div className="content">
       <div className="row">
-        <h2 style={{ margin: 0 }}>Workflows</h2>
+        <h2 style={{ margin: 0 }}>Triggers</h2>
         <div className="spacer" />
         <button className="ghost" onClick={syncRepo} title="Pull new/updated workflows from the repo">Sync from repo</button>
         <button className="primary" onClick={() => openEdit()}>+ New</button>
       </div>
       <p className="muted" style={{ fontSize: 13 }}>
-        Automations (trigger → action). Seeded from repo YAML; edits here lock a workflow from repo updates.
+        A trigger runs an action on a schedule or event. Seeded from repo YAML; edits here lock a trigger from repo updates.
       </p>
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
@@ -148,7 +148,7 @@ export default function WorkflowsPage() {
 
       {editing && (
         <Modal
-          title={`${editing.id ? "Edit" : "New"} workflow`}
+          title={`${editing.id ? "Edit" : "New"} trigger`}
           size="wide"
           onClose={() => setEditing(null)}
           footer={<>

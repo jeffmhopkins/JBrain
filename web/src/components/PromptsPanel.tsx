@@ -34,7 +34,7 @@ export default function PromptsPanel() {
   return (
     <div>
       <p className="muted" style={{ fontSize: 13 }}>
-        Edit the prompts that drive the AI modes and workflow actions. Overrides are
+        Edit the prompts that drive the AI modes and actions. Overrides are
         stored in your database (they survive updates); Reset returns to the shipped default.
       </p>
       {msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}

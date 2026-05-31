@@ -105,9 +105,9 @@ export default function Shell({ children }: { children: ReactNode }) {
 }
 
 const CAPTURE = [
-  { key: "entry", label: "Entry" },
-  { key: "assisted", label: "Assisted" },
-  { key: "research", label: "Research" },
+  { key: "entry", label: "Entry", icon: "plus" },
+  { key: "assisted", label: "Assisted", icon: "robot" },
+  { key: "research", label: "Research", icon: "search" },
 ];
 const GROUPS = [
   { to: "/browse", label: "Browse", icon: "wiki", match: ["/browse", "/wiki", "/graph", "/search", "/note"] },
@@ -127,9 +127,13 @@ function MobileShell({ children, brainName, disconnect, reviewCount, online, dem
       <div className="mtop">
         {CAPTURE.map((c) => (
           <button key={c.key} className={"mtab" + (!advanced && mode === c.key ? " active" : "")}
-                  onClick={() => nav(`/chat?m=${c.key}`)}>{c.label}</button>
+                  onClick={() => nav(`/chat?m=${c.key}`)}>
+            <Icon name={c.icon} size={20} /><span>{c.label}</span>
+          </button>
         ))}
-        <button className={"mtab" + (advanced ? " active" : "")} onClick={() => nav("/browse")}>Advanced</button>
+        <button className={"mtab" + (advanced ? " active" : "")} onClick={() => nav("/browse")}>
+          <Icon name="cog" size={20} /><span>Advanced</span>
+        </button>
       </div>
 
       {demoBanner}

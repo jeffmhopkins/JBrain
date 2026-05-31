@@ -19,5 +19,8 @@ action:
   type: synthesize_wiki
   config:
     batch_limit: 50
+    # Extra guidance appended to the synthesis prompt (the JSON-output contract
+    # is always enforced). Tune how your knowledge base is organised here.
+    instructions: "Prefer a small number of broad, durable topic notes. Keep each concise; link liberally."
     review:
       title: "Knowledge base updated"

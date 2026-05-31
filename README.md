@@ -34,9 +34,11 @@ and a graph.
   with offline reading of notes you've already viewed.
 - **Quick-capture inbox** — a tiny `/api/capture` endpoint so a phone shortcut
   or a Wear OS tile can dictate thoughts the architect folds in later.
-- **Workflows** — trigger→action automations (event or scheduled), defined as
-  repo YAML (`workflows/`), ingested into the DB on boot, and editable in the PWA.
-  Runs are logged; writes are versioned and attributed `source='workflow'`.
+- **Workflows** — trigger→action automations defined as repo YAML (`workflows/`),
+  ingested into the DB on boot and editable in the PWA. Triggers: app **events**,
+  fixed **intervals**, or **cron** (`"0 7 * * *"`, in the server timezone). The
+  Claude prompt for AI actions is set in the workflow's `config`. Runs are logged;
+  writes are versioned and attributed `source='workflow'`.
 - **Review inbox** — workflows can post **review items** (title, message, link to
   an entry, dismiss) surfaced in a PWA **Review** tab with a count badge — e.g.
   daily-review messages — for easy visibility of what automations produced.

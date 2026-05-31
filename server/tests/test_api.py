@@ -294,6 +294,43 @@ def test_workflow_scheduled_due(client):
     assert wf_svc.run_due_scheduled(conn) == 0
 
 
+def test_schedule_due_cron_and_interval():
+    from datetime import datetime, timedelta, timezone
+    from app.services import workflows as wf_svc
+    now = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Interval: never-run is due; just-run is not.
+    assert wf_svc.schedule_due(None, {"interval_seconds": 3600}, now) is True
+    assert wf_svc.schedule_due("2026-05-31 11:59:00", {"interval_seconds": 3600}, now) is False
+
+    # Cron (every minute): never-run does NOT fire immediately; an old last-run does.
+    if __import__("importlib").util.find_spec("croniter"):
+        assert wf_svc.schedule_due(None, {"cron": "* * * * *"}, now) is False
+        assert wf_svc.schedule_due("2026-05-31 11:55:00", {"cron": "* * * * *"}, now) is True
+        # Daily 07:00 — last run yesterday, now past 07:00 today -> due.
+        assert wf_svc.schedule_due("2026-05-30 07:00:00", {"cron": "0 7 * * *"}, now) is True
+
+
+def test_daylog_prompt_is_configurable(client, monkeypatch):
+    from app.services import workflows as wf_svc
+    captured = {}
+    monkeypatch.setattr(wf_svc, "_summarise_entries",
+                        lambda entries, prompt=None: captured.update(prompt=prompt) or "ok")
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    quicktasks.append_log(conn, "Daily Log", "a", date="2026-05-29")
+    quicktasks.append_log(conn, "Daily Log", "b", date="2026-05-30")
+    conn.commit()
+    wf = client.post("/api/workflows", json={
+        "name": "DL", "trigger_type": "event", "trigger_config": {"event": "x"},
+        "action_type": "summarize_day_log",
+        "action_config": {"log_title": "Daily Log", "prompt": "MY CUSTOM PROMPT"}, "enabled": True,
+    }).json()
+    client.post(f"/api/workflows/{wf['id']}/run")
+    assert captured.get("prompt") == "MY CUSTOM PROMPT"
+
+
 def test_workflow_crud_via_api(client):
     created = client.post("/api/workflows", json={
         "name": "Manual", "trigger_type": "event",
@@ -371,7 +408,7 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
     client.post("/api/notes", json={"title": "Read on habits", "content_md": "tiny habits compound"})
 
     # Stub the Claude call with a deterministic KB action.
-    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb: [
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [
         {"op": "create", "title": "Health & Habits",
          "content_md": "Synthesis. See [[Ran 5k]] and [[Read on habits]]."}
     ])

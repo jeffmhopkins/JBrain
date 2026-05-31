@@ -6,10 +6,11 @@ key: example-daily-note
 name: Example — daily note stub
 enabled: false
 
-# Triggers: either an event fired by the app, or an interval schedule.
+# Triggers: an event fired by the app, an interval, or a cron expression.
 trigger:
   type: schedule
-  interval_seconds: 86400   # ~daily
+  # interval_seconds: 86400        # every ~24h, OR:
+  cron: "0 7 * * *"                # 07:00 every day, in the server's TZ
 
 action:
   type: append_to_note

@@ -18,6 +18,9 @@ Still to do: a turnkey self-restart path that needs no host helper (e.g. a small
 watcher container on the docker socket, documented), release signature
 verification, and automatic rollback on a failed boot. Original notes below.
 
+(Workflow scheduling now supports **cron** expressions (server-TZ) in addition to
+intervals, and Claude action prompts are **configurable from the workflow YAML**.)
+
 **Goal:** the server can update itself to a newer release when the user approves
 from the PWA — **non-destructively to the SQL database**, and **without changing
 the access key or any tokens**.

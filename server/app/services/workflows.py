@@ -14,11 +14,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-
-import re
 
 from ..config import get_settings
 from ..db import get_meta, set_meta
@@ -185,9 +185,13 @@ def _action_create_review_item(conn, cfg: dict, workflow_id, context=None) -> st
     return "created review item"
 
 
-def _summarise_entries(entries: list[str]) -> str:
+DEFAULT_DAYLOG_PROMPT = "Summarise this day's log entries into a tight paragraph or a few bullets:"
+
+
+def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
     """Summarise a day's log entries. Uses Claude when configured, else a plain
-    recap so the workflow still works without an API key."""
+    recap so the workflow still works without an API key. The prompt is
+    overridable from the workflow YAML (config.prompt)."""
     joined = "\n".join(f"- {e}" for e in entries)
     settings = get_settings()
     if not settings.has_anthropic:
@@ -197,9 +201,7 @@ def _summarise_entries(entries: list[str]) -> str:
     msg = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=512,
-        messages=[{"role": "user", "content":
-                   "Summarise this day's log entries into a tight paragraph or a "
-                   f"few bullets:\n{joined}"}],
+        messages=[{"role": "user", "content": f"{prompt or DEFAULT_DAYLOG_PROMPT}\n{joined}"}],
     )
     return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
 
@@ -230,7 +232,7 @@ def _action_summarize_day_log(conn, cfg: dict, workflow_id, context=None) -> str
 
     summary_title = cfg.get("summary_title") or f"{log_title} — Daily Summaries"
     for d in todo:
-        text = _summarise_entries(by_date[d])
+        text = _summarise_entries(by_date[d], cfg.get("prompt"))
         snote = notes_svc.get_by_title(conn, summary_title)
         body = snote["content_md"] if snote else f"# {summary_title}\n"
         notes_svc.upsert_note(
@@ -249,9 +251,12 @@ def _action_summarize_day_log(conn, cfg: dict, workflow_id, context=None) -> str
     return f"summarised {', '.join(todo)}"
 
 
-def _synthesize_actions(entries: list, existing_kb: list) -> list[dict]:
+def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None) -> list[dict]:
     """Ask Claude to fold new entries into the knowledge base. Returns a list of
-    {op, title, content_md}. Factored out so it can be stubbed in tests."""
+    {op, title, content_md}. Factored out so it can be stubbed in tests.
+
+    `instructions` (from the workflow YAML config) is extra guidance appended to
+    the base prompt; the JSON-output contract is always enforced."""
     settings = get_settings()
     if not settings.has_anthropic:
         raise RuntimeError("no Anthropic API key configured")
@@ -261,12 +266,14 @@ def _synthesize_actions(entries: list, existing_kb: list) -> list[dict]:
 
     entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
+    extra = f"\n\nAdditional guidance:\n{instructions}" if instructions else ""
     prompt = (
         "You maintain a personal KNOWLEDGE BASE synthesized from raw journal/note "
         "entries. Read the NEW ENTRIES and fold their durable knowledge into "
         "topic notes. Update an existing KB note when the topic already exists; "
         "otherwise create one. Cite the source entries inline as [[Entry Title]] "
-        "wiki-links, and cross-link related KB topics as [[KB Title]].\n\n"
+        "wiki-links, and cross-link related KB topics as [[KB Title]]."
+        f"{extra}\n\n"
         f"NEW ENTRIES:\n{entries_text}\n\n"
         f"EXISTING KB NOTES:\n{kb_text}\n\n"
         "Return ONLY a JSON array (no prose) of actions:\n"
@@ -308,7 +315,7 @@ def _action_synthesize_wiki(conn, cfg: dict, workflow_id, context=None) -> str:
     ).fetchall()
 
     changed: list[str] = []
-    for a in _synthesize_actions(entries, existing_kb):
+    for a in _synthesize_actions(entries, existing_kb, cfg.get("instructions")):
         notes_svc.upsert_note(
             conn, a["title"], a["content_md"], kind="kb",
             source="workflow", version_note="wiki synthesis",
@@ -380,25 +387,54 @@ def fire_event(conn, event: str, context: dict | None = None) -> None:
         run_workflow(conn, wf, context)
 
 
+def _parse_utc(ts: str | None):
+    if not ts:
+        return None
+    try:
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def schedule_due(last_run_at: str | None, tc: dict, now: datetime | None = None) -> bool:
+    """Is a scheduled workflow due? Supports cron ("0 7 * * *", in the server's
+    TZ) and interval_seconds. Cron never fires immediately on first enable."""
+    now = now or datetime.now(timezone.utc)
+    last = _parse_utc(last_run_at)
+    cron = tc.get("cron")
+    if cron:
+        try:
+            from croniter import croniter
+        except Exception:
+            return False
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(os.environ.get("TZ") or "UTC")
+        except Exception:
+            tz = timezone.utc
+        now_local = now.astimezone(tz)
+        base = (last or now).astimezone(tz)
+        try:
+            nxt = croniter(cron, base).get_next(datetime)
+            return nxt <= now_local
+        except Exception:
+            return False
+    interval = int(tc.get("interval_seconds", 0) or 0)
+    if interval <= 0:
+        return False
+    if last is None:
+        return True
+    return (now - last).total_seconds() >= interval
+
+
 def run_due_scheduled(conn) -> int:
-    """Run interval-scheduled workflows that are due. Returns count run."""
+    """Run scheduled workflows (cron or interval) that are due. Returns count run."""
     rows = conn.execute(
         "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'schedule'"
     ).fetchall()
     ran = 0
     for wf in rows:
-        tc = json.loads(wf["trigger_config"] or "{}")
-        interval = int(tc.get("interval_seconds", 0) or 0)
-        if interval <= 0:
-            continue
-        if wf["last_run_at"] is None:
-            due = True
-        else:
-            secs = conn.execute(
-                "SELECT (julianday('now') - julianday(?)) * 86400 AS s", (wf["last_run_at"],)
-            ).fetchone()["s"]
-            due = secs is not None and secs >= interval
-        if due:
+        if schedule_due(wf["last_run_at"], json.loads(wf["trigger_config"] or "{}")):
             run_workflow(conn, wf)
             ran += 1
     return ran

@@ -22,5 +22,7 @@ action:
   config:
     log_title: Daily Log
     summary_title: Daily Summaries
+    # The Claude prompt is editable here (omit to use the built-in default).
+    prompt: "Summarise this day's log entries into a tight paragraph plus a few key bullets:"
     review:
       title: "Daily review — {date}"

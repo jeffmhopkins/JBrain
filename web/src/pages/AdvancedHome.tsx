@@ -20,6 +20,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
     name: "Authoring",
     cards: [
       { to: "/prompts", label: "Prompts", sub: "Tune the AI", icon: "robot" },
+      { to: "/actions", label: "Actions", sub: "Step recipes", icon: "bolt" },
       { to: "/flows", label: "Workflows", sub: "Triggers & actions", icon: "flows" },
     ],
   },

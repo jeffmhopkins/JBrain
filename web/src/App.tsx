@@ -13,6 +13,7 @@ import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
 import AdvancedHome from "./pages/AdvancedHome";
+import ActionsPage from "./pages/ActionsPage";
 import SystemPage from "./pages/SystemPage";
 import PromptsPanel from "./components/PromptsPanel";
 
@@ -106,6 +107,7 @@ export default function App() {
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/prompts" element={<div className="content"><PromptsPanel /></div>} />
+            <Route path="/actions" element={<ActionsPage />} />
             <Route path="/flows" element={<WorkflowsPage />} />
             <Route path="/system" element={<SystemPage />} />
             <Route path="/review" element={<ReviewPage />} />

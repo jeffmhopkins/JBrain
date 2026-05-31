@@ -221,6 +221,19 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .wf-actions { scrollbar-width: none; }
 .wf-actions button { flex-shrink: 0; padding: 6px 10px; font-size: 13px; }
 
+/* ---- Action pipeline view ----------------------------------------------- */
+.pipeline { display: flex; flex-direction: column; gap: 8px; }
+.step-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--bg-elev); }
+.step-loop { border-left: 2px solid var(--accent); }
+.step-children { margin-top: 8px; padding-left: 12px; display: flex; flex-direction: column; gap: 8px; border-left: 1px solid var(--border); }
+.step-head { display: flex; align-items: center; gap: 8px; }
+.step-do { font-weight: 600; font-size: 14px; }
+.out-chip { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--text); border: 1px solid var(--accent); }
+.ref-chip { font-size: 12px; padding: 1px 6px; border-radius: 6px; background: var(--accent-soft); color: var(--text); border: 1px solid var(--border); }
+.guard-pill { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+.step-input { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 13px; flex-wrap: wrap; }
+.step-key { color: var(--text-dim); min-width: 96px; font-size: 12px; }
+
 /* ---- Cards / misc ------------------------------------------------------- */
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .muted { color: var(--text-dim); }

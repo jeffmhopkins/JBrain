@@ -1,5 +1,5 @@
-import { FormEvent, useState } from "react";
-import { post } from "../api";
+import { FormEvent, useRef, useState } from "react";
+import { downloadBackup, post, restoreBackup } from "../api";
 
 const EXAMPLES = [
   "SELECT title, updated_at FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC",
@@ -12,6 +12,26 @@ export default function SqlConsole() {
   const [columns, setColumns] = useState<string[]>([]);
   const [rows, setRows] = useState<any[][]>([]);
   const [error, setError] = useState("");
+  const [backupMsg, setBackupMsg] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function doBackup() {
+    setBackupMsg("Preparing download…");
+    try { await downloadBackup(); setBackupMsg("Backup downloaded."); }
+    catch (e: any) { setBackupMsg(`Backup failed: ${e.message}`); }
+  }
+
+  async function doRestore(file: File) {
+    if (!confirm(`Restore from “${file.name}”? This REPLACES your entire current database. Make a backup first.`)) return;
+    setBackupMsg("Restoring…");
+    try {
+      await restoreBackup(file);
+      setBackupMsg("Restored. Reloading…");
+      setTimeout(() => location.reload(), 800);
+    } catch (e: any) {
+      setBackupMsg(`Restore failed: ${e.message}`);
+    }
+  }
 
   async function run(e: FormEvent) {
     e.preventDefault();
@@ -28,7 +48,24 @@ export default function SqlConsole() {
 
   return (
     <div className="content">
-      <h2>SQL console</h2>
+      <h2>Database</h2>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Backup &amp; restore</h3>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Your whole brain — notes, attachments, history, workflows — is one SQLite file.
+          Export it to back up; import a backup to restore (replaces everything).
+        </p>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button className="primary" onClick={doBackup}>Export database</button>
+          <input ref={fileRef} type="file" accept=".db,.sqlite,application/octet-stream"
+                 style={{ display: "none" }}
+                 onChange={(e) => { const f = e.target.files?.[0]; if (f) doRestore(f); e.currentTarget.value = ""; }} />
+          <button className="ghost" onClick={() => fileRef.current?.click()}>Import database…</button>
+          {backupMsg && <span className="muted" style={{ fontSize: 13 }}>{backupMsg}</span>}
+        </div>
+      </div>
+
+      <h3>SQL console</h3>
       <p className="muted">Read-only access to your brain’s database (SELECT/WITH only). For full SQL use the <code>sqlite3</code> CLI — see the README.</p>
       <form onSubmit={run}>
         <textarea rows={4} value={sql} onChange={(e) => setSql(e.target.value)} style={{ fontFamily: "monospace" }} />

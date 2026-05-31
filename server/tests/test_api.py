@@ -420,6 +420,29 @@ def test_system_update_schedules_when_no_cmd(client, monkeypatch):
     assert os.path.exists(flag)
 
 
+def test_backup_and_restore(client):
+    client.post("/api/notes", json={"title": "Keep Me", "content_md": "precious"})
+    blob = client.get("/api/system/backup")
+    assert blob.status_code == 200
+    assert blob.content[:16] == b"SQLite format 3\x00"
+    snapshot = blob.content
+
+    # Mutate after the snapshot, then restore it.
+    client.delete("/api/notes/keep-me")
+    assert client.get("/api/notes/keep-me").status_code == 404
+
+    r = client.post("/api/system/restore",
+                    files={"file": ("backup.db", snapshot, "application/octet-stream")})
+    assert r.status_code == 200
+    assert client.get("/api/notes/keep-me").json()["title"] == "Keep Me"
+
+
+def test_restore_rejects_non_sqlite(client):
+    bad = client.post("/api/system/restore",
+                      files={"file": ("x.db", b"not a database", "application/octet-stream")})
+    assert bad.status_code == 400
+
+
 def test_workflow_sync_and_reset(client, monkeypatch, tmp_path):
     from app.db import get_conn
     from app.services import workflows as wf_svc

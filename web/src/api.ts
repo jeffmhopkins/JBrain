@@ -72,6 +72,38 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
   return res.json();
 }
 
+// Download a full DB backup (auth header can't ride on a plain <a>, so fetch+blob).
+export async function downloadBackup(): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch("/api/system/backup", { headers });
+  if (!res.ok) throw new ApiError("Backup failed", res.status);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1]
+    || "jbrain-backup.db";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function restoreBackup<T = any>(file: File): Promise<T> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch("/api/system/restore", { method: "POST", headers, body: fd });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json();
+}
+
 export interface ChatEvent {
   type: "token" | "staging" | "applied" | "done" | "error";
   text?: string;

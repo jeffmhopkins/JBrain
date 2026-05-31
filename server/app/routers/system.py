@@ -9,14 +9,18 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
-from ..auth import CurrentUser
+from .. import db as db_mod
+from ..auth import CurrentUser, ensure_access_key
 from ..config import get_settings
 from ..version import APP_VERSION
 
@@ -94,3 +98,36 @@ def update():
             "auto-updater / set JBRAIN_UPDATE_CMD) to finish."
         ),
     }
+
+
+@router.get("/backup")
+def backup():
+    """Download a consistent snapshot of the entire database (one .db file)."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db_mod.backup_to_file(tmp.name)
+    fname = f"jbrain-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.db"
+    return FileResponse(
+        tmp.name, media_type="application/octet-stream", filename=fname,
+        background=BackgroundTask(lambda: os.path.exists(tmp.name) and os.unlink(tmp.name)),
+    )
+
+
+@router.post("/restore")
+async def restore(file: UploadFile = File(...)):
+    """Replace the entire database from an uploaded JBrain backup (.db)."""
+    raw = await file.read()
+    if raw[:16] != b"SQLite format 3\x00":
+        raise HTTPException(status_code=400, detail="Not a SQLite database file.")
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.write(raw)
+    tmp.close()
+    try:
+        db_mod.restore_from_file(tmp.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        os.path.exists(tmp.name) and os.unlink(tmp.name)
+    # Keep the configured access key valid even if the backup carried a different one.
+    ensure_access_key()
+    return {"ok": True, "message": "Database restored."}

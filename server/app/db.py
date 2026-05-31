@@ -133,3 +133,34 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 def get_meta(key: str, default: str | None = None) -> str | None:
     row = get_conn().execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
+
+
+def backup_to_file(dest_path: str) -> None:
+    """Write a consistent snapshot of the whole DB (WAL included) to dest_path."""
+    dst = sqlite3.connect(dest_path)
+    try:
+        get_conn().backup(dst)
+    finally:
+        dst.close()
+
+
+def restore_from_file(src_path: str) -> None:
+    """Replace the live DB contents with those from src_path (a JBrain backup).
+
+    Uses the backup API to copy pages into the live connection in-place, then
+    re-runs init/migrations so an older backup is upgraded to the current schema.
+    """
+    global _initialized
+    src = sqlite3.connect(src_path)
+    try:
+        ok = src.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('notes','meta')"
+        ).fetchone()
+        if not ok:
+            raise ValueError("That file is not a JBrain database backup.")
+        src.backup(get_conn())
+    finally:
+        src.close()
+    # Re-apply schema/migrations on the restored data (upgrades older backups).
+    _initialized = False
+    init_db()

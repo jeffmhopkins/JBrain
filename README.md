@@ -159,7 +159,15 @@ track the shipped definition again.
 
 ## Backup & restore
 
-The whole brain is one SQLite file on the `brain-data` volume.
+The whole brain — notes, attachments, history, workflows — is one SQLite file.
+
+**From the app (easiest):** **SQL/Database** tab → **Export database** downloads a
+consistent snapshot (`.db`); **Import database…** replaces everything from a
+backup file (it's upgraded to the current schema on import, and your configured
+access key stays valid). Available at `GET /api/system/backup` and
+`POST /api/system/restore`.
+
+**From the CLI:**
 
 ```bash
 # Backup

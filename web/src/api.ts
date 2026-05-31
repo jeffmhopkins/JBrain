@@ -2,7 +2,11 @@
 // Bearer token; it is stored on-device and pasted in once on first run.
 
 const KEY_STORAGE = "jbrain_access_key";
+const SERVER_STORAGE = "jbrain_server";
 let accessKey: string | null = localStorage.getItem(KEY_STORAGE);
+// Server base URL. Empty = same origin (PWA served by the API itself). Set when
+// the PWA is hosted separately (e.g. GitHub Pages) and talks to a remote server.
+let serverBase: string = (localStorage.getItem(SERVER_STORAGE) || "").replace(/\/+$/, "");
 
 export function setAccessKey(key: string) {
   accessKey = key;
@@ -11,9 +15,21 @@ export function setAccessKey(key: string) {
 export function getAccessKey(): string | null {
   return accessKey;
 }
+export function setServer(url: string) {
+  serverBase = (url || "").trim().replace(/\/+$/, "");
+  localStorage.setItem(SERVER_STORAGE, serverBase);
+}
+export function getServer(): string {
+  return serverBase;
+}
 export function clearAccessKey() {
   accessKey = null;
   localStorage.removeItem(KEY_STORAGE);
+}
+
+// Resolve an API path against the configured server (or same origin).
+export function u(path: string): string {
+  return serverBase + path;
 }
 
 function authHeaders(extra: HeadersInit = {}): HeadersInit {
@@ -23,7 +39,7 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(u(path), {
     ...opts,
     headers: authHeaders(opts.headers),
   });
@@ -59,7 +75,7 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
   fd.append("file", file);
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
-  const res = await fetch(`/api/notes/${encodeURIComponent(slug)}/attachments`, {
+  const res = await fetch(u(`/api/notes/${encodeURIComponent(slug)}/attachments`), {
     method: "POST",
     headers,
     body: fd,
@@ -76,7 +92,7 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
 export async function downloadBackup(): Promise<void> {
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
-  const res = await fetch("/api/system/backup", { headers });
+  const res = await fetch(u("/api/system/backup"), { headers });
   if (!res.ok) throw new ApiError("Backup failed", res.status);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -95,7 +111,7 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
   fd.append("file", file);
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
-  const res = await fetch("/api/system/restore", { method: "POST", headers, body: fd });
+  const res = await fetch(u("/api/system/restore"), { method: "POST", headers, body: fd });
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
@@ -122,7 +138,7 @@ export async function streamChat(
 ): Promise<void> {
   const body: any = { text };
   if (location) { body.lat = location.lat; body.lon = location.lon; }
-  const res = await fetch(`/api/chat/conversations/${conversationId}/message`, {
+  const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),

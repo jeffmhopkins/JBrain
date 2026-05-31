@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # first run and reveals it once (logs + /data/access-key.txt).
     jbrain_access_key: str = ""
 
+    # Allowed CORS origins (comma-separated) for a separately-hosted PWA, e.g.
+    # GitHub Pages. "*" is safe here because auth is a bearer token, not cookies.
+    jbrain_cors_origins: str = "*"
+
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     db_path: str = "/data/brain.db"
 

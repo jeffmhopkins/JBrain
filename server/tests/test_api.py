@@ -49,6 +49,15 @@ def client(monkeypatch):
     return TestClient(app, headers={"Authorization": f"Bearer {TEST_KEY}"})
 
 
+def test_info_exposes_version_and_cors(client):
+    from app.version import APP_VERSION
+    info = client.get("/api/auth/info").json()
+    assert info["version"] == APP_VERSION and "brain_name" in info
+    # CORS header present for a cross-origin caller (separately-hosted PWA).
+    r = client.get("/api/auth/info", headers={"Origin": "https://example.github.io"})
+    assert r.headers.get("access-control-allow-origin") in ("*", "https://example.github.io")
+
+
 def test_health_is_public(client):
     from fastapi.testclient import TestClient
     from app.main import app

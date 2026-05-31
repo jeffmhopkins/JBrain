@@ -53,6 +53,24 @@ and a graph.
 - **Manual editing** — edit any note's markdown directly in the PWA (versioned
   like every other change), so you can refine or correct the synthesized wiki.
 
+## Hosting the PWA on GitHub Pages (optional)
+
+The PWA can run from GitHub Pages instead of being served by your server — useful
+to install/update the app independently of the VM.
+
+- GitHub Pages serves *built static files*, not the `web/` source, so a workflow
+  (`.github/workflows/pages.yml`) builds `web/` and publishes it. Enable it in
+  **Settings → Pages → Source: GitHub Actions**; it deploys on pushes to `main`.
+- Because the app is now a different origin from your server:
+  - **First run asks for your server address** (your VM's `https://…`) plus the
+    access key; both are stored on-device and used for every request.
+  - The server allows cross-origin calls via **CORS** (`JBRAIN_CORS_ORIGINS`,
+    default `*`; safe since auth is a bearer token, not cookies).
+  - The app checks the **server version** against its own and shows a banner if
+    they differ, so you can keep both in sync.
+- Served by your server instead (the default)? Leave the server address blank —
+  everything is same-origin and works as before.
+
 ## Authentication
 
 There are no usernames or passwords. A single high-entropy **access key** (the

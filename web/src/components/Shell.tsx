@@ -56,8 +56,14 @@ const NAV = [
 export default function Shell({ children }: { children: ReactNode }) {
   const isDesktop = useIsDesktop();
   const online = useOnline();
-  const { brainName, disconnect } = useAuth();
+  const { brainName, disconnect, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const reviewCount = useReviewCount();
+
+  const versionWarning = versionMismatch ? (
+    <div className="version-banner">
+      App v{pwaVersion} vs server v{serverVersion} — versions differ; update so they match.
+    </div>
+  ) : null;
 
   if (isDesktop) {
     return (
@@ -81,6 +87,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         </aside>
         <div className="main">
           <UpdateBanner />
+          {versionWarning}
           {!online && <div className="offline-banner">Offline — reading cached notes. Chat & saving need a connection.</div>}
           {children}
         </div>
@@ -101,6 +108,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <UpdateBanner />
+        {versionWarning}
         {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
         {children}
       </div>

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { clearAccessKey, get, getAccessKey, setAccessKey } from "./api";
+import { clearAccessKey, get, getAccessKey, getServer, setAccessKey, setServer } from "./api";
 import Shell from "./components/Shell";
 import KeyEntry from "./pages/KeyEntry";
 import Chat from "./pages/Chat";
@@ -15,21 +15,37 @@ import ReviewPage from "./pages/ReviewPage";
 interface AuthState {
   authenticated: boolean;
   brainName: string;
-  connect: (key: string) => Promise<void>;
+  server: string;
+  pwaVersion: string;
+  serverVersion: string | null;
+  versionMismatch: boolean;
+  connect: (key: string, server: string) => Promise<void>;
   disconnect: () => void;
 }
 
 const AuthCtx = createContext<AuthState>(null!);
 export const useAuth = () => useContext(AuthCtx);
+export const PWA_VERSION = __PWA_VERSION__;
 
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [authed, setAuthed] = useState(false);
   const [brainName, setBrainName] = useState("JBrain");
+  const [serverVersion, setServerVersion] = useState<string | null>(null);
 
-  // Validate a key against the server (throws on invalid).
-  async function connect(key: string) {
+  // Load public server info (brain name + version) from the configured server.
+  async function loadInfo() {
+    const i = await get("/api/auth/info");
+    setBrainName(i.brain_name || "JBrain");
+    setServerVersion(i.version || null);
+    return i;
+  }
+
+  // Validate a key (and server address) — throws on invalid.
+  async function connect(key: string, srv: string) {
+    setServer(srv);
     setAccessKey(key);
+    await loadInfo();              // resolves the server (and surfaces bad URLs)
     await get("/api/auth/verify"); // 401 -> throws ApiError
     setAuthed(true);
   }
@@ -40,10 +56,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    // Brain name for the key-entry screen (public endpoint).
-    get("/api/auth/info").then((i) => setBrainName(i.brain_name || "JBrain")).catch(() => {});
-
-    // If a key is already stored, verify it silently.
+    loadInfo().catch(() => {});
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
@@ -57,7 +70,11 @@ export default function App() {
 
   if (loading) return <div className="content muted">Loading…</div>;
 
-  const auth: AuthState = { authenticated: authed, brainName, connect, disconnect };
+  const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
+  const auth: AuthState = {
+    authenticated: authed, brainName, server: getServer(),
+    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, connect, disconnect,
+  };
 
   return (
     <AuthCtx.Provider value={auth}>

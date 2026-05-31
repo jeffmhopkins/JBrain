@@ -2,7 +2,15 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+const base = process.env.VITE_BASE || "/";
+
 export default defineConfig({
+  // Pages serves a project site at /<repo>/ — set VITE_BASE=/JBrain/ in CI.
+  // Same-origin (served by the API) uses "/".
+  base,
+  define: {
+    __PWA_VERSION__: JSON.stringify(process.env.npm_package_version || "0.0.0"),
+  },
   plugins: [
     react(),
     VitePWA({
@@ -21,7 +29,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallback: "/index.html",
+        navigateFallback: base + "index.html",
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {

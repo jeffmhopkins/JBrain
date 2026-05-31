@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -68,6 +69,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
+
+# Allow a separately-hosted PWA (e.g. GitHub Pages) to call the API. Safe with
+# "*" because auth is a bearer token (no cookies). Tighten via JBRAIN_CORS_ORIGINS.
+_origins = [o.strip() for o in settings.jbrain_cors_origins.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system):
     app.include_router(r.router)

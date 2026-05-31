@@ -1,8 +1,10 @@
 import { FormEvent, useState } from "react";
 import { useAuth } from "../App";
+import { getServer } from "../api";
 
 export default function KeyEntry() {
-  const { brainName, connect } = useAuth();
+  const { brainName, connect, pwaVersion } = useAuth();
+  const [server, setServerInput] = useState(getServer());
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -13,9 +15,13 @@ export default function KeyEntry() {
     setBusy(true);
     setError("");
     try {
-      await connect(key.trim());
-    } catch {
-      setError("That access key was rejected. Check it and try again.");
+      await connect(key.trim(), server.trim());
+    } catch (err: any) {
+      setError(
+        err?.status === 401
+          ? "That access key was rejected. Check it and try again."
+          : "Couldn't reach that server. Check the address (and that it's running).",
+      );
     } finally {
       setBusy(false);
     }
@@ -25,15 +31,23 @@ export default function KeyEntry() {
     <div className="login card">
       <h1>{brainName}</h1>
       <p className="muted" style={{ textAlign: "center", marginTop: -8 }}>
-        Paste your access key to connect this device
+        Connect this device to your brain
       </p>
       <form onSubmit={submit}>
+        <label className="muted">Server address</label>
+        <input
+          value={server}
+          onChange={(e) => setServerInput(e.target.value)}
+          placeholder="https://brain.example.com — leave blank if this site is your server"
+          autoCapitalize="none"
+          autoCorrect="off"
+        />
+        <label className="muted" style={{ marginTop: 12, display: "block" }}>Access key</label>
         <textarea
           rows={3}
           value={key}
           onChange={(e) => setKey(e.target.value)}
           placeholder="Paste the access key from install (or /data/access-key.txt)…"
-          autoFocus
           style={{ fontFamily: "monospace" }}
         />
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
@@ -42,7 +56,7 @@ export default function KeyEntry() {
         </button>
       </form>
       <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
-        The key is stored only on this device and sent over HTTPS with each request.
+        Stored only on this device, sent over HTTPS with each request. App v{pwaVersion}.
       </p>
     </div>
   );

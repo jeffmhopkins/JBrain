@@ -7,13 +7,16 @@ from fastapi import APIRouter
 
 from ..auth import CurrentUser
 from ..config import get_settings
+from ..version import APP_VERSION
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.get("/info")
 def info():
-    return {"brain_name": get_settings().brain_name}
+    # Public: brain name + server version so the PWA can verify compatibility
+    # before/at connect (works cross-origin for a separately-hosted PWA).
+    return {"brain_name": get_settings().brain_name, "version": APP_VERSION}
 
 
 @router.get("/verify", dependencies=[CurrentUser])

@@ -1,3 +1,4 @@
+# Repo is public — Pages is available; this workflow auto-enables it.
 name: Deploy PWA to GitHub Pages
 
 # Builds the web/ PWA and publishes it to GitHub Pages. The PWA then talks to

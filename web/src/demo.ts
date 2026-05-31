@@ -118,6 +118,34 @@ const ACTION_DEFS: Record<string, any> = {
   },
 };
 
+const ACTION_TYPES = [
+  { type: "append_to_note", config: [
+    { key: "title", label: "Note title", type: "text", required: true },
+    { key: "text", label: "Text to append", type: "textarea" },
+    { key: "review", label: "Post a review card", type: "review" },
+  ] },
+  { type: "create_review_item", config: [
+    { key: "title", label: "Card title", type: "text", required: true },
+    { key: "message", label: "Message", type: "textarea" },
+    { key: "link_title", label: "Link to note titled", type: "text" },
+  ] },
+  { type: "generate_tags", config: [{ key: "prompt", label: "Tag prompt (optional)", type: "textarea" }] },
+  { type: "summarize_day_log", config: [
+    { key: "log_title", label: "Log note title", type: "text", required: true },
+    { key: "summary_title", label: "Summary note title", type: "text" },
+    { key: "review", label: "Post a review card", type: "review", default: true },
+  ] },
+  { type: "synthesize_wiki", config: [
+    { key: "batch_limit", label: "Max entries per run", type: "number" },
+    { key: "review", label: "Post a review card", type: "review", default: true },
+  ] },
+  { type: "synthesize", config: [
+    { key: "target_title", label: "Target note title", type: "text", required: true },
+    { key: "prompt", label: "Prompt (optional)", type: "textarea" },
+    { key: "review", label: "Post a review card", type: "review" },
+  ] },
+];
+
 const PRIMITIVES_CATALOG = [
   { name: "call_action", summary: "Run another action recipe as a sub-pipeline (chaining).", output: "object" },
   { name: "create_review", summary: "Post a card to the Review inbox.", output: "object" },
@@ -188,6 +216,7 @@ function match(path: string): any {
   if (p === "/api/reviews/count") return { pending: REVIEWS.length };
   if (p === "/api/reviews") return REVIEWS;
   if (p === "/api/workflows") return WORKFLOWS;
+  if (p === "/api/workflows/action-types") return ACTION_TYPES;
   if (/^\/api\/workflows\/\d+\/runs/.test(p)) return [{ id: 1, started_at: "2026-05-31 07:00", status: "ok", detail: "summarised 2026-05-30" }];
   if (p === "/api/prompts") return PROMPTS;
   if (p === "/api/action-defs") return _actionList();
@@ -224,6 +253,10 @@ export function demoResponse(path: string, method = "GET"): any {
     if (/\/notes\/entry$/.test(path)) return { id: Date.now(), title: "Demo entry", slug: "health-habits" };
     if (/\/action-defs\/validate$/.test(path)) return { warnings: ["Demo mode — changes aren’t saved."], recipe: null };
     if (/\/action-defs\/sync$/.test(path)) return { synced: 0 };
+    if (/\/api\/sql$/.test(path)) return {
+      columns: ["title", "kind", "updated_at"],
+      rows: NOTES_LIST.map((n) => [n.title, n.kind, n.updated_at]),
+    };
     return { ok: true, id: 1 };
   }
   return match(path) ?? [];

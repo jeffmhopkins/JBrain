@@ -44,8 +44,10 @@ export default defineConfig({
         runtimeCaching: [
           {
             // Offline reading: serve last-seen notes/attachments/search offline.
+            // Same-origin only — in Pages mode the API is a different origin and
+            // its authed responses must not be persisted into the Pages cache.
             // Exclude attachment downloads so large blobs don't fill the cache.
-            urlPattern: ({ url }) => (
+            urlPattern: ({ url }) => url.origin === self.location.origin && (
               url.pathname.startsWith("/api/notes") ||
               url.pathname.startsWith("/api/graph") ||
               url.pathname.startsWith("/api/search") ||

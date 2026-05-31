@@ -12,10 +12,17 @@ export default function KeyEntry() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!key.trim()) return;
+    const srv = server.trim();
+    // A browser blocks an https page calling an http server ("mixed content"),
+    // which otherwise surfaces as an indistinguishable "couldn't reach" error.
+    if (location.protocol === "https:" && /^http:\/\//i.test(srv)) {
+      setError("This page is HTTPS but the server address is http:// — browsers block that. Use an https:// server.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      await connect(key.trim(), server.trim());
+      await connect(key.trim(), srv);
     } catch (err: any) {
       setError(
         err?.status === 401

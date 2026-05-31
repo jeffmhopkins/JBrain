@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { clearAccessKey, get, getAccessKey, getServer, setAccessKey, setServer } from "./api";
 import { isDemo, setDemo } from "./demo";
 import Shell from "./components/Shell";
+import ErrorBoundary from "./components/ErrorBoundary";
 import KeyEntry from "./pages/KeyEntry";
 import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
@@ -66,6 +67,8 @@ export default function App() {
   function disconnect() {
     setDemo(false);
     clearAccessKey();
+    // Clear cached API responses too, so a shared device leaves nothing behind.
+    if ("caches" in window) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
     setAuthed(false);
   }
 
@@ -76,7 +79,10 @@ export default function App() {
     if (stored) {
       get("/api/auth/verify")
         .then(() => setAuthed(true))
-        .catch(() => clearAccessKey())
+        // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
+        // A network error or 5xx (offline, server restarting) must NOT log the
+        // user out: stay authed so cached pages still work.
+        .catch((e: any) => { if (e?.status === 401) clearAccessKey(); else setAuthed(true); })
         .finally(() => setLoading(false));
     } else {
       setLoading(false);
@@ -98,6 +104,7 @@ export default function App() {
         <KeyEntry />
       ) : (
         <Shell>
+          <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
@@ -114,6 +121,7 @@ export default function App() {
             <Route path="/sql" element={<SqlConsole />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
+          </ErrorBoundary>
         </Shell>
       )}
     </AuthCtx.Provider>

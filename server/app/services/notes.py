@@ -83,6 +83,7 @@ def upsert_note(
     lat: float | None = None,
     lon: float | None = None,
     location_label: str | None = None,
+    kind: str | None = None,
 ) -> int:
     """Create or update a note and append a version row for the new state.
 
@@ -114,12 +115,14 @@ def upsert_note(
                 "UPDATE notes SET lat = ?, lon = ?, location_label = ? WHERE id = ?",
                 (lat, lon, location_label, note_id),
             )
+        if kind is not None:  # only change kind when explicitly set
+            conn.execute("UPDATE notes SET kind = ? WHERE id = ?", (kind, note_id))
     else:
         slug = _unique_slug(conn, title)
         cur = conn.execute(
-            "INSERT INTO notes (title, slug, content_md, lat, lon, location_label) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (title, slug, content_md, lat, lon, location_label),
+            "INSERT INTO notes (title, slug, content_md, kind, lat, lon, location_label) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (title, slug, content_md, kind or "entry", lat, lon, location_label),
         )
         note_id = cur.lastrowid
         wikilinks.resolve_dangling_links(conn, note_id, title)

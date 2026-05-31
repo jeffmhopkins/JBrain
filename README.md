@@ -46,6 +46,12 @@ and a graph.
 - **Location & time** — entries record when they were made (always) and, with the
   opt-in 📍 toggle in the PWA, *where*: chat/quick-task/capture entries are
   stamped with your coordinates and shown on the note (with a map link).
+- **Knowledge-base synthesis** — a scheduled workflow analyses the entries since
+  its last run and folds their durable knowledge into a continually-updated
+  **Knowledge Base** layer that links back to the source entries (auto-applied,
+  versioned, posts a Review card). Browse it via **Wiki → Knowledge base**.
+- **Manual editing** — edit any note's markdown directly in the PWA (versioned
+  like every other change), so you can refine or correct the synthesized wiki.
 
 ## Authentication
 

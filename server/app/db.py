@@ -43,7 +43,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def init_db() -> None:
@@ -116,6 +116,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             _add_column(conn, table, "lat", "REAL")
             _add_column(conn, table, "lon", "REAL")
             _add_column(conn, table, "location_label", "TEXT")
+
+    if current < 7:
+        # Knowledge-base layer marker (raw 'entry' vs synthesized 'kb').
+        _add_column(conn, "notes", "kind", "TEXT NOT NULL DEFAULT 'entry'")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

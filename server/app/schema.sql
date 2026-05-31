@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS notes (
   title      TEXT UNIQUE NOT NULL,
   slug       TEXT UNIQUE NOT NULL,
   content_md TEXT NOT NULL DEFAULT '',
+  kind           TEXT NOT NULL DEFAULT 'entry',   -- 'entry' (raw) | 'kb' (synthesized)
   lat            REAL,
   lon            REAL,
   location_label TEXT,

@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get } from "../api";
+import { get, post } from "../api";
 import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 
 interface Note {
-  id: number; title: string; slug: string; content_md: string;
+  id: number; title: string; slug: string; content_md: string; kind: string;
   created_at: string; updated_at: string;
   lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
@@ -24,6 +24,20 @@ export default function NotePage() {
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState<TimelineEntry | null>(null);
   const [diffing, setDiffing] = useState<{ from: TimelineEntry; to: TimelineEntry } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function saveEdit() {
+    if (!note) return;
+    setSaving(true);
+    try {
+      await post("/api/notes", { title: note.title, content_md: editing });
+      setEditing(null);
+      reload();
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function reload() {
     get<Note>(`/api/notes/${slug}`).then(setNote).catch((e) => setError(e.message));
@@ -56,8 +70,15 @@ export default function NotePage() {
 
   const article = (
     <div className="content">
-      <h1>{note.title}</h1>
-      <div className="muted" style={{ fontSize: 12, marginBottom: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div className="row">
+        <h1 style={{ margin: 0 }}>{note.title}</h1>
+        {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
+        <span className="spacer" />
+        {editing === null && (
+          <button className="ghost" onClick={() => setEditing(note.content_md)}>Edit</button>
+        )}
+      </div>
+      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
         <span>🕐 {note.created_at}{note.updated_at !== note.created_at ? ` · updated ${note.updated_at}` : ""}</span>
         {note.lat != null && note.lon != null && (
           <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
@@ -71,9 +92,20 @@ export default function NotePage() {
           {note.tags.map((t) => <span key={t} className="badge">#{t}</span>)}
         </div>
       )}
-      <div className="md">
-        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
-      </div>
+      {editing !== null ? (
+        <div>
+          <textarea rows={16} style={{ fontFamily: "monospace" }} value={editing}
+                    onChange={(e) => setEditing(e.target.value)} />
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="primary" onClick={saveEdit} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+            <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="md">
+          <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
+        </div>
+      )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}
     </div>
   );

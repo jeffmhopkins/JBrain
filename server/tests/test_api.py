@@ -353,6 +353,51 @@ def test_day_log_summary_workflow(client):
     assert client.get("/api/notes/daily-summaries").json()["content_md"].count("## 2026-05-30") == 1
 
 
+def test_wiki_synthesis_workflow(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import workflows as wf_svc
+
+    # Two raw entries to synthesize.
+    client.post("/api/notes", json={"title": "Ran 5k", "content_md": "felt great, 26 min"})
+    client.post("/api/notes", json={"title": "Read on habits", "content_md": "tiny habits compound"})
+
+    # Stub the Claude call with a deterministic KB action.
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb: [
+        {"op": "create", "title": "Health & Habits",
+         "content_md": "Synthesis. See [[Ran 5k]] and [[Read on habits]]."}
+    ])
+
+    wf = client.post("/api/workflows", json={
+        "name": "Synth", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
+        "action_type": "synthesize_wiki", "action_config": {"review": {"title": "KB updated"}},
+        "enabled": True,
+    }).json()
+    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+
+    kb = client.get("/api/notes?kind=kb").json()
+    assert any(n["title"] == "Health & Habits" for n in kb)
+    note = client.get("/api/notes/health-habits").json()
+    assert note["kind"] == "kb"
+    # It links to the source entries -> they gain backlinks.
+    assert any(b["title"] == "Health & Habits" for b in client.get("/api/notes/ran-5k").json()["backlinks"])
+    assert any("KB updated" in i["title"] for i in client.get("/api/reviews").json())
+
+    # Re-run with no new entries -> no-op (watermark advanced).
+    assert "no new entries" in client.post(f"/api/workflows/{wf['id']}/run").json()["detail"]
+
+
+def test_manual_edit_preserves_kb_kind(client):
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "KB Topic", "v1", kind="kb")
+    conn.commit()
+    # Manual edit through the normal notes endpoint (no kind passed).
+    client.post("/api/notes", json={"title": "KB Topic", "content_md": "edited"})
+    note = client.get("/api/notes/kb-topic").json()
+    assert note["kind"] == "kb" and note["content_md"] == "edited"
+
+
 def test_capture_with_location(client):
     client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
     item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")

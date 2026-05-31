@@ -249,11 +249,89 @@ def _action_summarize_day_log(conn, cfg: dict, workflow_id, context=None) -> str
     return f"summarised {', '.join(todo)}"
 
 
+def _synthesize_actions(entries: list, existing_kb: list) -> list[dict]:
+    """Ask Claude to fold new entries into the knowledge base. Returns a list of
+    {op, title, content_md}. Factored out so it can be stubbed in tests."""
+    settings = get_settings()
+    if not settings.has_anthropic:
+        raise RuntimeError("no Anthropic API key configured")
+    import json as _json
+
+    from anthropic import Anthropic
+
+    entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
+    kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
+    prompt = (
+        "You maintain a personal KNOWLEDGE BASE synthesized from raw journal/note "
+        "entries. Read the NEW ENTRIES and fold their durable knowledge into "
+        "topic notes. Update an existing KB note when the topic already exists; "
+        "otherwise create one. Cite the source entries inline as [[Entry Title]] "
+        "wiki-links, and cross-link related KB topics as [[KB Title]].\n\n"
+        f"NEW ENTRIES:\n{entries_text}\n\n"
+        f"EXISTING KB NOTES:\n{kb_text}\n\n"
+        "Return ONLY a JSON array (no prose) of actions:\n"
+        '[{"op":"create"|"update","title":"Topic","content_md":"full markdown '
+        'with [[links]] to sources"}]. For updates, return the FULL merged content.'
+    )
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    msg = client.messages.create(
+        model=settings.anthropic_model, max_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    try:
+        data = _json.loads(text[start:end + 1])
+    except Exception:
+        return []
+    return [a for a in data if isinstance(a, dict) and a.get("title") and a.get("content_md")]
+
+
+def _action_synthesize_wiki(conn, cfg: dict, workflow_id, context=None) -> str:
+    """Fold entries created since the last run into the dedicated KB layer.
+    Auto-applies (versioned/undoable) and posts a Review card."""
+    wm_key = "wiki_synth:last_note_id"
+    watermark = int(get_meta(wm_key) or 0)
+    batch = int(cfg.get("batch_limit", 50))
+    entries = conn.execute(
+        "SELECT id, title, slug, content_md FROM notes "
+        "WHERE id > ? AND kind = 'entry' AND deleted_at IS NULL ORDER BY id LIMIT ?",
+        (watermark, batch),
+    ).fetchall()
+    if not entries:
+        return "no new entries since last run"
+
+    existing_kb = conn.execute(
+        "SELECT title, content_md FROM notes WHERE kind = 'kb' AND deleted_at IS NULL"
+    ).fetchall()
+
+    changed: list[str] = []
+    for a in _synthesize_actions(entries, existing_kb):
+        notes_svc.upsert_note(
+            conn, a["title"], a["content_md"], kind="kb",
+            source="workflow", version_note="wiki synthesis",
+        )
+        changed.append(a["title"])
+
+    set_meta(conn, wm_key, str(max(e["id"] for e in entries)))
+
+    if cfg.get("review") is not False and changed:
+        rev = cfg.get("review") if isinstance(cfg.get("review"), dict) else {}
+        reviews_svc.create_review_item(
+            conn, workflow_id, rev.get("title") or "Knowledge base updated",
+            "Updated topics: " + ", ".join(changed[:10]), _slug_for(conn, changed[0]),
+        )
+    return f"synthesised {len(entries)} entr(y/ies) into {len(changed)} KB note(s)"
+
+
 _ACTIONS = {
     "append_to_note": _action_append_to_note,
     "claude_synthesize": _action_claude_synthesize,
     "create_review_item": _action_create_review_item,
     "summarize_day_log": _action_summarize_day_log,
+    "synthesize_wiki": _action_synthesize_wiki,
 }
 
 

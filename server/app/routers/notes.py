@@ -31,20 +31,22 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 
 
 @router.get("")
-def list_notes(q: str | None = None, limit: int = 200):
+def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200):
     conn = get_conn()
+    clauses = ["deleted_at IS NULL"]
+    params: list = []
     if q:
-        rows = conn.execute(
-            "SELECT id, title, slug, updated_at FROM notes "
-            "WHERE deleted_at IS NULL AND title LIKE ? ORDER BY updated_at DESC LIMIT ?",
-            (f"%{q}%", limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, title, slug, updated_at FROM notes "
-            "WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        clauses.append("title LIKE ?")
+        params.append(f"%{q}%")
+    if kind:
+        clauses.append("kind = ?")
+        params.append(kind)
+    params.append(limit)
+    rows = conn.execute(
+        "SELECT id, title, slug, kind, updated_at FROM notes "
+        f"WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?",
+        params,
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -15,9 +15,13 @@ registerSW({
   },
 });
 
+// Route under the deploy base path (e.g. "/JBrain/" on GitHub Pages, "/" when
+// the API serves the app) so links/refreshes keep the correct prefix.
+const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <App />
     </BrowserRouter>
   </React.StrictMode>,

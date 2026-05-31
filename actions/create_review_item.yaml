@@ -1,0 +1,14 @@
+# Declarative action: post a card to the Review inbox. Equivalent to the former
+# Python _action_create_review_item.
+#
+# config keys:
+#   title       (required) — card title ({date} supported)
+#   message                — card body ({date} supported)
+#   link_title             — note title to link the card to
+type: create_review_item
+steps:
+  - do: create_review
+    with:
+      title: "{{ config.title }}"
+      message: "{{ config.message | default('') }}"
+      link_title: "{{ config.link_title | default(none) }}"

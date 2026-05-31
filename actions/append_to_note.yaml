@@ -1,0 +1,21 @@
+# Declarative action: append text to a note (creating it if absent), with an
+# optional review card. Equivalent to the former Python _action_append_to_note.
+#
+# config keys:
+#   title  (required)  — the note to append to
+#   text               — text to append ({date} token supported)
+#   review             — omit/false to skip; or {title?, message?} to post a card
+type: append_to_note
+steps:
+  - do: write_note
+    with:
+      title: "{{ config.title }}"
+      text: "{{ config.text | default('') }}"
+      mode: append
+
+  - do: create_review
+    when: "{{ config.review }}"
+    with:
+      title: "{{ config.review.title | default('Review: ' ~ config.title) }}"
+      message: "{{ config.review.message | default('') }}"
+      link_title: "{{ config.title }}"

@@ -393,10 +393,16 @@ def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
 
 
 def run_workflow(conn, wf, context: dict | None = None) -> tuple[str, str]:
+    from . import pipeline
+
     cfg = json.loads(wf["action_config"] or "{}")
+    recipe = pipeline.get_action_def(wf["action_type"])  # YAML def wins over Python
     action = _ACTIONS.get(wf["action_type"])
     try:
-        if action is None:
+        if recipe is not None:
+            detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], context)
+            status = "ok"
+        elif action is None:
             status, detail = "error", f"unknown action '{wf['action_type']}'"
         else:
             detail = action(conn, cfg, wf["id"], context)

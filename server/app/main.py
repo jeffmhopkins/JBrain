@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
     for w in architect.validate_agent_config(get_conn()):
         print(f"[agent] config warning: {w}", flush=True)
 
+    from .services import pipeline
+    for w in pipeline.validate_action_defs():
+        print(f"[pipeline] action warning: {w}", flush=True)
+
     task = asyncio.create_task(_scheduler_loop())
     try:
         yield

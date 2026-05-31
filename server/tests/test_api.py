@@ -691,3 +691,56 @@ def test_append_action_with_review_block(client):
     client.post(f"/api/workflows/{wf['id']}/run")
     items = client.get("/api/reviews").json()
     assert any(i["title"] == "Check journal" and i["link_slug"] == "journal" for i in items)
+
+
+# --- Declarative pipeline engine -------------------------------------------
+
+def test_pipeline_templating_native_and_string():
+    from app.services import pipeline
+    scope = {"config": {"n": 3, "tags": ["a", "b"]}, "today": "2026-01-01"}
+    # A lone {{ expr }} yields the native value (list/int), not a string.
+    assert pipeline._render_value("{{ config.tags }}", scope) == ["a", "b"]
+    assert pipeline._render_value("{{ config.n }}", scope) == 3
+    # Embedded interpolation yields a string; {date} is substituted.
+    assert pipeline._render_value("have {{ config.n }} on {date}", scope) == "have 3 on 2026-01-01".replace("2026-01-01", pipeline._today())
+    # Missing keys chain to None/empty rather than raising.
+    assert pipeline._render_value("{{ config.missing }}", scope) is None
+    assert pipeline._render_value("{{ config.missing.deep }}", scope) is None
+
+
+def test_pipeline_default_filter_and_concat():
+    from app.services import pipeline
+    scope = {"config": {"title": "Journal"}}
+    assert pipeline._eval("config.review.title | default('Review: ' ~ config.title)", scope) == "Review: Journal"
+    assert pipeline._eval("config.review", scope) is None  # tri-state: absent → falsy
+
+
+def test_action_defs_load_and_validate():
+    from app.services import pipeline
+    types = pipeline.action_types()
+    assert "append_to_note" in types and "create_review_item" in types
+    assert pipeline.validate_action_defs() == []  # shipped defs are well-formed
+
+
+def test_pipeline_unknown_primitive_raises():
+    from app.db import get_conn
+    from app.services import pipeline
+    bad = {"type": "x", "steps": [{"do": "nonexistent", "with": {}}]}
+    try:
+        pipeline.run_pipeline(get_conn(), bad, {}, 1, None)
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "unknown primitive" in str(e)
+
+
+def test_pipeline_action_runs_via_engine(client):
+    # append_to_note is a YAML definition now; confirm dispatch routes to it.
+    from app.services import pipeline
+    assert pipeline.get_action_def("append_to_note") is not None
+    wf = client.post("/api/workflows", json={
+        "name": "Eng", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "append_to_note",
+        "action_config": {"title": "Engine Out", "text": "x"}, "enabled": True,
+    }).json()
+    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert "x" in client.get("/api/notes/engine-out").json()["content_md"]

@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { get } from "../api";
+import { Icon } from "../components/Icon";
 
 type Mode = "hybrid" | "keyword" | "semantic";
 interface Result {
@@ -48,7 +49,7 @@ export default function SearchPage() {
             <div style={{ fontWeight: 600 }}>{r.title}</div>
             {r.kind === "attachment" && (
               <div className="muted" style={{ fontSize: 12 }}>
-                📎 in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}
+                <Icon name="clip" size={13} /> in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}
               </div>
             )}
           </Link>

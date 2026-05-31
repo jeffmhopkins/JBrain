@@ -6,6 +6,7 @@ import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
+import { Icon } from "../components/Icon";
 
 interface Note {
   id: number; title: string; slug: string; content_md: string; kind: string;
@@ -83,7 +84,7 @@ export default function NotePage() {
         {note.lat != null && note.lon != null && (
           <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
              target="_blank" rel="noreferrer">
-            📍 {note.location_label || `${note.lat}, ${note.lon}`}
+            <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
           </a>
         )}
       </div>

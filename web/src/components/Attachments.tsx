@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { del, get, uploadAttachment } from "../api";
+import { Icon } from "./Icon";
 
 interface Attachment {
   id: number;
@@ -78,7 +79,7 @@ export default function Attachments({ slug }: { slug: string }) {
       {items.map((a) => (
         <div key={a.id} className="list-item">
           <div className="row">
-            <span>📎 {a.filename}</span>
+            <span><Icon name="clip" size={15} /> {a.filename}</span>
             <span className="spacer" />
             <span className="muted" style={{ fontSize: 11 }}>{humanSize(a.byte_size)}</span>
           </div>

@@ -21,8 +21,8 @@ export default defineConfig({
         name: "JBrain",
         short_name: "JBrain",
         description: "Your self-hosted conversational wiki and thinking partner.",
-        theme_color: "#0f172a",
-        background_color: "#0f172a",
+        theme_color: "#111315",
+        background_color: "#111315",
         display: "standalone",
         start_url: "/",
         icons: [

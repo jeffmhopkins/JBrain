@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { useIsDesktop, useOnline } from "../hooks";
+import { Icon } from "./Icon";
 
 function useReviewCount(): number {
   const [n, setN] = useState(0);
@@ -45,12 +46,12 @@ function UpdateBanner() {
 }
 
 const NAV = [
-  { to: "/chat", label: "Chat", ico: "💬" },
-  { to: "/wiki", label: "Wiki", ico: "📚" },
-  { to: "/graph", label: "Graph", ico: "🕸️" },
-  { to: "/search", label: "Search", ico: "🔍" },
-  { to: "/flows", label: "Flows", ico: "⚙️" },
-  { to: "/sql", label: "SQL", ico: "🗄️" },
+  { to: "/chat", label: "Chat", icon: "chat" },
+  { to: "/wiki", label: "Wiki", icon: "wiki" },
+  { to: "/graph", label: "Graph", icon: "graph" },
+  { to: "/search", label: "Search", icon: "search" },
+  { to: "/flows", label: "Flows", icon: "flows" },
+  { to: "/sql", label: "SQL", icon: "sql" },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -77,11 +78,11 @@ export default function Shell({ children }: { children: ReactNode }) {
           <nav className="nav">
             {NAV.map((n) => (
               <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "active" : "")}>
-                <span className="ico">{n.ico}</span> {n.label}
+                <Icon name={n.icon} /> {n.label}
               </NavLink>
             ))}
             <NavLink to="/review" className={({ isActive }) => (isActive ? "active" : "")}>
-              <span className="ico">🔔</span> Review
+              <Icon name="bell" /> Review
               {reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
             </NavLink>
           </nav>
@@ -107,7 +108,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           <strong>{brainName}</strong>
           <div className="row" style={{ gap: 8 }}>
             <NavLink to="/review" className="bell">
-              🔔{reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
+              <Icon name="bell" />{reviewCount > 0 && <span className="count-badge">{reviewCount}</span>}
             </NavLink>
             <button className="ghost" onClick={disconnect}>Disconnect</button>
           </div>
@@ -121,7 +122,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <nav className="tabbar">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "active" : "")}>
-            <span className="ico">{n.ico}</span>
+            <Icon name={n.icon} size={20} />
             <span>{n.label}</span>
           </NavLink>
         ))}

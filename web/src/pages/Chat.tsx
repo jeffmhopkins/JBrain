@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { createEntry, post, streamChat } from "../api";
 import { useGeo, useIsDesktop, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
+import { Icon } from "../components/Icon";
 
 interface Msg { role: "user" | "assistant"; content: string; }
 type Mode = "entry" | "assisted" | "research";
@@ -73,7 +74,7 @@ function EntryForm({ geo }: { geo: ReturnType<typeof useGeo> }) {
           <button
             type="button" className={geo.enabled ? "primary" : "ghost"} onClick={geo.toggle}
             title={geo.enabled ? "Location on" : "Tag this entry with your location"} style={{ padding: "0 12px" }}
-          >📍</button>
+          ><Icon name="pin" /></button>
           <button className="primary" type="submit" disabled={busy || !text.trim()}>Save entry</button>
           {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
         </div>
@@ -173,7 +174,7 @@ function ChatPane({ mode, geo, isDesktop }: { mode: Mode; geo: ReturnType<typeof
       {!research && !isDesktop && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
       <form className="composer" onSubmit={send}>
         <button type="button" className={geo.enabled ? "primary" : "ghost"} onClick={geo.toggle}
-          title={geo.enabled ? "Location on" : "Tag entries with your location"} style={{ padding: "0 12px" }}>📍</button>
+          title={geo.enabled ? "Location on" : "Tag entries with your location"} style={{ padding: "0 12px" }}><Icon name="pin" /></button>
         <textarea
           rows={1}
           placeholder={online ? (research ? "Ask your brain…" : "Talk to your brain…") : "Offline — reconnect to chat"}

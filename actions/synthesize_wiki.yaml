@@ -12,6 +12,10 @@
 #   instructions  — extra guidance appended to the synthesis prompt
 #   review        — set to false to suppress the review card (default on)
 type: synthesize_wiki
+config:
+  - { key: batch_limit, label: Max entries per run, type: number, help: "Default 50" }
+  - { key: instructions, label: Extra guidance, type: textarea }
+  - { key: review, label: Post a review card, type: review }
 steps:
   - id: wm
     do: get_meta

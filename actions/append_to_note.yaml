@@ -6,6 +6,10 @@
 #   text               — text to append ({date} token supported)
 #   review             — omit/false to skip; or {title?, message?} to post a card
 type: append_to_note
+config:
+  - { key: title, label: Note title, type: text, required: true }
+  - { key: text, label: Text to append, type: textarea, help: "{date} becomes today" }
+  - { key: review, label: Post a review card, type: review }
 steps:
   - do: write_note
     with:

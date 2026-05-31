@@ -25,16 +25,22 @@ const BLANK = {
   enabled: true,
 };
 
+interface ActionType { type: string; config: any[]; }
+
 export default function WorkflowsPage() {
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
   const [runs, setRuns] = useState<Record<number, any[]>>({});
   const [error, setError] = useState("");
+  const [actionTypes, setActionTypes] = useState<ActionType[]>([]);
 
   async function load() {
     try { setItems(await get("/api/workflows")); } catch { /* ignore */ }
   }
   useEffect(() => { load(); }, []);
+  // Action types are data-driven from the server catalog (YAML defs + Python),
+  // so newly-added actions appear automatically.
+  useEffect(() => { get("/api/workflows/action-types").then(setActionTypes).catch(() => {}); }, []);
 
   async function toggle(w: Workflow) { await post(`/api/workflows/${w.id}/toggle`); load(); }
   async function runNow(w: Workflow) {
@@ -164,12 +170,9 @@ export default function WorkflowsPage() {
             <div style={{ flex: 1 }}>
               <label className="muted">Action type</label>
               <select className="modal-select" value={editing.action_type} onChange={(e) => setEditing({ ...editing, action_type: e.target.value })}>
-                <option value="append_to_note">append_to_note</option>
-                <option value="claude_synthesize">claude_synthesize</option>
-                <option value="create_review_item">create_review_item</option>
-                <option value="generate_tags">generate_tags</option>
-                <option value="summarize_day_log">summarize_day_log</option>
-                <option value="synthesize_wiki">synthesize_wiki</option>
+                {(actionTypes.length ? actionTypes.map((a) => a.type) : [editing.action_type]).map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
               </select>
             </div>
           </div>

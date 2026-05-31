@@ -45,6 +45,12 @@ def list_workflows():
     return [_public(r) for r in rows]
 
 
+@router.get("/action-types")
+def action_types():
+    """The catalog of action types + config-form schemas (data-driven picker)."""
+    return wf_svc.action_catalog()
+
+
 @router.get("/{wf_id}")
 def get_workflow(wf_id: int):
     return _public(_row(get_conn(), wf_id))

@@ -382,6 +382,33 @@ _ACTIONS = {
     "generate_tags": _action_generate_tags,
 }
 
+# Config-form schemas for actions still implemented in Python (YAML-defined
+# actions declare their own `config:` in actions/*.yaml).
+_PY_ACTION_SCHEMAS = {
+    "claude_synthesize": [
+        {"key": "target_title", "label": "Target note title", "type": "text", "required": True},
+        {"key": "prompt", "label": "Prompt (optional)", "type": "textarea"},
+        {"key": "source_title", "label": "Source note title", "type": "text"},
+        {"key": "context_query", "label": "Context search query", "type": "text"},
+        {"key": "mode", "label": "Write mode", "type": "select", "options": ["replace", "append"]},
+        {"key": "review", "label": "Post a review card", "type": "review"},
+    ],
+}
+
+
+def action_catalog() -> list[dict]:
+    """Every runnable action type + its config-form schema. YAML definitions win;
+    Python-only actions fall back to _PY_ACTION_SCHEMAS. Drives the PWA picker."""
+    from . import pipeline
+
+    schemas: dict[str, list] = {}
+    for t in pipeline.action_types():
+        recipe = pipeline.get_action_def(t) or {}
+        schemas[t] = recipe.get("config", [])
+    for t in _ACTIONS:
+        schemas.setdefault(t, _PY_ACTION_SCHEMAS.get(t, []))
+    return [{"type": t, "config": schemas[t]} for t in sorted(schemas)]
+
 
 # --- Execution --------------------------------------------------------------
 

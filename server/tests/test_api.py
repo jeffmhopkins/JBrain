@@ -769,3 +769,15 @@ def test_pipeline_action_runs_via_engine(client):
     }).json()
     assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
     assert "x" in client.get("/api/notes/engine-out").json()["content_md"]
+
+
+def test_action_types_endpoint(client):
+    cat = client.get("/api/workflows/action-types").json()
+    by_type = {c["type"]: c for c in cat}
+    # Every runnable action appears, YAML-defined and Python alike.
+    for t in ("append_to_note", "create_review_item", "generate_tags",
+              "summarize_day_log", "synthesize_wiki", "claude_synthesize"):
+        assert t in by_type, f"{t} missing from action catalog"
+    # Schemas come through for the picker/forms.
+    assert any(f["key"] == "title" for f in by_type["append_to_note"]["config"])
+    assert any(f["key"] == "target_title" for f in by_type["claude_synthesize"]["config"])

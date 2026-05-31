@@ -6,6 +6,10 @@
 #   message                — card body ({date} supported)
 #   link_title             — note title to link the card to
 type: create_review_item
+config:
+  - { key: title, label: Card title, type: text, required: true }
+  - { key: message, label: Message, type: textarea }
+  - { key: link_title, label: Link to note titled, type: text }
 steps:
   - do: create_review
     with:

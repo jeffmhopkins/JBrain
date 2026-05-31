@@ -9,6 +9,11 @@
 #   prompt                   — optional override for the day summary prompt
 #   review                   — set to false to suppress the review card (default on)
 type: summarize_day_log
+config:
+  - { key: log_title, label: Log note title, type: text, required: true }
+  - { key: summary_title, label: Summary note title, type: text }
+  - { key: prompt, label: Summary prompt (optional), type: textarea }
+  - { key: review, label: Post a review card, type: review }
 steps:
   - id: pending
     do: daylog_pending

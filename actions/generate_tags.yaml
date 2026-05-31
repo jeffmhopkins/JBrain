@@ -4,6 +4,8 @@
 # config keys:
 #   prompt  — optional override for the tag-suggestion prompt
 type: generate_tags
+config:
+  - { key: prompt, label: Tag prompt (optional), type: textarea, help: "Leave blank for the default" }
 steps:
   - id: entry
     do: read_note

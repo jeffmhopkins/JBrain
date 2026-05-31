@@ -287,13 +287,36 @@ def test_capture_inbox_and_undo(client):
     assert not any(i["id"] == iid for i in client.get("/api/capture").json())
 
 
-def test_attachments_rejects_non_text(client):
+def test_attachments_accepts_any_file(client):
     client.post("/api/notes", json={"title": "Host2", "content_md": "x"})
-    bad = client.post(
+    # Any file type is accepted now (binary stored; no text extracted from junk).
+    ok = client.post(
         "/api/notes/host2/attachments",
-        files={"file": ("image.png", b"\x89PNG\r\n", "image/png")},
+        files={"file": ("image.png", b"\x89PNG\r\nnotrealpng", "image/png")},
     )
-    assert bad.status_code == 415
+    assert ok.status_code == 200
+    assert any(a["filename"] == "image.png" for a in client.get("/api/notes/host2/attachments").json())
+
+
+def test_attachments_rejects_oversize(client):
+    client.post("/api/notes", json={"title": "Host3", "content_md": "x"})
+    big = client.post(
+        "/api/notes/host3/attachments",
+        files={"file": ("big.bin", b"x" * (10 * 1024 * 1024 + 1), "application/octet-stream")},
+    )
+    assert big.status_code == 413
+
+
+def test_attachment_text_is_extracted_and_downloads(client):
+    client.post("/api/notes", json={"title": "Host4", "content_md": "x"})
+    up = client.post(
+        "/api/notes/host4/attachments",
+        files={"file": ("notes.txt", b"searchable plain text here", "text/plain")},
+    ).json()
+    got = client.get(f"/api/attachments/{up['id']}").json()
+    assert "searchable plain text" in got["content_text"]
+    dl = client.get(f"/api/attachments/{up['id']}/download")
+    assert dl.content == b"searchable plain text here"
 
 
 def _write_workflow(tmp, name, body):

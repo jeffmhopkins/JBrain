@@ -23,18 +23,11 @@ async def upload(slug: str, file: UploadFile = File(...)):
     conn = get_conn()
     note_id = _note_id_for_slug(conn, slug)
 
-    mime = att_svc.mime_for(file.filename or "", file.content_type)
-    if mime is None:
-        raise HTTPException(status_code=415, detail="Only .txt and .md/.markdown files are supported.")
-
     raw = await file.read()
     if len(raw) > att_svc.MAX_ATTACHMENT_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (2 MB max).")
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=415, detail="File must be UTF-8 text.")
+        raise HTTPException(status_code=413, detail="File too large (10 MB max).")
 
+    mime = att_svc.resolve_mime(file.filename or "", file.content_type)
     result = att_svc.add_attachment(conn, note_id, file.filename, mime, raw)
     conn.commit()
     return result
@@ -48,7 +41,10 @@ def list_attachments(slug: str):
 
 @router.get("/attachments/{att_id}")
 def get_attachment(att_id: int):
-    row = get_conn().execute("SELECT * FROM attachments WHERE id = ?", (att_id,)).fetchone()
+    row = get_conn().execute(
+        "SELECT id, note_id, filename, mime, content_text, byte_size, created_at "
+        "FROM attachments WHERE id = ?", (att_id,)
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
     return dict(row)
@@ -57,13 +53,14 @@ def get_attachment(att_id: int):
 @router.get("/attachments/{att_id}/download")
 def download_attachment(att_id: int):
     row = get_conn().execute(
-        "SELECT filename, mime, content_text FROM attachments WHERE id = ?", (att_id,)
+        "SELECT filename, mime, content_text, content_blob FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    data = bytes(row["content_blob"]) if row["content_blob"] is not None else (row["content_text"] or "").encode()
     return Response(
-        content=row["content_text"],
-        media_type=f"{row['mime']}; charset=utf-8",
+        content=data,
+        media_type=row["mime"],
         headers={"Content-Disposition": f'attachment; filename="{row["filename"]}"'},
     )
 

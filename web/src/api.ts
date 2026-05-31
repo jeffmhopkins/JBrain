@@ -72,7 +72,10 @@ export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
 export async function uploadAttachment<T = any>(slug: string, file: File): Promise<T> {
+  if (file.size > MAX_ATTACHMENT_BYTES) throw new ApiError("File too large (10 MB max).", 413);
   if (isDemo()) return { id: 1, filename: file.name } as T;
   const fd = new FormData();
   fd.append("file", file);
@@ -89,6 +92,28 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
     throw new ApiError(detail, res.status);
   }
   return res.json();
+}
+
+// Attachments need the auth header, so a plain <a>/<img> won't work — fetch+blob.
+async function attachmentBlob(id: number): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch(u(`/api/attachments/${id}/download`), { headers });
+  if (!res.ok) throw new ApiError("Failed to load attachment", res.status);
+  return res.blob();
+}
+
+export async function attachmentObjectUrl(id: number): Promise<string> {
+  return URL.createObjectURL(await attachmentBlob(id));
+}
+
+export async function downloadAttachment(id: number, filename: string): Promise<void> {
+  if (isDemo()) return;
+  const url = URL.createObjectURL(await attachmentBlob(id));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename || "file";
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // Download a full DB backup (auth header can't ride on a plain <a>, so fetch+blob).

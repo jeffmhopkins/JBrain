@@ -112,7 +112,8 @@ CREATE TABLE IF NOT EXISTS attachments (
   note_id      INTEGER REFERENCES notes(id) ON DELETE CASCADE,
   filename     TEXT NOT NULL,
   mime         TEXT NOT NULL,
-  content_text TEXT NOT NULL DEFAULT '',
+  content_text TEXT NOT NULL DEFAULT '',   -- extracted searchable text (may be empty)
+  content_blob BLOB,                        -- raw bytes (in-DB so backups are complete)
   byte_size    INTEGER NOT NULL DEFAULT 0,
   sha256       TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))

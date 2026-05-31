@@ -37,8 +37,10 @@ and a graph.
   full **revision history**: every edit is versioned and attributed (you vs. the
   AI vs. a restore), with **line diffs** and one-click **restore** (which snapshots
   first, so history is never lost).
-- **Attachments** — attach `.txt`/`.md` files to any note; their contents are
-  **searchable** (keyword + semantic) and the AI can read them for grounding.
+- **Attachments** — attach **any file up to 10 MB** to a note (stored in the DB so
+  backups stay complete). Searchable text is extracted automatically: text/code
+  files are decoded, **PDFs** are text-extracted, and **image EXIF/metadata** is
+  pulled — all indexed for keyword + semantic search and available to the AI.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

@@ -180,7 +180,11 @@ export default function Chat() {
           {mode !== "research" && (
             <>
               <input ref={fileRef} type="file" style={{ display: "none" }}
-                     onChange={(e) => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.currentTarget.value = ""; }} />
+                     onChange={(e) => {
+                       const f = e.target.files?.[0];
+                       if (f) { if (f.size > 10 * 1024 * 1024) alert("File too large (10 MB max)."); else setPendingFile(f); }
+                       e.currentTarget.value = "";
+                     }} />
               <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" /></button>
             </>
           )}

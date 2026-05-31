@@ -43,7 +43,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def init_db() -> None:
@@ -120,6 +120,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 7:
         # Knowledge-base layer marker (raw 'entry' vs synthesized 'kb').
         _add_column(conn, "notes", "kind", "TEXT NOT NULL DEFAULT 'entry'")
+
+    if current < 9:
+        # Store raw attachment bytes in the DB (any file type, not just text).
+        _add_column(conn, "attachments", "content_blob", "BLOB")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

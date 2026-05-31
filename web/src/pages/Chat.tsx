@@ -179,7 +179,6 @@ export default function Chat() {
           placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
         />
         <div className="composer-row">
           <span className="mode-wrap">

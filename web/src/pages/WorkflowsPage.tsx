@@ -48,6 +48,15 @@ export default function WorkflowsPage() {
   async function remove(w: Workflow) {
     if (confirm(`Delete workflow “${w.name}”?`)) { await del(`/api/workflows/${w.id}`); load(); }
   }
+  async function syncRepo() {
+    const r = await post("/api/workflows/sync");
+    setError(`Synced ${r.synced} workflow(s) from repo.`);
+    load();
+  }
+  async function resetToRepo(w: Workflow) {
+    await post(`/api/workflows/${w.id}/reset`);
+    load();
+  }
 
   function openEdit(w?: Workflow) {
     setError("");
@@ -92,6 +101,7 @@ export default function WorkflowsPage() {
       <div className="row">
         <h2 style={{ margin: 0 }}>Workflows</h2>
         <div className="spacer" />
+        <button className="ghost" onClick={syncRepo} title="Pull new/updated workflows from the repo">Sync from repo</button>
         <button className="primary" onClick={() => openEdit()}>+ New</button>
       </div>
       <p className="muted" style={{ fontSize: 13 }}>
@@ -117,6 +127,7 @@ export default function WorkflowsPage() {
             <button className="ghost" onClick={() => runNow(w)}>Run now</button>
             <button className="ghost" onClick={() => openEdit(w)}>Edit</button>
             <button className="ghost" onClick={() => showRuns(w.id)}>History</button>
+            {w.locked && <button className="ghost" onClick={() => resetToRepo(w)} title="Discard local edits; track the repo version again">Reset to repo</button>}
             <button className="ghost" onClick={() => remove(w)}>Delete</button>
           </div>
           {runs[w.id] && (

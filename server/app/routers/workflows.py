@@ -105,6 +105,27 @@ def run_now(wf_id: int):
     return {"status": status, "detail": detail}
 
 
+@router.post("/sync")
+def sync_from_repo():
+    """Re-ingest repo workflow YAML: add new ones, update unlocked changed ones.
+    Lets the PWA pull newly-deployed/updated workflows without a restart."""
+    conn = get_conn()
+    n = wf_svc.ingest_repo_workflows(conn)
+    return {"synced": n, "workflows": [_public(r) for r in
+            conn.execute("SELECT * FROM workflows ORDER BY name").fetchall()]}
+
+
+@router.post("/{wf_id}/reset")
+def reset_to_repo(wf_id: int):
+    """Unlock a user-edited workflow so the repo definition can refresh it."""
+    conn = get_conn()
+    _row(conn, wf_id)
+    conn.execute("UPDATE workflows SET locked = 0 WHERE id = ?", (wf_id,))
+    conn.commit()
+    wf_svc.ingest_repo_workflows(conn)  # re-apply repo definition if present
+    return _public(_row(conn, wf_id))
+
+
 @router.get("/{wf_id}/runs")
 def runs(wf_id: int):
     rows = get_conn().execute(

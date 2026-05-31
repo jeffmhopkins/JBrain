@@ -21,6 +21,7 @@ from .routers import (
     search,
     sql_console,
     staging,
+    system,
     workflows,
 )
 from .services import workflows as wf_svc
@@ -68,7 +69,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system):
     app.include_router(r.router)
 
 

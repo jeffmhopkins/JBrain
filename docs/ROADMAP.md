@@ -5,7 +5,18 @@ implement later. Items reflect the adversarially-reviewed, de-risked approach.
 
 ---
 
-## 1. Self-update from GitHub releases (via the PWA)
+## 1. Self-update from GitHub releases (via the PWA)  — IMPLEMENTED (v1)
+
+Shipped: `app/version.py` (`APP_VERSION`); `GET /api/system/version` (current +
+latest GitHub release, cached 1h, `update_available`); `POST /api/system/update`
+(runs `JBRAIN_UPDATE_CMD` if set, else writes a `/data/update-requested.json`
+marker); a PWA **update banner** with notes link + Update button; and `update.sh`
+— a non-destructive host updater (pulls latest tag, rebuilds; DB + Caddy certs on
+named volumes and `.env`/keys untouched; migrations run on boot).
+
+Still to do: a turnkey self-restart path that needs no host helper (e.g. a small
+watcher container on the docker socket, documented), release signature
+verification, and automatic rollback on a failed boot. Original notes below.
 
 **Goal:** the server can update itself to a newer release when the user approves
 from the PWA — **non-destructively to the SQL database**, and **without changing

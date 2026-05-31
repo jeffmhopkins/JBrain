@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../App";
-import { get } from "../api";
+import { get, post } from "../api";
 import { useIsDesktop, useOnline } from "../hooks";
 
 function useReviewCount(): number {
@@ -13,6 +13,34 @@ function useReviewCount(): number {
     return () => clearInterval(id);
   }, []);
   return n;
+}
+
+function UpdateBanner() {
+  const [info, setInfo] = useState<any>(null);
+  const [state, setState] = useState<"idle" | "updating" | "scheduled">("idle");
+  useEffect(() => {
+    get("/api/system/version").then(setInfo).catch(() => {});
+  }, []);
+
+  async function doUpdate() {
+    const r = await post("/api/system/update");
+    setState(r.started ? "updating" : "scheduled");
+  }
+
+  if (!info?.update_available) return null;
+  return (
+    <div className="update-banner">
+      {state === "idle" && (
+        <>
+          <span>Update available: {info.current} → {info.latest}</span>
+          {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
+          <button className="primary" style={{ padding: "4px 12px" }} onClick={doUpdate}>Update</button>
+        </>
+      )}
+      {state === "updating" && <span>Updating… the server will restart shortly.</span>}
+      {state === "scheduled" && <span>Update requested — run ./update.sh on the host to finish.</span>}
+    </div>
+  );
 }
 
 const NAV = [
@@ -51,6 +79,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
         </aside>
         <div className="main">
+          <UpdateBanner />
           {!online && <div className="offline-banner">Offline — reading cached notes. Chat & saving need a connection.</div>}
           {children}
         </div>
@@ -70,6 +99,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <button className="ghost" onClick={disconnect}>Disconnect</button>
           </div>
         </div>
+        <UpdateBanner />
         {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
         {children}
       </div>

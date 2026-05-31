@@ -128,6 +128,23 @@ docker compose down              # stop
   docker compose exec api sqlite3 /data/brain.db
   ```
 
+## Updating
+
+JBrain checks the latest GitHub release; when a newer one exists the PWA shows an
+**Update** banner. Updating is **non-destructive**: the database and Caddy certs
+are on Docker named volumes and your `.env` (access key, API keys) is untouched —
+only code is replaced, and schema changes are applied by the migration runner on
+boot.
+
+- Manual: `./update.sh` (optionally `./update.sh v0.2.0`) on the host.
+- From the PWA: set `JBRAIN_UPDATE_CMD` (run in the api container) so the
+  **Update** button runs your updater, or wire a host watcher to the
+  `data/update-requested.json` marker the server writes.
+
+Workflows can be turned on/off, edited, and **re-synced from the repo** anytime
+(Workflows → *Sync from repo*); a workflow you edited shows *Reset to repo* to
+track the shipped definition again.
+
 ## Backup & restore
 
 The whole brain is one SQLite file on the `brain-data` volume.

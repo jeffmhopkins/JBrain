@@ -398,6 +398,54 @@ def test_manual_edit_preserves_kb_kind(client):
     assert note["kind"] == "kb" and note["content_md"] == "edited"
 
 
+def test_system_version_check(client, monkeypatch):
+    from app.routers import system
+    from app.version import APP_VERSION
+    # No newer release -> not available.
+    monkeypatch.setattr(system, "_latest_release", lambda: {"tag": APP_VERSION, "url": "u", "name": "n"})
+    v = client.get("/api/system/version").json()
+    assert v["current"] == APP_VERSION and v["update_available"] is False
+    # A newer release -> available.
+    monkeypatch.setattr(system, "_latest_release", lambda: {"tag": "v999.0.0", "url": "u", "name": "n"})
+    assert client.get("/api/system/version").json()["update_available"] is True
+
+
+def test_system_update_schedules_when_no_cmd(client, monkeypatch):
+    import os
+    monkeypatch.delenv("JBRAIN_UPDATE_CMD", raising=False)
+    r = client.post("/api/system/update").json()
+    assert r["scheduled"] is True
+    from app.config import get_settings
+    flag = os.path.join(os.path.dirname(get_settings().db_path), "update-requested.json")
+    assert os.path.exists(flag)
+
+
+def test_workflow_sync_and_reset(client, monkeypatch, tmp_path):
+    from app.db import get_conn
+    from app.services import workflows as wf_svc
+    _write_workflow(str(tmp_path), "synced.yaml", """
+key: synced-wf
+name: Synced
+enabled: true
+trigger: { type: event, event: noop }
+action: { type: append_to_note, config: { title: T, text: x } }
+""")
+    monkeypatch.setenv("JBRAIN_WORKFLOWS_DIR", str(tmp_path))
+
+    out = client.post("/api/workflows/sync").json()
+    assert out["synced"] == 1
+    wf = next(w for w in client.get("/api/workflows").json() if w["key"] == "synced-wf")
+    assert wf["locked"] is False
+
+    # Editing locks it; reset unlocks (so repo can refresh it again).
+    client.put(f"/api/workflows/{wf['id']}", json={
+        "name": "Edited", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "append_to_note", "action_config": {"title": "T", "text": "x"}, "enabled": True,
+    })
+    assert client.get(f"/api/workflows/{wf['id']}").json()["locked"] is True
+    assert client.post(f"/api/workflows/{wf['id']}/reset").json()["locked"] is False
+
+
 def test_capture_with_location(client):
     client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
     item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")

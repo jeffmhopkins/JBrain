@@ -249,6 +249,14 @@ function match(path: string): any {
 
 export function demoResponse(path: string, method = "GET"): any {
   if (method !== "GET") {
+    // Persist a dismiss for the session so the item doesn't reappear on re-fetch
+    // (mirrors the real server marking it dismissed).
+    const dis = path.match(/\/api\/reviews\/(\d+)\/dismiss$/);
+    if (dis) {
+      const i = REVIEWS.findIndex((r) => r.id === Number(dis[1]));
+      if (i >= 0) REVIEWS.splice(i, 1);
+      return { ok: true };
+    }
     if (/\/conversations$/.test(path)) return { id: 1 };
     if (/\/notes\/entry$/.test(path)) return { id: Date.now(), title: "Demo entry", slug: "health-habits" };
     if (/\/action-defs\/validate$/.test(path)) return { warnings: ["Demo mode — changes aren’t saved."], recipe: null };

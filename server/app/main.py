@@ -50,19 +50,31 @@ async def _scheduler_loop():
 async def lifespan(app: FastAPI):
     init_db()
     generated = ensure_access_key()
+    _key_file = "/data/access-key.txt"
     if generated:
         # No key was configured; reveal the generated one once so it can be
-        # pasted into the PWA/watch. Also persisted to /data for retrieval.
+        # pasted into the PWA/watch. Written 0600 (owner-only).
         try:
-            with open("/data/access-key.txt", "w") as fh:
+            import os as _os
+            fd = _os.open(_key_file, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+            with _os.fdopen(fd, "w") as fh:
                 fh.write(generated + "\n")
         except OSError:
             pass
         print("\n" + "=" * 60, flush=True)
         print("JBrain generated an access key (paste this into the app):", flush=True)
         print(f"    {generated}", flush=True)
-        print("Saved to /data/access-key.txt", flush=True)
+        print(f"Saved to {_key_file} (delete it once you've copied the key).", flush=True)
         print("=" * 60 + "\n", flush=True)
+    else:
+        # A key is configured in the env: remove any stale cleartext key file
+        # from a previous generated-key run so it can't mislead/leak.
+        try:
+            import os as _os
+            if _os.path.exists(_key_file):
+                _os.unlink(_key_file)
+        except OSError:
+            pass
 
     wf_svc.ingest_repo_workflows(get_conn())  # seed/update repo workflows
 

@@ -49,10 +49,11 @@ def client(monkeypatch):
     return TestClient(app, headers={"Authorization": f"Bearer {TEST_KEY}"})
 
 
-def test_info_exposes_version_and_cors(client):
+def test_info_public_and_version_is_authed(client):
     from app.version import APP_VERSION
     info = client.get("/api/auth/info").json()
-    assert info["version"] == APP_VERSION and "brain_name" in info
+    assert "brain_name" in info and "version" not in info   # version is not leaked pre-auth
+    assert client.get("/api/auth/verify").json()["version"] == APP_VERSION
     # CORS header present for a cross-origin caller (separately-hosted PWA).
     r = client.get("/api/auth/info", headers={"Origin": "https://example.github.io"})
     assert r.headers.get("access-control-allow-origin") in ("*", "https://example.github.io")
@@ -87,6 +88,13 @@ def test_query_sql_guard():
     import pytest as _pytest
     with _pytest.raises(ValueError):
         sqlsafe.run_select(get_conn(), "DELETE FROM notes", 10)
+    # The meta table (holds the access-key hash), recursive CTEs, and file
+    # functions are all rejected.
+    for bad in ("SELECT value FROM meta",
+                "WITH RECURSIVE c(x) AS (SELECT 1) SELECT * FROM c",
+                "SELECT readfile('/data/access-key.txt')"):
+        with _pytest.raises(ValueError):
+            sqlsafe.run_select(get_conn(), bad, 10)
 
 
 def test_agent_config_complete_and_valid(client):

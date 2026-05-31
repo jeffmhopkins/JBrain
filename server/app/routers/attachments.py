@@ -1,4 +1,6 @@
 """Attachment REST API: upload (multipart), list, view, download, delete."""
+import re
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
@@ -58,10 +60,20 @@ def download_attachment(att_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
     data = bytes(row["content_blob"]) if row["content_blob"] is not None else (row["content_text"] or "").encode()
+    # Serve attacker-uploadable bytes safely: never let the browser render them
+    # inline as active content. Force a download, neutralise script-y MIMEs, stop
+    # content sniffing, and sanitise the filename (no header injection / inline).
+    mime = (row["mime"] or "application/octet-stream")
+    if mime in ("image/svg+xml", "text/html", "application/xhtml+xml") or "javascript" in mime:
+        mime = "application/octet-stream"
+    safe_name = re.sub(r'[\r\n"\\]', "_", (row["filename"] or "file"))
     return Response(
         content=data,
-        media_type=row["mime"],
-        headers={"Content-Disposition": f'attachment; filename="{row["filename"]}"'},
+        media_type=mime,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

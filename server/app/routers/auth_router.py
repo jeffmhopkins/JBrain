@@ -14,11 +14,12 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.get("/info")
 def info():
-    # Public: brain name + server version so the PWA can verify compatibility
-    # before/at connect (works cross-origin for a separately-hosted PWA).
-    return {"brain_name": get_settings().brain_name, "version": APP_VERSION}
+    # Public: brain name only (for the key-entry screen). The exact version is
+    # NOT exposed pre-auth (it maps a public deployment to specific commits).
+    return {"brain_name": get_settings().brain_name}
 
 
 @router.get("/verify", dependencies=[CurrentUser])
 def verify():
-    return {"ok": True, "brain_name": get_settings().brain_name}
+    # Version is returned here (authed) so the PWA can do its compatibility check.
+    return {"ok": True, "brain_name": get_settings().brain_name, "version": APP_VERSION}

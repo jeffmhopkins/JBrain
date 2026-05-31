@@ -41,11 +41,11 @@ export default function App() {
   const [brainName, setBrainName] = useState("JBrain");
   const [serverVersion, setServerVersion] = useState<string | null>(null);
 
-  // Load public server info (brain name + version) from the configured server.
+  // Load public server info (brain name) from the configured server. The version
+  // is authed-only now, so it comes from /verify instead.
   async function loadInfo() {
     const i = await get("/api/auth/info");
     setBrainName(i.brain_name || "JBrain");
-    setServerVersion(i.version || null);
     return i;
   }
 
@@ -53,8 +53,9 @@ export default function App() {
   async function connect(key: string, srv: string) {
     setServer(srv);
     setAccessKey(key);
-    await loadInfo();              // resolves the server (and surfaces bad URLs)
-    await get("/api/auth/verify"); // 401 -> throws ApiError
+    await loadInfo();                       // resolves the server (surfaces bad URLs)
+    const v = await get("/api/auth/verify"); // 401 -> throws ApiError
+    setServerVersion(v.version || null);
     setAuthed(true);
   }
 
@@ -78,7 +79,7 @@ export default function App() {
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
-        .then(() => setAuthed(true))
+        .then((v) => { setServerVersion(v?.version || null); setAuthed(true); })
         // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
         // A network error or 5xx (offline, server restarting) must NOT log the
         // user out: stay authed so cached pages still work.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time
 
 from fastapi import Depends, HTTPException, Request, status
 
@@ -38,6 +39,9 @@ def ensure_access_key() -> str | None:
     configured = get_settings().jbrain_access_key.strip()
 
     if configured:
+        if len(configured) < 24:
+            print("[auth] WARNING: JBRAIN_ACCESS_KEY is short; use a long random "
+                  "key (the installer generates a 256-bit one).", flush=True)
         set_meta(conn, _HASH_KEY, _hash(configured))
         conn.commit()
         return None
@@ -67,13 +71,39 @@ def _extract_key(request: Request) -> str | None:
     return request.headers.get("x-jbrain-key")
 
 
+# Lightweight in-memory per-IP throttle on failed auth (defense-in-depth against
+# online guessing of a weak operator-chosen key; a generated 256-bit key is
+# uncrackable anyway). Best-effort, bounded; resets on success.
+_FAIL_WINDOW = 60.0
+_FAIL_MAX = 30
+_fails: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
 def require_key(request: Request) -> str:
     """Dependency: gate a route on a valid access key."""
-    key = _extract_key(request)
-    if not verify_key(key):
+    ip = _client_ip(request)
+    now = time.monotonic()
+    recent = [t for t in _fails.get(ip, []) if now - t < _FAIL_WINDOW]
+    if len(recent) >= _FAIL_MAX:
+        _fails[ip] = recent
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many attempts; slow down.")
+    if not verify_key(_extract_key(request)):
+        recent.append(now)
+        _fails[ip] = recent
+        if len(_fails) > 10_000:  # bound memory
+            _fails.clear()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing access key"
         )
+    _fails.pop(ip, None)  # success clears the IP's failure history
     return "client"
 
 

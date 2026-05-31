@@ -8,6 +8,16 @@
 {{DOMAIN}} {
 	encode zstd gzip
 
+	# Security headers (Caddy adds HSTS automatically on auto-HTTPS). The CSP is
+	# strict but allows the inline styles the app uses; tighten if you customise.
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+		-Server
+	}
+
 	# Stream Server-Sent Events (chat) without buffering.
 	@sse path /api/chat/*
 	reverse_proxy @sse api:8000 {

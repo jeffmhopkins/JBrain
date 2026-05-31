@@ -116,7 +116,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 /* Center the brand text with the bolt (drop the sidebar's bottom-heavy padding). */
 .utop .brand { padding: 0; }
 .review-bell { position: relative; }
-.review-bell .count-badge { position: absolute; top: 0; right: -2px; }
+/* Brighter, on-brand accent circle for the pending-review count. */
+.review-bell .count-badge {
+  position: absolute; top: 0; right: -2px;
+  background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700;
+}
 /* Notifications-style review dropdown (anchored under the bell, top-right). */
 .review-wrap { position: relative; display: inline-flex; }
 .review-menu {

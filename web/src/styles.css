@@ -215,6 +215,12 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .mbottom button.active .icon { color: var(--accent); }
 .mbottom .count-badge { position: absolute; top: 6px; right: 26%; }
 
+/* Workflow action buttons: one line, compact; scroll sideways if too many. */
+.wf-actions { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.wf-actions::-webkit-scrollbar { display: none; }
+.wf-actions { scrollbar-width: none; }
+.wf-actions button { flex-shrink: 0; padding: 6px 10px; font-size: 13px; }
+
 /* ---- Cards / misc ------------------------------------------------------- */
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .muted { color: var(--text-dim); }

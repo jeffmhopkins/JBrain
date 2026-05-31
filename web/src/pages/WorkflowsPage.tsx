@@ -122,7 +122,7 @@ export default function WorkflowsPage() {
           <div className="muted" style={{ fontSize: 12, margin: "4px 0" }}>
             {w.action_type}{w.last_status ? ` · last: ${w.last_status}` : ""}
           </div>
-          <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <div className="wf-actions">
             <button className="ghost" onClick={() => toggle(w)}>{w.enabled ? "Disable" : "Enable"}</button>
             <button className="ghost" onClick={() => runNow(w)}>Run now</button>
             <button className="ghost" onClick={() => openEdit(w)}>Edit</button>

@@ -115,7 +115,7 @@ def test_agent_config_complete_and_valid(client):
 def test_tool_descriptions_come_from_yaml():
     from app.services import architect
     tools = {t.name: t.description for t in architect._tools_for("assisted")}
-    assert tools["add_list_item"].startswith("Add an item to a checklist")
+    assert "checklist" in tools["add_list_item"] and "shopping list" in tools["add_list_item"]
 
 
 def test_research_prompt_injects_live_tables(client):

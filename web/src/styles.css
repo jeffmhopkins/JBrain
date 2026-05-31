@@ -117,6 +117,16 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .utop .brand { padding: 0; }
 .review-bell { position: relative; }
 .review-bell .count-badge { position: absolute; top: 0; right: -2px; }
+/* Notifications-style review dropdown (anchored under the bell, top-right). */
+.review-wrap { position: relative; display: inline-flex; }
+.review-menu {
+  position: absolute; top: 100%; right: 0; margin-top: 8px; width: 300px; max-width: 86vw;
+  max-height: 60vh; overflow-y: auto; z-index: 60;
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 12px; padding: 6px;
+}
+.review-menu-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); padding: 6px 8px 4px; }
+.review-item { padding: 8px; border-radius: 8px; }
+.review-item + .review-item { border-top: 1px solid var(--border); }
 .utop .back { background: transparent; border: none; color: var(--text-dim); padding: 6px; cursor: pointer; display: inline-flex; border-radius: 8px; }
 .utop .back:hover { color: var(--text); }
 .utop .back .icon { transform: rotate(180deg); }   /* chevron points back (‹) */

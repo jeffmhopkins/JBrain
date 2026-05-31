@@ -1,19 +1,67 @@
-import { ReactNode, useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { ReactNode, useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { useOnline } from "../hooks";
 import { Icon } from "./Icon";
 
-function useReviewCount(): number {
-  const [n, setN] = useState(0);
+interface ReviewItem { id: number; title: string; message: string; link_slug: string | null; created_at: string; }
+
+// The review "alerts" bell: a notifications-style dropdown of items (not a whole
+// page), so the Advanced bolt stays visible beside it. The bell fills + brightens
+// (same treatment as the active bolt) while the menu is open.
+function ReviewBell() {
+  const [count, setCount] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<ReviewItem[]>([]);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const refresh = () => get("/api/reviews/count").then((r) => setCount(r.pending)).catch(() => {});
+  useEffect(() => { refresh(); const id = setInterval(refresh, 60000); return () => clearInterval(id); }, []);
+
   useEffect(() => {
-    const tick = () => get("/api/reviews/count").then((r) => setN(r.pending)).catch(() => {});
-    tick();
-    const id = setInterval(tick, 60000);
-    return () => clearInterval(id);
-  }, []);
-  return n;
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+
+  async function toggle() {
+    if (open) { setOpen(false); return; }
+    try { setItems(await get("/api/reviews")); } catch { setItems([]); }
+    setOpen(true);
+  }
+  async function dismiss(id: number) {
+    await post(`/api/reviews/${id}/dismiss`);
+    setItems((xs) => xs.filter((x) => x.id !== id));
+    setCount((c) => Math.max(0, c - 1));
+  }
+
+  if (count === 0 && !open) return null;
+  return (
+    <div className="review-wrap" ref={ref}>
+      <button className={"bolt review-bell" + (open ? " active" : "")} title={`${count} to review`} onClick={toggle}>
+        <Icon name="bell" size={20} />
+        {count > 0 && <span className="count-badge">{count}</span>}
+      </button>
+      {open && (
+        <div className="review-menu">
+          <div className="review-menu-head">Review</div>
+          {items.length === 0 && <div className="muted" style={{ padding: "10px 8px", fontSize: 13 }}>Nothing to review. 🎉</div>}
+          {items.map((r) => (
+            <div className="review-item" key={r.id}>
+              <strong style={{ fontSize: 14 }}>{r.title}</strong>
+              {r.message && <div className="muted" style={{ fontSize: 12, margin: "4px 0", whiteSpace: "pre-wrap" }}>{r.message}</div>}
+              <div className="row" style={{ gap: 6, marginTop: 4 }}>
+                {r.link_slug && <Link className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} to={`/note/${r.link_slug}`} onClick={() => setOpen(false)}>Open</Link>}
+                <button className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => dismiss(r.id)}>Dismiss</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function UpdateBanner() {
@@ -60,7 +108,6 @@ function toolTitle(pathname: string): string {
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
   const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
-  const reviewCount = useReviewCount();
   const loc = useLocation();
   const nav = useNavigate();
   const path = loc.pathname;
@@ -83,12 +130,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           <span className="brand">{brainName}<span className="dot">.</span></span>
         )}
         <span className="spacer" />
-        {capture && reviewCount > 0 && (
-          <button className="bolt review-bell" title={`${reviewCount} to review`} onClick={() => nav("/review")}>
-            <Icon name="bell" size={20} />
-            <span className="count-badge">{reviewCount}</span>
-          </button>
-        )}
+        {capture && <ReviewBell />}
         {review && <button className="ghost" style={{ padding: "4px 10px" }} onClick={() => nav("/chat")}>Done</button>}
         {!review && (
           <button className={"bolt" + (advanced ? " active" : "")} title={advanced ? "Back to compose" : "Advanced"}

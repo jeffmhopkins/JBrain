@@ -129,6 +129,27 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .login { max-width: 360px; margin: 12vh auto; padding: 24px; }
 .login h1 { text-align: center; }
 
+/* ---- Overlays (version viewer, diff, attachment viewer) ----------------- */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 100;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 24px; padding-top: calc(24px + env(safe-area-inset-top)); overflow-y: auto;
+}
+.overlay-card {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px; width: 100%; max-width: 760px;
+}
+pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
+.diff-insert { color: var(--ok); }
+.diff-delete { color: var(--danger); text-decoration: line-through; }
+.diff-equal { color: var(--text-dim); }
+
+/* Version source badges */
+.badge-user { background: var(--bg-elev-2); }
+.badge-architect { background: rgba(56,189,248,0.18); color: var(--accent); }
+.badge-restore { background: rgba(167,139,250,0.18); color: var(--accent-2); }
+.badge-import { background: rgba(148,163,184,0.18); color: var(--text-dim); }
+
 table.sql-result { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.sql-result th, table.sql-result td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 table.sql-result th { background: var(--bg-elev-2); }

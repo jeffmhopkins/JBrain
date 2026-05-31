@@ -18,7 +18,11 @@ and a graph.
 - **Staging area → confirm** — the AI never writes silently. It proposes
   `CREATE` / `UPDATE` / `LINK` actions; you tap **Apply**.
 - **Wiki** — markdown notes with `[[wiki-links]]`, automatic **backlinks**, and
-  full **version history**.
+  full **revision history**: every edit is versioned and attributed (you vs. the
+  AI vs. a restore), with **line diffs** and one-click **restore** (which snapshots
+  first, so history is never lost).
+- **Attachments** — attach `.txt`/`.md` files to any note; their contents are
+  **searchable** (keyword + semantic) and the AI can read them for grounding.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

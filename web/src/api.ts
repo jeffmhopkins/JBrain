@@ -50,6 +50,26 @@ export const post = <T = any>(p: string, body?: unknown) =>
   api<T>(p, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
+// Multipart upload: must NOT set Content-Type (browser sets the boundary), so
+// we call fetch directly with only the Authorization header.
+export async function uploadAttachment<T = any>(slug: string, file: File): Promise<T> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch(`/api/notes/${encodeURIComponent(slug)}/attachments`, {
+    method: "POST",
+    headers,
+    body: fd,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json();
+}
+
 export interface ChatEvent {
   type: "token" | "staging" | "done" | "error";
   text?: string;

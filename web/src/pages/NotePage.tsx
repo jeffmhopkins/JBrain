@@ -3,39 +3,54 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { get } from "../api";
 import { useIsDesktop } from "../hooks";
-import { renderWikiLinks } from "../util";
+import { makeLinkRenderer, renderWikiLinks } from "../util";
+import Attachments from "../components/Attachments";
+import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 
 interface Note {
   id: number; title: string; slug: string; content_md: string; updated_at: string;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
 }
-interface Version { id: number; content_md: string; created_at: string; }
 
 export default function NotePage() {
   const { slug } = useParams();
   const navigate = useNavigate();
   const isDesktop = useIsDesktop();
   const [note, setNote] = useState<Note | null>(null);
-  const [versions, setVersions] = useState<Version[]>([]);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState("");
+  const [viewing, setViewing] = useState<TimelineEntry | null>(null);
+  const [diffing, setDiffing] = useState<{ from: TimelineEntry; to: TimelineEntry } | null>(null);
+
+  function reload() {
+    get<Note>(`/api/notes/${slug}`).then(setNote).catch((e) => setError(e.message));
+    get<TimelineEntry[]>(`/api/notes/${slug}/versions`).then(setTimeline).catch(() => {});
+  }
 
   useEffect(() => {
     setNote(null); setError("");
-    get<Note>(`/api/notes/${slug}`).then(setNote).catch((e) => setError(e.message));
-    get<Version[]>(`/api/notes/${slug}/versions`).then(setVersions).catch(() => {});
+    reload();
   }, [slug]);
 
   if (error) return <div className="content"><p className="muted">{error}</p><Link to="/wiki">← Back to wiki</Link></div>;
   if (!note) return <div className="content muted">Loading…</div>;
 
-  // Internal links navigate via the router; external open normally.
-  const linkRenderer = ({ href, children }: any) => {
-    if (href?.startsWith("/note/")) {
-      return <a className="wikilink" onClick={(e) => { e.preventDefault(); navigate(href); }} href={href}>{children}</a>;
-    }
-    return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
-  };
+  const rail = (
+    <>
+      <h3 style={{ marginTop: 0 }}>Attachments</h3>
+      <Attachments slug={note.slug} />
+
+      <h3 style={{ marginTop: 20 }}>Backlinks</h3>
+      {note.backlinks.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No notes link here yet.</p>}
+      {note.backlinks.map((b) => (
+        <Link key={b.id} to={`/note/${b.slug}`} className="list-item">{b.title}</Link>
+      ))}
+
+      <h3 style={{ marginTop: 20 }}>History</h3>
+      <HistoryTimeline timeline={timeline} onView={setViewing} onDiff={(from, to) => setDiffing({ from, to })} />
+    </>
+  );
 
   const article = (
     <div className="content">
@@ -46,31 +61,29 @@ export default function NotePage() {
         </div>
       )}
       <div className="md">
-        <ReactMarkdown components={{ a: linkRenderer }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
+        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
       </div>
-      {!isDesktop && <Rail note={note} versions={versions} />}
+      {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}
     </div>
   );
 
-  if (!isDesktop) return article;
-  return (
-    <div className="with-rail">
-      {article}
-      <aside className="rail"><Rail note={note} versions={versions} /></aside>
-    </div>
-  );
-}
-
-function Rail({ note, versions }: { note: Note; versions: Version[] }) {
   return (
     <>
-      <h3>Backlinks</h3>
-      {note.backlinks.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No notes link here yet.</p>}
-      {note.backlinks.map((b) => (
-        <Link key={b.id} to={`/note/${b.slug}`} className="list-item">{b.title}</Link>
-      ))}
-      <h3 style={{ marginTop: 20 }}>History</h3>
-      <p className="muted" style={{ fontSize: 13 }}>{versions.length} previous version(s).</p>
+      {isDesktop ? (
+        <div className="with-rail">
+          {article}
+          <aside className="rail">{rail}</aside>
+        </div>
+      ) : article}
+
+      {viewing && (
+        <VersionViewer slug={note.slug} version={viewing}
+          onClose={() => setViewing(null)}
+          onRestored={() => { setViewing(null); reload(); }} />
+      )}
+      {diffing && (
+        <DiffView slug={note.slug} from={diffing.from} to={diffing.to} onClose={() => setDiffing(null)} />
+      )}
     </>
   );
 }

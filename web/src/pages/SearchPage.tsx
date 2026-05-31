@@ -3,7 +3,14 @@ import { Link } from "react-router-dom";
 import { get } from "../api";
 
 type Mode = "hybrid" | "keyword" | "semantic";
-interface Result { id: number; title: string; slug: string; score: number; }
+interface Result {
+  kind: "note" | "attachment";
+  title: string;
+  slug: string;
+  score: number;
+  filename?: string;
+  snippet?: string;
+}
 
 export default function SearchPage() {
   const [q, setQ] = useState("");
@@ -36,8 +43,15 @@ export default function SearchPage() {
       </form>
       <div style={{ marginTop: 18 }}>
         {searched && results.length === 0 && <p className="muted">No results.</p>}
-        {results.map((r) => (
-          <Link key={r.id} to={`/note/${r.slug}`} className="list-item">{r.title}</Link>
+        {results.map((r, i) => (
+          <Link key={i} to={`/note/${r.slug}`} className="list-item">
+            <div style={{ fontWeight: 600 }}>{r.title}</div>
+            {r.kind === "attachment" && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                📎 in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}
+              </div>
+            )}
+          </Link>
         ))}
       </div>
     </div>

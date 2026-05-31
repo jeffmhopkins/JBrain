@@ -25,10 +25,14 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
-            // Offline reading: serve last-seen notes/search when offline.
-            urlPattern: ({ url }) => url.pathname.startsWith("/api/notes") ||
+            // Offline reading: serve last-seen notes/attachments/search offline.
+            // Exclude attachment downloads so large blobs don't fill the cache.
+            urlPattern: ({ url }) => (
+              url.pathname.startsWith("/api/notes") ||
               url.pathname.startsWith("/api/graph") ||
-              url.pathname.startsWith("/api/search"),
+              url.pathname.startsWith("/api/search") ||
+              (url.pathname.startsWith("/api/attachments") && !url.pathname.endsWith("/download"))
+            ),
             handler: "NetworkFirst",
             options: {
               cacheName: "jbrain-api",

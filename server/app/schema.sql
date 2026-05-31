@@ -16,13 +16,20 @@ CREATE TABLE IF NOT EXISTS notes (
   deleted_at TEXT
 );
 
+-- Full history. One row per authored state (created/updated/restored). The
+-- NEWEST row equals the live note content. `source` = who authored THIS row's
+-- content: 'user' | 'architect' | 'restore' | 'import'.
 CREATE TABLE IF NOT EXISTS note_versions (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-  title      TEXT NOT NULL,
-  content_md TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id         INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL,
+  content_md      TEXT NOT NULL,
+  source          TEXT NOT NULL DEFAULT 'user',
+  conversation_id INTEGER,
+  note            TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id);
 
 -- Wiki-link edges. target_note_id is NULL until the target note exists.
 CREATE TABLE IF NOT EXISTS links (
@@ -84,5 +91,41 @@ CREATE TABLE IF NOT EXISTS inbox (
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   note_id UNINDEXED,
   title,
+  content
+);
+
+-- File attachments (text/markdown in v1). Content is stored as TEXT so it lives
+-- in one consistency domain and is trivially searchable. note_id is nullable so
+-- an attachment can exist before being linked to an entry.
+CREATE TABLE IF NOT EXISTS attachments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id      INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  mime         TEXT NOT NULL,
+  content_text TEXT NOT NULL DEFAULT '',
+  byte_size    INTEGER NOT NULL DEFAULT 0,
+  sha256       TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_note ON attachments(note_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_sha  ON attachments(note_id, sha256);
+
+-- Chunk metadata for attachment semantic search. The matching float vectors are
+-- stored in the vec_chunks virtual table (created in db.py), keyed by this id.
+CREATE TABLE IF NOT EXISTS attachment_chunks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  attachment_id INTEGER NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  note_id       INTEGER,
+  chunk_index   INTEGER NOT NULL,
+  text          TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_att ON attachment_chunks(attachment_id);
+
+-- Full-text index over attachment content (separate from notes_fts).
+CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
+  attachment_id UNINDEXED,
+  note_id       UNINDEXED,
+  filename,
   content
 );

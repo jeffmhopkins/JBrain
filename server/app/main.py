@@ -10,6 +10,7 @@ from .auth import ensure_access_key
 from .config import get_settings
 from .db import init_db
 from .routers import (
+    attachments,
     auth_router,
     capture,
     chat,
@@ -45,7 +46,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments):
     app.include_router(r.router)
 
 

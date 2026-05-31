@@ -1,4 +1,4 @@
-"""Hybrid search: FTS5 keyword + sqlite-vec semantic, merged and ranked."""
+"""Hybrid search over notes AND attachments: FTS5 keyword + sqlite-vec semantic."""
 from fastapi import APIRouter
 
 from ..auth import CurrentUser
@@ -17,34 +17,57 @@ def _fts_escape(q: str) -> str:
 @router.get("")
 def search(q: str, mode: str = "hybrid", limit: int = 20):
     conn = get_conn()
-    results: dict[int, dict] = {}
+    # Keyed by a string composite so note and attachment hits never collide.
+    results: dict[str, dict] = {}
 
-    if mode in ("hybrid", "keyword") and q.strip():
+    def bump(key: str, base: dict, rank_index: int):
+        results.setdefault(key, {**base, "score": 0.0})
+        results[key]["score"] += 1.0 / (rank_index + 1)
+
+    if not q.strip():
+        return []
+
+    if mode in ("hybrid", "keyword"):
         try:
-            rows = conn.execute(
-                """
-                SELECT f.note_id, n.title, n.slug, bm25(notes_fts) AS rank
-                FROM notes_fts f JOIN notes n ON n.id = f.note_id
-                WHERE notes_fts MATCH ? AND n.deleted_at IS NULL
-                ORDER BY rank LIMIT ?
-                """,
+            for i, r in enumerate(conn.execute(
+                "SELECT f.note_id, n.title, n.slug, bm25(notes_fts) AS rank "
+                "FROM notes_fts f JOIN notes n ON n.id = f.note_id "
+                "WHERE notes_fts MATCH ? AND n.deleted_at IS NULL ORDER BY rank LIMIT ?",
                 (_fts_escape(q), limit),
-            ).fetchall()
-            for i, r in enumerate(rows):
-                results.setdefault(r["note_id"], {
-                    "id": r["note_id"], "title": r["title"], "slug": r["slug"], "score": 0.0,
-                })
-                # Lower bm25 rank = better; convert to a descending contribution.
-                results[r["note_id"]]["score"] += 1.0 / (i + 1)
+            ).fetchall()):
+                bump(f"note:{r['note_id']}", {
+                    "kind": "note", "id": r["note_id"], "title": r["title"], "slug": r["slug"],
+                }, i)
         except Exception:
-            pass  # malformed FTS query — fall back to semantic only
+            pass
 
-    if mode in ("hybrid", "semantic") and q.strip():
+        try:
+            for i, r in enumerate(conn.execute(
+                "SELECT af.attachment_id, af.note_id, af.filename, n.title, n.slug, "
+                "bm25(attachments_fts) AS rank "
+                "FROM attachments_fts af JOIN notes n ON n.id = af.note_id "
+                "WHERE attachments_fts MATCH ? AND n.deleted_at IS NULL ORDER BY rank LIMIT ?",
+                (_fts_escape(q), limit),
+            ).fetchall()):
+                bump(f"att:{r['attachment_id']}", {
+                    "kind": "attachment", "attachment_id": r["attachment_id"],
+                    "note_id": r["note_id"], "filename": r["filename"],
+                    "title": r["title"], "slug": r["slug"],
+                }, i)
+        except Exception:
+            pass
+
+    if mode in ("hybrid", "semantic"):
         for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
-            results.setdefault(r["id"], {
-                "id": r["id"], "title": r["title"], "slug": r["slug"], "score": 0.0,
-            })
-            results[r["id"]]["score"] += 1.0 / (i + 1)
+            bump(f"note:{r['id']}", {
+                "kind": "note", "id": r["id"], "title": r["title"], "slug": r["slug"],
+            }, i)
+        for i, r in enumerate(embeddings.semantic_search_attachments(conn, q, limit)):
+            bump(f"att:{r['attachment_id']}", {
+                "kind": "attachment", "attachment_id": r["attachment_id"],
+                "note_id": r["note_id"], "filename": r["filename"],
+                "title": r["title"], "slug": r["slug"], "snippet": r["snippet"],
+            }, i)
 
     ranked = sorted(results.values(), key=lambda x: x["score"], reverse=True)
     return ranked[:limit]

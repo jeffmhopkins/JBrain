@@ -43,8 +43,17 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
+SCHEMA_VERSION = 3
+
+
 def init_db() -> None:
-    """Create schema, vec table, and seed admin + meta. Idempotent."""
+    """Create/upgrade schema + vec tables and seed meta. Idempotent.
+
+    schema.sql is the full latest schema (all CREATE ... IF NOT EXISTS), so a
+    fresh DB lands at the latest version directly. Existing DBs are upgraded by
+    the migration runner, which applies guarded ALTERs for column additions that
+    IF NOT EXISTS can't handle.
+    """
     global _initialized
     with _init_lock:
         if _initialized:
@@ -57,14 +66,49 @@ def init_db() -> None:
             f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_notes USING vec0("
             f"note_id INTEGER PRIMARY KEY, embedding float[{dim}])"
         )
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
+            f"chunk_id INTEGER PRIMARY KEY, embedding float[{dim}])"
+        )
+
+        _run_migrations(conn)
 
         settings = get_settings()
         set_meta(conn, "brain_name", settings.brain_name)
         set_meta(conn, "embedding_dim", str(dim))
-        set_meta(conn, "schema_version", "2")
+        set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
         conn.commit()
         _initialized = True
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    # SQLite has no ADD COLUMN IF NOT EXISTS, so guard explicitly.
+    if not _column_exists(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Upgrade an existing DB to SCHEMA_VERSION. Fresh DBs skip (already latest)."""
+    raw = get_meta("schema_version")
+    if raw is None:
+        return  # brand-new DB: schema.sql already created everything at latest
+    current = int(raw)
+
+    if current < 3:
+        # Revision-history columns + a baseline ("import") version per live note.
+        _add_column(conn, "note_versions", "source", "TEXT NOT NULL DEFAULT 'user'")
+        _add_column(conn, "note_versions", "conversation_id", "INTEGER")
+        _add_column(conn, "note_versions", "note", "TEXT")
+        conn.execute(
+            "INSERT INTO note_versions (note_id, title, content_md, source, note) "
+            "SELECT id, title, content_md, 'import', 'pre-migration snapshot' "
+            "FROM notes WHERE deleted_at IS NULL"
+        )
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

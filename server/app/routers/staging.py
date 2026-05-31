@@ -24,15 +24,17 @@ def list_pending():
     ]
 
 
-def _apply_action(conn, action_type: str, payload: dict) -> None:
+def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None) -> None:
+    # Architect-applied edits are attributed to 'architect' in the version history.
+    kw = {"source": "architect", "conversation_id": conversation_id}
     if action_type in ("CREATE", "UPDATE"):
-        notes_svc.upsert_note(conn, payload["title"], payload.get("content", ""))
+        notes_svc.upsert_note(conn, payload["title"], payload.get("content", ""), **kw)
     elif action_type == "LINK":
         source = notes_svc.get_by_title(conn, payload["source_title"])
         target_title = payload["target_title"]
         if source and f"[[{target_title}]]" not in source["content_md"]:
             new_content = source["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
-            notes_svc.upsert_note(conn, source["title"], new_content)
+            notes_svc.upsert_note(conn, source["title"], new_content, **kw)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -45,7 +47,7 @@ def apply_action(action_id: int):
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Pending action not found")
-    _apply_action(conn, row["type"], json.loads(row["payload_json"]))
+    _apply_action(conn, row["type"], json.loads(row["payload_json"]), row["conversation_id"])
     conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (action_id,))
     conn.commit()
     return {"ok": True}
@@ -58,7 +60,7 @@ def apply_all():
         "SELECT * FROM staging_actions WHERE status = 'pending' ORDER BY id"
     ).fetchall()
     for r in rows:
-        _apply_action(conn, r["type"], json.loads(r["payload_json"]))
+        _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
         conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (r["id"],))
     conn.commit()
     return {"ok": True, "applied": len(rows)}

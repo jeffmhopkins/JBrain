@@ -31,6 +31,9 @@ def client(monkeypatch):
     monkeypatch.setattr(embeddings, "upsert_note_embedding", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "delete_note_embedding", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "semantic_search", lambda *a, **k: [])
+    monkeypatch.setattr(embeddings, "upsert_attachment_embeddings", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "delete_attachment_embeddings", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "semantic_search_attachments", lambda *a, **k: [])
 
     import app.db as db
     db._initialized = False
@@ -81,11 +84,54 @@ def test_create_note_and_backlinks(client):
     assert any(b["title"] == "Alpha" for b in beta["backlinks"])
 
 
-def test_versioning_on_update(client):
+def test_versioning_timeline(client):
     client.post("/api/notes", json={"title": "Gamma", "content_md": "v1"})
     client.post("/api/notes", json={"title": "Gamma", "content_md": "v2"})
-    versions = client.get("/api/notes/gamma/versions").json()
-    assert any(v["content_md"] == "v1" for v in versions)
+    timeline = client.get("/api/notes/gamma/versions").json()
+    # Newest first; newest is current and equals live content.
+    assert timeline[0]["is_current"] is True
+    assert len(timeline) >= 2
+    newest = client.get(f"/api/notes/gamma/versions/{timeline[0]['version_id']}").json()
+    oldest = client.get(f"/api/notes/gamma/versions/{timeline[-1]['version_id']}").json()
+    assert newest["content_md"] == "v2"
+    assert oldest["content_md"] == "v1"
+
+
+def test_diff_and_restore(client):
+    client.post("/api/notes", json={"title": "Delta", "content_md": "line one\nline two"})
+    client.post("/api/notes", json={"title": "Delta", "content_md": "line one\nline THREE"})
+    tl = client.get("/api/notes/delta/versions").json()
+    cur, prev = tl[0]["version_id"], tl[-1]["version_id"]
+
+    diff = client.get(f"/api/notes/delta/diff/{prev}/{cur}").json()
+    types = {h["type"] for h in diff["hunks"]}
+    assert "insert" in types and "delete" in types
+
+    # Restore the original; live content should revert, history preserved.
+    client.post("/api/notes/delta/restore", json={"version_id": prev})
+    assert client.get("/api/notes/delta").json()["content_md"] == "line one\nline two"
+    after = client.get("/api/notes/delta/versions").json()
+    assert len(after) == len(tl) + 1  # restore added a new version, nothing destroyed
+    assert after[0]["source"] == "restore"
+
+
+def test_architect_edits_attributed(client):
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO conversations (id, title) VALUES (99, 't')"
+    )
+    conn.execute(
+        "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (99, 'CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "title": "FromAI", "content": "x", "summary": "s"}),),
+    )
+    conn.commit()
+    pending = client.get("/api/staging").json()
+    client.post(f"/api/staging/{pending[0]['id']}/apply")
+    tl = client.get("/api/notes/fromai/versions").json()
+    assert tl[0]["source"] == "architect"
+    assert tl[0]["conversation_id"] == 99
 
 
 def test_sql_console_rejects_writes(client):
@@ -107,3 +153,36 @@ def test_staging_apply(client):
     assert len(pending) == 1
     client.post(f"/api/staging/{pending[0]['id']}/apply")
     assert client.get("/api/notes/staged").json()["title"] == "Staged"
+
+
+def test_attachments_upload_list_delete(client):
+    client.post("/api/notes", json={"title": "Host", "content_md": "host note"})
+
+    up = client.post(
+        "/api/notes/host/attachments",
+        files={"file": ("spec.md", b"# Spec\n\nsome searchable content", "text/markdown")},
+    )
+    assert up.status_code == 200
+    att_id = up.json()["id"]
+
+    listing = client.get("/api/notes/host/attachments").json()
+    assert any(a["filename"] == "spec.md" for a in listing)
+
+    got = client.get(f"/api/attachments/{att_id}").json()
+    assert "searchable content" in got["content_text"]
+
+    # FTS keyword search should surface the attachment.
+    res = client.get("/api/search?q=searchable&mode=keyword").json()
+    assert any(r["kind"] == "attachment" and r["attachment_id"] == att_id for r in res)
+
+    assert client.delete(f"/api/attachments/{att_id}").status_code == 200
+    assert client.get("/api/notes/host/attachments").json() == []
+
+
+def test_attachments_rejects_non_text(client):
+    client.post("/api/notes", json={"title": "Host2", "content_md": "x"})
+    bad = client.post(
+        "/api/notes/host2/attachments",
+        files={"file": ("image.png", b"\x89PNG\r\n", "image/png")},
+    )
+    assert bad.status_code == 415

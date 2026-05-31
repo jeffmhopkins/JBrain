@@ -10,6 +10,10 @@ import sqlite3
 
 from . import embeddings, wikilinks
 
+# Keep at most this many version rows per note (newest wins). Markdown versions
+# are tiny, so this is generous; it just bounds runaway growth on churny notes.
+MAX_VERSIONS_PER_NOTE = 50
+
 
 def slugify(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
@@ -46,21 +50,47 @@ def get_by_title(conn, title: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def upsert_note(conn, title: str, content_md: str) -> int:
-    """Create a note, or update it if the title already exists. Returns note id."""
+def _prune_versions(conn, note_id: int) -> None:
+    conn.execute(
+        "DELETE FROM note_versions WHERE note_id = ? AND id NOT IN ("
+        "  SELECT id FROM note_versions WHERE note_id = ? "
+        "  ORDER BY created_at DESC, id DESC LIMIT ?)",
+        (note_id, note_id, MAX_VERSIONS_PER_NOTE),
+    )
+
+
+def upsert_note(
+    conn,
+    title: str,
+    content_md: str,
+    *,
+    note_id: int | None = None,
+    source: str = "user",
+    conversation_id: int | None = None,
+    version_note: str | None = None,
+) -> int:
+    """Create or update a note and append a version row for the new state.
+
+    Every write (create, update, restore) records a `note_versions` row tagged
+    with `source` (who authored this content), so the newest version always
+    equals the live note. Pass `note_id` to target a specific note (used by
+    restore, which may also change the title).
+    """
     title = title.strip()
-    existing = get_by_title(conn, title)
+    if note_id is not None:
+        existing = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    else:
+        existing = get_by_title(conn, title)
 
     if existing:
         note_id = existing["id"]
-        # Snapshot previous version before overwriting.
+        slug = existing["slug"]
+        if existing["title"].lower() != title.lower():
+            slug = _unique_slug(conn, title, exclude_id=note_id)
         conn.execute(
-            "INSERT INTO note_versions (note_id, title, content_md) VALUES (?, ?, ?)",
-            (note_id, existing["title"], existing["content_md"]),
-        )
-        conn.execute(
-            "UPDATE notes SET content_md = ?, updated_at = datetime('now') WHERE id = ?",
-            (content_md, note_id),
+            "UPDATE notes SET title = ?, slug = ?, content_md = ?, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (title, slug, content_md, note_id),
         )
     else:
         slug = _unique_slug(conn, title)
@@ -70,6 +100,13 @@ def upsert_note(conn, title: str, content_md: str) -> int:
         )
         note_id = cur.lastrowid
         wikilinks.resolve_dangling_links(conn, note_id, title)
+
+    conn.execute(
+        "INSERT INTO note_versions (note_id, title, content_md, source, conversation_id, note) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (note_id, title, content_md, source, conversation_id, version_note),
+    )
+    _prune_versions(conn, note_id)
 
     _sync_fts(conn, note_id, title, content_md)
     wikilinks.reconcile_links(conn, note_id, content_md)
@@ -85,6 +122,14 @@ def soft_delete(conn, note_id: int) -> None:
     conn.execute("DELETE FROM links WHERE source_note_id = ?", (note_id,))
     conn.execute("UPDATE links SET target_note_id = NULL WHERE target_note_id = ?", (note_id,))
     embeddings.delete_note_embedding(conn, note_id)
+
+    # Drop the note's attachment search artifacts so they don't surface while the
+    # note is deleted, but KEEP the attachment rows so a restore can re-index.
+    for att in conn.execute(
+        "SELECT id FROM attachments WHERE note_id = ?", (note_id,)
+    ).fetchall():
+        embeddings.delete_attachment_embeddings(conn, att["id"])
+    conn.execute("DELETE FROM attachments_fts WHERE note_id = ?", (note_id,))
 
 
 def backlinks(conn, note_id: int) -> list[dict]:

@@ -8,10 +8,10 @@ import { Icon } from "../components/Icon";
 interface Msg { role: "user" | "assistant"; content: string; }
 type Mode = "entry" | "assisted" | "research";
 
-const MODES: { key: Mode; label: string; hint: string }[] = [
-  { key: "entry", label: "Entry", hint: "Store text directly as a note." },
-  { key: "assisted", label: "Assisted", hint: "Talk it out; I propose the note." },
-  { key: "research", label: "Research", hint: "Ask questions across your brain (read-only)." },
+const MODES: { key: Mode; label: string; hint: string; icon: string }[] = [
+  { key: "entry", label: "Entry", hint: "Store text directly as a note.", icon: "plus" },
+  { key: "assisted", label: "Assisted", hint: "Talk it out; I propose the note.", icon: "robot" },
+  { key: "research", label: "Research", hint: "Ask questions across your brain (read-only).", icon: "search" },
 ];
 
 export default function Chat() {
@@ -33,8 +33,9 @@ export default function Chat() {
         <div className="content" style={{ paddingBottom: 0 }}>
           <div className="row" style={{ gap: 6 }}>
             {MODES.map((m) => (
-              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pick(m.key)}>
-                {m.label}
+              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pick(m.key)}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <Icon name={m.icon} size={16} /> {m.label}
               </button>
             ))}
           </div>

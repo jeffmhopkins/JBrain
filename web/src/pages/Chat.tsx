@@ -13,7 +13,13 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
+  const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+
+  async function undo(id: number) {
+    await post(`/api/staging/${id}/undo`);
+    setApplied((a) => a.map((x) => (x.id === id ? { ...x, undone: true } : x)));
+  }
 
   async function newConversation() {
     const { id } = await post("/api/chat/conversations");
@@ -41,6 +47,8 @@ export default function Chat() {
           });
         } else if (ev.type === "staging") {
           setStagingTick((t) => t + 1);
+        } else if (ev.type === "applied" && ev.action) {
+          setApplied((a) => [...a, ev.action!]);
         } else if (ev.type === "error") {
           setMessages((m) => {
             const copy = [...m];
@@ -74,6 +82,20 @@ export default function Chat() {
         ))}
         <div ref={endRef} />
       </div>
+      {applied.length > 0 && (
+        <div style={{ margin: "8px 0" }}>
+          {applied.map((a) => (
+            <div key={a.id} className="applied-chip">
+              <span>✓ {a.summary}</span>
+              {a.undone ? (
+                <span className="muted" style={{ fontSize: 12 }}>undone</span>
+              ) : (
+                <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {!isDesktop && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
       <form className="composer" onSubmit={send}>
         <textarea

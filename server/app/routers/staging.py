@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import notes as notes_svc
+from ..services import quicktasks
 
 router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[CurrentUser])
 
@@ -73,5 +74,33 @@ def reject_action(action_id: int):
         "UPDATE staging_actions SET status = 'rejected' WHERE id = ? AND status = 'pending'",
         (action_id,),
     )
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/{action_id}/undo")
+def undo_action(action_id: int):
+    """Undo an auto-applied additive op by applying its recorded inverse."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM staging_actions WHERE id = ? AND status = 'applied'", (action_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Applied action not found")
+    undo = json.loads(row["payload_json"]).get("undo") or {}
+    op = undo.get("op")
+
+    if op == "remove_line":
+        quicktasks.remove_line_from_note(conn, undo["title"], undo["line"], source="user")
+    elif op == "delete_inbox":
+        conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
+    elif op == "unmark_inbox":
+        conn.executemany(
+            "UPDATE inbox SET processed = 0 WHERE id = ?", [(i,) for i in undo.get("ids", [])]
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Action cannot be undone")
+
+    conn.execute("UPDATE staging_actions SET status = 'undone' WHERE id = ?", (action_id,))
     conn.commit()
     return {"ok": True}

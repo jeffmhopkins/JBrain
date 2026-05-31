@@ -15,8 +15,11 @@ and a graph.
 
 - **Conversational capture** — a curious, Socratic Claude agent that draws ideas
   out of you one concept at a time.
-- **Staging area → confirm** — the AI never writes silently. It proposes
-  `CREATE` / `UPDATE` / `LINK` actions; you tap **Apply**.
+- **Two modes** — *knowledge capture* (Socratic; proposes `CREATE`/`UPDATE`/`LINK`
+  to a **staging area** you confirm with **Apply**) and *quick tasks* ("add milk
+  to the shopping list", "log a 5k run", "remember to…") which **apply instantly**
+  because they're additive — each with one-tap **Undo**. The AI has no
+  destructive auto-apply tool by design; deletes/edits always go through staging.
 - **Wiki** — markdown notes with `[[wiki-links]]`, automatic **backlinks**, and
   full **revision history**: every edit is versioned and attributed (you vs. the
   AI vs. a restore), with **line diffs** and one-click **restore** (which snapshots

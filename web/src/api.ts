@@ -71,9 +71,10 @@ export async function uploadAttachment<T = any>(slug: string, file: File): Promi
 }
 
 export interface ChatEvent {
-  type: "token" | "staging" | "done" | "error";
+  type: "token" | "staging" | "applied" | "done" | "error";
   text?: string;
   actions?: any[];
+  action?: { id: number; summary: string };
   message?: string;
 }
 

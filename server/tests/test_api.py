@@ -179,6 +179,53 @@ def test_attachments_upload_list_delete(client):
     assert client.get("/api/notes/host/attachments").json() == []
 
 
+def test_quicktask_add_list_item_and_undo(client):
+    import json as _json
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    r = quicktasks.add_list_item(conn, "Shopping List", "milk")
+    conn.commit()
+    assert "- [ ] milk" in client.get("/api/notes/shopping-list").json()["content_md"]
+
+    # Record the applied op with its inverse (as the architect would), then undo.
+    cur = conn.execute(
+        "INSERT INTO staging_actions (type, payload_json, status) VALUES ('ADD_ITEM', ?, 'applied')",
+        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "Shopping List", "line": r["line"]}}),),
+    )
+    conn.commit()
+    client.post(f"/api/staging/{cur.lastrowid}/undo")
+    assert "- [ ] milk" not in client.get("/api/notes/shopping-list").json()["content_md"]
+
+
+def test_quicktask_log_entry(client):
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    quicktasks.append_log(conn, "Running Log", "5k easy", date="2026-05-31")
+    conn.commit()
+    body = client.get("/api/notes/running-log").json()["content_md"]
+    assert "5k easy" in body and "2026-05-31" in body
+
+
+def test_capture_inbox_and_undo(client):
+    import json as _json
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    iid = quicktasks.capture_inbox(conn, "remember milk")
+    conn.commit()
+    assert any(i["id"] == iid for i in client.get("/api/capture").json())
+
+    cur = conn.execute(
+        "INSERT INTO staging_actions (type, payload_json, status) VALUES ('CAPTURE', ?, 'applied')",
+        (_json.dumps({"summary": "x", "undo": {"op": "delete_inbox", "id": iid}}),),
+    )
+    conn.commit()
+    client.post(f"/api/staging/{cur.lastrowid}/undo")
+    assert not any(i["id"] == iid for i in client.get("/api/capture").json())
+
+
 def test_attachments_rejects_non_text(client):
     client.post("/api/notes", json={"title": "Host2", "content_md": "x"})
     bad = client.post(

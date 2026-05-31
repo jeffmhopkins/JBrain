@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { createEntry, post, streamChat } from "../api";
 import { useGeo, useIsDesktop, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
@@ -14,121 +14,75 @@ const MODES: { key: Mode; label: string; hint: string; icon: string }[] = [
   { key: "research", label: "Research", hint: "Ask questions across your brain (read-only).", icon: "search" },
 ];
 
+const PLACEHOLDER: Record<Mode, string> = {
+  entry: "Write an entry — it's saved directly as a note.",
+  assisted: "Talk to your brain…",
+  research: "Ask your brain… (read-only)",
+};
+
 export default function Chat() {
   const isDesktop = useIsDesktop();
+  const online = useOnline();
   const geo = useGeo();
   const [sp] = useSearchParams();
   // Desktop has its own mode selector; phone is driven by the shell's top buttons (?m=).
   const [deskMode, setDeskMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
   const mode: Mode = isDesktop ? deskMode : ((sp.get("m") as Mode) || "entry");
 
-  function pick(m: Mode) {
-    setDeskMode(m);
-    localStorage.setItem("jbrain_mode", m);
-  }
-
-  return (
-    <div>
-      {isDesktop && (
-        <div className="content" style={{ paddingBottom: 0 }}>
-          <div className="row" style={{ gap: 6 }}>
-            {MODES.map((m) => (
-              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pick(m.key)}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <Icon name={m.icon} size={16} /> {m.label}
-              </button>
-            ))}
-          </div>
-          <p className="muted" style={{ fontSize: 12, margin: "6px 2px 0" }}>
-            {MODES.find((m) => m.key === mode)!.hint}
-          </p>
-        </div>
-      )}
-      {mode === "entry"
-        ? <EntryForm geo={geo} />
-        : <ChatPane key={mode} mode={mode} geo={geo} isDesktop={isDesktop} />}
-    </div>
-  );
-}
-
-function EntryForm({ geo }: { geo: ReturnType<typeof useGeo> }) {
-  const [title, setTitle] = useState("");
-  const [text, setText] = useState("");
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    if (!text.trim()) return;
-    setBusy(true); setMsg("");
-    try {
-      const r = await createEntry(text.trim(), title.trim(), geo.enabled ? geo.coords : null);
-      setMsg(`Saved “${r.title}”.`);
-      setTitle(""); setText("");
-    } catch {
-      setMsg("Save failed.");
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <div className="content">
-      <form onSubmit={save}>
-        <input placeholder="Title (optional)" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <textarea
-          rows={8} style={{ marginTop: 8 }}
-          placeholder="Write your entry — it's stored directly as a note."
-          value={text} onChange={(e) => setText(e.target.value)}
-        />
-        <div className="row" style={{ marginTop: 10, gap: 8 }}>
-          <button
-            type="button" className={geo.enabled ? "primary" : "ghost"} onClick={geo.toggle}
-            title={geo.enabled ? "Location on" : "Tag this entry with your location"} style={{ padding: "0 12px" }}
-          ><Icon name="pin" /></button>
-          <button className="primary" type="submit" disabled={busy || !text.trim()}>Save entry</button>
-          {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function ChatPane({ mode, geo, isDesktop }: { mode: Mode; geo: ReturnType<typeof useGeo>; isDesktop: boolean }) {
-  const online = useOnline();
-  const research = mode === "research";
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
+  const [entries, setEntries] = useState<{ title: string; slug: string }[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
   const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+
+  function pickDesktopMode(m: Mode) { setDeskMode(m); localStorage.setItem("jbrain_mode", m); }
+
+  // A fresh conversation when entering / switching a chat mode (entry needs none).
+  async function newConversation() {
+    const { id } = await post("/api/chat/conversations");
+    setConvId(id); setMessages([]); setApplied([]);
+  }
+  useEffect(() => {
+    if (mode === "entry") return;
+    newConversation();
+  }, [mode]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, entries]);
 
   async function undo(id: number) {
     await post(`/api/staging/${id}/undo`);
     setApplied((a) => a.map((x) => (x.id === id ? { ...x, undone: true } : x)));
   }
-  async function newConversation() {
-    const { id } = await post("/api/chat/conversations");
-    setConvId(id); setMessages([]); setApplied([]);
-  }
-  // Fresh conversation per mode so assisted/research threads don't intermix.
-  useEffect(() => { newConversation(); }, [mode]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   async function send(e: FormEvent) {
     e.preventDefault();
-    if (!input.trim() || !convId || streaming) return;
     const text = input.trim();
+    if (!text || streaming || busy || !online) return;
     setInput("");
+    const coords = geo.enabled ? geo.coords : null;
+
+    if (mode === "entry") {
+      setBusy(true);
+      try {
+        const r = await createEntry(text, undefined, coords);
+        setEntries((xs) => [{ title: r.title, slug: r.slug }, ...xs]);
+      } finally { setBusy(false); }
+      return;
+    }
+
+    if (!convId) return;
     setMessages((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
     setStreaming(true);
     try {
       await streamChat(convId, text, (ev) => {
         if (ev.type === "token") {
           setMessages((m) => {
-            const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: copy[copy.length - 1].content + (ev.text || "") };
-            return copy;
+            const c = [...m];
+            c[c.length - 1] = { role: "assistant", content: c[c.length - 1].content + (ev.text || "") };
+            return c;
           });
         } else if (ev.type === "staging") {
           setStagingTick((t) => t + 1);
@@ -136,75 +90,85 @@ function ChatPane({ mode, geo, isDesktop }: { mode: Mode; geo: ReturnType<typeof
           setApplied((a) => [...a, ev.action!]);
         } else if (ev.type === "error") {
           setMessages((m) => {
-            const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: `⚠️ ${ev.message}` };
-            return copy;
+            const c = [...m];
+            c[c.length - 1] = { role: "assistant", content: `⚠️ ${ev.message}` };
+            return c;
           });
         }
-      }, geo.enabled ? geo.coords : null, research ? "research" : "assisted");
+      }, coords, mode === "research" ? "research" : "assisted");
     } finally {
       setStreaming(false);
-      if (!research) setStagingTick((t) => t + 1);
+      if (mode === "assisted") setStagingTick((t) => t + 1);
     }
   }
 
-  const conversation = (
+  return (
     <div className="content chat-wrap">
-      <div className="row" style={{ margin: "8px 0" }}>
-        <strong>{research ? "Research your brain" : "Think out loud"}</strong>
-        <div className="spacer" />
-        <button className="ghost" onClick={newConversation}>+ New</button>
-      </div>
-      <div className="messages">
-        {messages.length === 0 && (
-          <div className="msg assistant muted">
-            {research
-              ? "Ask anything about your notes — “what have I logged about sleep?”, “summarise my project decisions”. I only read; I won’t change anything."
-              : "Tell me what you want to capture. I’ll ask questions, then propose a note for you to confirm."}
+      {isDesktop && (
+        <div style={{ marginBottom: 4 }}>
+          <div className="row" style={{ gap: 6 }}>
+            {MODES.map((m) => (
+              <button key={m.key} className={mode === m.key ? "primary" : "ghost"} onClick={() => pickDesktopMode(m.key)}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <Icon name={m.icon} size={16} /> {m.label}
+              </button>
+            ))}
           </div>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>{m.content || (streaming && i === messages.length - 1 ? "…" : "")}</div>
-        ))}
-        <div ref={endRef} />
-      </div>
-      {!research && applied.length > 0 && (
-        <div style={{ margin: "8px 0" }}>
-          {applied.map((a) => (
-            <div key={a.id} className="applied-chip">
-              <span>✓ {a.summary}</span>
-              {a.undone
-                ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
-                : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
-            </div>
-          ))}
+          <p className="muted" style={{ fontSize: 12, margin: "6px 2px 0" }}>{MODES.find((m) => m.key === mode)!.hint}</p>
         </div>
       )}
-      {!research && !isDesktop && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
+
+      {/* The area ABOVE the composer is the only thing that changes between modes. */}
+      <div className="messages">
+        {mode === "entry" ? (
+          entries.length === 0
+            ? <div className="msg assistant muted">Type below and press Send — it's saved straight to your wiki.</div>
+            : entries.map((en, i) => (
+                <Link key={i} to={`/note/${en.slug}`} className="msg user" style={{ textDecoration: "none" }}>
+                  Saved: {en.title}
+                </Link>
+              ))
+        ) : (
+          <>
+            {messages.length === 0 && (
+              <div className="msg assistant muted">
+                {mode === "research"
+                  ? "Ask anything about your notes — I only read; I won’t change anything."
+                  : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`msg ${m.role}`}>{m.content || (streaming && i === messages.length - 1 ? "…" : "")}</div>
+            ))}
+            {mode === "assisted" && applied.map((a) => (
+              <div key={`a${a.id}`} className="applied-chip">
+                <span>✓ {a.summary}</span>
+                {a.undone
+                  ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
+                  : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
+              </div>
+            ))}
+            {mode === "assisted" && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
+          </>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {/* Shared composer — identical across Entry / Assisted / Research. */}
       <form className="composer" onSubmit={send}>
         <button type="button" className={geo.enabled ? "primary" : "ghost"} onClick={geo.toggle}
-          title={geo.enabled ? "Location on" : "Tag entries with your location"} style={{ padding: "0 12px" }}><Icon name="pin" /></button>
+                title={geo.enabled ? "Location on" : "Tag entries with your location"} style={{ padding: "0 12px" }}>
+          <Icon name="pin" />
+        </button>
         <textarea
           rows={1}
-          placeholder={online ? (research ? "Ask your brain…" : "Talk to your brain…") : "Offline — reconnect to chat"}
+          placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); } }}
         />
-        <button className="primary" type="submit" disabled={streaming || !online}>Send</button>
+        <button className="primary" type="submit" disabled={streaming || busy || !online}>Send</button>
       </form>
-    </div>
-  );
-
-  if (research || !isDesktop) return conversation;
-  return (
-    <div className="with-rail">
-      {conversation}
-      <aside className="rail">
-        <h3 style={{ marginTop: 0 }}>Staging area</h3>
-        <p className="muted" style={{ fontSize: 13 }}>Proposed changes appear here. Nothing is saved until you apply it.</p>
-        <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />
-      </aside>
     </div>
   );
 }

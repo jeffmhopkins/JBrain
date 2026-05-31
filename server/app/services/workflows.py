@@ -23,6 +23,7 @@ import yaml
 from ..config import get_settings
 from ..db import get_meta, set_meta
 from . import notes as notes_svc
+from . import prompts
 from . import reviews as reviews_svc
 
 _DATED_LINE = re.compile(r"^- \*\*(\d{4}-\d{2}-\d{2})\*\* (.*)$")
@@ -198,10 +199,11 @@ def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
         return "Entries:\n" + joined
     from anthropic import Anthropic
     client = Anthropic(api_key=settings.anthropic_api_key)
+    instruction = prompt or prompts.get("actions.daylog_summary", DEFAULT_DAYLOG_PROMPT)
     msg = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=512,
-        messages=[{"role": "user", "content": f"{prompt or DEFAULT_DAYLOG_PROMPT}\n{joined}"}],
+        messages=[{"role": "user", "content": f"{instruction}\n{joined}"}],
     )
     return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
 
@@ -266,6 +268,7 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
 
     entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
+    instructions = instructions or prompts.get("actions.wiki_synthesis", "")
     extra = f"\n\nAdditional guidance:\n{instructions}" if instructions else ""
     prompt = (
         "You maintain a personal KNOWLEDGE BASE synthesized from raw journal/note "
@@ -349,7 +352,8 @@ def _suggest_tags(title: str, content: str, prompt: str | None = None) -> list[s
     msg = client.messages.create(
         model=settings.anthropic_model, max_tokens=80,
         messages=[{"role": "user",
-                   "content": f"{prompt or DEFAULT_TAG_PROMPT}\n\nTitle: {title}\n{content[:2000]}"}],
+                   "content": f"{prompt or prompts.get('actions.generate_tags', DEFAULT_TAG_PROMPT)}"
+                              f"\n\nTitle: {title}\n{content[:2000]}"}],
     )
     text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
     return [t.strip().lower().lstrip("#") for t in text.replace("\n", ",").split(",") if t.strip()][:6]

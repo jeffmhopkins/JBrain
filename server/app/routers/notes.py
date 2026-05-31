@@ -1,4 +1,6 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -13,6 +15,22 @@ router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[CurrentUse
 class NoteIn(BaseModel):
     title: str
     content_md: str = ""
+
+
+class EntryIn(BaseModel):
+    text: str
+    title: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+
+
+def _unique_title(conn, base: str) -> str:
+    base = base.strip()[:80] or "Entry"
+    title, i = base, 2
+    while conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?)", (title,)).fetchone():
+        title = f"{base} ({i})"
+        i += 1
+    return title
 
 
 class RestoreIn(BaseModel):
@@ -75,6 +93,23 @@ def get_note(slug: str):
 def create_or_update(body: NoteIn):
     conn = get_conn()
     note_id = notes_svc.upsert_note(conn, body.title, body.content_md)
+    conn.commit()
+    row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return dict(row)
+
+
+@router.post("/entry")
+def create_entry(body: EntryIn):
+    """'Make entry' mode: store text directly as a NEW note (unique title), no LLM.
+    Fires the entry_created hooks (auto-tag, etc.)."""
+    conn = get_conn()
+    text = body.text.strip()
+    base = body.title or next((ln.strip() for ln in text.splitlines() if ln.strip()), "") \
+        or f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+    title = _unique_title(conn, base)
+    note_id = notes_svc.upsert_note(
+        conn, title, text, source="user", lat=body.lat, lon=body.lon,
+    )
     conn.commit()
     row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return dict(row)

@@ -130,13 +130,17 @@ export interface ChatEvent {
 
 // Stream the architect's reply over SSE (POST + ReadableStream, so we can send
 // a body and rely on the session cookie).
+export const createEntry = <T = any>(text: string, title?: string, loc?: { lat: number; lon: number } | null) =>
+  post<T>("/api/notes/entry", { text, title: title || undefined, lat: loc?.lat, lon: loc?.lon });
+
 export async function streamChat(
   conversationId: number,
   text: string,
   onEvent: (e: ChatEvent) => void,
   location?: { lat: number; lon: number } | null,
+  mode: "assisted" | "research" = "assisted",
 ): Promise<void> {
-  const body: any = { text };
+  const body: any = { text, mode };
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
     method: "POST",

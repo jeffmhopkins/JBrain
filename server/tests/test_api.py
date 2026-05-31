@@ -58,6 +58,43 @@ def test_info_exposes_version_and_cors(client):
     assert r.headers.get("access-control-allow-origin") in ("*", "https://example.github.io")
 
 
+def test_entry_mode_creates_unique_notes(client):
+    # "Make entry": direct store, no LLM. Same title -> distinct notes (no merge).
+    a = client.post("/api/notes/entry", json={"text": "first thought", "title": "Idea"}).json()
+    b = client.post("/api/notes/entry", json={"text": "second thought", "title": "Idea"}).json()
+    assert a["slug"] != b["slug"]
+    assert client.get(f"/api/notes/{a['slug']}").json()["content_md"] == "first thought"
+    # No title -> derived from first line.
+    c = client.post("/api/notes/entry", json={"text": "buy a tent\nfor camping"}).json()
+    assert c["title"].startswith("buy a tent")
+
+
+def test_research_mode_is_read_only(client):
+    # Research mode must not expose write tools.
+    from app.services import architect
+    research = {t["name"] for t in architect._tools_for("research")}
+    assisted = {t["name"] for t in architect._tools_for("assisted")}
+    assert "propose_actions" not in research and "add_list_item" not in research
+    assert "query_sql" in research and "query_sql" not in assisted
+    assert "propose_actions" in assisted
+
+
+def test_query_sql_guard():
+    from app.db import get_conn
+    from app.services import sqlsafe
+    cols, rows = sqlsafe.run_select(get_conn(), "SELECT 1 AS one", 10)
+    assert cols == ["one"] and rows == [[1]]
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        sqlsafe.run_select(get_conn(), "DELETE FROM notes", 10)
+
+
+def test_prompts_yaml_loads():
+    from app.services import prompts
+    # Falls back gracefully; with the repo prompts.yaml present, research prompt resolves.
+    assert isinstance(prompts.get("architect.research", "x"), str)
+
+
 def test_health_is_public(client):
     from fastapi.testclient import TestClient
     from app.main import app

@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[CurrentUser]
 
 class MessageIn(BaseModel):
     text: str
+    mode: str = "assisted"          # 'assisted' | 'research'
     lat: float | None = None
     lon: float | None = None
     location_label: str | None = None
@@ -71,9 +72,11 @@ def send_message(conversation_id: int, body: MessageIn):
         else None
     )
 
+    mode = body.mode if body.mode in ("assisted", "research") else "assisted"
+
     async def event_stream():
         try:
-            async for event in architect.run(conversation_id, body.text, location):
+            async for event in architect.run(conversation_id, body.text, location, mode):
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
         except Exception as exc:  # surface to the client rather than hanging
             yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"

@@ -718,8 +718,33 @@ def test_pipeline_default_filter_and_concat():
 def test_action_defs_load_and_validate():
     from app.services import pipeline
     types = pipeline.action_types()
-    assert "append_to_note" in types and "create_review_item" in types
+    for t in ("append_to_note", "create_review_item", "generate_tags",
+              "summarize_day_log", "synthesize_wiki"):
+        assert t in types, f"{t} should be a YAML-defined action"
     assert pipeline.validate_action_defs() == []  # shipped defs are well-formed
+
+
+def test_synthesize_wiki_watermark_not_advanced_on_empty_plan(client, monkeypatch):
+    # Regression: a failed/empty LLM plan must NOT advance the watermark, else the
+    # entry would be skipped forever. (The old Python action advanced it always.)
+    from app.services import workflows as wf_svc
+    client.post("/api/notes", json={"title": "Entry One", "content_md": "a"})
+
+    wf = client.post("/api/workflows", json={
+        "name": "S", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 1},
+        "action_type": "synthesize_wiki", "action_config": {}, "enabled": True,
+    }).json()
+
+    # Run 1: LLM yields nothing → no KB note, watermark stays put.
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [])
+    client.post(f"/api/workflows/{wf['id']}/run")
+    assert client.get("/api/notes?kind=kb").json() == []
+
+    # Run 2: LLM works → the SAME entry is still processed (not skipped).
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [
+        {"op": "create", "title": "Topic", "content_md": "from [[Entry One]]"}])
+    client.post(f"/api/workflows/{wf['id']}/run")
+    assert any(n["title"] == "Topic" for n in client.get("/api/notes?kind=kb").json())
 
 
 def test_pipeline_unknown_primitive_raises():

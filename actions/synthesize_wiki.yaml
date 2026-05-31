@@ -1,0 +1,59 @@
+# Declarative action: fold entries created since the last run into the dedicated
+# KB layer, then post a review card. Equivalent to the former
+# _action_synthesize_wiki. The LLM prompt-building + JSON parsing lives in the
+# wiki_plan primitive; composition (query → plan → write each → watermark →
+# review) is here.
+#
+# Fix vs. the old Python: the watermark only advances when the plan is non-empty,
+# so a failed/empty LLM response no longer skips those entries forever.
+#
+# config keys:
+#   batch_limit   — max new entries per run (default 50)
+#   instructions  — extra guidance appended to the synthesis prompt
+#   review        — set to false to suppress the review card (default on)
+type: synthesize_wiki
+steps:
+  - id: wm
+    do: get_meta
+    with: { key: "wiki_synth:last_note_id", default: "0" }
+
+  - id: entries
+    do: query_notes
+    with:
+      kind: entry
+      since_id: "{{ wm }}"
+      limit: "{{ config.batch_limit | default(50) }}"
+    stop_when_empty: "no new entries since last run"
+
+  - id: kb
+    do: query_notes
+    with: { kind: kb }
+
+  - id: plan
+    do: wiki_plan
+    with:
+      entries: "{{ entries }}"
+      existing_kb: "{{ kb }}"
+      instructions: "{{ config.instructions | default(none) }}"
+
+  - id: write
+    for_each: "{{ plan }}"
+    steps:
+      - do: write_note
+        with:
+          title: "{{ item.title }}"
+          content_md: "{{ item.content_md }}"
+          kind: kb
+
+  - do: set_meta
+    when: "{{ plan }}"            # only advance the watermark when something changed
+    with:
+      key: "wiki_synth:last_note_id"
+      value: "{{ entries | map(attribute='id') | max }}"
+
+  - do: create_review
+    when: "{{ config.review != false and plan }}"
+    with:
+      title: "{{ config.review.title | default('Knowledge base updated') }}"
+      message: "Updated topics: {{ plan | map(attribute='title') | join(', ') }}"
+      link_title: "{{ plan[0].title }}"

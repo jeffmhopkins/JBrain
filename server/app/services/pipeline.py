@@ -154,6 +154,52 @@ def _p_set_tags(ctx, note_id, tags):
     return notes_svc.set_tags(ctx.conn, int(note_id), list(tags or []))
 
 
+# Code-backed helpers exposed as named primitives. These wrap the irregular
+# logic (LLM prompt building, parsing, watermark arithmetic) that doesn't belong
+# in YAML — and delegate to the same workflows.* functions tests already stub.
+
+def _p_suggest_tags(ctx, title, content, prompt=None):
+    from . import workflows as wf
+    return wf._suggest_tags(title or "", content or "", prompt)
+
+
+def _p_summarise_entries(ctx, entries, prompt=None):
+    from . import workflows as wf
+    return wf._summarise_entries(list(entries or []), prompt)
+
+
+def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
+    from . import workflows as wf
+    return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions)
+
+
+def _p_daylog_pending(ctx, log_title):
+    """Parse a log note's dated lines and the per-log watermark; return the days
+    still to summarise (encapsulates summarize_day_log's irregular front-end)."""
+    from . import workflows as wf
+    empty = {"days": [], "watermark_key": None, "last_date": None}
+    note = notes_svc.get_by_title(ctx.conn, log_title)
+    if not note:
+        return empty
+    by_date: dict[str, list[str]] = {}
+    for line in note["content_md"].splitlines():
+        m = wf._DATED_LINE.match(line.strip())
+        if m:
+            by_date.setdefault(m.group(1), []).append(m.group(2))
+    if not by_date:
+        return empty
+    dates = sorted(by_date)
+    current = dates[-1]  # the day still being logged into — leave it alone
+    wm_key = f"daylog_summarized:{log_title.lower()}"
+    last = get_meta(wm_key)
+    todo = [d for d in dates if d < current and (last is None or d > last)]
+    return {
+        "days": [{"date": d, "entries": by_date[d]} for d in todo],
+        "watermark_key": wm_key,
+        "last_date": (todo[-1] if todo else None),
+    }
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "write_note": _p_write_note,
@@ -163,6 +209,10 @@ _PRIMITIVES = {
     "get_meta": _p_get_meta,
     "set_meta": _p_set_meta,
     "set_tags": _p_set_tags,
+    "suggest_tags": _p_suggest_tags,
+    "summarise_entries": _p_summarise_entries,
+    "wiki_plan": _p_wiki_plan,
+    "daylog_pending": _p_daylog_pending,
 }
 
 
@@ -179,6 +229,13 @@ def _run_steps(ctx, steps, scope, trace):
         when = step.get("when")
         if when is not None and not _truthy(_eval(when, scope)):
             continue
+
+        stop_when = step.get("stop_when")
+        if stop_when is not None and _truthy(_eval(stop_when, scope)):
+            raise _Stop(str(step.get("stop_message", "stopped")))
+
+        if step.get("do") is None and "for_each" not in step:
+            continue  # control-only step (when/stop_when)
 
         if "for_each" in step:
             coll = _eval(step["for_each"], scope) or []
@@ -300,6 +357,8 @@ def validate_action_defs() -> list[str]:
                 _walk(type_name, step.get("steps"))
                 continue
             do = step.get("do")
+            if do is None:
+                continue  # control-only step (when/stop_when)
             if do not in _PRIMITIVES:
                 warnings.append(f"{type_name}: unknown primitive '{do}'")
 

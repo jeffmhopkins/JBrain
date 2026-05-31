@@ -1,0 +1,44 @@
+# Declarative action: on a new day, summarise each completed prior day of a log
+# note into a summary note (once each, watermark-tracked). Equivalent to the
+# former _action_summarize_day_log. The irregular date-parsing + watermark logic
+# lives in the daylog_pending primitive; the summarise/write/review tail is here.
+#
+# config keys:
+#   log_title     (required) — the log note to read dated lines from
+#   summary_title            — where summaries are written (defaults to "<log> — Daily Summaries")
+#   prompt                   — optional override for the day summary prompt
+#   review                   — set to false to suppress the review card (default on)
+type: summarize_day_log
+steps:
+  - id: pending
+    do: daylog_pending
+    with: { log_title: "{{ config.log_title }}" }
+
+  - stop_when: "{{ not pending.days }}"
+    stop_message: "nothing new to summarise"
+
+  - id: loop
+    for_each: "{{ pending.days }}"
+    steps:
+      - id: s
+        do: summarise_entries
+        with:
+          entries: "{{ item.entries }}"
+          prompt: "{{ config.prompt | default(none) }}"
+      - do: write_note
+        with:
+          title: "{{ config.summary_title | default(config.log_title ~ ' — Daily Summaries') }}"
+          text: "\n## {{ item.date }}\n\n{{ s }}"
+          mode: append
+
+  - do: set_meta
+    with:
+      key: "{{ pending.watermark_key }}"
+      value: "{{ pending.last_date }}"
+
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ config.review.title | default('Daily review — ' ~ pending.last_date) }}"
+      message: "Summarised day(s) of '{{ config.log_title }}'."
+      link_title: "{{ config.summary_title | default(config.log_title ~ ' — Daily Summaries') }}"

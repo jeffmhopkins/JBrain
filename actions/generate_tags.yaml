@@ -1,0 +1,25 @@
+# Declarative action: auto-tag the entry that triggered this workflow (from the
+# entry_created event context). Equivalent to the former _action_generate_tags.
+#
+# config keys:
+#   prompt  — optional override for the tag-suggestion prompt
+type: generate_tags
+steps:
+  - id: entry
+    do: read_note
+    when: "{{ trigger.note_id }}"
+    with: { id: "{{ trigger.note_id }}" }
+
+  - id: tags
+    do: suggest_tags
+    when: "{{ entry }}"
+    with:
+      title: "{{ entry.title }}"
+      content: "{{ entry.content_md }}"
+      prompt: "{{ config.prompt | default(none) }}"
+
+  - do: set_tags
+    when: "{{ tags }}"
+    with:
+      note_id: "{{ entry.id }}"
+      tags: "{{ tags }}"

@@ -39,8 +39,17 @@ export default function Chat() {
   const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
 
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Only auto-follow new content when the user is already at the bottom; if they
+  // scroll up to read, leave them there even as the reply streams in.
+  const atBottomRef = useRef(true);
+  function onMessagesScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
 
   // Grow the compose box upward as you type, up to ~half the visible height,
   // then scroll inside it.
@@ -60,7 +69,9 @@ export default function Chat() {
     setConvId(id); setMessages([]); setApplied([]);
   }
   useEffect(() => { if (mode !== "entry") newConversation(); }, [mode]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, entries]);
+  useEffect(() => {
+    if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
+  }, [messages, entries]);
 
   async function undo(id: number) {
     await post(`/api/staging/${id}/undo`);
@@ -99,6 +110,7 @@ export default function Chat() {
       extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
     }
     const msg = (text + extra).trim();
+    atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setStreaming(true);
     try {
@@ -131,7 +143,7 @@ export default function Chat() {
 
   return (
     <div className="chat-wrap">
-      <div className="messages">
+      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}>
         {mode === "entry" ? (
           entries.length === 0
             ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>

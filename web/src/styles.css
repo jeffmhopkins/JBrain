@@ -394,6 +394,14 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
+/* ---- Lists (checklist) view -------------------------------------------- */
+.checklist { display: flex; flex-direction: column; gap: 1px; margin: 8px 0; }
+.check-item { display: flex; align-items: center; gap: 9px; padding: 5px 2px; cursor: pointer; }
+.check-item input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.check-item .check-text { font-size: 14px; line-height: 1.3; }
+.check-item.done .check-text { text-decoration: line-through; color: var(--text-dim); }
+.badge.prio { background: var(--accent-soft); color: var(--text); border-color: var(--accent); font-weight: 600; }
+
 /* Manual trigger run status: spinner while running, then a result pill. */
 .run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); }

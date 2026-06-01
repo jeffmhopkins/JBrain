@@ -94,6 +94,7 @@ function UpdateBanner() {
 // no longer renders a big heading — the title lives here instead).
 const TOOL_TITLES: Record<string, string> = {
   "/wiki": "Wiki",
+  "/lists": "Lists",
   "/search": "Search",
   "/graph": "Graph",
   "/prompts": "Prompts",

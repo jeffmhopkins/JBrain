@@ -12,6 +12,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
     name: "Knowledge",
     cards: [
       { to: "/wiki", label: "Wiki", sub: "Browse & edit notes", icon: "wiki" },
+      { to: "/lists", label: "Lists", sub: "Checklists & todos", icon: "list" },
       { to: "/search", label: "Search", sub: "Full-text & semantic", icon: "search" },
       { to: "/graph", label: "Graph", sub: "Connections", icon: "graph" },
     ],

@@ -7,6 +7,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import KeyEntry from "./pages/KeyEntry";
 import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
+import ListsPage from "./pages/ListsPage";
 import NotePage from "./pages/NotePage";
 import GraphPage from "./pages/GraphPage";
 import SearchPage from "./pages/SearchPage";
@@ -111,6 +112,7 @@ export default function App() {
             <Route path="/chat" element={<Chat />} />
             <Route path="/advanced" element={<AdvancedHome />} />
             <Route path="/wiki" element={<Wiki />} />
+            <Route path="/lists" element={<ListsPage />} />
             <Route path="/note/:slug" element={<NotePage />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/search" element={<SearchPage />} />

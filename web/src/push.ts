@@ -42,11 +42,19 @@ export async function enablePush(vapidPublicKey: string): Promise<boolean> {
   if (Notification.permission !== "granted") return false;
   try {
     const reg = await navigator.serviceWorker.ready;
+    const key = urlB64ToUint8Array(vapidPublicKey);
     let sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      // If the server's VAPID key changed (e.g. it was regenerated), the existing
+      // subscription is stale and pushes to it fail — drop it and re-subscribe.
+      const old = new Uint8Array((sub.options && sub.options.applicationServerKey) || new ArrayBuffer(0));
+      const same = old.length === key.length && old.every((b, i) => b === key[i]);
+      if (!same) { try { await sub.unsubscribe(); } catch {} sub = null; }
+    }
     if (!sub) {
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlB64ToUint8Array(vapidPublicKey) as BufferSource,
+        applicationServerKey: key as BufferSource,
       });
     }
     const j: any = sub.toJSON();

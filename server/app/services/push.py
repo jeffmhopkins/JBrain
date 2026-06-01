@@ -20,8 +20,8 @@ from ..config import get_settings
 from ..db import get_conn, get_meta, set_meta
 from . import reviews as reviews_svc
 
-_PRIV_META = "vapid_private_pem"
-_PUB_META = "vapid_public_key"   # base64url uncompressed P-256 point (applicationServerKey)
+_PRIV_META = "vapid_private_pem"   # holds the raw base64url private scalar (legacy name)
+_PUB_META = "vapid_public_key"     # base64url uncompressed P-256 point (applicationServerKey)
 
 
 def _b64url(b: bytes) -> str:
@@ -29,24 +29,23 @@ def _b64url(b: bytes) -> str:
 
 
 def _generate_keypair() -> tuple[str, str]:
-    """Return (private PKCS8 PEM, public applicationServerKey b64url)."""
+    """Return (private scalar b64url, public applicationServerKey b64url) — the
+    standard Web Push VAPID key formats that pywebpush/py_vapid consume."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 
     priv = ec.generate_private_key(ec.SECP256R1())
-    pem = priv.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode("ascii")
+    scalar = priv.private_numbers().private_value.to_bytes(32, "big")   # raw 32-byte private key
     point = priv.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint,
-    )   # 65 bytes, 0x04-prefixed — exactly what the browser's applicationServerKey needs
-    return pem, _b64url(point)
+    )   # 65 bytes, 0x04-prefixed — what the browser's applicationServerKey needs
+    return _b64url(scalar), _b64url(point)
 
 
 def ensure_vapid() -> None:
-    """Seed the VAPID keypair on boot: env override is authoritative; else reuse
-    the DB-stored pair; else generate one. Idempotent."""
+    """Seed the VAPID keypair on boot: env override is authoritative; else reuse a
+    valid DB-stored pair; else generate one. Regenerates an old PEM-format key from
+    a pre-fix build (pywebpush can't consume it). Idempotent."""
     conn = get_conn()
     s = get_settings()
     if s.vapid_private_key.strip() and s.vapid_public_key.strip():
@@ -54,12 +53,15 @@ def ensure_vapid() -> None:
         set_meta(conn, _PUB_META, s.vapid_public_key.strip())
         conn.commit()
         return
-    if get_meta(_PRIV_META) and get_meta(_PUB_META):
-        return
-    pem, pub = _generate_keypair()
-    set_meta(conn, _PRIV_META, pem)
+    cur = get_meta(_PRIV_META)
+    if cur and "BEGIN" not in cur and get_meta(_PUB_META):
+        return   # already a valid raw-scalar key
+    priv, pub = _generate_keypair()
+    set_meta(conn, _PRIV_META, priv)
     set_meta(conn, _PUB_META, pub)
     conn.commit()
+    if cur:
+        print("[push] regenerated VAPID key in the correct format; devices will re-subscribe.", flush=True)
 
 
 def public_key() -> str:

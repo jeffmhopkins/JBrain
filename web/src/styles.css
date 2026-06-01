@@ -371,6 +371,16 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
+/* Manual trigger run status: spinner while running, then a result pill. */
+.run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); }
+.run-status.running { color: var(--text-dim); }
+.run-status.ok { color: #4ade80; border-color: rgba(74,222,128,0.45); }
+.run-status.err { color: var(--danger); border-color: rgba(248,113,113,0.45); }
+.spinner { width: 12px; height: 12px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* Backlinks as compact link-icon chips (root prefix dropped; full title on hover). */
 .backlink-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .backlink-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;

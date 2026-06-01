@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { del, get, post, put } from "../api";
 import Modal from "../components/Modal";
 import ConfigFields from "../components/ConfigFields";
+import { Icon } from "../components/Icon";
 
 interface Workflow {
   id: number;
@@ -32,6 +33,8 @@ export default function WorkflowsPage() {
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
   const [runs, setRuns] = useState<Record<number, any[]>>({});
+  const [running, setRunning] = useState<Record<number, boolean>>({});
+  const [result, setResult] = useState<Record<number, { status: string; detail: string }>>({});
   const [error, setError] = useState("");
   const [actionTypes, setActionTypes] = useState<ActionType[]>([]);
 
@@ -45,9 +48,19 @@ export default function WorkflowsPage() {
 
   async function toggle(w: Workflow) { await post(`/api/workflows/${w.id}/toggle`); load(); }
   async function runNow(w: Workflow) {
-    const r = await post(`/api/workflows/${w.id}/run`);
-    setError(r.status === "ok" ? "" : `Run failed: ${r.detail}`);
-    showRuns(w.id);
+    setRunning((m) => ({ ...m, [w.id]: true }));
+    setResult((m) => { const n = { ...m }; delete n[w.id]; return n; });
+    setError("");
+    try {
+      const r = await post(`/api/workflows/${w.id}/run`);
+      setResult((m) => ({ ...m, [w.id]: { status: r.status, detail: r.detail || "" } }));
+      showRuns(w.id);
+      load();   // refresh last_status
+    } catch (e: any) {
+      setResult((m) => ({ ...m, [w.id]: { status: "error", detail: e?.message || "request failed" } }));
+    } finally {
+      setRunning((m) => ({ ...m, [w.id]: false }));
+    }
   }
   async function showRuns(id: number) {
     const r = await get(`/api/workflows/${id}/runs`);
@@ -129,12 +142,25 @@ export default function WorkflowsPage() {
           </div>
           <div className="wf-actions">
             <button className="ghost" onClick={() => toggle(w)}>{w.enabled ? "Disable" : "Enable"}</button>
-            <button className="ghost" onClick={() => runNow(w)}>Run now</button>
+            <button className="ghost" onClick={() => runNow(w)} disabled={running[w.id]}>
+              {running[w.id] ? "Running…" : "Run now"}
+            </button>
             <button className="ghost" onClick={() => openEdit(w)}>Edit</button>
             <button className="ghost" onClick={() => showRuns(w.id)}>History</button>
             {w.locked && <button className="ghost" onClick={() => resetToRepo(w)} title="Discard local edits; track the repo version again">Reset to repo</button>}
             <button className="ghost" onClick={() => remove(w)}>Delete</button>
           </div>
+          {(running[w.id] || result[w.id]) && (
+            <div className={"run-status " + (running[w.id] ? "running" : result[w.id].status === "ok" ? "ok" : "err")}>
+              {running[w.id] ? (
+                <><span className="spinner" /> Running…</>
+              ) : result[w.id].status === "ok" ? (
+                <><Icon name="check" size={14} /> {result[w.id].detail || "Done"}</>
+              ) : (
+                <><Icon name="bell" size={14} /> {result[w.id].detail || "Failed"}</>
+              )}
+            </div>
+          )}
           {runs[w.id] && (
             <div style={{ marginTop: 8, fontSize: 12 }}>
               {runs[w.id].length === 0 && <span className="muted">No runs.</span>}

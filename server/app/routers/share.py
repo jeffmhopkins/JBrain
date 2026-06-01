@@ -51,22 +51,29 @@ def _enforce_bind(conn, link, request: Request, response: Response = None, bind_
         return
     name = f"jb_bind_{link['id']}"
     cookie = request.cookies.get(name)
-    if link["bind_secret"]:
+    if link["bind_secret"]:                       # already bound — require the matching cookie
         if not cookie or not hmac.compare_digest(cookie, link["bind_secret"]):
             raise HTTPException(status_code=403,
                                 detail="This link is locked to the device that first opened it.")
-    elif bind_if_new and response is not None:
-        secret = share_svc.mint_token()
-        # First-open-wins, atomically: only the request that flips NULL->secret binds.
-        cur = conn.execute(
-            "UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=? AND bind_secret IS NULL",
-            (secret, link["id"]))
-        conn.commit()
-        if cur.rowcount != 1:   # another device bound first
-            raise HTTPException(status_code=403,
-                                detail="This link is locked to the device that first opened it.")
-        response.set_cookie(name, secret, max_age=31_536_000, httponly=True,
-                            samesite="lax", path=f"/api/share/{link['token']}")
+        return
+    # Not yet bound:
+    if not (bind_if_new and response is not None):
+        # validate-only path (e.g. an attachment load) on an unbound link — refuse,
+        # so attachments can't be fetched off a bind link before it's claimed.
+        raise HTTPException(status_code=403, detail="Open the shared page first.")
+    secret = share_svc.mint_token()
+    # First-open-wins, atomically: only the request that flips NULL->secret binds.
+    cur = conn.execute(
+        "UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=? AND bind_secret IS NULL",
+        (secret, link["id"]))
+    conn.commit()
+    if cur.rowcount != 1:   # another device bound first
+        raise HTTPException(status_code=403,
+                            detail="This link is locked to the device that first opened it.")
+    domain = (get_settings().jbrain_domain or "").lower()
+    secure = not (domain == "" or domain.startswith("localhost") or domain.startswith("127."))
+    response.set_cookie(name, secret, max_age=31_536_000, httponly=True,
+                        samesite="lax", secure=secure, path=f"/api/share/{link['token']}")
 
 
 @router.get("/{token}")

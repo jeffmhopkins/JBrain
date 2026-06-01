@@ -470,6 +470,10 @@ def test_share_link_bind(client):
     assert client.post(f"/api/shares/{lid}/reset-bind").status_code == 200
     assert TestClient(app).get(f"/api/share/{tok}").status_code == 200
 
+    # Attachments off an UNBOUND bind link are refused (can't fetch before it's claimed).
+    v2 = client.post("/api/shares", json={"title": "Locked Note", "scope": "view", "bind": True}).json()
+    assert TestClient(app).get(f"/api/share/{v2['token']}/attachments/1").status_code == 403
+
 
 def _link_id(client, token):
     return next(l["id"] for l in client.get("/api/shares").json()["links"] if l["token"] == token)

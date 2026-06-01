@@ -373,8 +373,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;   /* hidden until scrolling (matches .messages) */
   margin: 0 -4px;            /* let cards reach the content edges */
 }
+.list-strip.scrolling { scrollbar-color: var(--border) transparent; }
+.list-strip::-webkit-scrollbar { height: 8px; }
+.list-strip::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+.list-strip.scrolling::-webkit-scrollbar-thumb { background: var(--border); }
 .list-strip > .card {
   flex: 0 0 100%;
   min-width: 100%;

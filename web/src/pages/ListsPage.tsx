@@ -35,6 +35,17 @@ export default function ListsPage() {
   const [newName, setNewName] = useState("");
   const stripRef = useRef<HTMLDivElement>(null);
   const pendingFocus = useRef<string | null>(null);   // slug to scroll to after create
+  const scrollHideTimer = useRef<number>();
+
+  // Reveal the carousel scrollbar only while scrolling, then auto-hide it (so it
+  // isn't a persistent bar on first load). Mirrors the chat .messages behavior.
+  function onStripScroll() {
+    const el = stripRef.current;
+    if (!el) return;
+    el.classList.add("scrolling");
+    clearTimeout(scrollHideTimer.current);
+    scrollHideTimer.current = window.setTimeout(() => el.classList.remove("scrolling"), 900);
+  }
 
   async function load() {
     setLoading(true);
@@ -103,7 +114,7 @@ export default function ListsPage() {
           to move between them. Native scroll-snap — no gesture code, and it leaves
           vertical scroll + Shell's vertical swipe to .ubody. */}
       {lists.length > 0 && (
-        <div className="list-strip" ref={stripRef}>
+        <div className="list-strip" ref={stripRef} onScroll={onStripScroll}>
           {lists.map((l) => {
             const p = parseList(l.content_md);
             const done = p.items.filter((i) => i.checked).length;

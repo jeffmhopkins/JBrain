@@ -4,6 +4,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
 import { renderWikiLinks } from "../util";
+import { Icon } from "../components/Icon";
+import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
@@ -30,33 +32,61 @@ function stripTitleHeading(md: string, title: string): string {
 export default function SharePage() {
   const { token = "" } = useParams();
   const [data, setData] = useState<ShareView | null>(null);
-  const [error, setError] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [error, setError] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");                  // textarea (non-list notes)
+  const [model, setModel] = useState<Parsed | null>(null); // native editor (lists)
+  const [newItem, setNewItem] = useState("");
+  const [pname, setPname] = useState(() => localStorage.getItem("jbrain_share_name") || "");
   const [pnote, setPnote] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    getShare<ShareView>(token).then(setData).catch(() => setError(true));
+    getShare<ShareView>(token).then(setData).catch((e) => setError(e?.status || 404));
   }, [token]);
 
   if (error) return (
     <div className="share-page"><div className="share-card">
-      <h2>This link isn't available.</h2>
-      <p className="muted">It may have been revoked, expired, or never existed.</p>
+      <h2>{error === 429 ? "Too many requests." : "This link isn't available."}</h2>
+      <p className="muted">{error === 429 ? "Please wait a moment and reload."
+        : "It may have been revoked, expired, or never existed."}</p>
     </div></div>
   );
   if (!data) return <div className="share-page"><div className="muted">Loading…</div></div>;
 
+  const n = data.note;
+  const isList = n.kind === "list";
+
+  function startEdit() {
+    setEditing(true);
+    if (isList) setModel(parseList(n.content_md));
+    else setDraft(n.content_md);
+  }
+  function up(fn: (p: Parsed) => void) {
+    if (!model) return;
+    const c: Parsed = { header: model.header, queue: model.queue, items: model.items.map((i) => ({ ...i })) };
+    fn(c);
+    setModel(c);
+  }
+  function addItem() {
+    const t = newItem.trim();
+    if (!t) return;
+    setNewItem("");
+    up((p) => { p.items.push({ checked: false, text: t, priority: null }); });
+  }
+
   async function submit() {
-    if (editing == null) return;
+    const name = pname.trim();
+    if (!name) { alert("Please enter your name so the owner knows who proposed this."); return; }
+    localStorage.setItem("jbrain_share_name", name);
+    const content = isList && model ? serialize(model) : draft;
     setBusy(true);
-    try { await proposeShareEdit(token, editing, pnote || undefined); setSent(true); }
+    try { await proposeShareEdit(token, content, name, pnote || undefined); setSent(true); }
     catch (e: any) { alert(e?.message || "Couldn't send."); }
     finally { setBusy(false); }
   }
 
-  const n = data.note;
   return (
     <div className="share-page">
       <div className="share-card">
@@ -69,19 +99,53 @@ export default function SharePage() {
         {sent ? (
           <div className="share-sent">
             <h3>Your edit was sent for approval.</h3>
-            <p className="muted">The owner will review it before it's published. Thanks!</p>
-            <button className="ghost" onClick={() => { setSent(false); setEditing(null); }}>Propose another change</button>
+            <p className="muted">{pname.trim()}, the owner will review it before it's published. Thanks!</p>
+            <button className="ghost" onClick={() => { setSent(false); setEditing(false); }}>Propose another change</button>
           </div>
-        ) : editing != null ? (
+        ) : editing ? (
           <div>
             <div className="share-banner">Edits here are <strong>proposals</strong> — they're sent to the owner and aren't published until accepted.</div>
-            <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={editing}
-                      onChange={(e) => setEditing(e.target.value)} />
-            <input placeholder="Note to owner (optional)…" value={pnote}
-                   onChange={(e) => setPnote(e.target.value)} style={{ marginTop: 8 }} />
+
+            {isList && model ? (
+              <>
+                <div className="checklist">
+                  {model.items.map((it, i) => (
+                    <div key={i} className="check-row">
+                      <label className={"check-item" + (it.checked ? " done" : "")}>
+                        <input type="checkbox" checked={it.checked}
+                               onChange={(e) => up((p) => { p.items[i].checked = e.target.checked; })} />
+                        {model.queue && <span className="badge prio">{i + 1}</span>}
+                        <span className="check-text">{it.text}</span>
+                      </label>
+                      <span className="reorder">
+                        <button className="reorder-btn" title="Up" disabled={i === 0}
+                                onClick={() => up((p) => { [p.items[i - 1], p.items[i]] = [p.items[i], p.items[i - 1]]; })}><Icon name="chevron" size={14} /></button>
+                        <button className="reorder-btn down" title="Down" disabled={i === model.items.length - 1}
+                                onClick={() => up((p) => { [p.items[i + 1], p.items[i]] = [p.items[i], p.items[i + 1]]; })}><Icon name="chevron" size={14} /></button>
+                        <button className="ghost" style={{ padding: "2px 6px" }} title="Remove"
+                                onClick={() => up((p) => { p.items.splice(i, 1); })}>✕</button>
+                      </span>
+                    </div>
+                  ))}
+                  {model.items.length === 0 && <span className="muted" style={{ fontSize: 13 }}>Empty list.</span>}
+                </div>
+                <div className="row" style={{ marginTop: 8, gap: 6 }}>
+                  <input placeholder="Add an item…" value={newItem}
+                         onChange={(e) => setNewItem(e.target.value)}
+                         onKeyDown={(e) => { if (e.key === "Enter") addItem(); }} />
+                  <button className="ghost" onClick={addItem}>Add</button>
+                </div>
+              </>
+            ) : (
+              <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={draft}
+                        onChange={(e) => setDraft(e.target.value)} />
+            )}
+
+            <input placeholder="Your name *" value={pname} onChange={(e) => setPname(e.target.value)} style={{ marginTop: 8 }} />
+            <input placeholder="Note to owner (optional)…" value={pnote} onChange={(e) => setPnote(e.target.value)} style={{ marginTop: 6 }} />
             <div className="row" style={{ marginTop: 10, gap: 8 }}>
               <button className="primary" onClick={submit} disabled={busy}>{busy ? "Sending…" : "Propose changes"}</button>
-              <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="ghost" onClick={() => setEditing(false)}>Cancel</button>
             </div>
           </div>
         ) : (
@@ -95,18 +159,24 @@ export default function SharePage() {
               <div style={{ marginTop: 16 }}>
                 <h3>Attachments</h3>
                 {n.attachments.map((a) => (
-                  <a key={a.id} className="list-item" href={shareAttachmentUrl(token, a.id)}
-                     target="_blank" rel="noreferrer">{a.filename}</a>
+                  a.mime.startsWith("image/")
+                    ? <img key={a.id} src={shareAttachmentUrl(token, a.id)} alt={a.filename}
+                           style={{ maxWidth: "100%", borderRadius: 8, margin: "6px 0" }} />
+                    : <a key={a.id} className="list-item" href={shareAttachmentUrl(token, a.id)}
+                         target="_blank" rel="noreferrer">{a.filename}</a>
                 ))}
               </div>
             )}
             {data.can_edit && (
               <div className="row" style={{ marginTop: 16 }}>
-                <button className="primary" onClick={() => setEditing(n.content_md)}>Suggest an edit</button>
+                <button className="primary" onClick={startEdit}>{isList ? "Edit list" : "Suggest an edit"}</button>
               </div>
             )}
           </>
         )}
+        <p className="muted" style={{ fontSize: 12, marginTop: 20 }}>
+          Shared from {data.brain_name} · updated {n.updated_at.replace(/\.\d+$/, "")}
+        </p>
       </div>
     </div>
   );

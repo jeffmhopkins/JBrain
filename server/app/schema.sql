@@ -207,7 +207,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
 
 -- Public share links: an unguessable token granting unauthenticated single-note
 -- access. scope 'view' = read that one note; 'edit' = read it AND submit proposals
--- (never a direct write). Only the SHA-256 hash of the token is stored.
+-- (never a direct write). The token is stored as-is so the owner can re-copy the
+-- link; revoking it kills access instantly.
 CREATE TABLE IF NOT EXISTS share_links (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   token        TEXT UNIQUE NOT NULL,                -- 256-bit URL-safe; the capability itself
@@ -230,6 +231,7 @@ CREATE TABLE IF NOT EXISTS share_proposals (
   note_id         INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   basis_hash      TEXT NOT NULL,                    -- sha256(note.content_md) at submit time
   proposed_content TEXT NOT NULL,
+  proposer_name   TEXT,
   proposer_note   TEXT,
   status          TEXT NOT NULL DEFAULT 'pending',  -- pending|accepted|rejected|superseded
   review_item_id  INTEGER REFERENCES review_items(id) ON DELETE SET NULL,

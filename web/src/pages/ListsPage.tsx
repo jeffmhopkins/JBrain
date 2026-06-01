@@ -3,53 +3,10 @@ import { Link } from "react-router-dom";
 import { del, get, post, put } from "../api";
 import { slugify } from "../util";
 import { Icon } from "../components/Icon";
+import { Parsed, parseList, serialize } from "../lists";
 
 interface NoteRow { slug: string; }
 interface ListNote { slug: string; title: string; content_md: string; }
-interface PItem { checked: boolean; text: string; priority: number | null; }
-interface Parsed { header: string; items: PItem[]; queue: boolean; }
-
-const ITEM_RE = /^(\s*)- \[( |x|X)\] (.*)$/;
-const PRIO_RE = /^\(P(\d+)\)\s+(.*)$/;            // leading "(P1)" priority token
-const QUEUE_MARK = "<!-- jbrain:queue -->";       // marks a priority-queue list (hidden in markdown)
-
-// Parse a list note into a canonical model: header text + items (in display order:
-// priority ascending, stable) + whether it's a priority queue.
-function parseList(md: string): Parsed {
-  const queue = (md || "").includes("jbrain:queue");
-  const header: string[] = [];
-  const items: PItem[] = [];
-  let seen = false;
-  for (const ln of (md || "").split("\n")) {
-    const m = ln.match(ITEM_RE);
-    if (m) {
-      seen = true;
-      let text = m[3];
-      let priority: number | null = null;
-      const p = text.match(PRIO_RE);
-      if (p) { priority = Number(p[1]); text = p[2]; }
-      items.push({ checked: m[2].toLowerCase() === "x", text, priority });
-    } else if (!seen && !ln.includes("jbrain:queue")) {
-      header.push(ln);
-    }
-  }
-  items.sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity));   // stable → keeps order
-  return { header: header.join("\n").replace(/\n+$/, ""), items, queue };
-}
-
-// Serialize back. In queue mode every item is numbered (P1..Pn) by its position,
-// so the order IS the priority; generic mode keeps any manual priority.
-function serialize(p: Parsed): string {
-  const out: string[] = [];
-  if (p.header.trim()) out.push(p.header.replace(/\s+$/, ""));
-  if (p.queue) out.push(QUEUE_MARK);
-  p.items.forEach((it, i) => {
-    const box = it.checked ? "[x]" : "[ ]";
-    const prio = p.queue ? `(P${i + 1}) ` : (it.priority ? `(P${it.priority}) ` : "");
-    out.push(`- ${box} ${prio}${it.text}`);
-  });
-  return out.join("\n") + "\n";
-}
 
 function renderText(text: string, progress: (slug: string) => string | null): ReactNode {
   const parts: ReactNode[] = [];

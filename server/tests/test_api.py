@@ -408,9 +408,11 @@ def test_share_links_flow(client):
 
     e = client.post("/api/shares", json={"title": "Shared Doc", "scope": "edit"}).json()
     et = e["token"]
-    assert anon.post(f"/api/share/{et}/propose", json={"content_md": "# Edited", "note": "fixed"}).json()["ok"]
+    assert anon.post(f"/api/share/{et}/propose", json={"content_md": "# Edited", "name": "Alice", "note": "fixed"}).json()["ok"]
     assert client.get("/api/reviews/count").json()["pending"] >= 1        # raised an alert
-    assert len(client.get("/api/shares").json()["proposals"]) == 1
+    assert any("Alice submitted an edit" in r["title"] for r in client.get("/api/reviews").json())
+    props0 = client.get("/api/shares").json()["proposals"]
+    assert len(props0) == 1 and props0[0]["proposer_name"] == "Alice"
     anon.post(f"/api/share/{et}/propose", json={"content_md": "# Edited2"})   # re-propose supersedes
     props = client.get("/api/shares").json()["proposals"]
     assert len(props) == 1                                                # still one pending

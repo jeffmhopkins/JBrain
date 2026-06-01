@@ -1,10 +1,11 @@
 """Share links: unguessable, single-note, unauthenticated capability tokens.
 
 A token grants access to exactly ONE note. 'view' = read it; 'edit' = read it AND
-submit edit PROPOSALS (never a direct write). Only the SHA-256 hash of the token
-is stored (like the access key), so a DB/backup leak can't reconstruct live links.
-Every public lookup resolves token -> note_id; no public route ever takes a
-note id/slug, so a token can never reach another note.
+submit edit PROPOSALS (never a direct write). The token is stored as-is (so the
+owner can re-copy the link from the Shares card); revoking a link kills it
+instantly, so a leaked token's blast radius is one note until revoked. Every
+public lookup resolves token -> note_id; no public route ever takes a note
+id/slug, so a token can never reach another note.
 """
 from __future__ import annotations
 
@@ -87,7 +88,8 @@ def _clear_pending(conn, link_id: int) -> None:
 
 # --- Public: submit an edit proposal ----------------------------------------
 
-def submit_proposal(conn, link, content: str, note: str | None, client_ip: str | None) -> dict:
+def submit_proposal(conn, link, content: str, note: str | None, name: str | None,
+                    client_ip: str | None) -> dict:
     """Persist a proposed new content for the link's note. Supersedes any prior
     pending proposal for the SAME link (one pending per link). Never writes the note."""
     if link["scope"] != "edit":
@@ -98,19 +100,20 @@ def submit_proposal(conn, link, content: str, note: str | None, client_ip: str |
     if n is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=409, detail="The note no longer exists.")
+    who = (name or "").strip()[:80] or "Someone"
     basis_hash = hashlib.sha256((n["content_md"] or "").encode("utf-8")).hexdigest()
     _clear_pending(conn, link["id"])            # supersede prior pending + dismiss its card
     cur = conn.execute(
-        "INSERT INTO share_proposals (share_link_id, note_id, basis_hash, proposed_content, proposer_note, client_ip) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (link["id"], n["id"], basis_hash, content, (note or "")[:2000] or None, client_ip),
+        "INSERT INTO share_proposals (share_link_id, note_id, basis_hash, proposed_content, "
+        "proposer_name, proposer_note, client_ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (link["id"], n["id"], basis_hash, content, who, (note or "")[:2000] or None, client_ip),
     )
     prop_id = cur.lastrowid
     note_row = conn.execute("SELECT title, slug FROM notes WHERE id=?", (n["id"],)).fetchone()
     rid = reviews_svc.create_review_item(
         conn, None,
-        title=f"Edit proposed for {note_row['title']}",
-        message=f"“{link['label'] or 'A shared link'}” submitted a new version — accept or reject it in Shares.",
+        title=f"{who} submitted an edit to {note_row['title']}",
+        message=f"{who} proposed a new version via the “{link['label'] or 'shared'}” link — accept or reject it in Shares.",
         link_slug="__shares__",                 # bell deep-links to the Shares page
     )
     conn.execute("UPDATE share_proposals SET review_item_id=? WHERE id=?", (rid, prop_id))

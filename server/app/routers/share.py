@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/share", tags=["share"])   # NO dependencies=[Cur
 
 class ProposeIn(BaseModel):
     content_md: str = Field(max_length=400_000)
+    name: str | None = Field(default=None, max_length=80)
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -76,7 +77,7 @@ def share_propose(token: str, body: ProposeIn, request: Request):
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
     try:
-        r = share_svc.submit_proposal(conn, link, body.content_md, body.note,
+        r = share_svc.submit_proposal(conn, link, body.content_md, body.note, body.name,
                                        request.client.host if request.client else None)
         conn.commit()
     except Exception:

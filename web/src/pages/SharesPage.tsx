@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { get, post } from "../api";
 
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; created_at: string; note_title: string; note_slug: string; url: string; }
-interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_note: string | null; created_at: string; stale: boolean; }
+interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
 
@@ -52,7 +52,7 @@ export default function SharesPage() {
             <div className="card" key={p.id}>
               <div className="row">
                 <strong>{leaf(p.note_title)}</strong>
-                <span className="badge">edit proposed</span>
+                <span className="badge">{p.proposer_name ? `${p.proposer_name} proposed` : "edit proposed"}</span>
                 {p.stale && <span className="badge tag-delete" title="The note changed since this was proposed">stale</span>}
                 <span className="spacer" />
                 <Link className="ghost" to={`/note/${p.note_slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open note</Link>

@@ -44,8 +44,9 @@ def list_shares():
         "WHERE sl.status='active' ORDER BY sl.created_at DESC"
     ).fetchall()
     proposals = conn.execute(
-        "SELECT p.id, p.proposed_content, p.proposer_note, p.created_at, p.basis_hash, "
-        "       n.title AS note_title, n.slug AS note_slug, n.content_md AS current_content, sl.label "
+        "SELECT p.id, p.proposed_content, p.proposer_name, p.proposer_note, p.created_at, p.basis_hash, "
+        "       n.title AS note_title, n.slug AS note_slug, n.kind AS note_kind, "
+        "       n.content_md AS current_content, sl.label "
         "FROM share_proposals p JOIN notes n ON n.id = p.note_id JOIN share_links sl ON sl.id = p.share_link_id "
         "WHERE p.status='pending' ORDER BY p.created_at DESC"
     ).fetchall()

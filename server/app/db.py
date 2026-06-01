@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def init_db() -> None:
@@ -177,6 +177,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT updated_at FROM notes WHERE id = ?", (int(old),)).fetchone()
             now = conn.execute("SELECT datetime('now')").fetchone()[0]
             set_meta(conn, "wiki_synth:since", row["updated_at"] if row else now)
+
+    if current < 13:
+        # Editors of a share link now provide a name, shown in the owner's alert.
+        _add_column(conn, "share_proposals", "proposer_name", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

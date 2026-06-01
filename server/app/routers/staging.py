@@ -70,6 +70,20 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
+    # Record the approval in the conversation so it stays in the chat.
+    if conversation_id is not None:
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'event', ?)",
+            (conversation_id, json.dumps({"summary": _applied_summary(action_type, payload)})),
+        )
+
+
+def _applied_summary(action_type: str, payload: dict) -> str:
+    if action_type == "LINK":
+        return f"Linked [[{payload.get('source_title', '')}]] → [[{payload.get('target_title', '')}]]"
+    verb = "Created" if action_type == "CREATE" else "Updated"
+    return f"{verb} [[{(payload.get('title') or '').strip()}]]"
+
 
 @router.post("/{action_id}/apply")
 def apply_action(action_id: int):

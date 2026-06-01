@@ -1,13 +1,15 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, post, streamChat, uploadAttachment } from "../api";
+import { createEntry, get, post, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import { Icon } from "../components/Icon";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 
-interface Msg { role: "user" | "assistant"; content: string; }
+// 'event' rows are persisted approval records (✓ applied X), kept in the chat
+// but excluded from the LLM history server-side.
+interface Msg { role: "user" | "assistant" | "event"; content: string; }
 type Mode = "entry" | "assisted" | "research";
 
 const MODES: { key: Mode; label: string; icon: string }[] = [
@@ -36,7 +38,10 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
-  const [applied, setApplied] = useState<{ id: number; summary: string; undone?: boolean }[]>([]);
+  // Transient chips for actions auto-applied during the current stream; at stream
+  // end we reload from the server (which has them as persisted 'event' rows).
+  const [applied, setApplied] = useState<{ id: number; summary: string }[]>([]);
+  const [undone, setUndone] = useState<Set<number>>(new Set());
 
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -64,24 +69,43 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
+  const convKey = (m: Mode) => `jbrain_conv_${m}`;
+
+  async function loadMessages(id: number) {
+    try {
+      const rows = await get<{ role: Msg["role"]; content: string }[]>(`/api/chat/conversations/${id}/messages`);
+      setMessages(rows.map((r) => ({ role: r.role, content: r.content })));
+    } catch { /* keep what we have */ }
+  }
+
   async function newConversation() {
     const { id } = await post("/api/chat/conversations");
-    setConvId(id); setMessages([]); setApplied([]);
+    localStorage.setItem(convKey(mode), String(id));
+    setConvId(id); setMessages([]); setApplied([]); setUndone(new Set());
   }
-  useEffect(() => { if (mode !== "entry") newConversation(); }, [mode]);
+
+  // On entering a chat mode, restore that mode's saved conversation (so the chat
+  // survives navigating to Advanced and back); only create one if none is saved.
+  useEffect(() => {
+    if (mode === "entry") return;
+    const saved = localStorage.getItem(convKey(mode));
+    if (saved) { setConvId(Number(saved)); loadMessages(Number(saved)); }
+    else { newConversation(); }
+  }, [mode]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages, entries]);
 
   async function undo(id: number) {
     await post(`/api/staging/${id}/undo`);
-    setApplied((a) => a.map((x) => (x.id === id ? { ...x, undone: true } : x)));
+    setUndone((s) => new Set(s).add(id));
   }
 
   async function send(e?: FormEvent) {
     e?.preventDefault();
     const text = input.trim();
     if ((!text && !pendingFile) || streaming || busy || !online) return;
+    if (mode !== "entry" && text === "/clear") { setInput(""); newConversation(); return; }
     const coords = geo.enabled ? geo.coords : null;
     const file = pendingFile;
     setInput(""); setPendingFile(null);
@@ -113,6 +137,7 @@ export default function Chat() {
     atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setStreaming(true);
+    let errored = false;
     try {
       await streamChat(convId, msg, (ev) => {
         if (ev.type === "token") {
@@ -126,6 +151,7 @@ export default function Chat() {
         } else if (ev.type === "applied" && ev.action) {
           setApplied((a) => [...a, ev.action!]);
         } else if (ev.type === "error") {
+          errored = true;
           setMessages((m) => {
             const c = [...m];
             c[c.length - 1] = { role: "assistant", content: `⚠️ ${ev.message}` };
@@ -136,6 +162,9 @@ export default function Chat() {
     } finally {
       setStreaming(false);
       if (mode === "assisted") setStagingTick((t) => t + 1);
+      // Re-sync from the server: the authoritative turn + any persisted approval
+      // ('event') records, correctly ordered. Skip on error to keep the ⚠️.
+      if (!errored && convId) { await loadMessages(convId); setApplied([]); }
     }
   }
 
@@ -162,26 +191,45 @@ export default function Chat() {
                   : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
               </div>
             )}
-            {messages.map((m, i) => (
-              <div key={i} className={`msg ${m.role}`}>
-                {m.role === "assistant" && m.content ? (
-                  <div className="md msg-md">
-                    <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+            {messages.map((m, i) => {
+              if (m.role === "event") {
+                let ev: { summary: string; undo_id?: number };
+                try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
+                return (
+                  <div key={i} className="applied-chip">
+                    <span>✓ {ev.summary}</span>
+                    {ev.undo_id == null ? null : undone.has(ev.undo_id)
+                      ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
+                      : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(ev.undo_id!)}>Undo</button>}
                   </div>
-                ) : (
-                  m.content || (streaming && i === messages.length - 1 ? "…" : "")
-                )}
-              </div>
-            ))}
+                );
+              }
+              return (
+                <div key={i} className={`msg ${m.role}`}>
+                  {m.role === "assistant" && m.content ? (
+                    <div className="md msg-md">
+                      <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    m.content || (streaming && i === messages.length - 1 ? "…" : "")
+                  )}
+                </div>
+              );
+            })}
             {mode === "assisted" && applied.map((a) => (
               <div key={`a${a.id}`} className="applied-chip">
                 <span>✓ {a.summary}</span>
-                {a.undone
+                {undone.has(a.id)
                   ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
                   : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
               </div>
             ))}
-            {mode === "assisted" && <StagingPanel tick={stagingTick} onChange={() => setStagingTick((t) => t + 1)} />}
+            {mode === "assisted" && (
+              <StagingPanel
+                tick={stagingTick}
+                onChange={() => { setStagingTick((t) => t + 1); if (convId && !streaming) loadMessages(convId); }}
+              />
+            )}
           </>
         )}
         <div ref={endRef} />

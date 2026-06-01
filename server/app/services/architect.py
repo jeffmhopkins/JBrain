@@ -253,8 +253,15 @@ def _record_applied(conn, conversation_id, action_type: str, display: str, undo:
         "VALUES (?, ?, ?, 'applied')",
         (conversation_id, action_type, json.dumps({"summary": display, "undo": undo})),
     )
+    aid = cur.lastrowid
+    # Persist a chat record so the approval stays in the conversation across reloads.
+    if conversation_id is not None:
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'event', ?)",
+            (conversation_id, json.dumps({"summary": display, "undo_id": aid})),
+        )
     conn.commit()
-    return {"type": "applied", "action": {"id": cur.lastrowid, "summary": display}}
+    return {"type": "applied", "action": {"id": aid, "summary": display}}
 
 
 def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True):
@@ -345,7 +352,10 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     # Build message history from the DB, then append the new user turn.
     history = conn.execute(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id",
+        # Only conversational turns go to the model; 'event' rows (applied-action
+        # records shown in the UI) are excluded from the LLM history.
+        "SELECT role, content FROM messages WHERE conversation_id = ? "
+        "AND role IN ('user', 'assistant') ORDER BY id",
         (conversation_id,),
     ).fetchall()
     messages = [{"role": r["role"], "content": r["content"]} for r in history]

@@ -266,6 +266,25 @@ def test_staged_create_does_not_clobber_existing_note(client):
     assert "Finances" in titles and "Finances (2)" in titles
 
 
+def test_apply_records_event_message_in_conversation(client):
+    # Applying a staged action leaves a persistent 'event' record in the chat
+    # (so approvals stay in the conversation across reloads).
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO conversations (id, title) VALUES (88, 'c')")
+    conn.execute(
+        "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (88, 'CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "title": "Recorded", "content": "x", "summary": "s"}),),
+    )
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    msgs = client.get("/api/chat/conversations/88/messages").json()
+    events = [m for m in msgs if m["role"] == "event"]
+    assert events and "Recorded" in events[0]["content"]
+
+
 def test_staged_action_missing_title_is_400_not_500(client):
     import json as _json
     from app.db import get_conn

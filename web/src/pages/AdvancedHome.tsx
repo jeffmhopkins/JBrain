@@ -1,3 +1,4 @@
+import { TouchEvent, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "../components/Icon";
 
@@ -37,8 +38,23 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
 
 export default function AdvancedHome() {
   const nav = useNavigate();
+
+  // Advanced is the last stop of the chat mode carousel; a horizontal swipe
+  // returns to chat at the neighbouring mode (right → Research, left wraps → Entry).
+  const start = useRef<{ x: number; y: number } | null>(null);
+  function onTouchStart(e: TouchEvent) { const t = e.touches[0]; start.current = { x: t.clientX, y: t.clientY }; }
+  function onTouchEnd(e: TouchEvent) {
+    const s = start.current; start.current = null;
+    if (!s) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    localStorage.setItem("jbrain_mode", dx > 0 ? "research" : "entry");
+    nav("/chat");
+  }
+
   return (
-    <div className="adv-home">
+    <div className="adv-home" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       {SECTIONS.map((s) => (
         <div key={s.name}>
           <div className="adv-section">{s.name}</div>

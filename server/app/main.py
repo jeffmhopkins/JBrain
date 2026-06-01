@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI):
             pass
 
     wf_svc.ingest_repo_workflows(get_conn())  # seed/update repo workflows
+    wf_svc.reset_stale_runs(get_conn())        # fail any run left 'running' by a prior process
 
     from .services import pipeline as _pipeline
     _pipeline.ingest_repo_action_defs(get_conn())  # seed/update action recipes

@@ -49,6 +49,19 @@ def client(monkeypatch):
     return TestClient(app, headers={"Authorization": f"Bearer {TEST_KEY}"})
 
 
+def run_and_wait(client, wf_id, timeout=8.0):
+    """Start a manual trigger run and poll its status until it finishes."""
+    import time
+    client.post(f"/api/workflows/{wf_id}/run")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = client.get(f"/api/workflows/{wf_id}/run-status").json()
+        if st["status"] != "running":
+            return st
+        time.sleep(0.03)
+    raise AssertionError("workflow run did not finish in time")
+
+
 def test_info_public_and_version_is_authed(client):
     from app.version import APP_VERSION
     info = client.get("/api/auth/info").json()
@@ -296,6 +309,32 @@ def test_update_note_renames_in_place(client):
     assert client.put("/api/notes/kb-jeff", json={"title": "notes/Taken", "content_md": "body"}).status_code == 409
 
 
+def test_manual_run_is_async_with_status(client, monkeypatch):
+    # Running a trigger returns immediately as 'running'; status polling reports
+    # completion once the background job finishes.
+    import time
+    from app.services import workflows as wf_svc
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
+        {"title": "Async Topic", "content_md": "x"}])
+    client.post("/api/notes", json={"title": "seed", "content_md": "s"})
+    wf = client.post("/api/workflows", json={
+        "name": "AsyncSynth", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
+        "action_type": "synthesize_wiki", "action_config": {}, "enabled": True,
+    }).json()
+    started = client.post(f"/api/workflows/{wf['id']}/run").json()
+    assert started["running"] is True and "run_id" in started
+
+    final = None
+    for _ in range(100):                       # poll up to ~5s
+        s = client.get(f"/api/workflows/{wf['id']}/run-status").json()
+        if s["status"] != "running":
+            final = s
+            break
+        time.sleep(0.05)
+    assert final and final["status"] == "ok"
+    assert any(n["title"] == "kb/Async Topic" for n in client.get("/api/notes?kind=kb").json())
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).
@@ -357,7 +396,7 @@ def test_synthesis_lives_under_kb_root_separate_from_entry(client, monkeypatch):
         "name": "Synth", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
         "action_type": "synthesize_wiki", "action_config": {}, "enabled": True,
     }).json()
-    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert run_and_wait(client, wf['id'])["status"] == "ok"
     atlas = client.get("/api/notes/notes-project-atlas").json()
     assert atlas["content_md"] == "user-authored body" and atlas["kind"] == "entry"  # untouched
     # The KB article takes the clean topic name under kb/ (no "(2)").
@@ -575,7 +614,7 @@ def test_daylog_prompt_is_configurable(client, monkeypatch):
         "action_type": "summarize_day_log",
         "action_config": {"log_title": "Daily Log", "prompt": "MY CUSTOM PROMPT"}, "enabled": True,
     }).json()
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
     assert captured.get("prompt") == "MY CUSTOM PROMPT"
 
 
@@ -588,7 +627,7 @@ def test_workflow_crud_via_api(client):
     wid = created["id"]
     assert created["locked"] is True  # user-created -> locked from repo re-ingest
 
-    run = client.post(f"/api/workflows/{wid}/run").json()
+    run = run_and_wait(client, wid)
     assert run["status"] == "ok"
     assert "hello" in client.get("/api/notes/manual-out").json()["content_md"]
 
@@ -608,7 +647,7 @@ def test_workflow_creates_review_item_and_dismiss(client):
         "action_config": {"title": "Review your day", "message": "Summary ready", "link_title": "Daily Summary"},
         "enabled": True,
     }).json()
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
 
     assert client.get("/api/reviews/count").json()["pending"] == 1
     items = client.get("/api/reviews").json()
@@ -636,14 +675,14 @@ def test_day_log_summary_workflow(client):
         "enabled": True,
     }).json()
 
-    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert run_and_wait(client, wf['id'])["status"] == "ok"
     summ = client.get("/api/notes/daily-summaries").json()["content_md"]
     assert "## 2026-05-30" in summ and "woke up" in summ   # completed day summarised
     assert "2026-05-31" not in summ                         # current day left alone
     assert any("Daily review" in i["title"] for i in client.get("/api/reviews").json())
 
     # Idempotent: re-running doesn't re-summarise the same day.
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
     assert client.get("/api/notes/daily-summaries").json()["content_md"].count("## 2026-05-30") == 1
 
 
@@ -666,7 +705,7 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
         "action_type": "synthesize_wiki", "action_config": {"review": {"title": "KB updated"}},
         "enabled": True,
     }).json()
-    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert run_and_wait(client, wf['id'])["status"] == "ok"
 
     kb = client.get("/api/notes?kind=kb").json()
     assert any(n["title"] == "kb/Health & Habits" for n in kb)
@@ -677,7 +716,7 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
     assert any("KB updated" in i["title"] for i in client.get("/api/reviews").json())
 
     # Re-run with no new entries -> no-op (watermark advanced).
-    assert "no new entries" in client.post(f"/api/workflows/{wf['id']}/run").json()["detail"]
+    assert "no new entries" in run_and_wait(client, wf['id'])["detail"]
 
 
 def test_manual_edit_preserves_kb_kind(client):
@@ -839,7 +878,7 @@ def test_append_action_with_review_block(client):
         "action_config": {"title": "Journal", "text": "entry", "review": {"title": "Check journal"}},
         "enabled": True,
     }).json()
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
     items = client.get("/api/reviews").json()
     assert any(i["title"] == "Check journal" and i["link_slug"] == "journal" for i in items)
 
@@ -888,13 +927,13 @@ def test_synthesize_wiki_watermark_not_advanced_on_empty_plan(client, monkeypatc
 
     # Run 1: LLM yields nothing → no KB note, watermark stays put.
     monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [])
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
     assert client.get("/api/notes?kind=kb").json() == []
 
     # Run 2: LLM works → the SAME entry is still processed (not skipped).
     monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
         {"op": "create", "title": "Topic", "content_md": "from [[Entry One]]"}])
-    client.post(f"/api/workflows/{wf['id']}/run")
+    run_and_wait(client, wf['id'])
     assert any(n["title"] == "kb/Topic" for n in client.get("/api/notes?kind=kb").json())
 
 
@@ -918,7 +957,7 @@ def test_pipeline_action_runs_via_engine(client):
         "action_type": "append_to_note",
         "action_config": {"title": "Engine Out", "text": "x"}, "enabled": True,
     }).json()
-    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert run_and_wait(client, wf['id'])["status"] == "ok"
     assert "x" in client.get("/api/notes/engine-out").json()["content_md"]
 
 
@@ -951,7 +990,7 @@ def test_claude_synthesize_via_pipeline(client, monkeypatch):
                           "review": {"title": "Check synthesis"}},
         "enabled": True,
     }).json()
-    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    assert run_and_wait(client, wf['id'])["status"] == "ok"
     assert client.get("/api/notes/summary").json()["content_md"] == "SYNTHESISED"
     assert any(i["title"] == "Check synthesis" for i in client.get("/api/reviews").json())
 

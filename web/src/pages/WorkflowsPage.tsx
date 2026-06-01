@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { del, get, post, put } from "../api";
 import Modal from "../components/Modal";
 import ConfigFields from "../components/ConfigFields";
@@ -46,22 +46,52 @@ export default function WorkflowsPage() {
   // so newly-added actions appear automatically.
   useEffect(() => { get("/api/workflows/action-types").then(setActionTypes).catch(() => {}); }, []);
 
+  const mounted = useRef(true);
+  const polling = useRef<Set<number>>(new Set());
+  useEffect(() => () => { mounted.current = false; }, []);
+
   async function toggle(w: Workflow) { await post(`/api/workflows/${w.id}/toggle`); load(); }
+
   async function runNow(w: Workflow) {
     setRunning((m) => ({ ...m, [w.id]: true }));
     setResult((m) => { const n = { ...m }; delete n[w.id]; return n; });
     setError("");
     try {
-      const r = await post(`/api/workflows/${w.id}/run`);
-      setResult((m) => ({ ...m, [w.id]: { status: r.status, detail: r.detail || "" } }));
-      showRuns(w.id);
-      load();   // refresh last_status
+      await post(`/api/workflows/${w.id}/run`);   // kicks off in the background
+      pollRun(w.id);
     } catch (e: any) {
       setResult((m) => ({ ...m, [w.id]: { status: "error", detail: e?.message || "request failed" } }));
-    } finally {
       setRunning((m) => ({ ...m, [w.id]: false }));
     }
   }
+
+  // Poll the run's status until it leaves 'running', then show the result.
+  function pollRun(id: number) {
+    if (polling.current.has(id)) return;
+    polling.current.add(id);
+    setRunning((m) => ({ ...m, [id]: true }));
+    const tick = async () => {
+      if (!mounted.current) { polling.current.delete(id); return; }
+      try {
+        const s = await get<{ status: string; detail: string }>(`/api/workflows/${id}/run-status`);
+        if (s.status === "running") { setTimeout(tick, 1500); return; }
+        polling.current.delete(id);
+        if (!mounted.current) return;
+        setResult((m) => ({ ...m, [id]: { status: s.status, detail: s.detail || "" } }));
+        setRunning((m) => ({ ...m, [id]: false }));
+        showRuns(id); load();
+      } catch {
+        polling.current.delete(id);
+        if (mounted.current) setRunning((m) => ({ ...m, [id]: false }));
+      }
+    };
+    tick();
+  }
+
+  // Resume the indicator if a run is still in flight (e.g. after a page reload).
+  useEffect(() => {
+    for (const w of items) if (w.last_status === "running") pollRun(w.id);
+  }, [items]);
   async function showRuns(id: number) {
     const r = await get(`/api/workflows/${id}/runs`);
     setRuns((m) => ({ ...m, [id]: r }));

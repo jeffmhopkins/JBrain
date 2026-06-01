@@ -106,9 +106,23 @@ def delete_workflow(wf_id: int):
 
 @router.post("/{wf_id}/run")
 def run_now(wf_id: int):
+    """Start the trigger in the background and return immediately. Poll
+    /{wf_id}/run-status for progress (runs can take a while — e.g. LLM calls)."""
     conn = get_conn()
-    status, detail = wf_svc.run_workflow(conn, _row(conn, wf_id))
-    return {"status": status, "detail": detail}
+    _row(conn, wf_id)  # 404 if missing
+    return wf_svc.start_manual_run(conn, wf_id)
+
+
+@router.get("/{wf_id}/run-status")
+def run_status(wf_id: int):
+    """Latest run's state: status is 'running' until the job finishes, then
+    'ok' | 'error' | 'skipped'."""
+    row = get_conn().execute(
+        "SELECT id, started_at, status, detail FROM workflow_runs "
+        "WHERE workflow_id = ? ORDER BY id DESC LIMIT 1",
+        (wf_id,),
+    ).fetchone()
+    return dict(row) if row else {"status": "none", "detail": ""}
 
 
 @router.post("/sync")

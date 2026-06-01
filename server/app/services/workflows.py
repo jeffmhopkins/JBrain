@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -291,6 +292,68 @@ def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
         "INSERT INTO workflow_runs (workflow_id, status, detail) VALUES (?, ?, ?)",
         (workflow_id, status, (detail or "")[:1000]),
     )
+
+
+def reset_stale_runs(conn) -> None:
+    """On startup, fail any run rows left 'running' by a previous process so a
+    crash mid-run doesn't wedge a trigger as perpetually in-progress."""
+    conn.execute(
+        "UPDATE workflow_runs SET status='error', detail='interrupted (server restarted)' "
+        "WHERE status='running'"
+    )
+    conn.execute("UPDATE workflows SET last_status='error' WHERE last_status='running'")
+    conn.commit()
+
+
+def start_manual_run(conn, wf_id: int) -> dict:
+    """Kick off a manual run in a background thread and return immediately. Poll
+    latest_run() for status. A run already in flight is returned as-is (no
+    double-run)."""
+    existing = conn.execute(
+        "SELECT id FROM workflow_runs WHERE workflow_id=? AND status='running' "
+        "AND started_at > datetime('now','-15 minutes') ORDER BY id DESC LIMIT 1",
+        (wf_id,),
+    ).fetchone()
+    if existing:
+        return {"running": True, "run_id": existing["id"]}
+    cur = conn.execute(
+        "INSERT INTO workflow_runs (workflow_id, status, detail) VALUES (?, 'running', '')",
+        (wf_id,),
+    )
+    run_id = cur.lastrowid
+    conn.execute("UPDATE workflows SET last_run_at=datetime('now'), last_status='running' WHERE id=?", (wf_id,))
+    conn.commit()
+    threading.Thread(target=_execute_manual_run, args=(wf_id, run_id), daemon=True).start()
+    return {"running": True, "run_id": run_id}
+
+
+def _execute_manual_run(wf_id: int, run_id: int) -> None:
+    """Background worker: run the pipeline on its OWN connection, then update the
+    pre-created run row + the workflow's last_status."""
+    from ..db import get_conn
+    from . import pipeline
+    conn = get_conn()  # this thread's own sqlite connection
+    status, detail = "error", "workflow not found"
+    wf = conn.execute("SELECT * FROM workflows WHERE id=?", (wf_id,)).fetchone()
+    if wf is not None:
+        cfg = json.loads(wf["action_config"] or "{}")
+        recipe = pipeline.get_action_def(wf["action_type"])
+        try:
+            if recipe is None:
+                status, detail = "error", f"unknown action '{wf['action_type']}'"
+            else:
+                detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], None)
+                status = "ok"
+                conn.commit()          # persist the pipeline's writes
+        except Exception as exc:        # noqa: BLE001 — record any failure
+            conn.rollback()             # discard partial pipeline writes
+            status, detail = "error", str(exc)
+    try:
+        conn.execute("UPDATE workflows SET last_run_at=datetime('now'), last_status=? WHERE id=?", (status, wf_id))
+        conn.execute("UPDATE workflow_runs SET status=?, detail=? WHERE id=?", (status, (detail or "")[:1000], run_id))
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
 
 
 def run_workflow(conn, wf, context: dict | None = None, commit: bool = True) -> tuple[str, str]:

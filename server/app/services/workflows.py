@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yaml
 
+from . import clock
 from . import embeddings
 from . import llm
 from . import notes as notes_svc
@@ -167,15 +168,19 @@ def _entry_block(e: dict) -> str:
     [[cite]] resolves), then a status line + the content. Edited entries look like
     new ones (reconcile); deleted entries are flagged so the model cleans up the
     articles that cited them."""
+    # Expand @t[...] live values to a DATED SNAPSHOT so the evergreen KB records a
+    # timeless, sourced fact ("40 (as of 2026-06-01; born 1986-03-01)") rather than
+    # a live token the synthesis LLM can't faithfully reproduce.
+    content = clock.expand_tokens(e["content_md"], snapshot=True)
     if e.get("deleted"):
         date = (e.get("deleted_at") or "")[:10]
         return (f"## {e['title']}\n[REMOVED by the owner{f' on {date}' if date else ''}] — the source entry "
                 f"[[{e['title']}]] was DELETED. Find articles that cite it, remove or correct the facts that "
                 f"came only from it, and drop it from their Sources. Former content (for reference only):\n"
-                f"{e['content_md']}")
+                f"{content}")
     date = (e.get("created_at") or "")[:10]
     cite = (f"Logged {date}. " if date else "") + f"Cite this entry as [[{e['title']}]]."
-    return f"## {e['title']}\n{cite}\n{e['content_md']}"
+    return f"## {e['title']}\n{cite}\n{content}"
 
 
 def _linked_kb(conn, entries: list) -> list[dict]:
@@ -450,11 +455,7 @@ def schedule_due(last_run_at: str | None, tc: dict, now: datetime | None = None)
             from croniter import croniter
         except Exception:
             return False
-        try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(os.environ.get("TZ") or "UTC")
-        except Exception:
-            tz = timezone.utc
+        tz = clock.app_tz()
         now_local = now.astimezone(tz)
         base = (last or now).astimezone(tz)
         try:

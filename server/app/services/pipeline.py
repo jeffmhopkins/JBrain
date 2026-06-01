@@ -14,19 +14,18 @@ Python fallback, so both can coexist during migration.
 """
 from __future__ import annotations
 
-import datetime
 import hashlib
 import json
 import os
 import threading
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import yaml
 from jinja2 import ChainableUndefined
 from jinja2 import meta as _jinja_meta
 from jinja2.sandbox import SandboxedEnvironment
 
+from . import clock
 from . import embeddings
 from . import llm
 from . import notes as notes_svc
@@ -35,13 +34,12 @@ from ..db import get_conn, get_meta, set_meta
 
 
 def _today() -> str:
-    return datetime.date.today().isoformat()
+    return clock.today_iso()
 
 
 def _local_day_path() -> str:
-    """Today as 'YYYY/MM/DD' in the server's local timezone — the same TZ the
-    scheduler uses for cron and that dated entry titles are bucketed by."""
-    return datetime.datetime.now(ZoneInfo(os.environ.get("TZ") or "UTC")).strftime("%Y/%m/%d")
+    """Today as 'YYYY/MM/DD' in the app timezone (the dated-capture bucket)."""
+    return clock.today_path()
 
 
 # --- Templating -------------------------------------------------------------
@@ -211,7 +209,10 @@ def _p_suggest_tags(ctx, title, content, prompt=None):
 
 def _p_summarise_entries(ctx, entries, prompt=None):
     from . import workflows as wf
-    return wf._summarise_entries(list(entries or []), prompt)
+    # The summary is STORED (a daily/log rollup), so render @t[...] live values as
+    # dated snapshots — the rollup is a point-in-time record, not a live note.
+    entries = [clock.expand_tokens(str(e), snapshot=True) for e in (entries or [])]
+    return wf._summarise_entries(entries, prompt)
 
 
 def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
@@ -221,16 +222,17 @@ def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
 
 
 def _p_gather_context(ctx, source_title=None, context_query=None):
-    """Build context text from a named note or a semantic search (synthesize)."""
+    """Build context text from a named note or a semantic search (synthesize).
+    @t[...] live values are expanded so the model reads the value, not the token."""
     if source_title:
         row = notes_svc.get_by_title(ctx.conn, source_title)
-        return row["content_md"] if row else ""
+        return clock.expand_tokens(row["content_md"]) if row else ""
     if context_query:
         out = ""
         for r in embeddings.semantic_search(ctx.conn, context_query, 8):
             n = notes_svc.get_by_title(ctx.conn, r["title"])
             if n:
-                out += f"\n\n## {n['title']}\n{n['content_md']}"
+                out += f"\n\n## {n['title']}\n{clock.expand_tokens(n['content_md'])}"
         return out
     return ""
 

@@ -9,8 +9,8 @@ which stay confirm-gated and need fail-closed matching).
 from __future__ import annotations
 
 import re
-from datetime import datetime
 
+from . import clock
 from . import notes as notes_svc
 
 # A checklist line: optional indent, "- [ ]"/"- [x]", optional "(P1)" priority, text.
@@ -166,7 +166,7 @@ def append_log(
     source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
     """Append a dated bullet to a log/journal note, creating it if absent."""
-    date = date or datetime.utcnow().strftime("%Y-%m-%d")
+    date = date or clock.today_iso()   # local day, not UTC (a late-evening log must not roll to tomorrow)
     note = notes_svc.get_by_title(conn, target)
     created = note is None
     body = note["content_md"] if note else f"# {target}\n"

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { del, get, post, put } from "../api";
+import { useAuth } from "../App";
+import { fmtTs } from "../time";
 import Modal from "../components/Modal";
 import ConfigFields from "../components/ConfigFields";
 import { Icon } from "../components/Icon";
@@ -30,6 +32,7 @@ const BLANK = {
 interface ActionType { type: string; config: any[]; }
 
 export default function WorkflowsPage() {
+  const { appTz } = useAuth();
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
   const [runs, setRuns] = useState<Record<number, any[]>>({});
@@ -195,7 +198,7 @@ export default function WorkflowsPage() {
             <div style={{ marginTop: 8, fontSize: 12 }}>
               {runs[w.id].length === 0 && <span className="muted">No runs.</span>}
               {runs[w.id].map((r) => (
-                <div key={r.id} className="muted">{r.started_at} · {r.status} · {r.detail}</div>
+                <div key={r.id} className="muted">{fmtTs(r.started_at, appTz)} · {r.status} · {r.detail}</div>
               ))}
             </div>
           )}

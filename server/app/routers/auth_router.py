@@ -22,6 +22,8 @@ def info():
 @router.get("/verify", dependencies=[CurrentUser])
 def verify():
     # Version is returned here (authed) so the PWA can do its compatibility check.
-    # has_llm lets the UI gate LLM-only affordances (e.g. the image-analysis toggle).
+    # has_llm gates LLM-only UI; app_tz lets the UI render UTC timestamps in the
+    # owner's configured local zone (labeled).
+    from ..services import clock
     return {"ok": True, "brain_name": get_settings().brain_name, "version": APP_VERSION,
-            "has_llm": get_settings().has_llm}
+            "has_llm": get_settings().has_llm, "app_tz": clock.app_tz_name()}

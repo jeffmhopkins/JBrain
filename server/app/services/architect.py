@@ -14,6 +14,7 @@ from typing import AsyncGenerator
 
 from ..config import get_settings
 from ..db import get_conn
+from . import clock
 from . import embeddings
 from . import geo
 from . import llm
@@ -148,6 +149,9 @@ def _schema_tables(conn) -> str:
 def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
     tmpl = prompts.get(f"modes.{mode}.system") or _FALLBACK_SYSTEM.get(mode, _FALLBACK_SYSTEM["assisted"])
     tmpl = tmpl.replace("{brain_name}", brain_name)
+    # Ground the agent in the owner's LOCAL time so "yesterday"/"in 1 hour"/"how
+    # old is X now" resolve correctly (rebuilt per turn — never a stale 'now').
+    tmpl = tmpl.replace("{now}", clock.now_prompt()).replace("{tz}", clock.app_tz_name())
     if "{tables}" in tmpl and conn is not None:
         tmpl = tmpl.replace("{tables}", _schema_tables(conn))
     return tmpl
@@ -216,7 +220,8 @@ def _tool_read_note(conn, title: str) -> str:
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
-    body = f"# {row['title']}\n\n{row['content_md']}"
+    # Expand @t[...] live values so the agent reads "40", not the raw token.
+    body = f"# {row['title']}\n\n{clock.expand_tokens(row['content_md'])}"
     if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
         body += f"\n\nLocation: {row['lat']:.5f}, {row['lon']:.5f}"
         if row["location_label"]:
@@ -419,7 +424,7 @@ def _tool_read_list(conn, list_title):
     if not items:
         return _untrusted("list", f"{title} (empty)")
     lines = [f"[{i}] [{'x' if it['checked'] else ' '}] "
-             + (f"(P{it['priority']}) " if it["priority"] else "") + it["text"]
+             + (f"(P{it['priority']}) " if it["priority"] else "") + clock.expand_tokens(it["text"])
              for i, it in enumerate(items)]
     return _untrusted("list", f"{title}\n" + "\n".join(lines))
 

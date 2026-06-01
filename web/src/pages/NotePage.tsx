@@ -3,7 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { del, get, post, put } from "../api";
+import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
+import { fmtTs, expandTimeTokens } from "../time";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
@@ -23,6 +25,7 @@ export default function NotePage() {
   const { slug } = useParams();
   const navigate = useNavigate();
   const isDesktop = useIsDesktop();
+  const { appTz } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState("");
@@ -166,7 +169,7 @@ export default function NotePage() {
         </div>
       )}
       <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <span>🕐 {note.created_at}{note.updated_at.replace(/\.\d+$/, "") !== note.created_at ? ` · updated ${note.updated_at.replace(/\.\d+$/, "")}` : ""}</span>
+        <span>🕐 {fmtTs(note.created_at, appTz)}{fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz) ? ` · updated ${fmtTs(note.updated_at, appTz)}` : ""}</span>
         {note.lat != null && note.lon != null && (
           <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
              target="_blank" rel="noreferrer">
@@ -218,7 +221,7 @@ export default function NotePage() {
               }
               return <li className={cls || undefined} {...props}>{children}</li>;
             },
-          }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
+          }}>{renderWikiLinks(expandTimeTokens(note.content_md, appTz))}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

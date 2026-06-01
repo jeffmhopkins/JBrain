@@ -78,11 +78,13 @@ def _bind_cookie(response: Response, token: str, link_id: int, secret: str) -> N
 
 
 def _note_payload(conn, link) -> dict:
+    from ..services import clock
     atts = att_svc.list_for_note(conn, link["note_id"])
     return {
         "scope": link["scope"],
         "can_edit": link["scope"] == "edit",
         "brain_name": get_settings().brain_name,
+        "app_tz": clock.app_tz_name(),
         "bound_name": link["bound_name"],
         "note": {
             "title": link["title"],

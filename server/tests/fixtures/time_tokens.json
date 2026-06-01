@@ -1,0 +1,21 @@
+{
+  "_comment": "Parity fixture pinning clock.expand_tokens (Python) and web/src/time.ts expandTimeTokens (TS). `now` is an aware UTC instant; tz is UTC for deterministic cross-impl comparison. Keep both implementations matching these.",
+  "tz": "UTC",
+  "now": "2026-06-01T12:00:00+00:00",
+  "now_ms": 1780315200000,
+  "cases": [
+    { "in": "Jeff is @t[age:1986-03-01].", "out": "Jeff is 40." },
+    { "in": "born @t[age:1986-07-04]", "out": "born 39" },
+    { "in": "leap @t[age:2000-02-29]", "out": "leap 26" },
+    { "in": "meeting @t[until:2026-06-01T13:00:00Z]", "out": "meeting in 1 hour" },
+    { "in": "deadline @t[until:2026-06-04T12:00:00Z]", "out": "deadline in 3 days" },
+    { "in": "started @t[since:2026-05-01T12:00:00Z]", "out": "started 1 month ago" },
+    { "in": "soon @t[until:2026-06-01T12:00:30Z]", "out": "soon now" },
+    { "in": "bad @t[age:not-a-date] token", "out": "bad @t[age:not-a-date] token" },
+    { "in": "no tokens here", "out": "no tokens here" },
+    { "in": "two @t[age:1986-03-01] and @t[age:2006-06-01]", "out": "two 40 and 20" }
+  ],
+  "snapshot_cases": [
+    { "in": "Jeff is @t[age:1986-03-01]", "out": "Jeff is 40 (as of 2026-06-01; born 1986-03-01)" }
+  ]
+}

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, post } from "../api";
+import { useAuth } from "../App";
+import { fmtTs } from "../time";
 
 interface ReviewItem {
   id: number;
@@ -11,6 +13,7 @@ interface ReviewItem {
 }
 
 export default function ReviewPage() {
+  const { appTz } = useAuth();
   const [items, setItems] = useState<ReviewItem[]>([]);
 
   async function load() {
@@ -35,7 +38,7 @@ export default function ReviewPage() {
           <div className="row">
             <strong>{r.title}</strong>
             <span className="spacer" />
-            <span className="muted" style={{ fontSize: 11 }}>{r.created_at}</span>
+            <span className="muted" style={{ fontSize: 11 }}>{fmtTs(r.created_at, appTz)}</span>
           </div>
           {r.message && <p style={{ margin: "6px 0", whiteSpace: "pre-wrap" }}>{r.message}</p>}
           <div className="row" style={{ gap: 8, marginTop: 8 }}>

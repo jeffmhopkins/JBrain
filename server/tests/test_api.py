@@ -457,6 +457,70 @@ def test_synthesis_consumes_daily_rollups_not_raw_dated_entries(client, monkeypa
     assert "notes/daily/2020/01/01/1" not in titles    # raw dated capture is NOT synthesized directly
 
 
+def test_clock_tz_resolution_and_validation(monkeypatch):
+    from app.services import clock
+    monkeypatch.setenv("TZ", "Florda/Bogus")     # typo must not brick anything
+    assert clock.app_tz_name() == "UTC"
+    monkeypatch.setenv("TZ", "America/New_York")
+    assert clock.app_tz_name() == "America/New_York"
+    assert clock.today_iso() == clock.now_local().date().isoformat()
+
+
+def test_time_token_expander_parity_fixture(monkeypatch):
+    import json
+    from datetime import datetime
+    from app.services import clock
+    monkeypatch.setenv("TZ", "UTC")
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "time_tokens.json")
+    with open(path) as fh:
+        fx = json.load(fh)
+    now = datetime.fromisoformat(fx["now"])
+    for c in fx["cases"]:
+        assert clock.expand_tokens(c["in"], now=now) == c["out"], c["in"]
+    for c in fx["snapshot_cases"]:
+        assert clock.expand_tokens(c["in"], snapshot=True, now=now) == c["out"], c["in"]
+
+
+def test_append_log_uses_local_date_not_utc(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import clock, quicktasks
+    monkeypatch.setattr(clock, "today_iso", lambda: "2026-06-01")   # prove it routes through clock
+    conn = get_conn()
+    quicktasks.append_log(conn, "Running Log", "5k easy")   # no explicit date -> local today
+    conn.commit()
+    assert "**2026-06-01** 5k easy" in client.get("/api/notes/running-log").json()["content_md"]
+
+
+def test_agent_system_prompt_is_time_grounded(client):
+    from app.db import get_conn
+    from app.services import architect
+    for mode in ("assisted", "research"):
+        sp = architect._system_prompt("Test Brain", mode, get_conn())
+        assert "CURRENT TIME" in sp
+        assert "{now}" not in sp and "{tz}" not in sp   # placeholders are filled per turn
+
+
+def test_verify_exposes_app_tz(client):
+    assert "app_tz" in client.get("/api/auth/verify").json()
+
+
+def test_read_note_expands_time_tokens_for_agent(client):
+    from app.db import get_conn
+    from app.services import architect
+    client.post("/api/notes/entry", json={"text": "Jeff is @t[age:1986-03-01]", "title": "Jeff"})
+    out = architect._tool_read_note(get_conn(), "notes/Jeff")
+    assert "@t[" not in out          # the agent sees the value, not the raw token
+    assert "Jeff is " in out
+
+
+def test_entry_block_snapshots_time_tokens_for_synthesis(monkeypatch):
+    from app.services import workflows as wf
+    monkeypatch.setenv("TZ", "UTC")
+    e = {"title": "notes/Jeff", "content_md": "Jeff is @t[age:1986-03-01]", "created_at": "2026-06-01"}
+    block = wf._entry_block(e)
+    assert "@t[" not in block and "born 1986-03-01" in block and "as of" in block
+
+
 def test_share_links_flow(client):
     # Mint view/edit links; verify unauthenticated access, scoping, propose →
     # accept (re-propose supersede), and revocation.

@@ -1,15 +1,12 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
-import os
 import sqlite3
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser
 from ..db import get_conn
-from ..services import diffing
+from ..services import clock, diffing
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[CurrentUser])
@@ -140,9 +137,8 @@ def create_entry(body: EntryIn):
     else:
         # Pure Entry capture: no title. File chronologically under the date tree
         # as notes/daily/YYYY/MM/DD/<n>; the whole text is the body. Day boundary
-        # is the server's local timezone (same TZ the scheduler uses for midnight).
-        day = datetime.now(ZoneInfo(os.environ.get("TZ") or "UTC")).date()
-        title = notes_svc.next_daily_title(conn, day)
+        # is the app timezone (same TZ the scheduler uses for midnight).
+        title = notes_svc.next_daily_title(conn, clock.today_local())
     try:
         note_id = notes_svc.upsert_note(
             conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,

@@ -4,13 +4,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
 import { renderWikiLinks } from "../util";
+import { fmtTs, expandTimeTokens } from "../time";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
   requires_claim?: boolean;
-  scope: "view" | "edit"; can_edit: boolean; brain_name: string; bound_name?: string | null;
+  scope: "view" | "edit"; can_edit: boolean; brain_name: string; app_tz?: string; bound_name?: string | null;
   note?: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
 }
 
@@ -148,7 +149,7 @@ export default function SharePage() {
           <>
             <div className="md">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: flatLink }}>
-                {renderWikiLinks(stripTitleHeading(n.content_md, n.title))}
+                {renderWikiLinks(expandTimeTokens(stripTitleHeading(n.content_md, n.title), data.app_tz))}
               </ReactMarkdown>
             </div>
             {n.attachments.length > 0 && (
@@ -171,7 +172,7 @@ export default function SharePage() {
           </>
         )}
         <p className="muted" style={{ fontSize: 12, marginTop: 20 }}>
-          Shared from {data.brain_name} · updated {n.updated_at.replace(/\.\d+$/, "")}
+          Shared from {data.brain_name} · updated {fmtTs(n.updated_at, data.app_tz)}
         </p>
       </div>
     </div>

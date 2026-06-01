@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, post } from "../api";
+import { useAuth } from "../App";
+import { fmtTs } from "../time";
 
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
@@ -18,6 +20,7 @@ function diff(cur: string, prop: string) {
 }
 
 export default function SharesPage() {
+  const { appTz } = useAuth();
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [history, setHistory] = useState<HistItem[]>([]);
@@ -110,7 +113,7 @@ export default function SharesPage() {
             {l.bind ? <span className="badge" title="Locked to first device">{l.bound_at ? "locked" : "lock pending"}</span> : null}
             {l.pending > 0 && <span className="badge tag-delete">{l.pending} pending</span>}
             <span className="spacer" />
-            <span className="muted" style={{ fontSize: 12 }}>{l.last_used_at ? `viewed ${l.last_used_at.replace(/\.\d+$/, "")}` : "not viewed yet"}</span>
+            <span className="muted" style={{ fontSize: 12 }}>{l.last_used_at ? `viewed ${fmtTs(l.last_used_at, appTz)}` : "not viewed yet"}</span>
           </div>
           <div className="row" style={{ marginTop: 6, gap: 6 }}>
             <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
@@ -131,7 +134,7 @@ export default function SharesPage() {
                 <Link to={`/note/${h.note_slug}`} className="wikilink">{leaf(h.note_title)}</Link>
                 <span className="muted">{h.proposer_name || "someone"}</span>
                 <span className="spacer" />
-                <span className="muted" style={{ fontSize: 12 }}>{(h.resolved_at || h.created_at).replace(/\.\d+$/, "")}</span>
+                <span className="muted" style={{ fontSize: 12 }}>{fmtTs(h.resolved_at || h.created_at, appTz)}</span>
               </div>
             ))}
           </div>

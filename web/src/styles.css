@@ -370,6 +370,23 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   width: 100%; padding: 9px; background: var(--bg-elev); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius);
 }
+
+/* ---- Graph controls ----------------------------------------------------- */
+.graph-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+/* Segmented filter (All / KB / Entries): buttons joined into one pill. */
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; border-left-width: 0; }
+.seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); border-left-width: 1px; }
+.seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.graph-depth { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 13px; }
+.graph-select { padding: 6px 8px; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); }
+.graph-select:disabled { opacity: 0.5; }
+.graph-legend { display: inline-flex; gap: 12px; color: var(--text-dim); font-size: 12px; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.graph-focus { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  padding: 8px 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); }
 /* Big keyboard-aware config editor (mirrors .note-edit-area). */
 /* Floor the height so it can't collapse when the keyboard shrinks --app-height
    (otherwise the calc goes near-zero and the editor becomes a sliver). */

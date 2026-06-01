@@ -12,7 +12,7 @@ def graph():
     conn = get_conn()
     nodes = conn.execute(
         """
-        SELECT n.id, n.title, n.slug,
+        SELECT n.id, n.title, n.slug, n.kind,
                (SELECT COUNT(*) FROM links l WHERE l.target_note_id = n.id) AS in_degree
         FROM notes n WHERE n.deleted_at IS NULL
         """
@@ -23,7 +23,8 @@ def graph():
     ).fetchall()
     return {
         "nodes": [
-            {"id": r["id"], "title": r["title"], "slug": r["slug"], "val": r["in_degree"] + 1}
+            {"id": r["id"], "title": r["title"], "slug": r["slug"],
+             "kind": r["kind"] or "entry", "val": r["in_degree"] + 1}
             for r in nodes
         ],
         "links": [{"source": r["source"], "target": r["target"]} for r in edges],

@@ -266,6 +266,17 @@ def test_staged_create_does_not_clobber_existing_note(client):
     assert "Finances" in titles and "Finances (2)" in titles
 
 
+def test_graph_nodes_include_kind(client):
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "An Article", "kb body", kind="kb")
+    conn.commit()
+    client.post("/api/notes/entry", json={"text": "a raw entry", "title": "An Entry"})
+    nodes = {n["title"]: n["kind"] for n in client.get("/api/graph").json()["nodes"]}
+    assert nodes["An Article"] == "kb" and nodes["An Entry"] == "entry"
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

@@ -4,14 +4,16 @@ import { get } from "../api";
 import { Icon } from "../components/Icon";
 
 interface NoteRow { id: number; title: string; slug: string; kind: string; updated_at: string; }
-type Filter = "" | "entry" | "kb";
+type Filter = "" | "entry" | "kb" | "list";
 type TNode = { name: string; note?: NoteRow; children: Record<string, TNode> };
 
 const TABS: { key: Filter; label: string }[] = [
   { key: "", label: "All" },
   { key: "entry", label: "Entries" },
+  { key: "list", label: "Lists" },
   { key: "kb", label: "Knowledge base" },
 ];
+const KIND_BADGE: Record<string, string> = { kb: "KB", list: "List" };
 
 // Build a tree from "/"-separated titles (e.g. "Work/Q3 Planning").
 function buildTree(notes: NoteRow[]): TNode {
@@ -70,7 +72,7 @@ export default function Wiki() {
               {node.note ? (
                 <Link to={`/note/${node.note.slug}`} className="tree-label">
                   {node.name}
-                  {node.note.kind === "kb" && <span className="badge" style={{ marginLeft: 6 }}>KB</span>}
+                  {KIND_BADGE[node.note.kind] && <span className="badge" style={{ marginLeft: 6 }}>{KIND_BADGE[node.note.kind]}</span>}
                 </Link>
               ) : (
                 <span className="tree-label folder" onClick={() => kids.length && toggle(path)}>{node.name}</span>

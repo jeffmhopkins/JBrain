@@ -23,17 +23,20 @@ def add_list_item(
     conn, list_title: str, item: str, checkbox: bool = True, *,
     source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
-    """Append an item to a checklist note, creating the list if absent."""
-    note = notes_svc.get_by_title(conn, list_title)
+    """Append an item to a checklist note, creating the list if absent. Lists are
+    their own layer: titled under the "lists/" root with kind='list', so they're
+    kept apart from notes and skipped by wiki-synthesis."""
+    title = notes_svc.root_title(list_title, "lists")
+    note = notes_svc.get_by_title(conn, title)
     created = note is None
-    body = note["content_md"] if note else f"# {list_title}\n"
+    body = note["content_md"] if note else f"# {title.split('/')[-1]}\n"
     line = f"- [ ] {item}" if checkbox else f"- {item}"
     new_body = body.rstrip() + "\n" + line + "\n"
     notes_svc.upsert_note(
-        conn, list_title, new_body, source=source,
+        conn, title, new_body, source=source, kind="list",
         conversation_id=conversation_id, version_note="added list item", **_loc_kwargs(location),
     )
-    return {"note_title": list_title, "line": line, "created": created}
+    return {"note_title": title, "line": line, "created": created}
 
 
 def append_log(

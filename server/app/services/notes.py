@@ -105,7 +105,7 @@ def root_title(title: str, root: str) -> str:
     'notes/Jeff' under 'kb' becomes 'kb/Jeff'. Deeper sub-paths are preserved."""
     t = (title or "").strip().strip("/")
     low = t.lower()
-    for r in ("notes/", "kb/"):
+    for r in ("notes/", "kb/", "lists/", "logs/"):
         if low.startswith(r):
             t = t[len(r):]
             break

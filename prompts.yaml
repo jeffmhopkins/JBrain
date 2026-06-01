@@ -75,7 +75,7 @@ tools:
   read_note: "When you need a note's full text: read its complete markdown by exact title."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
   read_inbox: "When folding captures into the wiki: read unprocessed quick-capture inbox items (e.g. dictations)."
-  add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."
+  add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."
   log_entry: "When the user logs an event ('log a 5k run', 'journal: ...'): append a dated entry to a log/journal note, creating it if absent. APPLIES IMMEDIATELY (additive, undoable) — name the resolved log back."
   capture_inbox: "When the user jots a fleeting fragment ('remember to...', 'note to self'): save it to the capture inbox for later. APPLIES IMMEDIATELY; does not touch the wiki."
   mark_inbox_processed: "When inbox items have been folded into the wiki: mark them processed. Pass ids from read_inbox."

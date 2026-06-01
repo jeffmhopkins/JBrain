@@ -479,16 +479,18 @@ def test_quicktask_add_list_item_and_undo(client):
     conn = get_conn()
     r = quicktasks.add_list_item(conn, "Shopping List", "milk")
     conn.commit()
-    assert "- [ ] milk" in client.get("/api/notes/shopping-list").json()["content_md"]
+    assert r["note_title"] == "lists/Shopping List"   # lists live under lists/
+    assert client.get("/api/notes/lists-shopping-list").json()["kind"] == "list"
+    assert "- [ ] milk" in client.get("/api/notes/lists-shopping-list").json()["content_md"]
 
     # Record the applied op with its inverse (as the architect would), then undo.
     cur = conn.execute(
         "INSERT INTO staging_actions (type, payload_json, status) VALUES ('ADD_ITEM', ?, 'applied')",
-        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "Shopping List", "line": r["line"]}}),),
+        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "lists/Shopping List", "line": r["line"]}}),),
     )
     conn.commit()
     client.post(f"/api/staging/{cur.lastrowid}/undo")
-    assert "- [ ] milk" not in client.get("/api/notes/shopping-list").json()["content_md"]
+    assert "- [ ] milk" not in client.get("/api/notes/lists-shopping-list").json()["content_md"]
 
 
 def test_quicktask_log_entry(client):
@@ -1337,7 +1339,7 @@ def test_undo_noop_does_not_mark_undone(client):
     quicktasks.add_list_item(conn, "Tasks", "buy milk")
     cur = conn.execute(
         "INSERT INTO staging_actions (type, payload_json, status) VALUES ('ADD_ITEM', ?, 'applied')",
-        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "Tasks", "line": "- [ ] NOT PRESENT"}}),),
+        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "lists/Tasks", "line": "- [ ] NOT PRESENT"}}),),
     )
     conn.commit()
     assert client.post(f"/api/staging/{cur.lastrowid}/undo").status_code == 409

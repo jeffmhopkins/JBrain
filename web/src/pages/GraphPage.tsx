@@ -11,10 +11,10 @@ const NODE_REL = 5;   // node radius scale; labels are positioned from this
 
 // Colour nodes by kind. Entries keep the sky accent; KB articles are amber so the
 // two layers read apart at a glance; anything else falls back to slate.
-const KIND_COLOR: Record<string, string> = { entry: "#38bdf8", kb: "#f59e0b" };
+const KIND_COLOR: Record<string, string> = { entry: "#38bdf8", kb: "#f59e0b", list: "#a78bfa" };
 const colorOf = (kind: string) => KIND_COLOR[kind] ?? "#94a3b8";
 
-type Kind = "all" | "kb" | "entry";
+type Kind = "all" | "kb" | "entry" | "list";
 const linkEnd = (e: number | GNode) => (typeof e === "object" ? e.id : e);
 
 export default function GraphPage() {
@@ -68,7 +68,8 @@ export default function GraphPage() {
 
   const focusNode = focusId != null ? data.nodes.find((n) => n.id === focusId) : undefined;
   const kinds: { key: Kind; label: string }[] = [
-    { key: "all", label: "All" }, { key: "kb", label: "KB" }, { key: "entry", label: "Entries" },
+    { key: "all", label: "All" }, { key: "kb", label: "KB" },
+    { key: "entry", label: "Entries" }, { key: "list", label: "Lists" },
   ];
 
   return (
@@ -96,6 +97,7 @@ export default function GraphPage() {
 
         <span className="graph-legend">
           <span><i className="legend-dot" style={{ background: KIND_COLOR.entry }} /> Entry</span>
+          <span><i className="legend-dot" style={{ background: KIND_COLOR.list }} /> List</span>
           <span><i className="legend-dot" style={{ background: KIND_COLOR.kb }} /> KB</span>
         </span>
       </div>

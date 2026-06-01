@@ -31,7 +31,7 @@ function buildTree(notes: NoteRow[]): TNode {
 export default function Wiki() {
   const [notes, setNotes] = useState<NoteRow[]>([]);
   const [q, setQ] = useState("");
-  const [kind, setKind] = useState<Filter>("");
+  const [kind, setKind] = useState<Filter>("kb");   // default to the knowledge base
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   useEffect(() => {

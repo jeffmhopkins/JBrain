@@ -20,6 +20,13 @@ function flatLink({ href, children }: any) {
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
 
+// The title is shown as the page heading; if the body opens with the same "# Title"
+// heading (lists carry one), drop it so it isn't rendered twice.
+function stripTitleHeading(md: string, title: string): string {
+  const want = leaf(title).trim().toLowerCase();
+  return md.replace(/^\s*#\s+(.+?)[ \t]*(?:\n|$)/, (m, h) => (h.trim().toLowerCase() === want ? "" : m));
+}
+
 export default function SharePage() {
   const { token = "" } = useParams();
   const [data, setData] = useState<ShareView | null>(null);
@@ -81,7 +88,7 @@ export default function SharePage() {
           <>
             <div className="md">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: flatLink }}>
-                {renderWikiLinks(n.content_md)}
+                {renderWikiLinks(stripTitleHeading(n.content_md, n.title))}
               </ReactMarkdown>
             </div>
             {n.attachments.length > 0 && (

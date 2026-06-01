@@ -6,6 +6,7 @@ python-multipart==0.0.20
 sqlite-vec==0.1.6
 fastembed==0.5.1
 PyYAML==6.0.2
+Jinja2==3.1.6          # action-engine templating (pipeline.py): SandboxedEnvironment
 croniter==3.0.3
 tzdata==2024.2
 pypdf==5.1.0

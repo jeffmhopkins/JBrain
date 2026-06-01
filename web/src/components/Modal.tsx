@@ -7,7 +7,7 @@ interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;        // sticky action bar; omit → no footer rendered
   headerExtra?: ReactNode;   // e.g. a source badge, between title and Close
-  size?: "default" | "wide"; // desktop max-width only; ignored on phone
+  size?: "default" | "wide" | "compact"; // "compact" = small centered popup (not a full-height sheet)
 }
 
 // One responsive modal for the whole app. On phone it's a full-height,
@@ -31,9 +31,9 @@ export default function Modal({ title, onClose, children, footer, headerExtra, s
   }, [onClose]);
 
   return createPortal(
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className={"modal-backdrop" + (size === "compact" ? " compact" : "")} onClick={onClose}>
       <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true"
-           className={"modal" + (size === "wide" ? " modal-wide" : "")}
+           className={"modal" + (size === "wide" ? " modal-wide" : "") + (size === "compact" ? " modal-compact" : "")}
            onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong className="modal-title">{title}</strong>

@@ -418,6 +418,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 }
 .modal-title { font-weight: 600; font-size: 15px; color: var(--text); }
 .modal-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 16px; }
+
+/* Compact variant: a small centered popup (not a full-height bottom sheet) —
+   for quick one-field prompts. Applies on phone too. */
+.modal-backdrop.compact { align-items: center; padding: 16px; }
+.modal-compact { height: auto; max-height: 80vh; max-width: 420px; border-radius: var(--radius); }
+.modal-compact .modal-head { padding-top: 14px; }
+.modal-compact .modal-foot { padding-bottom: 12px; }
 .modal-foot {
   flex-shrink: 0; display: flex; gap: 8px; align-items: center;
   padding: 12px 16px; padding-bottom: calc(12px + env(safe-area-inset-bottom));

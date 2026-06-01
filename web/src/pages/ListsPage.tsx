@@ -107,7 +107,7 @@ export default function ListsPage() {
       </div>
 
       {creating && (
-        <Modal title="New list" onClose={() => setCreating(false)}
+        <Modal title="New list" size="compact" onClose={() => setCreating(false)}
           footer={<>
             <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
             <button className="primary" onClick={createList} disabled={!newName.trim()}>Create</button>

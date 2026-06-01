@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { Children, isValidElement, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { get, put } from "../api";
 import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
@@ -58,6 +59,19 @@ export default function NotePage() {
     get<TimelineEntry[]>(`/api/notes/${slug}/versions`).then(setTimeline).catch(() => {});
   }
 
+  // Toggle a `- [ ]`/`- [x]` checkbox on the given (0-based) source line and save.
+  async function toggleCheckbox(lineIdx: number) {
+    if (!note) return;
+    const lines = note.content_md.split("\n");
+    const ln = lines[lineIdx];
+    if (!ln || !/\[[ xX]\]/.test(ln)) return;
+    lines[lineIdx] = ln.replace(/\[[ xX]\]/, /\[ \]/.test(ln) ? "[x]" : "[ ]");
+    const content_md = lines.join("\n");
+    setNote({ ...note, content_md });   // optimistic
+    try { await put(`/api/notes/${note.slug}`, { title: note.title, content_md }); }
+    catch { reload(); }
+  }
+
   useEffect(() => {
     setNote(null); setError("");
     reload();
@@ -65,6 +79,7 @@ export default function NotePage() {
 
   if (error) return <div className="content"><p className="muted">{error}</p><Link to="/wiki">← Back to wiki</Link></div>;
   if (!note) return <div className="content muted">Loading…</div>;
+  const sourceLines = note.content_md.split("\n");   // for mapping rendered checkboxes back to source lines
 
   const rail = (
     <>
@@ -126,7 +141,26 @@ export default function NotePage() {
         </div>
       ) : (
         <div className="md">
-          <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+            a: makeLinkRenderer(navigate),
+            li: ({ node, children, className, ...props }: any) => {
+              const cls = Array.isArray(className) ? className.join(" ") : (className || "");
+              const line = node?.position?.start?.line;
+              if (cls.includes("task-list-item") && line) {
+                const src = sourceLines[line - 1] || "";
+                const checked = /\[[xX]\]/.test(src);
+                // Drop react-markdown's own disabled checkbox; render an interactive one.
+                const kids = Children.toArray(children).filter((c) => !(isValidElement(c) && (c as any).type === "input"));
+                return (
+                  <li className="task-li">
+                    <input type="checkbox" checked={checked} onChange={() => toggleCheckbox(line - 1)} />
+                    <span className={checked ? "task-done" : ""}>{kids}</span>
+                  </li>
+                );
+              }
+              return <li className={cls || undefined} {...props}>{children}</li>;
+            },
+          }}>{renderWikiLinks(note.content_md)}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

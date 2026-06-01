@@ -37,6 +37,16 @@ function ReviewBell() {
     };
   }, []);
 
+  // Mirror the pending count onto the installed-app icon badge (App Badging API:
+  // desktop PWAs, and iOS 16.4+ Home Screen apps once notification permission is
+  // granted). No-op where unsupported.
+  useEffect(() => {
+    const nav = navigator as any;
+    if (typeof nav.setAppBadge !== "function") return;
+    if (count > 0) nav.setAppBadge(count).catch(() => {});
+    else nav.clearAppBadge?.().catch(() => {});
+  }, [count]);
+
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -46,6 +56,11 @@ function ReviewBell() {
 
   async function toggle() {
     if (open) { setOpen(false); return; }
+    // First time the user engages with alerts, ask for notification permission so
+    // the icon badge can show (required on installed iOS PWAs). User-gesture only.
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch { /* ignore */ }
+    }
     let list: ReviewItem[] = [];
     try { list = await get("/api/reviews"); } catch { /* ignore */ }
     setItems(list);

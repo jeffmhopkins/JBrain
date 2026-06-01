@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, post } from "../api";
 
-interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
+interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
 
@@ -102,6 +102,7 @@ export default function SharesPage() {
             <strong>{leaf(l.note_title)}</strong>
             <span className={"badge " + (l.scope === "edit" ? "badge-architect" : "")}>{l.scope}</span>
             {l.label && <span className="badge">{l.label}</span>}
+            {l.expires_at && <span className="badge" title="Link expiry">expires {l.expires_at.slice(0, 10)}</span>}
             {l.pending > 0 && <span className="badge tag-delete">{l.pending} pending</span>}
             <span className="spacer" />
             <span className="muted" style={{ fontSize: 12 }}>{l.last_used_at ? `viewed ${l.last_used_at.replace(/\.\d+$/, "")}` : "not viewed yet"}</span>

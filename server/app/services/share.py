@@ -61,12 +61,20 @@ def touch(conn, link_id: int) -> None:
 
 # --- Owner: minting / listing / revoking -----------------------------------
 
-def create_link(conn, note_id: int, scope: str, label: str | None = None) -> str:
+def create_link(conn, note_id: int, scope: str, label: str | None = None,
+                ttl_days: int | None = None) -> str:
     token = mint_token()
-    conn.execute(
-        "INSERT INTO share_links (token, note_id, scope, label) VALUES (?, ?, ?, ?)",
-        (token, note_id, scope, label),
-    )
+    if ttl_days and int(ttl_days) > 0:
+        conn.execute(
+            "INSERT INTO share_links (token, note_id, scope, label, expires_at) "
+            "VALUES (?, ?, ?, ?, datetime('now', ?))",
+            (token, note_id, scope, label, f"+{int(ttl_days)} days"),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO share_links (token, note_id, scope, label) VALUES (?, ?, ?, ?)",
+            (token, note_id, scope, label),
+        )
     return token
 
 
@@ -92,13 +100,20 @@ def submit_proposal(conn, link, content: str, note: str | None, name: str | None
                     client_ip: str | None) -> dict:
     """Persist a proposed new content for the link's note. Supersedes any prior
     pending proposal for the SAME link (one pending per link). Never writes the note."""
+    from fastapi import HTTPException
     if link["scope"] != "edit":
-        from fastapi import HTTPException
         raise HTTPException(status_code=403, detail="This link is read-only.")
+    # Per-link propose cap: an edit link is the only write-ish surface, so throttle
+    # it on the link itself (not just per-IP) to stop proposal spam.
+    recent = conn.execute(
+        "SELECT COUNT(*) AS c FROM share_proposals WHERE share_link_id=? "
+        "AND created_at > datetime('now', '-60 seconds')", (link["id"],),
+    ).fetchone()["c"]
+    if recent >= 8:
+        raise HTTPException(status_code=429, detail="Too many edits in a short time — please wait a moment.")
     n = conn.execute("SELECT id, content_md FROM notes WHERE id=? AND deleted_at IS NULL",
                      (link["note_id"],)).fetchone()
     if n is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=409, detail="The note no longer exists.")
     who = (name or "").strip()[:80] or "Someone"
     basis_hash = hashlib.sha256((n["content_md"] or "").encode("utf-8")).hexdigest()

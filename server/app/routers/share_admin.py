@@ -18,6 +18,7 @@ class MintIn(BaseModel):
     title: str
     scope: str = "view"
     label: str | None = None
+    ttl_days: int | None = None      # optional expiry; None = no expiry
 
 
 @router.post("")
@@ -28,7 +29,7 @@ def mint(body: MintIn):
     note = notes_svc.get_by_title(conn, body.title.strip())
     if note is None:
         raise HTTPException(status_code=404, detail=f"No note titled '{body.title}'")
-    token = share_svc.create_link(conn, note["id"], body.scope, body.label)
+    token = share_svc.create_link(conn, note["id"], body.scope, body.label, body.ttl_days)
     conn.commit()
     return {"token": token, "url": share_svc.share_url(token), "scope": body.scope,
             "note_title": note["title"], "note_slug": note["slug"]}
@@ -41,7 +42,7 @@ def list_shares():
     see the status of everything in one place."""
     conn = get_conn()
     links = conn.execute(
-        "SELECT sl.id, sl.token, sl.scope, sl.label, sl.created_at, sl.last_used_at, "
+        "SELECT sl.id, sl.token, sl.scope, sl.label, sl.created_at, sl.last_used_at, sl.expires_at, "
         "       n.title AS note_title, n.slug AS note_slug, "
         "       (SELECT COUNT(*) FROM share_proposals p WHERE p.share_link_id = sl.id AND p.status='pending') AS pending "
         "FROM share_links sl JOIN notes n ON n.id = sl.note_id "

@@ -426,6 +426,29 @@ def test_share_links_flow(client):
     assert anon.get(f"/api/share/{token}").status_code == 404             # revoked → gone
 
 
+def test_share_link_expiry_and_propose_limit(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import get_conn
+    anon = TestClient(app)
+    client.post("/api/notes", json={"title": "Limited", "content_md": "x"})
+
+    # Expiry: minting with ttl_days sets expires_at and the link works; expired -> 404.
+    v = client.post("/api/shares", json={"title": "Limited", "scope": "view", "ttl_days": 7}).json()
+    assert anon.get(f"/api/share/{v['token']}").status_code == 200
+    link = next(l for l in client.get("/api/shares").json()["links"] if l["token"] == v["token"])
+    assert link["expires_at"]
+    get_conn().execute("UPDATE share_links SET expires_at = datetime('now','-1 day') WHERE token=?", (v["token"],))
+    get_conn().commit()
+    assert anon.get(f"/api/share/{v['token']}").status_code == 404   # expired
+
+    # Per-link propose cap: a burst of proposals on one edit link eventually 429s.
+    e = client.post("/api/shares", json={"title": "Limited", "scope": "edit"}).json()
+    codes = [anon.post(f"/api/share/{e['token']}/propose", json={"content_md": f"v{i}", "name": "A"}).status_code
+             for i in range(12)]
+    assert 429 in codes
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

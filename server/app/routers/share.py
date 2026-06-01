@@ -4,6 +4,8 @@ Every handler resolves the token to exactly one note via share_svc.resolve_activ
 and exposes only that note. There is no note id/slug parameter anywhere here, so a
 token can never reach another note. Keep this file small and auditable.
 """
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -16,6 +18,15 @@ from ..services import share as share_svc
 router = APIRouter(prefix="/api/share", tags=["share"])   # NO dependencies=[CurrentUser]
 
 
+def _client_ip(request: Request) -> str:
+    """Real client IP — honor X-Forwarded-For so the rate limit isn't keyed on the
+    reverse proxy's address (which would make it one global bucket)."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
 class ProposeIn(BaseModel):
     content_md: str = Field(max_length=400_000)
     name: str | None = Field(default=None, max_length=80)
@@ -23,7 +34,7 @@ class ProposeIn(BaseModel):
 
 
 def _resolve_or_404(conn, request: Request, token: str):
-    if share_svc.rate_limited(request.client.host if request.client else "?"):
+    if share_svc.rate_limited(_client_ip(request)):
         raise HTTPException(status_code=429, detail="Too many requests; slow down.")
     link = share_svc.resolve_active_link(conn, token)
     if link is None:
@@ -93,9 +104,12 @@ def share_propose(token: str, body: ProposeIn, request: Request):
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
     try:
-        r = share_svc.submit_proposal(conn, link, body.content_md, body.note, body.name,
-                                       request.client.host if request.client else None)
+        r = share_svc.submit_proposal(conn, link, body.content_md, body.note, body.name, _client_ip(request))
         conn.commit()
+    except sqlite3.IntegrityError:
+        # Two proposals raced the one-pending-per-link index — clean retry, not a 500.
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="Someone else just proposed a change — reload and try again.")
     except Exception:
         conn.rollback()
         raise

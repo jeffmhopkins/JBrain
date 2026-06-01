@@ -30,6 +30,7 @@ export default function NotePage() {
   const [editTitle, setEditTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
 
   async function remove() {
@@ -41,7 +42,7 @@ export default function NotePage() {
   async function mintShare(scope: "view" | "edit") {
     if (!note) return;
     try {
-      const r = await post<{ url: string }>("/api/shares", { title: note.title, scope });
+      const r = await post<{ url: string }>("/api/shares", { title: note.title, scope, ttl_days: shareTtl || undefined });
       setMinted({ url: r.url, scope });
       try { await navigator.clipboard.writeText(r.url); } catch { /* ignore */ }
     } catch (e: any) { alert(e?.message || "Couldn't create link."); }
@@ -131,10 +132,18 @@ export default function NotePage() {
       {sharing && (
         <div className="share-panel">
           {!minted ? (
-            <div className="row" style={{ gap: 8 }}>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <span className="muted" style={{ fontSize: 13 }}>Create a public link:</span>
               <button className="ghost" onClick={() => mintShare("view")}>View-only</button>
               <button className="ghost" onClick={() => mintShare("edit")}>Editable (proposals)</button>
+              <span className="spacer" />
+              <select value={shareTtl} onChange={(e) => setShareTtl(Number(e.target.value))}
+                      style={{ width: "auto", fontSize: 13, padding: "6px 8px" }} title="Link expiry">
+                <option value={0}>No expiry</option>
+                <option value={1}>Expires in 1 day</option>
+                <option value={7}>Expires in 7 days</option>
+                <option value={30}>Expires in 30 days</option>
+              </select>
             </div>
           ) : (
             <div className="row" style={{ gap: 6 }}>

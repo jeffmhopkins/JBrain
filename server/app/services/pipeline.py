@@ -159,6 +159,21 @@ def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
     return [dict(r) for r in ctx.conn.execute(sql, params).fetchall()]
 
 
+def _p_query_entry_changes(ctx, since="", limit=20):
+    """Entries CHANGED since a timestamp watermark — new, edited, OR soft-deleted
+    (so wiki synthesis can fold in edits and clean up after removals, not just add
+    new notes). Each row carries `deleted` and `changed_at`; the caller advances the
+    watermark to the max changed_at processed."""
+    rows = ctx.conn.execute(
+        "SELECT id, title, slug, content_md, created_at, updated_at, deleted_at, "
+        "(deleted_at IS NOT NULL) AS deleted, COALESCE(deleted_at, updated_at) AS changed_at "
+        "FROM notes WHERE kind = 'entry' AND COALESCE(deleted_at, updated_at) > ? "
+        "ORDER BY changed_at LIMIT ?",
+        (since or "", max(1, min(int(limit), 1000))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _p_get_meta(ctx, key, default=None):
     return get_meta(key, default)
 
@@ -282,6 +297,7 @@ _PRIMITIVES = {
     "create_review": _p_create_review,
     "semantic_search": _p_semantic_search,
     "query_notes": _p_query_notes,
+    "query_entry_changes": _p_query_entry_changes,
     "get_meta": _p_get_meta,
     "set_meta": _p_set_meta,
     "set_tags": _p_set_tags,
@@ -321,6 +337,9 @@ _PRIMITIVE_META: dict[str, dict] = {
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},
+    "query_entry_changes": {"summary": "Entries changed (new/edited/deleted) since a timestamp.",
+                            "inputs": [{"name": "since", "type": "str"}, {"name": "limit", "type": "int"}],
+                            "output": "list"},
     "get_meta": {"summary": "Read a stored key (e.g. a watermark).",
                  "inputs": [{"name": "key", "type": "str", "required": True}, {"name": "default", "type": "str"}],
                  "output": "scalar"},

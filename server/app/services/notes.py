@@ -232,7 +232,7 @@ def upsert_note(
             slug = _unique_slug(conn, title, exclude_id=note_id)
         conn.execute(
             "UPDATE notes SET title = ?, slug = ?, content_md = ?, "
-            "updated_at = datetime('now') WHERE id = ?",
+            "updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
             (title, slug, content_md, note_id),
         )
         if has_location:  # only overwrite location when new coords are supplied
@@ -250,8 +250,8 @@ def upsert_note(
         created = True
         slug = _unique_slug(conn, title)
         cur = conn.execute(
-            "INSERT INTO notes (title, slug, content_md, kind, lat, lon, location_label) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes (title, slug, content_md, kind, lat, lon, location_label, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f','now'))",
             (title, slug, content_md, kind or "entry", lat, lon, location_label),
         )
         note_id = cur.lastrowid
@@ -288,7 +288,7 @@ def upsert_note(
 
 def soft_delete(conn, note_id: int) -> None:
     conn.execute(
-        "UPDATE notes SET deleted_at = datetime('now') WHERE id = ?", (note_id,)
+        "UPDATE notes SET deleted_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?", (note_id,)
     )
     conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
     conn.execute("DELETE FROM links WHERE source_note_id = ?", (note_id,))

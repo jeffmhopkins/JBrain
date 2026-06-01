@@ -164,10 +164,36 @@ def _relevant_kb(conn, entries: list, fallback_kb: list, k: int = 12) -> list[di
 
 def _entry_block(e: dict) -> str:
     """Render one source entry for the prompt: heading is the EXACT title (so a
-    [[cite]] resolves), then the date + an explicit cite hint, then the content."""
+    [[cite]] resolves), then a status line + the content. Edited entries look like
+    new ones (reconcile); deleted entries are flagged so the model cleans up the
+    articles that cited them."""
+    if e.get("deleted"):
+        date = (e.get("deleted_at") or "")[:10]
+        return (f"## {e['title']}\n[REMOVED by the owner{f' on {date}' if date else ''}] — the source entry "
+                f"[[{e['title']}]] was DELETED. Find articles that cite it, remove or correct the facts that "
+                f"came only from it, and drop it from their Sources. Former content (for reference only):\n"
+                f"{e['content_md']}")
     date = (e.get("created_at") or "")[:10]
     cite = (f"Logged {date}. " if date else "") + f"Cite this entry as [[{e['title']}]]."
     return f"## {e['title']}\n{cite}\n{e['content_md']}"
+
+
+def _linked_kb(conn, entries: list) -> list[dict]:
+    """KB articles that CITE any of these entries (via the links table) — so when an
+    entry is edited or deleted, the articles that referenced it are in context to be
+    updated, even if semantic search wouldn't surface them."""
+    if conn is None:
+        return []
+    titles = [e["title"] for e in entries if e.get("title")]
+    if not titles:
+        return []
+    rows = conn.execute(
+        "SELECT DISTINCT n.id, n.title, n.content_md FROM notes n JOIN links l ON l.source_note_id = n.id "
+        f"WHERE n.kind = 'kb' AND n.deleted_at IS NULL AND lower(l.target_title) IN "
+        f"({','.join('?' * len(titles))})",
+        [t.lower() for t in titles],
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None,
@@ -183,6 +209,12 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
         raise RuntimeError("no LLM API key configured")
 
     kb = _relevant_kb(conn, entries, existing_kb)
+    # Always include articles that cite the changed/deleted entries, so edits and
+    # removals can be reconciled even if semantic search wouldn't surface them.
+    seen = {k["title"] for k in kb}
+    for k in _linked_kb(conn, entries):
+        if k["title"] not in seen:
+            kb.append(k); seen.add(k["title"])
     entries_text = "\n\n".join(_entry_block(e) for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in kb) or "(none yet)"
     extra = f"\nAdditional guidance: {instructions}" if instructions else ""

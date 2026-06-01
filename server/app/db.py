@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def init_db() -> None:
@@ -167,6 +167,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               ON share_proposals(share_link_id) WHERE status = 'pending';
             CREATE INDEX IF NOT EXISTS idx_share_prop_status ON share_proposals(status);
         """)
+
+    if current < 12:
+        # Wiki synthesis now tracks entry CHANGES by timestamp (so edits + deletions
+        # are caught), not just new note ids. Seed the new watermark from the old
+        # one's note timestamp so we don't reprocess the whole history.
+        old = get_meta("wiki_synth:last_note_id")
+        if old and old != "0":
+            row = conn.execute("SELECT updated_at FROM notes WHERE id = ?", (int(old),)).fetchone()
+            now = conn.execute("SELECT datetime('now')").fetchone()[0]
+            set_meta(conn, "wiki_synth:since", row["updated_at"] if row else now)
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

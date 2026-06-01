@@ -147,7 +147,7 @@ export default function NotePage() {
         </div>
       )}
       <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <span>🕐 {note.created_at}{note.updated_at !== note.created_at ? ` · updated ${note.updated_at}` : ""}</span>
+        <span>🕐 {note.created_at}{note.updated_at.replace(/\.\d+$/, "") !== note.created_at ? ` · updated ${note.updated_at.replace(/\.\d+$/, "")}` : ""}</span>
         {note.lat != null && note.lon != null && (
           <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
              target="_blank" rel="noreferrer">

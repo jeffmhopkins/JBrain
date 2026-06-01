@@ -356,6 +356,38 @@ def test_staged_rename_action(client):
     assert "[[notes/New Name]]" in client.get("/api/notes/refers").json()["content_md"]
 
 
+def test_synthesis_sees_edits_and_deletions(client, monkeypatch):
+    # Wiki synthesis processes entry CHANGES (edits + soft-deletes), not just new
+    # notes: an edited or deleted entry is re-fed with the right flag.
+    from app.db import get_conn
+    from app.services import workflows as wf_svc
+    seen = []
+    monkeypatch.setattr(wf_svc, "_synthesize_actions",
+                        lambda entries, kb, instructions=None, **_: (seen.append(list(entries)) or
+                        [{"op": "update", "title": "Topic", "content_md": "x"}]))
+    wf = client.post("/api/workflows", json={
+        "name": "S", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
+        "action_type": "synthesize_wiki", "action_config": {}, "enabled": True}).json()
+
+    client.post("/api/notes/entry", json={"text": "first", "title": "Foo"})
+    run_and_wait(client, wf["id"])                       # processes the new entry
+    assert any(e["title"] == "notes/Foo" for e in seen[-1])
+
+    # Edit it -> re-fed (not deleted).
+    seen.clear()
+    client.put("/api/notes/notes-foo", json={"title": "notes/Foo", "content_md": "edited"})
+    run_and_wait(client, wf["id"])
+    foo = next(e for e in seen[-1] if e["title"] == "notes/Foo")
+    assert foo["content_md"] == "edited" and not foo["deleted"]
+
+    # Delete it -> re-fed flagged deleted (content preserved for cleanup).
+    seen.clear()
+    client.delete("/api/notes/notes-foo")
+    run_and_wait(client, wf["id"])
+    foo = next(e for e in seen[-1] if e["title"] == "notes/Foo")
+    assert foo["deleted"] == 1
+
+
 def test_share_links_flow(client):
     # Mint view/edit links; verify unauthenticated access, scoping, propose →
     # accept (re-propose supersede), and revocation.
@@ -772,8 +804,8 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
     assert any(b["title"] == "kb/Health & Habits" for b in client.get("/api/notes/ran-5k").json()["backlinks"])
     assert any("KB updated" in i["title"] for i in client.get("/api/reviews").json())
 
-    # Re-run with no new entries -> no-op (watermark advanced).
-    assert "no new entries" in run_and_wait(client, wf['id'])["detail"]
+    # Re-run with no changes -> no-op (watermark advanced).
+    assert "no entry changes" in run_and_wait(client, wf['id'])["detail"]
 
 
 def test_manual_edit_preserves_kb_kind(client):

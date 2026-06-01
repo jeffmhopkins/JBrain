@@ -1,8 +1,9 @@
-# Declarative action: fold entries created since the last run into the dedicated
-# KB layer, then post a review card. Equivalent to the former
-# _action_synthesize_wiki. The LLM prompt-building + JSON parsing lives in the
-# wiki_plan primitive; composition (query → plan → write each → watermark →
-# review) is here.
+# Declarative action: fold entry CHANGES since the last run (new, edited, OR
+# deleted entries) into the dedicated KB layer, then post a review card. Edits are
+# reconciled and deletions clean up the articles that cited the removed entry. The
+# LLM prompt-building + JSON parsing lives in the wiki_plan primitive; composition
+# (query changes → plan → write each → watermark → review) is here. The watermark
+# is a timestamp (max changed_at processed), so edits/removals are caught too.
 #
 # Fix vs. the old Python: the watermark only advances when the plan is non-empty,
 # so a failed/empty LLM response no longer skips those entries forever.
@@ -19,15 +20,14 @@ config:
 steps:
   - id: wm
     do: get_meta
-    with: { key: "wiki_synth:last_note_id", default: "0" }
+    with: { key: "wiki_synth:since", default: "" }
 
   - id: entries
-    do: query_notes
+    do: query_entry_changes      # new, edited, OR deleted entries since the watermark
     with:
-      kind: entry
-      since_id: "{{ wm }}"
+      since: "{{ wm }}"
       limit: "{{ config.batch_limit | default(20) }}"
-    stop_when_empty: "no new entries since last run"
+    stop_when_empty: "no entry changes since last run"
 
   - id: kb
     do: query_notes
@@ -52,8 +52,8 @@ steps:
   - do: set_meta
     when: "{{ plan }}"            # only advance the watermark when something changed
     with:
-      key: "wiki_synth:last_note_id"
-      value: "{{ entries | map(attribute='id') | max }}"
+      key: "wiki_synth:since"
+      value: "{{ entries | map(attribute='changed_at') | max }}"
 
   - do: create_review
     when: "{{ config.review != false and plan }}"

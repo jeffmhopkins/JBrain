@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { del, get, post, put } from "../api";
 import { slugify } from "../util";
 import { Icon } from "../components/Icon";
@@ -34,6 +34,8 @@ export default function ListsPage() {
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [newName, setNewName] = useState("");
+  const [params] = useSearchParams();
+  const focus = params.get("focus");   // a note linked here to edit one specific list
 
   async function load() {
     setLoading(true);
@@ -45,6 +47,17 @@ export default function ListsPage() {
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
+
+  // Came from a list note's "Edit list" → scroll to and briefly highlight it.
+  useEffect(() => {
+    if (!focus || loading) return;
+    const el = document.getElementById(`list-${focus}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.classList.add("flash-focus");
+    const t = setTimeout(() => el.classList.remove("flash-focus"), 1600);
+    return () => clearTimeout(t);
+  }, [focus, loading, lists]);
 
   async function persist(list: ListNote, parsed: Parsed) {
     const content_md = serialize(parsed);
@@ -107,7 +120,7 @@ export default function ListsPage() {
         const p = parseList(l.content_md);
         const done = p.items.filter((i) => i.checked).length;
         return (
-          <div className="card" key={l.slug}>
+          <div className="card" key={l.slug} id={`list-${l.slug}`}>
             <div className="row">
               <strong>{leaf(l.title)}</strong>
               <span className="badge">{done}/{p.items.length}</span>

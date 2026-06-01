@@ -435,6 +435,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .reorder-btn:disabled { opacity: 0.25; cursor: default; }
 .queue-toggle { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
 .queue-toggle.on { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.flash-focus { animation: flashFocus 1.6s ease; }
+@keyframes flashFocus { 0%, 40% { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); } 100% { border-color: var(--border); box-shadow: none; } }
 
 /* Manual trigger run status: spinner while running, then a result pill. */
 .run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;

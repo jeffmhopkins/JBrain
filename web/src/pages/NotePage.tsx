@@ -127,7 +127,9 @@ export default function NotePage() {
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
         <span className="spacer" />
         {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
-        {editing === null && <button className="ghost" onClick={startEdit}>Edit</button>}
+        {editing === null && (note.kind === "list"
+          ? <button className="ghost" onClick={() => navigate(`/lists?focus=${note.slug}`)}>Edit list</button>
+          : <button className="ghost" onClick={startEdit}>Edit</button>)}
         {editing === null && <button className="ghost danger-hover" onClick={remove}>Delete</button>}
       </div>
       {sharing && (

@@ -361,6 +361,28 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .wikilink { color: var(--accent); border-bottom: 1px dashed var(--accent); }
 
+/* ---- Lists carousel ----------------------------------------------------- */
+/* One list per screen; swipe / trackpad / drag the scrollbar to move between
+   them. overflow-x makes this its own horizontal scroller; the row's height is
+   the tallest card and cards never overflow it vertically, so .ubody stays the
+   vertical scroll container (Shell's swipe gating is unaffected). */
+.list-strip {
+  display: flex;
+  align-items: flex-start;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  margin: 0 -4px;            /* let cards reach the content edges */
+}
+.list-strip > .card {
+  flex: 0 0 100%;
+  min-width: 100%;
+  scroll-snap-align: center;
+  margin: 0 4px;
+  box-sizing: border-box;
+}
+
 /* ---- Note title --------------------------------------------------------- */
 /* Path-style titles (notes/daily/2026/06/01/3) get a calmer size and wrap at
    the slash separators (via <wbr>) rather than ballooning into a heavy heading. */

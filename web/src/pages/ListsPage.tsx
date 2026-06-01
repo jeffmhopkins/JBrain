@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { del, get, post, put } from "../api";
 import { slugify } from "../util";
@@ -33,6 +33,8 @@ export default function ListsPage() {
   const [lists, setLists] = useState<ListNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
+  const stripRef = useRef<HTMLDivElement>(null);
+  const pendingFocus = useRef<string | null>(null);   // slug to scroll to after create
 
   async function load() {
     setLoading(true);
@@ -61,9 +63,23 @@ export default function ListsPage() {
     const name = newName.trim();
     if (!name) return;
     setNewName("");
-    try { await post("/api/lists", { title: name }); load(); }
-    catch (e: any) { alert(e?.message || "Couldn't create the list."); }
+    try {
+      const created = await post<{ slug: string }>("/api/lists", { title: name });
+      pendingFocus.current = created.slug;   // jump the carousel to it once it loads
+      await load();
+    } catch (e: any) { alert(e?.message || "Couldn't create the list."); }
   }
+
+  // After a (re)load, snap the carousel to a just-created list.
+  useEffect(() => {
+    const s = pendingFocus.current;
+    if (!s || !stripRef.current) return;
+    const i = lists.findIndex((l) => l.slug === s);
+    if (i >= 0) {
+      (stripRef.current.children[i] as HTMLElement | undefined)?.scrollIntoView({ inline: "center", behavior: "smooth" });
+      pendingFocus.current = null;
+    }
+  }, [lists]);
 
   const bySlug = new Map(lists.map((l) => [l.slug, parseList(l.content_md).items]));
   const progress = (slug: string): string | null => {
@@ -73,7 +89,6 @@ export default function ListsPage() {
 
   return (
     <div className="content">
-      <h2 style={{ marginTop: 0 }}>Lists</h2>
       <div className="row" style={{ gap: 6, marginBottom: 14 }}>
         <input placeholder="New list name…" value={newName}
                onChange={(e) => setNewName(e.target.value)}
@@ -84,23 +99,30 @@ export default function ListsPage() {
       {loading && <p className="muted">Loading…</p>}
       {!loading && lists.length === 0 && <p className="muted">No lists yet — create one above.</p>}
 
-      {lists.map((l) => {
-        const p = parseList(l.content_md);
-        const done = p.items.filter((i) => i.checked).length;
-        return (
-          <div className="card" key={l.slug}>
-            <div className="row">
-              <strong>{leaf(l.title)}</strong>
-              <span className="badge">{done}/{p.items.length}</span>
-              <span className="spacer" />
-              <Link className="ghost" to={`/note/${l.slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open</Link>
-              <button className="ghost danger-hover" style={{ fontSize: 13, padding: "4px 8px" }} onClick={() => removeList(l)}>Delete</button>
-            </div>
-            <ListEditor value={p} onChange={(next) => persist(l, next)}
-                        renderItemText={(t) => renderText(t, progress)} />
-          </div>
-        );
-      })}
+      {/* Horizontal carousel: one list per screen, swipe (or trackpad/scrollbar)
+          to move between them. Native scroll-snap — no gesture code, and it leaves
+          vertical scroll + Shell's vertical swipe to .ubody. */}
+      {lists.length > 0 && (
+        <div className="list-strip" ref={stripRef}>
+          {lists.map((l) => {
+            const p = parseList(l.content_md);
+            const done = p.items.filter((i) => i.checked).length;
+            return (
+              <div className="card" key={l.slug}>
+                <div className="row">
+                  <strong>{leaf(l.title)}</strong>
+                  <span className="badge">{done}/{p.items.length}</span>
+                  <span className="spacer" />
+                  <Link className="ghost" to={`/note/${l.slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open</Link>
+                  <button className="ghost danger-hover" style={{ fontSize: 13, padding: "4px 8px" }} onClick={() => removeList(l)}>Delete</button>
+                </div>
+                <ListEditor value={p} onChange={(next) => persist(l, next)}
+                            renderItemText={(t) => renderText(t, progress)} />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

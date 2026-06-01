@@ -69,8 +69,9 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
-  // Swipe left/right across the conversation to move between modes.
+  // Swipe left/right across the conversation to move between modes (wraps around).
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const slideFrom = useRef(16);   // px the mode-flash slides in from (swipe direction)
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
@@ -83,10 +84,25 @@ export default function Chat() {
     const dx = t.clientX - s.x, dy = t.clientY - s.y;
     // Require a clear, mostly-horizontal swipe so it doesn't fight vertical scroll.
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    slideFrom.current = dx < 0 ? 22 : -22;
     const i = MODES.findIndex((m) => m.key === mode);
-    const ni = dx < 0 ? Math.min(i + 1, MODES.length - 1) : Math.max(i - 1, 0);
-    if (ni !== i) pick(MODES[ni].key);
+    const ni = (i + (dx < 0 ? 1 : -1) + MODES.length) % MODES.length;
+    pick(MODES[ni].key);
   }
+
+  // Brief sliding mode-name flash on every switch (swipe or menu).
+  const [flashKey, setFlashKey] = useState(0);
+  const [showFlash, setShowFlash] = useState(false);
+  const flashTimer = useRef<number>();
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    setShowFlash(true);
+    setFlashKey((k) => k + 1);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setShowFlash(false), 850);
+    return () => clearTimeout(flashTimer.current);
+  }, [mode]);
 
   const convKey = (m: Mode) => `jbrain_conv_${m}`;
 
@@ -191,6 +207,11 @@ export default function Chat() {
 
   return (
     <div className="chat-wrap">
+      {showFlash && (
+        <div className="mode-flash" key={flashKey} style={{ ["--from" as any]: slideFrom.current + "px" }}>
+          <Icon name={cur.icon} size={16} /> {cur.label}
+        </div>
+      )}
       <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}
            onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {mode === "entry" ? (

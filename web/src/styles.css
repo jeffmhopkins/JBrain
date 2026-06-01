@@ -302,8 +302,23 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 
 /* ---- Chat --------------------------------------------------------------- */
 .chat-wrap {
-  height: 100%; display: flex; flex-direction: column;
+  height: 100%; display: flex; flex-direction: column; position: relative;
   width: 100%; max-width: 860px; margin: 0 auto; padding: 0 16px;
+}
+/* Sliding mode-name flash shown briefly when switching modes (swipe or menu). */
+.mode-flash {
+  position: absolute; top: 12px; left: 50%; z-index: 6; pointer-events: none;
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+  border-radius: 999px; background: var(--bg-elev-2); border: 1px solid var(--border);
+  color: var(--text); font-size: 13px; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35); animation: modeFlash 0.85s ease forwards;
+}
+.mode-flash .icon { color: var(--accent); }
+@keyframes modeFlash {
+  0%   { opacity: 0; transform: translate(calc(-50% + var(--from, 16px)), 0); }
+  18%  { opacity: 1; transform: translate(-50%, 0); }
+  72%  { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -6px); }
 }
 .messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
 .msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }

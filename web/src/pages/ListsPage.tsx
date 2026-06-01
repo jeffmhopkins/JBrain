@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { del, get, post, put } from "../api";
 import { slugify } from "../util";
 import ListEditor from "../components/ListEditor";
+import Modal from "../components/Modal";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface NoteRow { slug: string; }
@@ -33,6 +34,7 @@ export default function ListsPage() {
   const [lists, setLists] = useState<ListNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const pendingFocus = useRef<string | null>(null);   // slug to scroll to after create
   const scrollHideTimer = useRef<number>();
@@ -73,10 +75,10 @@ export default function ListsPage() {
   async function createList() {
     const name = newName.trim();
     if (!name) return;
-    setNewName("");
     try {
       const created = await post<{ slug: string }>("/api/lists", { title: name });
       pendingFocus.current = created.slug;   // jump the carousel to it once it loads
+      setNewName(""); setCreating(false);
       await load();
     } catch (e: any) { alert(e?.message || "Couldn't create the list."); }
   }
@@ -100,12 +102,21 @@ export default function ListsPage() {
 
   return (
     <div className="content">
-      <div className="row" style={{ gap: 6, marginBottom: 14 }}>
-        <input placeholder="New list name…" value={newName}
-               onChange={(e) => setNewName(e.target.value)}
-               onKeyDown={(e) => { if (e.key === "Enter") createList(); }} />
-        <button className="primary" onClick={createList}>New list</button>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="primary" onClick={() => { setNewName(""); setCreating(true); }}>+ New list</button>
       </div>
+
+      {creating && (
+        <Modal title="New list" onClose={() => setCreating(false)}
+          footer={<>
+            <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
+            <button className="primary" onClick={createList} disabled={!newName.trim()}>Create</button>
+          </>}>
+          <input autoFocus placeholder="List name…" value={newName} style={{ width: "100%" }}
+                 onChange={(e) => setNewName(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") createList(); }} />
+        </Modal>
+      )}
 
       {loading && <p className="muted">Loading…</p>}
       {!loading && lists.length === 0 && <p className="muted">No lists yet — create one above.</p>}

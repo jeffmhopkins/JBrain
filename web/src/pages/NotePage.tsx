@@ -2,7 +2,7 @@ import { Children, isValidElement, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { get, post, put } from "../api";
+import { del, get, post, put } from "../api";
 import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
@@ -31,6 +31,12 @@ export default function NotePage() {
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
+
+  async function remove() {
+    if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
+    try { await del(`/api/notes/${note.slug}`); navigate("/wiki"); }
+    catch (e: any) { alert(e?.message || "Couldn't delete."); }
+  }
 
   async function mintShare(scope: "view" | "edit") {
     if (!note) return;
@@ -120,6 +126,7 @@ export default function NotePage() {
         <span className="spacer" />
         {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
         {editing === null && <button className="ghost" onClick={startEdit}>Edit</button>}
+        {editing === null && <button className="ghost danger-hover" onClick={remove}>Delete</button>}
       </div>
       {sharing && (
         <div className="share-panel">

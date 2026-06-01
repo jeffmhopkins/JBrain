@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { get, post, put } from "../api";
+import { del, get, post, put } from "../api";
 import { slugify } from "../util";
 import { Icon } from "../components/Icon";
 
@@ -114,6 +114,11 @@ export default function ListsPage() {
     setDraft((d) => ({ ...d, [l.slug]: "" }));
     mutate(l, (p) => { p.items.push({ checked: false, text, priority: null }); });
   }
+  async function removeList(l: ListNote) {
+    if (!confirm(`Delete the list “${leaf(l.title)}”? (soft-deleted, restorable)`)) return;
+    setLists((ls) => ls.filter((x) => x.slug !== l.slug));
+    try { await del(`/api/notes/${l.slug}`); } catch { load(); }
+  }
   async function createList() {
     const name = newName.trim();
     if (!name) return;
@@ -155,6 +160,7 @@ export default function ListsPage() {
                 {p.queue ? "✓ Priority queue" : "Priority queue"}
               </button>
               <Link className="ghost" to={`/note/${l.slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open</Link>
+              <button className="ghost danger-hover" style={{ fontSize: 13, padding: "4px 8px" }} onClick={() => removeList(l)}>Delete</button>
             </div>
             <div className="checklist">
               {p.items.map((it, i) => (

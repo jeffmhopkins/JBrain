@@ -271,6 +271,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 /* Action-type labels and version-source badges: monochrome, weight-only emphasis. */
 .tag-create, .tag-update, .tag-link { color: var(--text); }
 .tag-delete { color: var(--danger); }
+.danger-hover:hover { color: var(--danger); }
 .badge-user, .badge-architect, .badge-restore, .badge-import { background: var(--bg-elev-2); color: var(--text-dim); }
 
 /* Banners: flat dark with a thin accent edge instead of bright fills. */

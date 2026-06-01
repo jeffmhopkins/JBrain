@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, post } from "../api";
+import { get, put } from "../api";
 import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
@@ -26,15 +26,28 @@ export default function NotePage() {
   const [viewing, setViewing] = useState<TimelineEntry | null>(null);
   const [diffing, setDiffing] = useState<{ from: TimelineEntry; to: TimelineEntry } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
   const [saving, setSaving] = useState(false);
+
+  function startEdit() {
+    if (!note) return;
+    setEditTitle(note.title);
+    setEditing(note.content_md);
+  }
 
   async function saveEdit() {
     if (!note) return;
+    const title = editTitle.trim();
+    if (!title) { alert("Title can't be empty."); return; }
     setSaving(true);
     try {
-      await post("/api/notes", { title: note.title, content_md: editing });
+      // PUT renames in place (id-targeted); use it to move notes under notes//kb/.
+      const r = await put<{ slug: string }>(`/api/notes/${note.slug}`, { title, content_md: editing });
       setEditing(null);
-      reload();
+      if (r.slug !== note.slug) navigate(`/note/${r.slug}`);  // title changed -> slug changed
+      else reload();
+    } catch (e: any) {
+      alert(e?.message || "Couldn't save.");
     } finally {
       setSaving(false);
     }
@@ -76,7 +89,7 @@ export default function NotePage() {
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
         <span className="spacer" />
         {editing === null && (
-          <button className="ghost" onClick={() => setEditing(note.content_md)}>Edit</button>
+          <button className="ghost" onClick={startEdit}>Edit</button>
         )}
       </div>
       <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -95,12 +108,17 @@ export default function NotePage() {
       )}
       {editing !== null ? (
         <div>
+          <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
+                 placeholder="Title — e.g. notes/Jeff or kb/Jeff" style={{ marginBottom: 8 }} />
           <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={editing}
                     onChange={(e) => setEditing(e.target.value)} />
           <div className="row" style={{ marginTop: 10 }}>
             <button className="primary" onClick={saveEdit} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
             <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
           </div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            Renaming changes the note’s URL. Use “notes/…” for captures, “kb/…” for articles.
+          </p>
         </div>
       ) : (
         <div className="md">

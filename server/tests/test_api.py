@@ -277,6 +277,22 @@ def test_graph_nodes_include_kind(client):
     assert nodes["An Article"] == "kb" and nodes["notes/An Entry"] == "entry"
 
 
+def test_update_note_renames_in_place(client):
+    # PUT renames a note (and its slug) in place instead of creating a duplicate;
+    # backlinks (resolved by id) survive the rename.
+    client.post("/api/notes/entry", json={"text": "body", "title": "Jeff"})
+    client.post("/api/notes", json={"title": "Friend", "content_md": "see [[notes/Jeff]]"})
+    r = client.put("/api/notes/notes-jeff", json={"title": "kb/Jeff", "content_md": "body"}).json()
+    assert r["slug"] == "kb-jeff" and r["title"] == "kb/Jeff"
+    # The old slug is gone; only one note exists (renamed, not duplicated).
+    assert client.get("/api/notes/notes-jeff").status_code == 404
+    titles = [n["title"] for n in client.get("/api/notes").json()]
+    assert "kb/Jeff" in titles and "notes/Jeff" not in titles
+    # Renaming onto an existing title is rejected.
+    client.post("/api/notes/entry", json={"text": "x", "title": "Taken"})
+    assert client.put("/api/notes/kb-jeff", json={"title": "notes/Taken", "content_md": "body"}).status_code == 409
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

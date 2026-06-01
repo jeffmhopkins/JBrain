@@ -1,4 +1,5 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
+import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -92,6 +93,31 @@ def create_or_update(body: NoteIn):
         conn.rollback()
         raise
     notes_svc.flush_entry_events(conn)  # fire entry_created AFTER commit
+    row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return dict(row)
+
+
+@router.put("/{slug}")
+def update_note(slug: str, body: NoteIn):
+    """Edit an existing note in place, including RENAMING it. Targets the note by
+    id so a new title renames THIS note (and its slug) rather than creating a
+    duplicate. Use it to move notes under the notes/ or kb/ roots."""
+    conn = get_conn()
+    note = _note_by_slug(conn, slug, include_deleted=True)
+    new_title = body.title.strip()
+    if not new_title:
+        raise HTTPException(status_code=422, detail="Title cannot be empty")
+    try:
+        note_id = notes_svc.upsert_note(
+            conn, new_title, body.content_md, note_id=note["id"], source="user",
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="A note with that title already exists.")
+    except Exception:
+        conn.rollback()
+        raise
     row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return dict(row)
 

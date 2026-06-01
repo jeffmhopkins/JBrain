@@ -449,6 +449,32 @@ def test_share_link_expiry_and_propose_limit(client):
     assert 429 in codes
 
 
+def test_share_link_bind(client):
+    # A 'bind' link locks to the first browser (cookie); others get 403 until reset.
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client.post("/api/notes", json={"title": "Locked Note", "content_md": "secret"})
+    v = client.post("/api/shares", json={"title": "Locked Note", "scope": "view", "bind": True}).json()
+    tok = v["token"]
+
+    first = TestClient(app)                      # first browser binds
+    r1 = first.get(f"/api/share/{tok}")
+    assert r1.status_code == 200 and first.cookies.get(f"jb_bind_{_link_id(client, tok)}")
+    assert first.get(f"/api/share/{tok}").status_code == 200   # same browser keeps working
+
+    other = TestClient(app)                      # a different browser is locked out
+    assert other.get(f"/api/share/{tok}").status_code == 403
+
+    # Owner resets the lock -> a fresh browser can bind again.
+    lid = _link_id(client, tok)
+    assert client.post(f"/api/shares/{lid}/reset-bind").status_code == 200
+    assert TestClient(app).get(f"/api/share/{tok}").status_code == 200
+
+
+def _link_id(client, token):
+    return next(l["id"] for l in client.get("/api/shares").json()["links"] if l["token"] == token)
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

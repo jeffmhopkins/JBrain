@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def init_db() -> None:
@@ -181,6 +181,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 13:
         # Editors of a share link now provide a name, shown in the owner's alert.
         _add_column(conn, "share_proposals", "proposer_name", "TEXT")
+
+    if current < 14:
+        # Optional "lock to first device" binding on share links.
+        _add_column(conn, "share_links", "bind", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "share_links", "bind_secret", "TEXT")
+        _add_column(conn, "share_links", "bound_at", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

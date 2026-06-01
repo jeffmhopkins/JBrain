@@ -4,6 +4,7 @@ Every handler resolves the token to exactly one note via share_svc.resolve_activ
 and exposes only that note. There is no note id/slug parameter anywhere here, so a
 token can never reach another note. Keep this file small and auditable.
 """
+import hmac
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
@@ -42,12 +43,39 @@ def _resolve_or_404(conn, request: Request, token: str):
     return link
 
 
+def _enforce_bind(conn, link, request: Request, response: Response = None, bind_if_new: bool = True):
+    """For 'bind' links: on first open, mint a cookie that locks the link to this
+    browser; thereafter require the matching cookie. The cookie is scoped to the
+    token's API path so it rides along on read/propose/attachment requests."""
+    if not link["bind"]:
+        return
+    name = f"jb_bind_{link['id']}"
+    cookie = request.cookies.get(name)
+    if link["bind_secret"]:
+        if not cookie or not hmac.compare_digest(cookie, link["bind_secret"]):
+            raise HTTPException(status_code=403,
+                                detail="This link is locked to the device that first opened it.")
+    elif bind_if_new and response is not None:
+        secret = share_svc.mint_token()
+        # First-open-wins, atomically: only the request that flips NULL->secret binds.
+        cur = conn.execute(
+            "UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=? AND bind_secret IS NULL",
+            (secret, link["id"]))
+        conn.commit()
+        if cur.rowcount != 1:   # another device bound first
+            raise HTTPException(status_code=403,
+                                detail="This link is locked to the device that first opened it.")
+        response.set_cookie(name, secret, max_age=31_536_000, httponly=True,
+                            samesite="lax", path=f"/api/share/{link['token']}")
+
+
 @router.get("/{token}")
-def share_read(token: str, request: Request):
+def share_read(token: str, request: Request, response: Response):
     """Return ONLY this one note's public fields (+ attachment list). Withholds
     backlinks, tags, geolocation, slug, and id."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
+    _enforce_bind(conn, link, request, response)
     share_svc.touch(conn, link["id"]); conn.commit()
     atts = att_svc.list_for_note(conn, link["note_id"])
     return {
@@ -77,6 +105,7 @@ def share_attachment(token: str, att_id: int, request: Request):
     nosniff + restrictive CSP, and only image types render inline (others download)."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
+    _enforce_bind(conn, link, request, bind_if_new=False)   # validate only; first-bind happens on read
     row = conn.execute(
         "SELECT filename, mime, content_text, content_blob FROM attachments WHERE id=? AND note_id=?",
         (att_id, link["note_id"]),
@@ -98,11 +127,12 @@ def share_attachment(token: str, att_id: int, request: Request):
 
 
 @router.post("/{token}/propose")
-def share_propose(token: str, body: ProposeIn, request: Request):
+def share_propose(token: str, body: ProposeIn, request: Request, response: Response):
     """EDIT links only: store a proposed new content as a pending proposal for the
     owner to accept. Never writes the note."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
+    _enforce_bind(conn, link, request, response)
     try:
         r = share_svc.submit_proposal(conn, link, body.content_md, body.note, body.name, _client_ip(request))
         conn.commit()

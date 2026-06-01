@@ -31,6 +31,7 @@ export default function NotePage() {
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
+  const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
 
   async function remove() {
@@ -42,7 +43,7 @@ export default function NotePage() {
   async function mintShare(scope: "view" | "edit") {
     if (!note) return;
     try {
-      const r = await post<{ url: string }>("/api/shares", { title: note.title, scope, ttl_days: shareTtl || undefined });
+      const r = await post<{ url: string }>("/api/shares", { title: note.title, scope, ttl_days: shareTtl || undefined, bind: shareBind });
       setMinted({ url: r.url, scope });
       try { await navigator.clipboard.writeText(r.url); } catch { /* ignore */ }
     } catch (e: any) { alert(e?.message || "Couldn't create link."); }
@@ -144,6 +145,10 @@ export default function NotePage() {
                 <option value={7}>Expires in 7 days</option>
                 <option value={30}>Expires in 30 days</option>
               </select>
+              <label className="row" style={{ gap: 4, fontSize: 13 }} title="After someone opens it, the link stops working in other browsers (resettable).">
+                <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareBind}
+                       onChange={(e) => setShareBind(e.target.checked)} /> Lock to first device
+              </label>
             </div>
           ) : (
             <div className="row" style={{ gap: 6 }}>

@@ -217,6 +217,9 @@ CREATE TABLE IF NOT EXISTS share_links (
   status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
   label        TEXT,
   expires_at   TEXT,
+  bind         INTEGER NOT NULL DEFAULT 0,          -- 1 = lock to the first browser that opens it
+  bind_secret  TEXT,                                -- the bound browser's cookie value (set on first open)
+  bound_at     TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   revoked_at   TEXT,
   last_used_at TEXT

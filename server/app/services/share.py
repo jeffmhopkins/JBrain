@@ -62,20 +62,21 @@ def touch(conn, link_id: int) -> None:
 # --- Owner: minting / listing / revoking -----------------------------------
 
 def create_link(conn, note_id: int, scope: str, label: str | None = None,
-                ttl_days: int | None = None) -> str:
+                ttl_days: int | None = None, bind: bool = False) -> str:
     token = mint_token()
-    if ttl_days and int(ttl_days) > 0:
-        conn.execute(
-            "INSERT INTO share_links (token, note_id, scope, label, expires_at) "
-            "VALUES (?, ?, ?, ?, datetime('now', ?))",
-            (token, note_id, scope, label, f"+{int(ttl_days)} days"),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO share_links (token, note_id, scope, label) VALUES (?, ?, ?, ?)",
-            (token, note_id, scope, label),
-        )
+    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+    conn.execute(
+        "INSERT INTO share_links (token, note_id, scope, label, bind, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, " + ("datetime('now', ?))" if exp else "NULL)"),
+        (token, note_id, scope, label, 1 if bind else 0) + ((exp,) if exp else ()),
+    )
     return token
+
+
+def reset_bind(conn, link_id: int) -> None:
+    """Forget the bound browser so the link can be opened fresh (e.g. it locked to
+    the wrong in-app browser)."""
+    conn.execute("UPDATE share_links SET bind_secret=NULL, bound_at=NULL WHERE id=?", (link_id,))
 
 
 def revoke_link(conn, link_id: int) -> None:

@@ -19,6 +19,7 @@ class MintIn(BaseModel):
     scope: str = "view"
     label: str | None = None
     ttl_days: int | None = None      # optional expiry; None = no expiry
+    bind: bool = False               # lock to the first browser that opens it
 
 
 @router.post("")
@@ -29,7 +30,7 @@ def mint(body: MintIn):
     note = notes_svc.get_by_title(conn, body.title.strip())
     if note is None:
         raise HTTPException(status_code=404, detail=f"No note titled '{body.title}'")
-    token = share_svc.create_link(conn, note["id"], body.scope, body.label, body.ttl_days)
+    token = share_svc.create_link(conn, note["id"], body.scope, body.label, body.ttl_days, body.bind)
     conn.commit()
     return {"token": token, "url": share_svc.share_url(token), "scope": body.scope,
             "note_title": note["title"], "note_slug": note["slug"]}
@@ -43,6 +44,7 @@ def list_shares():
     conn = get_conn()
     links = conn.execute(
         "SELECT sl.id, sl.token, sl.scope, sl.label, sl.created_at, sl.last_used_at, sl.expires_at, "
+        "       sl.bind, sl.bound_at, "
         "       n.title AS note_title, n.slug AS note_slug, "
         "       (SELECT COUNT(*) FROM share_proposals p WHERE p.share_link_id = sl.id AND p.status='pending') AS pending "
         "FROM share_links sl JOIN notes n ON n.id = sl.note_id "
@@ -74,6 +76,16 @@ def list_shares():
 def revoke(link_id: int):
     conn = get_conn()
     share_svc.revoke_link(conn, link_id)
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/{link_id}/reset-bind")
+def reset_bind(link_id: int):
+    """Forget the bound browser so a 'bind' link can be opened fresh (e.g. it
+    locked to the wrong in-app browser)."""
+    conn = get_conn()
+    share_svc.reset_bind(conn, link_id)
     conn.commit()
     return {"ok": True}
 

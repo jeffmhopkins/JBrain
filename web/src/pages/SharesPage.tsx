@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, post } from "../api";
 
-interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
+interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
 
@@ -43,6 +43,10 @@ export default function SharesPage() {
     if (!confirm(`Revoke this ${l.scope} link for “${leaf(l.note_title)}”? It stops working immediately.`)) return;
     setLinks((ls) => ls.filter((x) => x.id !== l.id));
     try { await post(`/api/shares/${l.id}/revoke`); } catch { load(); }
+  }
+  async function resetBind(l: ShareLink) {
+    if (!confirm("Reset the lock so the link can be opened on a fresh device?")) return;
+    try { await post(`/api/shares/${l.id}/reset-bind`); load(); } catch { load(); }
   }
   async function accept(p: Proposal) {
     try { await post(`/api/shares/proposals/${p.id}/accept`); load(); }
@@ -103,6 +107,7 @@ export default function SharesPage() {
             <span className={"badge " + (l.scope === "edit" ? "badge-architect" : "")}>{l.scope}</span>
             {l.label && <span className="badge">{l.label}</span>}
             {l.expires_at && <span className="badge" title="Link expiry">expires {l.expires_at.slice(0, 10)}</span>}
+            {l.bind ? <span className="badge" title="Locked to first device">{l.bound_at ? "locked" : "lock pending"}</span> : null}
             {l.pending > 0 && <span className="badge tag-delete">{l.pending} pending</span>}
             <span className="spacer" />
             <span className="muted" style={{ fontSize: 12 }}>{l.last_used_at ? `viewed ${l.last_used_at.replace(/\.\d+$/, "")}` : "not viewed yet"}</span>
@@ -110,6 +115,7 @@ export default function SharesPage() {
           <div className="row" style={{ marginTop: 6, gap: 6 }}>
             <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
             <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied" : "Copy"}</button>
+            {l.bind ? <button className="ghost" onClick={() => resetBind(l)} title="Forget the bound device">Reset lock</button> : null}
             <button className="ghost" onClick={() => revoke(l)}>Revoke</button>
           </div>
         </div>

@@ -6,7 +6,7 @@ import { del, get, post, put } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
 import { fmtTs, expandTimeTokens } from "../time";
-import { makeLinkRenderer, renderWikiLinks } from "../util";
+import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
@@ -19,6 +19,14 @@ interface Note {
   lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
+}
+
+// Long path titles (e.g. notes/daily/2026/06/01/3) wrap cleanly at the slashes
+// instead of breaking mid-number; <wbr> adds a break opportunity, copies as "/".
+function breakableTitle(title: string) {
+  return title.split("/").map((seg, i) => (
+    <span key={i}>{i > 0 && <>/<wbr /></>}{seg}</span>
+  ));
 }
 
 export default function NotePage() {
@@ -131,7 +139,7 @@ export default function NotePage() {
   const article = (
     <div className="content">
       <div className="row">
-        <h1 style={{ margin: 0 }}>{note.title}</h1>
+        <h1 className="note-title">{breakableTitle(note.title)}</h1>
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
         <span className="spacer" />
         {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
@@ -221,7 +229,7 @@ export default function NotePage() {
               }
               return <li className={cls || undefined} {...props}>{children}</li>;
             },
-          }}>{renderWikiLinks(expandTimeTokens(note.content_md, appTz))}</ReactMarkdown>
+          }}>{renderWikiLinks(expandTimeTokens(stripSummarySentinels(note.content_md), appTz))}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

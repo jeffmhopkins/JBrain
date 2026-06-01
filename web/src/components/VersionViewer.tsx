@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { get, post } from "../api";
-import { makeLinkRenderer } from "../util";
+import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Modal from "./Modal";
 
 export interface TimelineEntry {
@@ -94,7 +94,7 @@ export function VersionViewer({
         : undefined}
     >
       <div className="md">
-        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{content}</ReactMarkdown>
+        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(stripSummarySentinels(content))}</ReactMarkdown>
       </div>
     </Modal>
   );

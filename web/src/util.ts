@@ -24,6 +24,14 @@ export function renderWikiLinks(md: string): string {
   });
 }
 
+// Remove the AI-image-summary anchor comments for DISPLAY. They're stored in
+// content_md as <!-- jbrain:image-summary att=N --> sentinels (so re-analysis can
+// find/replace the block), but react-markdown (no rehype-raw) renders raw HTML
+// comments as visible text — strip them at render so only the summary body shows.
+export function stripSummarySentinels(md: string): string {
+  return (md || "").replace(/[ \t]*<!-- \/?jbrain:image-summary att=\d+ -->\n?/g, "");
+}
+
 // Shared ReactMarkdown `a` renderer: internal /note/ links use the router,
 // external links open in a new tab. Reused by NotePage and the version viewer.
 export function makeLinkRenderer(navigate: NavigateFunction) {

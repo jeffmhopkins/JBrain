@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
-import { renderWikiLinks } from "../util";
+import { renderWikiLinks, stripSummarySentinels } from "../util";
 import { fmtTs, expandTimeTokens } from "../time";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
@@ -149,7 +149,7 @@ export default function SharePage() {
           <>
             <div className="md">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: flatLink }}>
-                {renderWikiLinks(expandTimeTokens(stripTitleHeading(n.content_md, n.title), data.app_tz))}
+                {renderWikiLinks(expandTimeTokens(stripSummarySentinels(stripTitleHeading(n.content_md, n.title)), data.app_tz))}
               </ReactMarkdown>
             </div>
             {n.attachments.length > 0 && (

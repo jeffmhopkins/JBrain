@@ -59,8 +59,15 @@ export default function SharePage() {
       const r = await claimShare<ShareView>(token, pname.trim() || undefined);
       if (pname.trim()) localStorage.setItem("jbrain_share_name", pname.trim());
       setData(r);
-    } catch (e: any) { setError(e?.status || 403); }
-    finally { setBusy(false); }
+    } catch (e: any) {
+      // Another tab in THIS browser may have claimed it a beat earlier — the cookie
+      // could be set now, so re-read before showing the "locked" error.
+      try {
+        const r2 = await getShare<ShareView>(token);
+        if (!r2.requires_claim) { setData(r2); return; }
+      } catch { /* fall through */ }
+      setError(e?.status || 403);
+    } finally { setBusy(false); }
   }
 
   if (data.requires_claim) {

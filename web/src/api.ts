@@ -85,6 +85,8 @@ async function publicApi<T = any>(path: string, opts: RequestInit = {}): Promise
   return res.json();
 }
 export const getShare = <T = any>(token: string) => publicApi<T>(`/api/share/${encodeURIComponent(token)}`);
+export const claimShare = <T = any>(token: string, name?: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/claim`, { method: "POST", body: JSON.stringify({ name }) });
 export const proposeShareEdit = (token: string, content_md: string, name?: string, note?: string) =>
   publicApi(`/api/share/${encodeURIComponent(token)}/propose`, { method: "POST", body: JSON.stringify({ content_md, name, note }) });
 export const shareAttachmentUrl = (token: string, id: number) =>

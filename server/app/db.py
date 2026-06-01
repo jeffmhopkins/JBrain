@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def init_db() -> None:
@@ -187,6 +187,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         _add_column(conn, "share_links", "bind", "INTEGER NOT NULL DEFAULT 0")
         _add_column(conn, "share_links", "bind_secret", "TEXT")
         _add_column(conn, "share_links", "bound_at", "TEXT")
+
+    if current < 15:
+        # Name captured when a bind link is accepted (reused on the editor's proposals).
+        _add_column(conn, "share_links", "bound_name", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

@@ -2,28 +2,23 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
+import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
 import { renderWikiLinks } from "../util";
 import { Icon } from "../components/Icon";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
-  scope: "view" | "edit"; can_edit: boolean; brain_name: string;
-  note: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
+  requires_claim?: boolean;
+  scope: "view" | "edit"; can_edit: boolean; brain_name: string; bound_name?: string | null;
+  note?: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
 }
 
-// On a shared page, [[wiki-links]] (rendered as /note/ links) point at notes the
-// recipient can't reach — render them as inert text, not navigable links.
 function flatLink({ href, children }: any) {
   if (href?.startsWith("/note/")) return <span className="wikilink-flat">{children}</span>;
   return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
 }
-
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
-
-// The title is shown as the page heading; if the body opens with the same "# Title"
-// heading (lists carry one), drop it so it isn't rendered twice.
 function stripTitleHeading(md: string, title: string): string {
   const want = leaf(title).trim().toLowerCase();
   return md.replace(/^\s*#\s+(.+?)[ \t]*(?:\n|$)/, (m, h) => (h.trim().toLowerCase() === want ? "" : m));
@@ -34,8 +29,8 @@ export default function SharePage() {
   const [data, setData] = useState<ShareView | null>(null);
   const [error, setError] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");                  // textarea (non-list notes)
-  const [model, setModel] = useState<Parsed | null>(null); // native editor (lists)
+  const [draft, setDraft] = useState("");
+  const [model, setModel] = useState<Parsed | null>(null);
   const [newItem, setNewItem] = useState("");
   const [pname, setPname] = useState(() => localStorage.getItem("jbrain_share_name") || "");
   const [pnote, setPnote] = useState("");
@@ -56,8 +51,45 @@ export default function SharePage() {
   );
   if (!data) return <div className="share-page"><div className="muted">Loading…</div></div>;
 
-  const n = data.note;
+  // --- Consent landing for a not-yet-accepted bind link --------------------
+  async function accept() {
+    if (data!.can_edit && !pname.trim()) { alert("Please enter your name."); return; }
+    setBusy(true);
+    try {
+      const r = await claimShare<ShareView>(token, pname.trim() || undefined);
+      if (pname.trim()) localStorage.setItem("jbrain_share_name", pname.trim());
+      setData(r);
+    } catch (e: any) { setError(e?.status || 403); }
+    finally { setBusy(false); }
+  }
+
+  if (data.requires_claim) {
+    return (
+      <div className="share-page"><div className="share-card">
+        <div className="share-head">
+          <span className="brand">{data.brain_name}<span className="dot">.</span></span>
+          <span className="badge">{data.can_edit ? "Shared · editable" : "Shared · read-only"}</span>
+        </div>
+        <h2 style={{ marginTop: 12 }}>{data.can_edit ? "Accept to start editing" : "Accept to view"}</h2>
+        <p className="muted">{data.can_edit
+          ? "Once you accept, you'll only be able to propose edits from this browser. Your name is shown to the owner on each suggestion."
+          : "Once you accept, only this browser will be able to open this link. (If it lands on the wrong browser, ask the sender to reset it.)"}</p>
+        {data.can_edit && (
+          <input placeholder="Your name *" value={pname} onChange={(e) => setPname(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") accept(); }} />
+        )}
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="primary" disabled={busy} onClick={accept}>
+            {busy ? "…" : data.can_edit ? "Accept & continue" : "Accept & view"}
+          </button>
+        </div>
+      </div></div>
+    );
+  }
+
+  const n = data.note!;
   const isList = n.kind === "list";
+  const haveName = !!data.bound_name;   // captured at the consent landing; don't re-ask
 
   function startEdit() {
     setEditing(true);
@@ -67,8 +99,7 @@ export default function SharePage() {
   function up(fn: (p: Parsed) => void) {
     if (!model) return;
     const c: Parsed = { header: model.header, queue: model.queue, items: model.items.map((i) => ({ ...i })) };
-    fn(c);
-    setModel(c);
+    fn(c); setModel(c);
   }
   function addItem() {
     const t = newItem.trim();
@@ -76,11 +107,10 @@ export default function SharePage() {
     setNewItem("");
     up((p) => { p.items.push({ checked: false, text: t, priority: null }); });
   }
-
   async function submit() {
-    const name = pname.trim();
-    if (!name) { alert("Please enter your name so the owner knows who proposed this."); return; }
-    localStorage.setItem("jbrain_share_name", name);
+    const name = (data!.bound_name || pname).trim();
+    if (!name) { alert("Please enter your name."); return; }
+    if (!haveName) localStorage.setItem("jbrain_share_name", name);
     const content = isList && model ? serialize(model) : draft;
     setBusy(true);
     try { await proposeShareEdit(token, content, name, pnote || undefined); setSent(true); }
@@ -100,13 +130,12 @@ export default function SharePage() {
         {sent ? (
           <div className="share-sent">
             <h3>Your edit was sent for approval.</h3>
-            <p className="muted">{pname.trim()}, the owner will review it before it's published. Thanks!</p>
+            <p className="muted">{(data.bound_name || pname).trim()}, the owner will review it before it's published. Thanks!</p>
             <button className="ghost" onClick={() => { setSent(false); setEditing(false); }}>Propose another change</button>
           </div>
         ) : editing ? (
           <div>
             <div className="share-banner">Edits here are <strong>proposals</strong> — they're sent to the owner and aren't published until accepted.</div>
-
             {isList && model ? (
               <>
                 <div className="checklist">
@@ -141,8 +170,7 @@ export default function SharePage() {
               <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={draft}
                         onChange={(e) => setDraft(e.target.value)} />
             )}
-
-            <input placeholder="Your name *" value={pname} onChange={(e) => setPname(e.target.value)} style={{ marginTop: 8 }} />
+            {!haveName && <input placeholder="Your name *" value={pname} onChange={(e) => setPname(e.target.value)} style={{ marginTop: 8 }} />}
             <input placeholder="Note to owner (optional)…" value={pnote} onChange={(e) => setPnote(e.target.value)} style={{ marginTop: 6 }} />
             <div className="row" style={{ marginTop: 10, gap: 8 }}>
               <button className="primary" onClick={submit} disabled={busy}>{busy ? "Sending…" : "Propose changes"}</button>

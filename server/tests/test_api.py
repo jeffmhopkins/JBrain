@@ -450,27 +450,35 @@ def test_share_link_expiry_and_propose_limit(client):
 
 
 def test_share_link_bind(client):
-    # A 'bind' link locks to the first browser (cookie); others get 403 until reset.
+    # A 'bind' link shows a consent landing; ACCEPT (claim) locks it to that
+    # browser. Others are locked out until the owner resets.
     from fastapi.testclient import TestClient
     from app.main import app
     client.post("/api/notes", json={"title": "Locked Note", "content_md": "secret"})
     v = client.post("/api/shares", json={"title": "Locked Note", "scope": "view", "bind": True}).json()
     tok = v["token"]
 
-    first = TestClient(app)                      # first browser binds
-    r1 = first.get(f"/api/share/{tok}")
-    assert r1.status_code == 200 and first.cookies.get(f"jb_bind_{_link_id(client, tok)}")
-    assert first.get(f"/api/share/{tok}").status_code == 200   # same browser keeps working
+    first = TestClient(app)
+    assert first.get(f"/api/share/{tok}").json()["requires_claim"] is True   # landing, no content yet
+    assert "note" not in first.get(f"/api/share/{tok}").json()
+    c = first.post(f"/api/share/{tok}/claim", json={})                        # accept -> binds
+    assert c.status_code == 200 and c.json()["note"]["title"] == "Locked Note"
+    assert first.cookies.get(f"jb_bind_{_link_id(client, tok)}")
+    assert first.get(f"/api/share/{tok}").json()["note"]["content_md"] == "secret"   # same browser, no landing
 
-    other = TestClient(app)                      # a different browser is locked out
-    assert other.get(f"/api/share/{tok}").status_code == 403
-
-    # Owner resets the lock -> a fresh browser can bind again.
+    assert TestClient(app).get(f"/api/share/{tok}").status_code == 403       # another browser: locked
     lid = _link_id(client, tok)
     assert client.post(f"/api/shares/{lid}/reset-bind").status_code == 200
-    assert TestClient(app).get(f"/api/share/{tok}").status_code == 200
+    assert TestClient(app).get(f"/api/share/{tok}").json()["requires_claim"] is True   # landing again
 
-    # Attachments off an UNBOUND bind link are refused (can't fetch before it's claimed).
+    # Edit bind link: name captured at ACCEPT is reused on proposals (none in body).
+    e = client.post("/api/shares", json={"title": "Locked Note", "scope": "edit", "bind": True}).json()
+    ec = TestClient(app)
+    ec.post(f"/api/share/{e['token']}/claim", json={"name": "Dana"})
+    assert ec.post(f"/api/share/{e['token']}/propose", json={"content_md": "edited"}).json()["ok"]
+    assert any("Dana submitted an edit" in r["title"] for r in client.get("/api/reviews").json())
+
+    # Attachments off an unaccepted bind link are refused.
     v2 = client.post("/api/shares", json={"title": "Locked Note", "scope": "view", "bind": True}).json()
     assert TestClient(app).get(f"/api/share/{v2['token']}/attachments/1").status_code == 403
 

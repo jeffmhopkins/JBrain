@@ -43,52 +43,47 @@ def _resolve_or_404(conn, request: Request, token: str):
     return link
 
 
-def _enforce_bind(conn, link, request: Request, response: Response = None, bind_if_new: bool = True):
-    """For 'bind' links: on first open, mint a cookie that locks the link to this
-    browser; thereafter require the matching cookie. The cookie is scoped to the
-    token's API path so it rides along on read/propose/attachment requests."""
+class ClaimIn(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+
+
+def _bind_status(link, request: Request) -> str:
+    """For a 'bind' link: 'ok' (this browser holds the matching cookie), 'unclaimed'
+    (nobody has accepted it yet), or 'locked' (a different browser accepted it).
+    Non-bind links are always 'open'."""
     if not link["bind"]:
-        return
-    name = f"jb_bind_{link['id']}"
-    cookie = request.cookies.get(name)
-    if link["bind_secret"]:                       # already bound — require the matching cookie
-        if not cookie or not hmac.compare_digest(cookie, link["bind_secret"]):
-            raise HTTPException(status_code=403,
-                                detail="This link is locked to the device that first opened it.")
-        return
-    # Not yet bound:
-    if not (bind_if_new and response is not None):
-        # validate-only path (e.g. an attachment load) on an unbound link — refuse,
-        # so attachments can't be fetched off a bind link before it's claimed.
-        raise HTTPException(status_code=403, detail="Open the shared page first.")
-    secret = share_svc.mint_token()
-    # First-open-wins, atomically: only the request that flips NULL->secret binds.
-    cur = conn.execute(
-        "UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=? AND bind_secret IS NULL",
-        (secret, link["id"]))
-    conn.commit()
-    if cur.rowcount != 1:   # another device bound first
-        raise HTTPException(status_code=403,
-                            detail="This link is locked to the device that first opened it.")
+        return "open"
+    secret = link["bind_secret"]
+    if not secret:
+        return "unclaimed"
+    cookie = request.cookies.get(f"jb_bind_{link['id']}")
+    return "ok" if (cookie and hmac.compare_digest(cookie, secret)) else "locked"
+
+
+def _require_access(link, request: Request) -> None:
+    """Reads of content / proposals / attachments require a non-bind link or one
+    already accepted by THIS browser."""
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
+    if st == "unclaimed":
+        raise HTTPException(status_code=403, detail="Open the link and accept it first.")
+
+
+def _bind_cookie(response: Response, token: str, link_id: int, secret: str) -> None:
     domain = (get_settings().jbrain_domain or "").lower()
     secure = not (domain == "" or domain.startswith("localhost") or domain.startswith("127."))
-    response.set_cookie(name, secret, max_age=31_536_000, httponly=True,
-                        samesite="lax", secure=secure, path=f"/api/share/{link['token']}")
+    response.set_cookie(f"jb_bind_{link_id}", secret, max_age=31_536_000, httponly=True,
+                        samesite="lax", secure=secure, path=f"/api/share/{token}")
 
 
-@router.get("/{token}")
-def share_read(token: str, request: Request, response: Response):
-    """Return ONLY this one note's public fields (+ attachment list). Withholds
-    backlinks, tags, geolocation, slug, and id."""
-    conn = get_conn()
-    link = _resolve_or_404(conn, request, token)
-    _enforce_bind(conn, link, request, response)
-    share_svc.touch(conn, link["id"]); conn.commit()
+def _note_payload(conn, link) -> dict:
     atts = att_svc.list_for_note(conn, link["note_id"])
     return {
         "scope": link["scope"],
         "can_edit": link["scope"] == "edit",
         "brain_name": get_settings().brain_name,
+        "bound_name": link["bound_name"],
         "note": {
             "title": link["title"],
             "content_md": link["content_md"],
@@ -98,6 +93,50 @@ def share_read(token: str, request: Request, response: Response):
                              "mime": a["mime"], "byte_size": a["byte_size"]} for a in atts],
         },
     }
+
+
+@router.get("/{token}")
+def share_read(token: str, request: Request):
+    """A bind link not yet accepted by this browser returns {requires_claim} (no
+    content) so the page can show the consent landing; otherwise the note itself.
+    Withholds backlinks, tags, geolocation, slug, and id."""
+    conn = get_conn()
+    link = _resolve_or_404(conn, request, token)
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
+    if st == "unclaimed":
+        return {"requires_claim": True, "scope": link["scope"],
+                "can_edit": link["scope"] == "edit", "brain_name": get_settings().brain_name}
+    share_svc.touch(conn, link["id"]); conn.commit()
+    return _note_payload(conn, link)
+
+
+@router.post("/{token}/claim")
+def share_claim(token: str, body: ClaimIn, request: Request, response: Response):
+    """Accept a bind link: lock it to THIS browser (cookie), store the name for
+    edit links, and return the note. Idempotent for the already-bound browser."""
+    conn = get_conn()
+    # Claim is the binding action; reject cross-site forged POSTs (drive-by claim).
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    link = _resolve_or_404(conn, request, token)
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
+    if st == "unclaimed":
+        secret = share_svc.mint_token()
+        cur = conn.execute(
+            "UPDATE share_links SET bind_secret=?, bound_at=datetime('now'), bound_name=? "
+            "WHERE id=? AND bind_secret IS NULL",
+            (secret, (body.name or "").strip()[:80] or None, link["id"]))
+        conn.commit()
+        if cur.rowcount != 1:    # another browser accepted in the race
+            raise HTTPException(status_code=403, detail="This link was just accepted on another browser.")
+        _bind_cookie(response, token, link["id"], secret)
+        link = share_svc.resolve_active_link(conn, token)   # re-read so bound_name is included
+    share_svc.touch(conn, link["id"]); conn.commit()
+    return _note_payload(conn, link)
 
 
 # Only these render inline on the public page; everything else (esp. SVG/HTML,
@@ -112,7 +151,7 @@ def share_attachment(token: str, att_id: int, request: Request):
     nosniff + restrictive CSP, and only image types render inline (others download)."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
-    _enforce_bind(conn, link, request, bind_if_new=False)   # validate only; first-bind happens on read
+    _require_access(link, request)   # bind links must be accepted by this browser first
     row = conn.execute(
         "SELECT filename, mime, content_text, content_blob FROM attachments WHERE id=? AND note_id=?",
         (att_id, link["note_id"]),
@@ -134,14 +173,15 @@ def share_attachment(token: str, att_id: int, request: Request):
 
 
 @router.post("/{token}/propose")
-def share_propose(token: str, body: ProposeIn, request: Request, response: Response):
+def share_propose(token: str, body: ProposeIn, request: Request):
     """EDIT links only: store a proposed new content as a pending proposal for the
     owner to accept. Never writes the note."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
-    _enforce_bind(conn, link, request, response)
+    _require_access(link, request)
+    name = link["bound_name"] or body.name   # reuse the name given when the link was accepted
     try:
-        r = share_svc.submit_proposal(conn, link, body.content_md, body.note, body.name, _client_ip(request))
+        r = share_svc.submit_proposal(conn, link, body.content_md, body.note, name, _client_ip(request))
         conn.commit()
     except sqlite3.IntegrityError:
         # Two proposals raced the one-pending-per-link index — clean retry, not a 500.

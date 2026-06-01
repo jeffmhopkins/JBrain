@@ -153,32 +153,64 @@ export default function NotePage() {
       {sharing && (
         <div className="share-panel">
           {!minted ? (
-            <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <span className="muted" style={{ fontSize: 13 }}>Create a public link:</span>
-              <label className="row" style={{ gap: 4, fontSize: 13 }} title="Recipients can submit edits that come back as proposals for you to approve (never applied live). Off = read-only.">
-                <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareEditable}
-                       onChange={(e) => setShareEditable(e.target.checked)} /> Editable
+            <div className="share-stack">
+              <strong className="share-stack-head">Create a public link</strong>
+
+              <div className="share-row">
+                <div className="share-row-label">Who can use it</div>
+                <div className="share-control">
+                  <div className="share-seg" role="group" aria-label="Link access">
+                    <button className={!shareEditable ? "primary" : "ghost"} aria-pressed={!shareEditable}
+                            onClick={() => setShareEditable(false)}>View only</button>
+                    <button className={shareEditable ? "primary" : "ghost"} aria-pressed={shareEditable}
+                            onClick={() => setShareEditable(true)}>Can edit</button>
+                  </div>
+                  <div className="share-help">
+                    {shareEditable
+                      ? "Recipients can submit edits — they come back as proposals for you to approve, never applied live."
+                      : "Recipients can read the note but not change it."}
+                  </div>
+                </div>
+              </div>
+
+              <div className="share-row">
+                <label className="share-row-label" htmlFor="share-ttl">Expires</label>
+                <div className="share-control">
+                  <select id="share-ttl" className="modal-select" value={shareTtl}
+                          onChange={(e) => setShareTtl(Number(e.target.value))}>
+                    <option value={0}>Never</option>
+                    <option value={1}>In 1 day</option>
+                    <option value={7}>In 7 days</option>
+                    <option value={30}>In 30 days</option>
+                  </select>
+                </div>
+              </div>
+
+              <label className="share-row share-toggle" htmlFor="share-bind">
+                <div className="share-row-label">Lock to first device</div>
+                <input id="share-bind" className="share-check" type="checkbox" checked={shareBind}
+                       onChange={(e) => setShareBind(e.target.checked)} />
+                <div className="share-help share-toggle-help">
+                  Ties the link to the first browser that opens it; others get a resettable lock page. Friction against re-sharing, not strong security.
+                </div>
               </label>
-              <select value={shareTtl} onChange={(e) => setShareTtl(Number(e.target.value))}
-                      style={{ width: "auto", fontSize: 13, padding: "6px 8px" }} title="Link expiry">
-                <option value={0}>No expiry</option>
-                <option value={1}>Expires in 1 day</option>
-                <option value={7}>Expires in 7 days</option>
-                <option value={30}>Expires in 30 days</option>
-              </select>
-              <label className="row" style={{ gap: 4, fontSize: 13 }} title="Ties the link to the first BROWSER that opens it — others get a 'locked' page (resettable). Friction against re-sharing, not strong security.">
-                <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareBind}
-                       onChange={(e) => setShareBind(e.target.checked)} /> Lock to first browser
-              </label>
-              <span className="spacer" />
-              <button className="primary" onClick={() => mintShare(shareEditable ? "edit" : "view")}>Create link</button>
+
+              <div className="share-actions">
+                <button className="ghost" onClick={() => setSharing(false)}>Cancel</button>
+                <button className="primary" onClick={() => mintShare(shareEditable ? "edit" : "view")}>Create link</button>
+              </div>
             </div>
           ) : (
-            <div className="row" style={{ gap: 6 }}>
-              <span className="badge">{minted.scope}</span>
-              <input readOnly value={minted.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
-              <button className="ghost" onClick={() => { navigator.clipboard?.writeText(minted.url); }}>Copy</button>
-              <button className="ghost" onClick={() => setMinted(null)}>New</button>
+            <div className="share-stack">
+              <div className="share-stack-head share-minted-head">
+                <strong>Link created</strong>
+                <span className="badge">{minted.scope === "edit" ? "Can edit" : "View only"}</span>
+              </div>
+              <input className="share-url" readOnly value={minted.url} onFocus={(e) => e.currentTarget.select()} />
+              <div className="share-actions">
+                <button className="ghost" onClick={() => setMinted(null)}>New link</button>
+                <button className="primary" onClick={() => { navigator.clipboard?.writeText(minted.url); }}>Copy</button>
+              </div>
             </div>
           )}
         </div>

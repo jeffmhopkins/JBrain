@@ -436,8 +436,38 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 }
 
 /* Share links: owner panel + public standalone page. */
-.share-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 8px 0; background: var(--bg-elev); }
-.share-panel input { flex: 1; min-width: 0; }
+.share-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin: 8px 0; background: var(--bg-elev); }
+
+/* Share panel: settings-style vertical stack inside the reading column. */
+.share-stack { display: flex; flex-direction: column; gap: 12px; }
+.share-stack-head { font-size: 14px; }
+.share-minted-head { display: flex; align-items: center; gap: 8px; }
+
+.share-row { display: flex; align-items: center; gap: 12px; }
+.share-row-label { font-size: 13px; color: var(--text); flex-shrink: 0; min-width: 130px; }
+.share-control { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.share-help { font-size: 12px; color: var(--text-dim); line-height: 1.35; }
+
+/* Full-width segmented control, two equal halves (reuses .primary/.ghost). */
+.share-seg { display: flex; width: 100%; }
+.share-seg button { flex: 1; border-radius: 0; border-left-width: 0; }
+.share-seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); border-left-width: 1px; }
+.share-seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+
+/* Lock-to-device toggle row: label + fixed checkbox on line 1, help on line 2. */
+.share-toggle { flex-wrap: wrap; cursor: pointer; }
+.share-toggle .share-row-label { flex: 1; min-width: 0; }
+.share-check { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.share-toggle-help { flex-basis: 100%; }
+
+.share-url { width: 100%; font-size: 12px; }
+.share-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 520px) {
+  .share-row { flex-direction: column; align-items: stretch; }
+  .share-row-label { min-width: 0; }
+  .share-toggle { flex-direction: row; align-items: center; flex-wrap: wrap; }
+}
 .share-page { min-height: 100vh; display: flex; justify-content: center; padding: 24px 16px; background: var(--bg); }
 .share-card { width: 100%; max-width: 760px; }
 .share-head { display: flex; align-items: center; gap: 10px; }

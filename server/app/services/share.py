@@ -74,9 +74,9 @@ def create_link(conn, note_id: int, scope: str, label: str | None = None,
 
 
 def reset_bind(conn, link_id: int) -> None:
-    """Forget the bound browser so the link can be opened fresh (e.g. it locked to
-    the wrong in-app browser)."""
-    conn.execute("UPDATE share_links SET bind_secret=NULL, bound_at=NULL WHERE id=?", (link_id,))
+    """Forget the bound browser (secret + claimer name) so the link can be accepted
+    fresh (e.g. it locked to the wrong in-app browser)."""
+    conn.execute("UPDATE share_links SET bind_secret=NULL, bound_at=NULL, bound_name=NULL WHERE id=?", (link_id,))
 
 
 def revoke_link(conn, link_id: int) -> None:

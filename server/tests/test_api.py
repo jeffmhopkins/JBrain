@@ -89,7 +89,8 @@ def test_research_mode_is_read_only(client):
     research = {t.name for t in architect._tools_for("research")}
     assisted = {t.name for t in architect._tools_for("assisted")}
     assert "propose_actions" not in research and "add_list_item" not in research
-    assert "query_sql" in research and "query_sql" not in assisted
+    assert "set_item_checked" not in research and "set_tags" not in research
+    assert "query_sql" in research and "query_sql" in assisted   # read-only, fine in both
     assert "propose_actions" in assisted
 
 
@@ -1327,6 +1328,42 @@ def test_id_targeted_upsert_does_not_flip_kind(client):
     notes_svc.upsert_note(conn, "Mine", "new body", note_id=nid, kind="kb")
     conn.commit()
     assert conn.execute("SELECT kind FROM notes WHERE id = ?", (nid,)).fetchone()["kind"] == "entry"
+
+
+def test_list_item_tools(client):
+    # Check-off, priority, sub-list, and tags are additive tools with undo.
+    from app.db import get_conn
+    from app.services import architect, quicktasks, notes as notes_svc
+    conn = get_conn()
+    quicktasks.add_list_item(conn, "Errands", "buy milk", priority=2, source="user")
+    conn.commit()
+    # read_list gives an indexed, checkbox view.
+    view = architect._tool_read_list(conn, "Errands")
+    assert "[0] [ ] (P2) buy milk" in view
+
+    # Check it off (additive) + undo.
+    txt, ev = architect._tool_set_item_checked(conn, None, "Errands", "buy milk", True)
+    conn.commit()
+    assert quicktasks.parse_items(notes_svc.get_by_title(conn, "lists/Errands")["content_md"])[0]["checked"]
+    assert client.post(f"/api/staging/{ev['action']['id']}/undo").status_code == 200
+    assert not quicktasks.parse_items(notes_svc.get_by_title(conn, "lists/Errands")["content_md"])[0]["checked"]
+
+    # Change priority.
+    architect._tool_set_item_priority(conn, None, "Errands", "buy milk", 1)
+    conn.commit()
+    assert quicktasks.parse_items(notes_svc.get_by_title(conn, "lists/Errands")["content_md"])[0]["priority"] == 1
+
+    # Sub-list: parent gets a [[lists/...]] line; child created.
+    architect._tool_add_sublist(conn, None, "Errands", "Groceries", ["eggs"])
+    conn.commit()
+    assert notes_svc.get_by_title(conn, "lists/Errands/Groceries") is not None
+    assert "[[lists/Errands/Groceries]]" in notes_svc.get_by_title(conn, "lists/Errands")["content_md"]
+
+    # Tags (additive) + undo restores prior tags.
+    client.post("/api/notes", json={"title": "Taggable", "content_md": "x"})
+    architect._tool_set_tags(conn, None, "Taggable", ["running", "nutrition"], "add")
+    conn.commit()
+    assert set(client.get("/api/notes/taggable").json()["tags"]) == {"running", "nutrition"}
 
 
 def test_undo_noop_does_not_mark_undone(client):

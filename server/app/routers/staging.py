@@ -188,6 +188,16 @@ def undo_action(action_id: int):
             # (which would lie to the UI), report that there's nothing to undo.
             conn.rollback()
             raise HTTPException(status_code=409, detail="Nothing to undo — that line was already changed or removed.")
+    elif op == "replace_line":
+        if not quicktasks.replace_line_in_note(conn, undo["title"], undo["from"], undo["to"], source="user"):
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="Nothing to undo — that line was already changed.")
+    elif op == "insert_line":
+        quicktasks.insert_line_in_note(conn, undo["title"], undo["index"], undo["line"], source="user")
+    elif op == "set_tags":
+        notes_svc.set_tags(conn, undo["note_id"], undo.get("tags", []))
+    elif op == "restore_note":
+        conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (undo["note_id"],))
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

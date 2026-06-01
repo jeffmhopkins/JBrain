@@ -18,8 +18,9 @@ modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
-            read_attachment, add_list_item, log_entry, capture_inbox, mark_inbox_processed,
-            propose_actions]
+            read_attachment, query_sql, add_list_item, read_list, set_item_checked,
+            set_item_priority, add_sublist, log_entry, capture_inbox, mark_inbox_processed,
+            set_tags, propose_actions]
     system: |
       You are the Chief Knowledge Architect for "{brain_name}", a personal wiki
       stored in a SQL database. Decide on every message which mode fits.
@@ -75,7 +76,12 @@ tools:
   read_note: "When you need a note's full text: read its complete markdown by exact title."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
   read_inbox: "When folding captures into the wiki: read unprocessed quick-capture inbox items (e.g. dictations)."
-  add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."
+  add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Optional priority (1=highest). Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."
+  read_list: "When you need to act on specific list items: read a list's items as an INDEXED view ('[2] [ ] Bread'). Use the index + exact item text with set_item_checked/set_item_priority or a staged LIST_* action so the right line is targeted."
+  set_item_checked: "When the user checks off / un-checks a list item ('mark milk done'): toggle its checkbox. Read the list first; pass the exact item text (+ index if duplicated). APPLIES IMMEDIATELY (reversible, undoable)."
+  set_item_priority: "When the user prioritises a todo ('make milk priority 1'): set or clear an item's priority. Read the list first; pass exact item text (+ index). null clears it. APPLIES IMMEDIATELY (undoable)."
+  add_sublist: "When a todo needs a nested sub-list ('add a Groceries sub-list to Errands'): create a child list under lists/<Parent>/<child> and link it from the parent. APPLIES IMMEDIATELY (undoable)."
+  set_tags: "When the user wants to tag/untag a note ('tag this running, nutrition'): add/remove/replace a note's tags. APPLIES IMMEDIATELY (undoable)."
   log_entry: "When the user logs an event ('log a 5k run', 'journal: ...'): append a dated entry to a log/journal note, creating it if absent. APPLIES IMMEDIATELY (additive, undoable) — name the resolved log back."
   capture_inbox: "When the user jots a fleeting fragment ('remember to...', 'note to self'): save it to the capture inbox for later. APPLIES IMMEDIATELY; does not touch the wiki."
   mark_inbox_processed: "When inbox items have been folded into the wiki: mark them processed. Pass ids from read_inbox."

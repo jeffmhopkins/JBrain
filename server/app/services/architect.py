@@ -35,8 +35,9 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
-                 "read_attachment", "add_list_item", "log_entry", "capture_inbox", "mark_inbox_processed",
-                 "propose_actions"],
+                 "read_attachment", "query_sql", "add_list_item", "read_list", "set_item_checked",
+                 "set_item_priority", "add_sublist", "log_entry", "capture_inbox", "mark_inbox_processed",
+                 "set_tags", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql"],
 }
@@ -50,8 +51,30 @@ _TOOL_SCHEMAS = {
     "read_inbox": {"type": "object", "properties": {}},
     "add_list_item": {"type": "object", "properties": {
         "list_title": {"type": "string"},
-        "item": {"type": "string", "description": "Item text, no bullet/checkbox prefix."},
-        "checkbox": {"type": "boolean", "default": True}}, "required": ["list_title", "item"]},
+        "item": {"type": "string", "description": "Item text, no bullet/checkbox/priority prefix."},
+        "checkbox": {"type": "boolean", "default": True},
+        "priority": {"type": "integer", "description": "Optional; 1 = highest. Omit for none."}},
+        "required": ["list_title", "item"]},
+    "read_list": {"type": "object", "properties": {"list_title": {"type": "string"}}, "required": ["list_title"]},
+    "set_item_checked": {"type": "object", "properties": {
+        "list_title": {"type": "string"},
+        "item": {"type": "string", "description": "Exact item text (no checkbox/priority prefix)."},
+        "checked": {"type": "boolean"},
+        "index": {"type": "integer", "description": "0-based index from read_list; disambiguates duplicates."}},
+        "required": ["list_title", "item", "checked"]},
+    "set_item_priority": {"type": "object", "properties": {
+        "list_title": {"type": "string"}, "item": {"type": "string"},
+        "priority": {"type": ["integer", "null"], "description": "1 = highest; null clears."},
+        "index": {"type": "integer"}}, "required": ["list_title", "item", "priority"]},
+    "add_sublist": {"type": "object", "properties": {
+        "parent_list": {"type": "string"},
+        "child_name": {"type": "string", "description": "Filed under lists/<Parent>/<child>."},
+        "items": {"type": "array", "items": {"type": "string"}}}, "required": ["parent_list", "child_name"]},
+    "set_tags": {"type": "object", "properties": {
+        "title": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "mode": {"type": "string", "enum": ["add", "remove", "replace"], "default": "add"}},
+        "required": ["title", "tags"]},
     "log_entry": {"type": "object", "properties": {
         "target": {"type": "string", "description": "Log note title."},
         "text": {"type": "string"},
@@ -265,12 +288,67 @@ def _record_applied(conn, conversation_id, action_type: str, display: str, undo:
     return {"type": "applied", "action": {"id": aid, "summary": display}}
 
 
-def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True):
+def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True, priority=None):
     loc = notes_svc.conversation_location(conn, conversation_id)
-    r = quicktasks.add_list_item(conn, list_title, item, checkbox, conversation_id=conversation_id, location=loc)
+    r = quicktasks.add_list_item(conn, list_title, item, checkbox, priority, conversation_id=conversation_id, location=loc)
     display = f"Added “{item}” to [[{r['note_title']}]]" + (" (new list)" if r["created"] else "")
     undo = {"op": "remove_line", "title": r["note_title"], "line": r["line"]}
     return f"applied: {display}", _record_applied(conn, conversation_id, "ADD_ITEM", display, undo)
+
+
+def _tool_read_list(conn, list_title):
+    title = notes_svc.root_title(list_title, "lists")
+    note = notes_svc.get_by_title(conn, title)
+    if note is None or note["kind"] != "list":
+        return f"No list titled '{title}'."
+    items = quicktasks.parse_items(note["content_md"])
+    if not items:
+        return _untrusted("list", f"{title} (empty)")
+    lines = [f"[{i}] [{'x' if it['checked'] else ' '}] "
+             + (f"(P{it['priority']}) " if it["priority"] else "") + it["text"]
+             for i, it in enumerate(items)]
+    return _untrusted("list", f"{title}\n" + "\n".join(lines))
+
+
+def _tool_set_item_checked(conn, conversation_id, list_title, item, checked, index=None):
+    r = quicktasks.set_item_checked(conn, list_title, item, checked, ordinal=index, conversation_id=conversation_id)
+    display = ("Checked off" if checked else "Unchecked") + f" “{item}” in [[{r['note_title']}]]"
+    undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "SET_CHECKED", display, undo)
+
+
+def _tool_set_item_priority(conn, conversation_id, list_title, item, priority, index=None):
+    r = quicktasks.set_item_priority(conn, list_title, item, priority, ordinal=index, conversation_id=conversation_id)
+    display = (f"Set “{item}” to P{priority}" if priority else f"Cleared priority on “{item}”") + f" in [[{r['note_title']}]]"
+    undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "SET_PRIORITY", display, undo)
+
+
+def _tool_add_sublist(conn, conversation_id, parent_list, child_name, items=None):
+    r = quicktasks.add_sublist(conn, parent_list, child_name, items, conversation_id=conversation_id)
+    display = f"Added sub-list [[{r['child_title']}]] under [[{r['parent_title']}]]"
+    undo = {"op": "remove_line", "title": r["parent_title"], "line": r["parent_line"]}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "ADD_SUBLIST", display, undo)
+
+
+def _tool_set_tags(conn, conversation_id, title, tags, mode="add"):
+    note = notes_svc.get_by_title(conn, title)
+    if note is None:
+        return f"No note titled '{title}'.", None
+    current = [r["name"] for r in conn.execute(
+        "SELECT t.name FROM tags t JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=? ORDER BY t.name",
+        (note["id"],)).fetchall()]
+    want = [t.strip().lower() for t in tags if t and t.strip()]
+    if mode == "replace":
+        new = want
+    elif mode == "remove":
+        new = [t for t in current if t not in want]
+    else:  # add
+        new = current + [t for t in want if t not in current]
+    notes_svc.set_tags(conn, note["id"], new)
+    display = f"Tags on [[{title}]]: " + (", ".join(new) or "(none)")
+    undo = {"op": "set_tags", "note_id": note["id"], "tags": current}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "SET_TAGS", display, undo)
 
 
 def _tool_log_entry(conn, conversation_id, target, text, date=None):
@@ -326,7 +404,18 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "query_sql":
         return _tool_query_sql(conn, args["sql"], args.get("limit", 50)), None
     if name == "add_list_item":
-        return _tool_add_list_item(conn, conversation_id, args["list_title"], args["item"], args.get("checkbox", True))
+        return _tool_add_list_item(conn, conversation_id, args["list_title"], args["item"],
+                                   args.get("checkbox", True), args.get("priority"))
+    if name == "read_list":
+        return _tool_read_list(conn, args["list_title"]), None
+    if name == "set_item_checked":
+        return _tool_set_item_checked(conn, conversation_id, args["list_title"], args["item"], args["checked"], args.get("index"))
+    if name == "set_item_priority":
+        return _tool_set_item_priority(conn, conversation_id, args["list_title"], args["item"], args.get("priority"), args.get("index"))
+    if name == "add_sublist":
+        return _tool_add_sublist(conn, conversation_id, args["parent_list"], args["child_name"], args.get("items"))
+    if name == "set_tags":
+        return _tool_set_tags(conn, conversation_id, args["title"], args["tags"], args.get("mode", "add"))
     if name == "log_entry":
         return _tool_log_entry(conn, conversation_id, args["target"], args["text"], args.get("date"))
     if name == "capture_inbox":

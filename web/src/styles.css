@@ -371,6 +371,14 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
+/* Backlinks as compact link-icon chips (root prefix dropped; full title on hover). */
+.backlink-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.backlink-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+  padding: 3px 9px; background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 999px; color: var(--text-dim); }
+.backlink-chip:hover { border-color: var(--accent); color: var(--text); }
+.backlink-chip .icon { color: var(--text-dim); }
+
 /* ---- Graph controls ----------------------------------------------------- */
 .graph-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 /* Segmented filter (All / KB / Entries): buttons joined into one pill. */

@@ -73,9 +73,13 @@ export default function NotePage() {
 
       <h3 style={{ marginTop: 20 }}>Backlinks</h3>
       {note.backlinks.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No notes link here yet.</p>}
-      {note.backlinks.map((b) => (
-        <Link key={b.id} to={`/note/${b.slug}`} className="list-item">{b.title}</Link>
-      ))}
+      <div className="backlink-row">
+        {note.backlinks.map((b) => (
+          <Link key={b.id} to={`/note/${b.slug}`} className="backlink-chip" title={b.title}>
+            <Icon name="link" size={12} /> {b.title.replace(/^(notes|kb)\//i, "")}
+          </Link>
+        ))}
+      </div>
 
       <h3 style={{ marginTop: 20 }}>History</h3>
       <HistoryTimeline timeline={timeline} onView={setViewing} onDiff={(from, to) => setDiffing({ from, to })} />

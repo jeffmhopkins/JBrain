@@ -141,6 +141,27 @@ def _unique_title(conn, base: str, exclude_id: int | None = None) -> str:
     return title
 
 
+def next_daily_title(conn, day) -> str:
+    """The next dated-capture title: notes/daily/YYYY/MM/DD/<n>.
+
+    `n` is MAX(existing trailing integer for that day) + 1. It counts ALL rows,
+    including soft-deleted ones, because `notes.title` is UNIQUE across every row
+    — reissuing a deleted note's number would hit that constraint. So numbering is
+    gap-tolerant (a deleted /3 is never reused). Single-writer SQLite means no
+    retry loop is needed; `day` is a date in the caller's local timezone."""
+    prefix = f"notes/daily/{day:%Y/%m/%d}"
+    rows = conn.execute(
+        "SELECT title FROM notes WHERE title LIKE ?",
+        (prefix + "/%",),
+    ).fetchall()
+    n = 0
+    for r in rows:
+        tail = r["title"][len(prefix) + 1:]
+        if tail.isdigit():
+            n = max(n, int(tail))
+    return f"{prefix}/{n + 1}"
+
+
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
     conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
     conn.execute(

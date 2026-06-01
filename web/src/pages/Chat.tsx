@@ -18,7 +18,7 @@ const MODES: { key: Mode; label: string; icon: string }[] = [
   { key: "research", label: "Research", icon: "search" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
-  entry: "Write an entry… (the first line becomes its title)",
+  entry: "Write an entry… (logged by date — no title needed)",
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };
@@ -227,12 +227,20 @@ export default function Chat() {
         {mode === "entry" ? (
           entries.length === 0
             ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>
-            : entries.map((en, i) => (
-                <div key={i} style={{ display: "contents" }}>
-                  {en.text && <div className="msg user">{en.text}</div>}
-                  <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {en.title}</Link>
-                </div>
-              ))
+            : entries.map((en, i) => {
+                // Dated captures have an opaque path title (notes/daily/…); show a
+                // friendly label from the entry's first line instead. Titled notes
+                // (assisted attachments) keep their own name (root stripped).
+                const label = en.title.startsWith("notes/daily/")
+                  ? ((en.text.split("\n").find((l) => l.trim()) || "entry").trim().slice(0, 40) || "entry")
+                  : en.title.replace(/^notes\//, "");
+                return (
+                  <div key={i} style={{ display: "contents" }}>
+                    {en.text && <div className="msg user">{en.text}</div>}
+                    <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>
+                  </div>
+                );
+              })
         ) : (
           <>
             {messages.length === 0 && (

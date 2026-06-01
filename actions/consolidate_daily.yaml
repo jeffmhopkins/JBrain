@@ -1,0 +1,46 @@
+# Declarative action: roll each COMPLETED day's dated captures
+# (notes/daily/YYYY/MM/DD/<n>) up into one daily summary note
+# (notes/daily/YYYY/MM/DD, kind='daily'). Scheduled at midnight, this runs BEFORE
+# wiki synthesis so the encyclopedia is built from clean daily rollups rather than
+# thousands of raw fragments.
+#
+# Idempotency is the EXISTENCE of the summary note (handled in the daily_pending
+# primitive) — no watermark — so restarts/outages backfill every still-missing
+# day. The consolidation prompt is fact-preserving (keeps names/dates/numbers);
+# without an LLM key, summarise_entries falls back to a plain recap.
+#
+# config keys:
+#   prompt   — optional override for the consolidation prompt
+#   review   — set to false to suppress the review card (default on)
+type: consolidate_daily
+config:
+  - { key: prompt, label: Consolidation prompt (optional), type: textarea }
+  - { key: review, label: Post a review card, type: review, default: true }
+steps:
+  - id: pending
+    do: daily_pending
+
+  - stop_when: "{{ not pending.days }}"
+    stop_message: "no completed days to consolidate"
+
+  - id: loop
+    for_each: "{{ pending.days }}"
+    steps:
+      - id: s
+        do: summarise_entries
+        with:
+          entries: "{{ item.entries }}"
+          prompt: "{{ config.prompt | default(prompts.actions.daily_consolidate, true) }}"
+      - do: write_note
+        with:
+          title: "{{ item.daily_title }}"
+          content_md: "# {{ item.daily_title }}\n\n{{ s }}\n\n## Entries\n\n{{ item.entries_md }}\n"
+          kind: daily
+          version_note: "daily consolidation"
+
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "Daily consolidation — {{ pending.days | map(attribute='date') | join(', ') }}"
+      message: "Consolidated {{ pending.count }} day(s) of captures."
+      link_title: "{{ pending.days[0].daily_title }}"

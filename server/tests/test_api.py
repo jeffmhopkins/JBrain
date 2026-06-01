@@ -73,14 +73,29 @@ def test_info_public_and_version_is_authed(client):
 
 
 def test_entry_mode_creates_unique_notes(client):
-    # "Make entry": direct store, no LLM. Same title -> distinct notes (no merge).
+    # "Make entry" with an EXPLICIT title (assisted-attachment path): direct store,
+    # no LLM, same title -> distinct notes (no merge), filed under notes/.
     a = client.post("/api/notes/entry", json={"text": "first thought", "title": "Idea"}).json()
     b = client.post("/api/notes/entry", json={"text": "second thought", "title": "Idea"}).json()
     assert a["slug"] != b["slug"]
+    assert a["title"].startswith("notes/Idea") and b["title"].startswith("notes/Idea")
     assert client.get(f"/api/notes/{a['slug']}").json()["content_md"] == "first thought"
-    # No title -> derived from first line; entries live under the notes/ root.
+
+
+def test_entry_mode_dated_titles_no_first_line_convention(client):
+    # No title -> dated bucket notes/daily/YYYY/MM/DD/<n>; the WHOLE text is the
+    # body (first line is NOT consumed as a title).
     c = client.post("/api/notes/entry", json={"text": "buy a tent\nfor camping"}).json()
-    assert c["title"].startswith("notes/buy a tent")
+    import re
+    assert re.match(r"^notes/daily/\d{4}/\d{2}/\d{2}/1$", c["title"]), c["title"]
+    assert client.get(f"/api/notes/{c['slug']}").json()["content_md"] == "buy a tent\nfor camping"
+    # Second same-day entry increments the counter.
+    d = client.post("/api/notes/entry", json={"text": "another thought"}).json()
+    assert d["title"].rsplit("/", 1)[1] == "2"
+    # Deleting then adding does NOT reuse the number (MAX+1, gap-tolerant).
+    client.delete(f"/api/notes/{d['slug']}")
+    e = client.post("/api/notes/entry", json={"text": "third"}).json()
+    assert e["title"].rsplit("/", 1)[1] == "3"
 
 
 def test_research_mode_is_read_only(client):
@@ -386,6 +401,60 @@ def test_synthesis_sees_edits_and_deletions(client, monkeypatch):
     run_and_wait(client, wf["id"])
     foo = next(e for e in seen[-1] if e["title"] == "notes/Foo")
     assert foo["deleted"] == 1
+
+
+def test_daily_consolidation_rolls_up_completed_days(client, monkeypatch):
+    # The nightly job rolls each completed day's dated captures into one daily
+    # summary note (kind='daily') with an ## Entries backlink section, idempotently.
+    from app.services import workflows as wf_svc
+    monkeypatch.setattr(wf_svc, "_summarise_entries", lambda entries, prompt=None: "DAY RECAP")
+    # Past-day captures (explicit dated titles file under the daily bucket, kind='entry').
+    client.post("/api/notes/entry", json={"text": "ran 5k", "title": "notes/daily/2020/01/01/1"})
+    client.post("/api/notes/entry", json={"text": "ate tacos", "title": "notes/daily/2020/01/01/2"})
+
+    wf = client.post("/api/workflows", json={
+        "name": "C", "trigger_type": "schedule", "trigger_config": {"cron": "0 0 * * *"},
+        "action_type": "consolidate_daily", "action_config": {"review": False}, "enabled": True}).json()
+    run_and_wait(client, wf["id"])
+
+    note = client.get("/api/notes/notes-daily-2020-01-01").json()
+    assert note["kind"] == "daily"
+    assert "DAY RECAP" in note["content_md"]
+    assert "[[notes/daily/2020/01/01/1]]" in note["content_md"]
+    assert "[[notes/daily/2020/01/01/2]]" in note["content_md"]
+
+    # Idempotent: re-running does not duplicate the day (existence gate).
+    run_and_wait(client, wf["id"])
+    again = client.get("/api/notes/notes-daily-2020-01-01").json()
+    assert again["content_md"].count("## Entries") == 1
+
+
+def test_synthesis_consumes_daily_rollups_not_raw_dated_entries(client, monkeypatch):
+    # After consolidation, synthesis must read the daily rollup + legacy free-titled
+    # entries, but NEVER the raw dated captures (no double-count, no legacy drop).
+    from app.services import workflows as wf_svc
+    monkeypatch.setattr(wf_svc, "_summarise_entries", lambda entries, prompt=None: "RECAP")
+    seen = []
+    monkeypatch.setattr(wf_svc, "_synthesize_actions",
+                        lambda entries, kb, instructions=None, **_: (seen.append([e["title"] for e in entries]) or []))
+
+    client.post("/api/notes/entry", json={"text": "ran", "title": "notes/daily/2020/01/01/1"})
+    client.post("/api/notes/entry", json={"text": "legacy thought", "title": "Project X"})
+
+    cons = client.post("/api/workflows", json={
+        "name": "C", "trigger_type": "schedule", "trigger_config": {"cron": "0 0 * * *"},
+        "action_type": "consolidate_daily", "action_config": {"review": False}, "enabled": True}).json()
+    run_and_wait(client, cons["id"])   # creates notes/daily/2020/01/01 (kind='daily')
+
+    synth = client.post("/api/workflows", json={
+        "name": "S", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
+        "action_type": "synthesize_wiki", "action_config": {}, "enabled": True}).json()
+    run_and_wait(client, synth["id"])
+
+    titles = seen[-1]
+    assert "notes/daily/2020/01/01" in titles          # the daily rollup IS a source
+    assert "notes/Project X" in titles                 # legacy free-titled entry IS a source
+    assert "notes/daily/2020/01/01/1" not in titles    # raw dated capture is NOT synthesized directly
 
 
 def test_share_links_flow(client):

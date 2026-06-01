@@ -20,6 +20,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 from jinja2 import ChainableUndefined
@@ -35,6 +36,12 @@ from ..db import get_conn, get_meta, set_meta
 
 def _today() -> str:
     return datetime.date.today().isoformat()
+
+
+def _local_day_path() -> str:
+    """Today as 'YYYY/MM/DD' in the server's local timezone — the same TZ the
+    scheduler uses for cron and that dated entry titles are bucketed by."""
+    return datetime.datetime.now(ZoneInfo(os.environ.get("TZ") or "UTC")).strftime("%Y/%m/%d")
 
 
 # --- Templating -------------------------------------------------------------
@@ -164,10 +171,16 @@ def _p_query_entry_changes(ctx, since="", limit=20):
     (so wiki synthesis can fold in edits and clean up after removals, not just add
     new notes). Each row carries `deleted` and `changed_at`; the caller advances the
     watermark to the max changed_at processed."""
+    # Synthesis consumes the daily ROLLUPS plus any legacy free-titled entries —
+    # but NOT the raw dated captures (notes/daily/.../<n>), which reach the KB only
+    # via their daily summary. This keeps facts in the KB exactly once (no double
+    # count) while legacy notes/<topic> entries stay first-class sources.
     rows = ctx.conn.execute(
         "SELECT id, title, slug, content_md, created_at, updated_at, deleted_at, "
         "(deleted_at IS NOT NULL) AS deleted, COALESCE(deleted_at, updated_at) AS changed_at "
-        "FROM notes WHERE kind = 'entry' AND COALESCE(deleted_at, updated_at) > ? "
+        "FROM notes WHERE "
+        "  (kind = 'daily' OR (kind = 'entry' AND title NOT LIKE 'notes/daily/%')) "
+        "  AND COALESCE(deleted_at, updated_at) > ? "
         "ORDER BY changed_at LIMIT ?",
         (since or "", max(1, min(int(limit), 1000))),
     ).fetchall()
@@ -262,6 +275,52 @@ def _p_daylog_pending(ctx, log_title):
     }
 
 
+def _p_daily_pending(ctx, limit_days=60):
+    """Completed days (before local today) that have dated capture entries
+    (notes/daily/YYYY/MM/DD/<n>) but no daily summary note yet.
+
+    Idempotency is the EXISTENCE of the day's summary note — no watermark — so a
+    restart or multi-day outage simply resumes with whatever days are still
+    missing (and backfills them all in one run). Each returned day carries its
+    entries' bodies (for summarise_entries) and child titles (for ## Entries
+    backlinks). Today is excluded (it's still being written into)."""
+    today = _local_day_path()
+    rows = ctx.conn.execute(
+        "SELECT title, content_md FROM notes "
+        "WHERE title LIKE 'notes/daily/%' AND kind = 'entry' AND deleted_at IS NULL "
+        "ORDER BY title",
+    ).fetchall()
+    by_day: dict[str, list[dict]] = {}
+    for r in rows:
+        parts = r["title"].split("/")           # notes/daily/Y/MM/DD/<n>
+        if len(parts) == 6 and parts[5].isdigit():
+            by_day.setdefault("/".join(parts[2:5]), []).append(dict(r))
+
+    existing = {
+        r["title"][len("notes/daily/"):]
+        for r in ctx.conn.execute(
+            "SELECT title FROM notes WHERE kind = 'daily' "
+            "AND title LIKE 'notes/daily/%' AND deleted_at IS NULL",
+        ).fetchall()
+    }
+
+    days = []
+    for date in sorted(by_day):
+        if date >= today or date in existing:   # leave today open; skip already-rolled-up days
+            continue
+        children = by_day[date]
+        days.append({
+            "date": date,
+            "daily_title": f"notes/daily/{date}",
+            "entries": [c["content_md"] for c in children],
+            "children": [c["title"] for c in children],
+            # Pre-rendered "## Entries" backlink list so the YAML stays a simple
+            # substitution (no Jinja loop needed in the recipe).
+            "entries_md": "\n".join(f"- [[{c['title']}]]" for c in children),
+        })
+    return {"days": days[: max(1, int(limit_days))], "count": len(days)}
+
+
 def _p_call_action(ctx, action, config=None, trigger=None):
     """Run another action recipe as a nested sub-pipeline (composition / chaining).
     The sub-recipe gets a FRESH variable scope (its own config/trigger), but the
@@ -305,6 +364,7 @@ _PRIMITIVES = {
     "summarise_entries": _p_summarise_entries,
     "wiki_plan": _p_wiki_plan,
     "daylog_pending": _p_daylog_pending,
+    "daily_pending": _p_daily_pending,
     "gather_context": _p_gather_context,
     "llm": _p_llm,
 }
@@ -337,7 +397,7 @@ _PRIMITIVE_META: dict[str, dict] = {
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},
-    "query_entry_changes": {"summary": "Entries changed (new/edited/deleted) since a timestamp.",
+    "query_entry_changes": {"summary": "Daily rollups + legacy entries changed (new/edited/deleted) since a timestamp.",
                             "inputs": [{"name": "since", "type": "str"}, {"name": "limit", "type": "int"}],
                             "output": "list"},
     "get_meta": {"summary": "Read a stored key (e.g. a watermark).",
@@ -362,6 +422,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                   "output": "list"},
     "daylog_pending": {"summary": "Days of a log still to summarise (+ watermark).",
                        "inputs": [{"name": "log_title", "type": "str", "required": True}], "output": "object"},
+    "daily_pending": {"summary": "Completed days with dated entries but no daily summary yet.",
+                      "inputs": [{"name": "limit_days", "type": "int"}], "output": "object"},
     "gather_context": {"summary": "Build context text from a note or a semantic search.",
                        "inputs": [{"name": "source_title", "type": "str"}, {"name": "context_query", "type": "str"}],
                        "output": "scalar"},

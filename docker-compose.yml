@@ -11,6 +11,9 @@ services:
     env_file: .env
     environment:
       DB_PATH: /data/brain.db
+      # Local timezone for scheduled jobs (midnight consolidation) and the date
+      # bucket dated captures file under (notes/daily/YYYY/MM/DD). Defaults to UTC.
+      TZ: ${TZ:-UTC}
     volumes:
       - brain-data:/data
     expose:

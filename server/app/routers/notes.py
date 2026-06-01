@@ -1,6 +1,8 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
+import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -128,12 +130,19 @@ def create_entry(body: EntryIn):
     Fires the entry_created hooks (auto-tag, etc.)."""
     conn = get_conn()
     text = body.text.strip()
-    base = (body.title or "").strip() or next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    if not text and not base:
+    explicit = (body.title or "").strip()
+    if not text and not explicit:
         raise HTTPException(status_code=422, detail="Entry text cannot be empty")
-    if not base:  # text-only with no usable first line (e.g. attachment placeholder)
-        base = f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
-    title = notes_svc._unique_title(conn, notes_svc.root_title(base, "notes"))
+    if explicit:
+        # An explicit title (the assisted-attachment path) keeps its own name —
+        # "assisted notes can go somewhere else". The first line is NOT a title.
+        title = notes_svc._unique_title(conn, notes_svc.root_title(explicit, "notes"))
+    else:
+        # Pure Entry capture: no title. File chronologically under the date tree
+        # as notes/daily/YYYY/MM/DD/<n>; the whole text is the body. Day boundary
+        # is the server's local timezone (same TZ the scheduler uses for midnight).
+        day = datetime.now(ZoneInfo(os.environ.get("TZ") or "UTC")).date()
+        title = notes_svc.next_daily_title(conn, day)
     try:
         note_id = notes_svc.upsert_note(
             conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,

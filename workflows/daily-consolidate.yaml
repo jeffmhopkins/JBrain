@@ -1,0 +1,25 @@
+# Nightly daily-consolidation.
+#
+# At local midnight, roll each COMPLETED day's dated captures
+# (notes/daily/YYYY/MM/DD/<n>) up into one daily summary note
+# (notes/daily/YYYY/MM/DD, kind='daily'). This runs before the knowledge-base
+# synthesis job consumes the day, so the encyclopedia is built from clean daily
+# rollups instead of thousands of raw fragments. (Ordering is also guaranteed
+# structurally: synthesis only ever reads the daily summary for dated captures,
+# never the raw entries — see query_entry_changes.)
+#
+# Auto-applies — every change is versioned and undoable. Works without an LLM key
+# (falls back to a plain recap). Midnight is the server's TZ.
+key: daily-consolidate
+name: Daily consolidation
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 0 * * *"   # local midnight (server TZ)
+
+action:
+  type: consolidate_daily
+  config:
+    review:
+      title: "Daily consolidation"

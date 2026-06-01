@@ -102,6 +102,15 @@ actions:
   daylog_summary: "Summarise one day's log lines into a tight paragraph plus 3-6 key bullets. No preamble. Do not invent anything not in the lines. The log lines follow:"
   generate_tags: "Output 3-6 short lowercase topic tags for this note as a single comma-separated line: spaces allowed inside a tag, commas only between tags. No preamble, no labels, no quotes, no '#', no trailing period. Example: running, marathon training, nutrition"
   synthesize: "Summarise the content below: open with a one-sentence overview, then concise bullets. Be faithful to the source and add nothing. No preamble."
+  daily_consolidate: |
+    Consolidate one day's raw capture entries into a single faithful daily record
+    that downstream knowledge synthesis will read. This is a CONSOLIDATION, not a
+    terse summary — PRESERVE every durable fact: names, dates, numbers, places,
+    decisions, preferences, relationships, and any concrete detail. Only dedupe
+    repeated information and group related points under "## " sections by topic.
+    Do NOT invent anything not in the entries, and do NOT drop specifics to be
+    brief. Open with a one-sentence overview of the day, then the grouped sections.
+    No preamble. The entries follow:
   image_max_tokens: 700
   image_analysis: |
     You are analyzing an image attached to a personal note. Produce a faithful,
@@ -135,7 +144,9 @@ actions:
     TITLES: every article lives under the "kb/" root — title it "kb/<Topic>"
     (e.g. "kb/Jeff"); branch as "kb/<Parent>/<Subtopic>". Cross-link other
     articles by their exact "kb/" title. Source entries are titled under "notes/"
-    — cite them by their exact given title (e.g. [[notes/Jeff — 2026-06-01]]).
+    — cite them by their exact given title. Dated daily rollups are titled
+    "notes/daily/YYYY/MM/DD" (cite as [[notes/daily/2026/06/01]]); free-form notes
+    keep their own title (e.g. [[notes/Jeff — 2026-06-01]]).
 
     Be THOROUGH: descriptive entries hold many facts — capture EVERY durable one
     (dates, names, numbers, decisions, preferences, relationships), not just the

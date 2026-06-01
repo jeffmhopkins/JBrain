@@ -528,6 +528,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     assistant_text_parts: list[str] = []
     total_tokens = 0
     stopped_early = False
+    need_sep = False   # insert a break when text resumes after a tool call
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -537,6 +538,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             messages, system=system, tools=tools, model=model, max_tokens=max_tokens
         ):
             if isinstance(ev, llm.TextDelta):
+                # When the model resumes talking after a tool call, its new text
+                # would otherwise butt right up against the pre-call text
+                # ("…right away!Based on…"). Insert a paragraph break.
+                if need_sep:
+                    need_sep = False
+                    prev = "".join(assistant_text_parts)
+                    if prev and not prev[-1].isspace() and ev.text[:1] and not ev.text[:1].isspace():
+                        assistant_text_parts.append("\n\n")
+                        yield {"type": "token", "text": "\n\n"}
                 assistant_text_parts.append(ev.text)
                 yield {"type": "token", "text": ev.text}
             elif isinstance(ev, llm.ToolCallEvent):
@@ -559,6 +569,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 yield event  # {"type": "staging"|"applied", ...}
             results.append(llm.ToolResult(tool_call_id=call.id, content=result_text))
         provider.append_tool_results(messages, results)
+        need_sep = True   # the next text block (post-tool) should be separated
 
         # Cumulative-cost backstop: stop before running another (ever-larger) turn.
         if token_budget and total_tokens >= token_budget:

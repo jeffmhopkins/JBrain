@@ -35,6 +35,7 @@ export default function Chat() {
   const [entries, setEntries] = useState<{ text: string; title: string; slug: string }[]>([]);
   const [input, setInput] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
@@ -157,14 +158,14 @@ export default function Chat() {
       setBusy(true);
       try {
         const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords);
-        if (file) await uploadAttachment(r.slug, file);
+        if (file) await uploadAttachment(r.slug, file, setUploadPct);
         setEntries((xs) => [...xs, { text: text || (file ? `📎 ${file.name}` : ""), title: r.title, slug: r.slug }]);
       } catch (err) {
         // Don't silently lose the entry: put the text back and tell the user.
         setInput(text);
         if (file) setPendingFile(file);
         alert("Couldn't save entry: " + (err instanceof Error ? err.message : "please try again."));
-      } finally { setBusy(false); }
+      } finally { setBusy(false); setUploadPct(null); }
       return;
     }
 
@@ -173,7 +174,8 @@ export default function Chat() {
     if (mode === "assisted" && file) {
       // Save the file to a note so there's something to attach it to.
       const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
-      await uploadAttachment(r.slug, file);
+      await uploadAttachment(r.slug, file, setUploadPct);
+      setUploadPct(null);
       extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
     }
     const msg = (text + extra).trim();
@@ -290,6 +292,11 @@ export default function Chat() {
           <div className="attach-chip">
             <Icon name="clip" size={14} /> {pendingFile.name}
             <button className="icon-btn" style={{ padding: 2 }} onClick={() => setPendingFile(null)}>✕</button>
+          </div>
+        )}
+        {uploadPct !== null && (
+          <div className="attach-chip">
+            <Icon name="clip" size={14} /> {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
           </div>
         )}
         <textarea

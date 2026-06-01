@@ -96,24 +96,34 @@ export const shareAttachmentUrl = (token: string, id: number) =>
 // we call fetch directly with only the Authorization header.
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
-export async function uploadAttachment<T = any>(slug: string, file: File): Promise<T> {
-  if (file.size > MAX_ATTACHMENT_BYTES) throw new ApiError("File too large (10 MB max).", 413);
-  if (isDemo()) return { id: 1, filename: file.name } as T;
-  const fd = new FormData();
-  fd.append("file", file);
-  const headers: Record<string, string> = {};
-  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
-  const res = await fetch(u(`/api/notes/${encodeURIComponent(slug)}/attachments`), {
-    method: "POST",
-    headers,
-    body: fd,
+// XHR (not fetch) so we get real upload progress. onProgress reports 0–100 for
+// bytes sent; the server then extracts text/embeds before responding, so callers
+// can show a "processing" phase once it hits 100.
+export function uploadAttachment<T = any>(
+  slug: string, file: File, onProgress?: (pct: number) => void,
+): Promise<T> {
+  if (file.size > MAX_ATTACHMENT_BYTES) return Promise.reject(new ApiError("File too large (10 MB max).", 413));
+  if (isDemo()) { onProgress?.(100); return Promise.resolve({ id: 1, filename: file.name } as T); }
+  return new Promise<T>((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", u(`/api/notes/${encodeURIComponent(slug)}/attachments`));
+    if (accessKey) xhr.setRequestHeader("Authorization", `Bearer ${accessKey}`);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(100);
+        try { resolve(JSON.parse(xhr.responseText)); } catch { resolve({} as T); }
+      } else {
+        let detail = xhr.statusText;
+        try { detail = JSON.parse(xhr.responseText).detail ?? detail; } catch { /* ignore */ }
+        reject(new ApiError(detail, xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError("Network error during upload", 0));
+    xhr.send(fd);
   });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
-  }
-  return res.json();
 }
 
 // Attachments need the auth header, so a plain <a>/<img> won't work — fetch+blob.

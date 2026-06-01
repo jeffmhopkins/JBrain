@@ -18,6 +18,7 @@ export default function Attachments({ slug }: { slug: string }) {
   const [items, setItems] = useState<Attachment[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ name: string; pct: number; processing: boolean } | null>(null);
   const [viewing, setViewing] = useState<Viewing>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -30,15 +31,22 @@ export default function Attachments({ slug }: { slug: string }) {
   async function onFiles(files: FileList | null) {
     if (!files) return;
     setError(""); setBusy(true);
+    const list = Array.from(files);
     try {
-      for (const f of Array.from(files)) {
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        const label = f.name + (list.length > 1 ? ` (${i + 1}/${list.length})` : "");
         if (f.size > MAX_ATTACHMENT_BYTES) { setError(`${f.name} is over 10 MB.`); continue; }
-        await uploadAttachment(slug, f);
+        setProgress({ name: label, pct: 0, processing: false });
+        try {
+          await uploadAttachment(slug, f, (pct) =>
+            setProgress((p) => (p ? { ...p, pct, processing: pct >= 100 } : p)));
+          await load();   // show each file as it lands
+        } catch (e: any) {
+          setError(`${f.name}: ${e.message || "upload failed"}`);
+        }
       }
-      await load();
-    } catch (e: any) {
-      setError(e.message || "Upload failed");
-    } finally { setBusy(false); }
+    } finally { setProgress(null); setBusy(false); }
   }
 
   async function view(a: Attachment) {
@@ -65,6 +73,19 @@ export default function Attachments({ slug }: { slug: string }) {
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>Any file up to 10 MB. Text, PDFs, and image metadata are searchable.</p>
+      {progress && (
+        <div className="upload-progress">
+          <div className="row" style={{ fontSize: 12 }}>
+            <span>{progress.processing ? "Processing" : "Uploading"} {progress.name}…</span>
+            <span className="spacer" />
+            {!progress.processing && <span className="muted">{progress.pct}%</span>}
+          </div>
+          <div className="progress-track">
+            <div className={"progress-fill" + (progress.processing ? " processing" : "")}
+                 style={{ width: progress.processing ? "100%" : `${progress.pct}%` }} />
+          </div>
+        </div>
+      )}
       {error && <p style={{ color: "var(--danger)", fontSize: 12 }}>{error}</p>}
 
       {items.map((a) => (

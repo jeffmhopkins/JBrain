@@ -436,6 +436,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .queue-toggle { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
 .queue-toggle.on { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
 
+/* Attachment upload progress. */
+.upload-progress { margin: 8px 0; }
+.progress-track { height: 6px; background: var(--bg-elev-2); border-radius: 999px; overflow: hidden; margin-top: 4px; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.2s ease; }
+.progress-fill.processing { animation: progPulse 1s ease-in-out infinite; }
+@keyframes progPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
 /* Manual trigger run status: spinner while running, then a result pill. */
 .run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); }

@@ -468,8 +468,20 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   .share-row-label { min-width: 0; }
   .share-toggle { flex-direction: row; align-items: center; flex-wrap: wrap; }
 }
-.share-page { min-height: 100vh; display: flex; justify-content: center; padding: 24px 16px; background: var(--bg); }
+/* SharePage renders OUTSIDE the Shell, directly under #root — and body is
+   overflow:hidden (the Shell owns scrolling). So the share page must be its OWN
+   scroll container, or tall notes / the edit form are clipped and unreachable.
+   height:100% bounds it to #root (the real viewport, incl. mobile); align-items
+   flex-start keeps the top from clipping when content overflows. */
+.share-page {
+  height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 24px 16px; background: var(--bg);
+}
 .share-card { width: 100%; max-width: 760px; }
+/* Cap the proposal editor so the name field + Propose/Cancel stay reachable
+   (the shared .note-edit-area is sized to ~full viewport for the authed editor). */
+.share-page .note-edit-area { min-height: 220px; max-height: 50vh; resize: vertical; }
 .share-head { display: flex; align-items: center; gap: 10px; }
 .share-banner { border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: var(--radius); padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
 .share-sent { text-align: center; padding: 24px 0; }

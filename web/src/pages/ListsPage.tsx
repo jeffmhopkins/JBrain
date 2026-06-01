@@ -36,8 +36,9 @@ function setLineChecked(md: string, idx: number, checked: boolean): string {
   return lines.join("\n");
 }
 
-// Render item text, turning [[wiki-links]] (e.g. sub-list references) into links.
-function renderText(text: string): ReactNode {
+// Render item text, turning [[wiki-links]] (e.g. sub-list references) into links,
+// and appending a "done/total" badge for referenced sub-lists.
+function renderText(text: string, progress: (slug: string) => string | null): ReactNode {
   const parts: ReactNode[] = [];
   const re = /\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g;
   let last = 0, m: RegExpExecArray | null;
@@ -45,10 +46,13 @@ function renderText(text: string): ReactNode {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const title = m[1].trim();
     const disp = (m[2] || m[1]).trim();
+    const slug = slugify(title);
+    const prog = progress(slug);
     parts.push(
-      <Link key={m.index} to={`/note/${slugify(title)}`} className="wikilink"
+      <Link key={m.index} to={`/note/${slug}`} className="wikilink"
             onClick={(e) => e.stopPropagation()}>{disp.replace(/^lists\//i, "")}</Link>,
     );
+    if (prog) parts.push(<span key={m.index + "p"} className="badge" style={{ marginLeft: 6 }}>{prog}</span>);
     last = re.lastIndex;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -92,6 +96,13 @@ export default function ListsPage() {
     persist(list, list.content_md.replace(/\s*$/, "") + `\n- [ ] ${text}\n`);
   }
 
+  // done/total for a referenced sub-list (by slug), computed from the fetched lists.
+  const bySlug = new Map(lists.map((l) => [l.slug, parseItems(l.content_md)]));
+  const progress = (slug: string): string | null => {
+    const its = bySlug.get(slug);
+    return its && its.length ? `${its.filter((i) => i.checked).length}/${its.length}` : null;
+  };
+
   return (
     <div className="content">
       <h2 style={{ marginTop: 0 }}>Lists</h2>
@@ -116,7 +127,7 @@ export default function ListsPage() {
                   <input type="checkbox" checked={it.checked}
                          onChange={(e) => toggle(l, it.idx, e.target.checked)} />
                   {it.priority != null && <span className="badge prio">P{it.priority}</span>}
-                  <span className="check-text">{renderText(it.text)}</span>
+                  <span className="check-text">{renderText(it.text, progress)}</span>
                 </label>
               ))}
               {items.length === 0 && <span className="muted" style={{ fontSize: 13 }}>Empty list.</span>}

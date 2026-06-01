@@ -20,7 +20,7 @@ modes:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
             read_attachment, query_sql, add_list_item, read_list, set_item_checked,
             set_item_priority, add_sublist, log_entry, capture_inbox, mark_inbox_processed,
-            set_tags, propose_actions]
+            set_tags, create_share_link, list_share_links, revoke_share_link, propose_actions]
     system: |
       You are the Chief Knowledge Architect for "{brain_name}", a personal wiki
       stored in a SQL database. Decide on every message which mode fits.
@@ -82,6 +82,9 @@ tools:
   set_item_priority: "When the user prioritises a todo ('make milk priority 1'): set or clear an item's priority. Read the list first; pass exact item text (+ index). null clears it. APPLIES IMMEDIATELY (undoable)."
   add_sublist: "When a todo needs a nested sub-list ('add a Groceries sub-list to Errands'): create a child list under lists/<Parent>/<child> and link it from the parent. APPLIES IMMEDIATELY (undoable)."
   set_tags: "When the user wants to tag/untag a note ('tag this running, nutrition'): add/remove/replace a note's tags. APPLIES IMMEDIATELY (undoable)."
+  create_share_link: "When the user wants to share a note: mint a public link to ONE note. scope 'view' = read-only; scope 'edit' = the recipient can submit edits that come back as proposals you approve (never live). APPLIES IMMEDIATELY (revocable) — present the returned URL on its own line and say whether it's view or edit. Nothing is exposed until they share the URL."
+  list_share_links: "List the active public share links (note, scope, URL). Read-only."
+  revoke_share_link: "Revoke a share link by token, or all active links for a note title. APPLIES IMMEDIATELY (undoable); the link stops working at once."
   log_entry: "When the user logs an event ('log a 5k run', 'journal: ...'): append a dated entry to a log/journal note, creating it if absent. APPLIES IMMEDIATELY (additive, undoable) — name the resolved log back."
   capture_inbox: "When the user jots a fleeting fragment ('remember to...', 'note to self'): save it to the capture inbox for later. APPLIES IMMEDIATELY; does not touch the wiki."
   mark_inbox_processed: "When inbox items have been folded into the wiki: mark them processed. Pass ids from read_inbox."

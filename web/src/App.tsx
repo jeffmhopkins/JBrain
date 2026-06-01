@@ -18,6 +18,8 @@ import AdvancedHome from "./pages/AdvancedHome";
 import ActionsPage from "./pages/ActionsPage";
 import SystemPage from "./pages/SystemPage";
 import PromptsPanel from "./components/PromptsPanel";
+import SharePage from "./pages/SharePage";
+import SharesPage from "./pages/SharesPage";
 
 interface AuthState {
   authenticated: boolean;
@@ -91,8 +93,6 @@ export default function App() {
     }
   }, []);
 
-  if (loading) return <div className="content muted">Loading…</div>;
-
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {
     authenticated: authed, brainName, server: getServer(),
@@ -102,31 +102,37 @@ export default function App() {
 
   return (
     <AuthCtx.Provider value={auth}>
-      {!authed ? (
-        <KeyEntry />
-      ) : (
-        <Shell>
-          <ErrorBoundary>
-          <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="/chat" element={<Chat />} />
-            <Route path="/advanced" element={<AdvancedHome />} />
-            <Route path="/wiki" element={<Wiki />} />
-            <Route path="/lists" element={<ListsPage />} />
-            <Route path="/note/:slug" element={<NotePage />} />
-            <Route path="/graph" element={<GraphPage />} />
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/prompts" element={<PromptsPanel />} />
-            <Route path="/actions" element={<ActionsPage />} />
-            <Route path="/flows" element={<WorkflowsPage />} />
-            <Route path="/system" element={<SystemPage />} />
-            <Route path="/review" element={<ReviewPage />} />
-            <Route path="/sql" element={<SqlConsole />} />
-            <Route path="*" element={<Navigate to="/chat" replace />} />
-          </Routes>
-          </ErrorBoundary>
-        </Shell>
-      )}
+      <Routes>
+        {/* Ungated, standalone public route — no key, no Shell. */}
+        <Route path="/share/:token" element={<SharePage />} />
+        <Route path="*" element={
+          loading ? <div className="content muted">Loading…</div> :
+          !authed ? <KeyEntry /> : (
+            <Shell>
+              <ErrorBoundary>
+              <Routes>
+                <Route path="/" element={<Navigate to="/chat" replace />} />
+                <Route path="/chat" element={<Chat />} />
+                <Route path="/advanced" element={<AdvancedHome />} />
+                <Route path="/wiki" element={<Wiki />} />
+                <Route path="/lists" element={<ListsPage />} />
+                <Route path="/shares" element={<SharesPage />} />
+                <Route path="/note/:slug" element={<NotePage />} />
+                <Route path="/graph" element={<GraphPage />} />
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/prompts" element={<PromptsPanel />} />
+                <Route path="/actions" element={<ActionsPage />} />
+                <Route path="/flows" element={<WorkflowsPage />} />
+                <Route path="/system" element={<SystemPage />} />
+                <Route path="/review" element={<ReviewPage />} />
+                <Route path="/sql" element={<SqlConsole />} />
+                <Route path="*" element={<Navigate to="/chat" replace />} />
+              </Routes>
+              </ErrorBoundary>
+            </Shell>
+          )
+        } />
+      </Routes>
     </AuthCtx.Provider>
   );
 }

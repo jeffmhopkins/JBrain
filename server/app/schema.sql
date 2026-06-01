@@ -204,3 +204,39 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   detail      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
+
+-- Public share links: an unguessable token granting unauthenticated single-note
+-- access. scope 'view' = read that one note; 'edit' = read it AND submit proposals
+-- (never a direct write). Only the SHA-256 hash of the token is stored.
+CREATE TABLE IF NOT EXISTS share_links (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  token        TEXT UNIQUE NOT NULL,                -- 256-bit URL-safe; the capability itself
+  note_id      INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  scope        TEXT NOT NULL CHECK (scope IN ('view','edit')),
+  status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  label        TEXT,
+  expires_at   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at   TEXT,
+  last_used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_share_links_note ON share_links(note_id);
+
+-- An external editor's submission via an EDIT link, awaiting the owner's accept.
+-- At most ONE pending row per share_link_id (a re-submission supersedes the prior).
+CREATE TABLE IF NOT EXISTS share_proposals (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id   INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  note_id         INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  basis_hash      TEXT NOT NULL,                    -- sha256(note.content_md) at submit time
+  proposed_content TEXT NOT NULL,
+  proposer_note   TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending',  -- pending|accepted|rejected|superseded
+  review_item_id  INTEGER REFERENCES review_items(id) ON DELETE SET NULL,
+  client_ip       TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_share_prop_one_pending
+  ON share_proposals(share_link_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_share_prop_status ON share_proposals(status);

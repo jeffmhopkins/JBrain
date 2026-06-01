@@ -56,7 +56,7 @@ function ReviewBell() {
               <strong style={{ fontSize: 14 }}>{r.title}</strong>
               {r.message && <div className="muted" style={{ fontSize: 12, margin: "4px 0", whiteSpace: "pre-wrap" }}>{r.message}</div>}
               <div className="row" style={{ gap: 6, marginTop: 4 }}>
-                {r.link_slug && <Link className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} to={`/note/${r.link_slug}`} onClick={() => setOpen(false)}>Open</Link>}
+                {r.link_slug && <Link className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} to={r.link_slug === "__shares__" ? "/shares" : `/note/${r.link_slug}`} onClick={() => setOpen(false)}>Open</Link>}
                 <button className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => dismiss(r.id)}>Dismiss</button>
               </div>
             </div>
@@ -95,6 +95,7 @@ function UpdateBanner() {
 const TOOL_TITLES: Record<string, string> = {
   "/wiki": "Wiki",
   "/lists": "Lists",
+  "/shares": "Shares",
   "/search": "Search",
   "/graph": "Graph",
   "/prompts": "Prompts",

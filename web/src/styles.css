@@ -395,6 +395,17 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
+/* Share links: owner panel + public standalone page. */
+.share-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 8px 0; background: var(--bg-elev); }
+.share-panel input { flex: 1; min-width: 0; }
+.share-page { min-height: 100vh; display: flex; justify-content: center; padding: 24px 16px; background: var(--bg); }
+.share-card { width: 100%; max-width: 760px; }
+.share-head { display: flex; align-items: center; gap: 10px; }
+.share-banner { border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: var(--radius); padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+.share-sent { text-align: center; padding: 24px 0; }
+.share-diff { white-space: pre-wrap; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; margin: 8px 0; }
+.wikilink-flat { color: var(--text-dim); }
+
 /* Interactive task-list checkboxes inside rendered note markdown. */
 .md .task-li { list-style: none; display: flex; align-items: flex-start; gap: 8px; margin-left: -1.1em; }
 .md .task-li input[type="checkbox"] { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }

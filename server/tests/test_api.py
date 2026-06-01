@@ -356,6 +356,40 @@ def test_staged_rename_action(client):
     assert "[[notes/New Name]]" in client.get("/api/notes/refers").json()["content_md"]
 
 
+def test_share_links_flow(client):
+    # Mint view/edit links; verify unauthenticated access, scoping, propose →
+    # accept (re-propose supersede), and revocation.
+    from fastapi.testclient import TestClient
+    from app.main import app
+    anon = TestClient(app)   # NO access key — exercises the public surface
+
+    client.post("/api/notes", json={"title": "Shared Doc", "content_md": "# Hi\n- [ ] task"})
+    v = client.post("/api/shares", json={"title": "Shared Doc", "scope": "view"}).json()
+    token = v["token"]
+    assert v["scope"] == "view" and v["url"].endswith("/share/" + token)
+
+    pub = anon.get(f"/api/share/{token}").json()                 # public read, no auth
+    assert pub["note"]["title"] == "Shared Doc" and pub["can_edit"] is False
+    assert "backlinks" not in pub["note"] and "tags" not in pub["note"]   # not exposed
+    assert anon.post(f"/api/share/{token}/propose", json={"content_md": "x"}).status_code == 403  # view can't edit
+    assert anon.get("/api/share/" + "z" * 40).status_code == 404          # bad token → uniform 404
+
+    e = client.post("/api/shares", json={"title": "Shared Doc", "scope": "edit"}).json()
+    et = e["token"]
+    assert anon.post(f"/api/share/{et}/propose", json={"content_md": "# Edited", "note": "fixed"}).json()["ok"]
+    assert client.get("/api/reviews/count").json()["pending"] >= 1        # raised an alert
+    assert len(client.get("/api/shares").json()["proposals"]) == 1
+    anon.post(f"/api/share/{et}/propose", json={"content_md": "# Edited2"})   # re-propose supersedes
+    props = client.get("/api/shares").json()["proposals"]
+    assert len(props) == 1                                                # still one pending
+    assert client.post(f"/api/shares/proposals/{props[0]['id']}/accept").status_code == 200
+    assert "Edited2" in client.get("/api/notes/shared-doc").json()["content_md"]
+
+    lid = next(l["id"] for l in client.get("/api/shares").json()["links"] if l["scope"] == "view")
+    client.post(f"/api/shares/{lid}/revoke")
+    assert anon.get(f"/api/share/{token}").status_code == 404             # revoked → gone
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

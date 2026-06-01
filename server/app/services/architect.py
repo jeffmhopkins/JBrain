@@ -37,7 +37,7 @@ _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "add_list_item", "read_list", "set_item_checked",
                  "set_item_priority", "add_sublist", "log_entry", "capture_inbox", "mark_inbox_processed",
-                 "set_tags", "propose_actions"],
+                 "set_tags", "create_share_link", "list_share_links", "revoke_share_link", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql"],
 }
@@ -75,6 +75,14 @@ _TOOL_SCHEMAS = {
         "tags": {"type": "array", "items": {"type": "string"}},
         "mode": {"type": "string", "enum": ["add", "remove", "replace"], "default": "add"}},
         "required": ["title", "tags"]},
+    "create_share_link": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "Exact note title to share."},
+        "scope": {"type": "string", "enum": ["view", "edit"], "default": "view"}},
+        "required": ["title"]},
+    "list_share_links": {"type": "object", "properties": {}},
+    "revoke_share_link": {"type": "object", "properties": {
+        "token": {"type": "string"},
+        "title": {"type": "string", "description": "Or revoke all active links for this note title."}}},
     "log_entry": {"type": "object", "properties": {
         "target": {"type": "string", "description": "Log note title."},
         "text": {"type": "string"},
@@ -387,6 +395,48 @@ def _tool_mark_inbox_processed(conn, conversation_id, ids):
     )
 
 
+def _tool_create_share_link(conn, conversation_id, title, scope="view"):
+    from . import share as share_svc
+    if scope not in ("view", "edit"):
+        return "scope must be 'view' or 'edit'.", None
+    note = notes_svc.get_by_title(conn, title)
+    if note is None:
+        return f"No note titled '{title}'.", None
+    token = share_svc.create_link(conn, note["id"], scope)
+    url = share_svc.share_url(token)
+    display = f"Created a {scope} share link for [[{note['title']}]]: {url}"
+    undo = {"op": "revoke_share", "token": token}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "SHARE_LINK", display, undo)
+
+
+def _tool_list_share_links(conn):
+    from . import share as share_svc
+    rows = conn.execute(
+        "SELECT sl.token, sl.scope, n.title FROM share_links sl JOIN notes n ON n.id=sl.note_id "
+        "WHERE sl.status='active' ORDER BY sl.created_at DESC LIMIT 50").fetchall()
+    if not rows:
+        return "No active share links."
+    lines = [f"- {r['scope']}: {r['title']} -> {share_svc.share_url(r['token'])}" for r in rows]
+    return _untrusted("share-links", "\n".join(lines))
+
+
+def _tool_revoke_share_link(conn, conversation_id, token=None, title=None):
+    if token:
+        cur = conn.execute("UPDATE share_links SET status='revoked', revoked_at=datetime('now') "
+                           "WHERE token=? AND status='active'", (token,))
+    elif title:
+        note = notes_svc.get_by_title(conn, title)
+        if note is None:
+            return f"No note titled '{title}'.", None
+        cur = conn.execute("UPDATE share_links SET status='revoked', revoked_at=datetime('now') "
+                           "WHERE note_id=? AND status='active'", (note["id"],))
+    else:
+        return "Provide a token or a note title to revoke.", None
+    display = f"Revoked {cur.rowcount} share link(s)" + (f" for [[{title}]]" if title else "")
+    return f"applied: {display}", _record_applied(conn, conversation_id, "SHARE_REVOKE", display,
+                                                   {"op": "reactivate_share", "token": token, "title": title})
+
+
 def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assisted"):
     """Returns (result_text, event_or_None). event is an SSE dict to surface."""
     # Hard mode boundary (fail closed): never dispatch a tool the current mode
@@ -421,6 +471,12 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_add_sublist(conn, conversation_id, args["parent_list"], args["child_name"], args.get("items"))
     if name == "set_tags":
         return _tool_set_tags(conn, conversation_id, args["title"], args["tags"], args.get("mode", "add"))
+    if name == "create_share_link":
+        return _tool_create_share_link(conn, conversation_id, args["title"], args.get("scope", "view"))
+    if name == "list_share_links":
+        return _tool_list_share_links(conn), None
+    if name == "revoke_share_link":
+        return _tool_revoke_share_link(conn, conversation_id, args.get("token"), args.get("title"))
     if name == "log_entry":
         return _tool_log_entry(conn, conversation_id, args["target"], args["text"], args.get("date"))
     if name == "capture_inbox":

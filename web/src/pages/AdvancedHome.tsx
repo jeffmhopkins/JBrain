@@ -28,6 +28,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
   {
     name: "System",
     cards: [
+      { to: "/shares", label: "Shares", sub: "Public links · proposals", icon: "link" },
       { to: "/sql", label: "Data", sub: "SQL · backup", icon: "sql" },
       { to: "/system", label: "System", sub: "Version · settings", icon: "cog" },
     ],

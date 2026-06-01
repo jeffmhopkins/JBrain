@@ -2,7 +2,7 @@ import { Children, isValidElement, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { get, put } from "../api";
+import { get, post, put } from "../api";
 import { useIsDesktop } from "../hooks";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
@@ -29,6 +29,17 @@ export default function NotePage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [saving, setSaving] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
+
+  async function mintShare(scope: "view" | "edit") {
+    if (!note) return;
+    try {
+      const r = await post<{ url: string }>("/api/shares", { title: note.title, scope });
+      setMinted({ url: r.url, scope });
+      try { await navigator.clipboard.writeText(r.url); } catch { /* ignore */ }
+    } catch (e: any) { alert(e?.message || "Couldn't create link."); }
+  }
 
   function startEdit() {
     if (!note) return;
@@ -107,10 +118,27 @@ export default function NotePage() {
         <h1 style={{ margin: 0 }}>{note.title}</h1>
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
         <span className="spacer" />
-        {editing === null && (
-          <button className="ghost" onClick={startEdit}>Edit</button>
-        )}
+        {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
+        {editing === null && <button className="ghost" onClick={startEdit}>Edit</button>}
       </div>
+      {sharing && (
+        <div className="share-panel">
+          {!minted ? (
+            <div className="row" style={{ gap: 8 }}>
+              <span className="muted" style={{ fontSize: 13 }}>Create a public link:</span>
+              <button className="ghost" onClick={() => mintShare("view")}>View-only</button>
+              <button className="ghost" onClick={() => mintShare("edit")}>Editable (proposals)</button>
+            </div>
+          ) : (
+            <div className="row" style={{ gap: 6 }}>
+              <span className="badge">{minted.scope}</span>
+              <input readOnly value={minted.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
+              <button className="ghost" onClick={() => { navigator.clipboard?.writeText(minted.url); }}>Copy</button>
+              <button className="ghost" onClick={() => setMinted(null)}>New</button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
         <span>🕐 {note.created_at}{note.updated_at !== note.created_at ? ` · updated ${note.updated_at}` : ""}</span>
         {note.lat != null && note.lon != null && (

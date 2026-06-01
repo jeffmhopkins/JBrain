@@ -16,6 +16,8 @@ from .routers import (
     attachments,
     auth_router,
     capture,
+    share,
+    share_admin,
     chat,
     graph,
     notes,
@@ -119,7 +121,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin):
     app.include_router(r.router)
 
 

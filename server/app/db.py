@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def init_db() -> None:
@@ -142,6 +142,31 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 9:
         # Store raw attachment bytes in the DB (any file type, not just text).
         _add_column(conn, "attachments", "content_blob", "BLOB")
+
+    if current < 11:
+        # Public share links + their pending edit proposals (idempotent creates;
+        # schema.sql carries them for fresh DBs).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS share_links (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL,
+              note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              scope TEXT NOT NULL CHECK (scope IN ('view','edit')),
+              status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+              label TEXT, expires_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              revoked_at TEXT, last_used_at TEXT);
+            CREATE INDEX IF NOT EXISTS idx_share_links_note ON share_links(note_id);
+            CREATE TABLE IF NOT EXISTS share_proposals (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+              note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              basis_hash TEXT NOT NULL, proposed_content TEXT NOT NULL, proposer_note TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              review_item_id INTEGER REFERENCES review_items(id) ON DELETE SET NULL,
+              client_ip TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), resolved_at TEXT);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_share_prop_one_pending
+              ON share_proposals(share_link_id) WHERE status = 'pending';
+            CREATE INDEX IF NOT EXISTS idx_share_prop_status ON share_proposals(status);
+        """)
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

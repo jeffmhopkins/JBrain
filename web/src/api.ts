@@ -70,6 +70,22 @@ export const put = <T = any>(p: string, body?: unknown) =>
   api<T>(p, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
 export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
+// Public, UNAUTHENTICATED share endpoints — no bearer key (a recipient has none).
+async function publicApi<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
+  const res = await fetch(u(path), { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json();
+}
+export const getShare = <T = any>(token: string) => publicApi<T>(`/api/share/${encodeURIComponent(token)}`);
+export const proposeShareEdit = (token: string, content_md: string, note?: string) =>
+  publicApi(`/api/share/${encodeURIComponent(token)}/propose`, { method: "POST", body: JSON.stringify({ content_md, note }) });
+export const shareAttachmentUrl = (token: string, id: number) =>
+  u(`/api/share/${encodeURIComponent(token)}/attachments/${id}`);
+
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;

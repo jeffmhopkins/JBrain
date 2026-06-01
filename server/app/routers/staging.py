@@ -28,11 +28,11 @@ def list_pending():
 
 
 def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None,
-                  action_id: int | None = None) -> None:
+                  action_id: int | None = None, source: str = "architect") -> None:
     # Architect-applied edits are attributed to 'architect' in the version history,
     # and stamped with where the user was when they had this conversation.
     loc = notes_svc.conversation_location(conn, conversation_id)
-    kw = {"source": "architect", "conversation_id": conversation_id}
+    kw = {"source": source, "conversation_id": conversation_id}
     if loc:
         kw.update(lat=loc["lat"], lon=loc["lon"], location_label=loc["location_label"])
     undo = None   # destructive staged actions record an inverse so they're undoable
@@ -40,12 +40,7 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
-        title = notes_svc.root_title(title, "notes")   # assisted captures live under notes/
         basis = payload.get("_basis") or {}
-        # CREATE always makes a new note. An UPDATE with no captured basis (the
-        # title didn't exist at propose time) is also treated as create-only, so
-        # it can't overwrite a note that appeared in the meantime.
-        create_only = action_type == "CREATE" or not basis.get("note_id")
         if action_type == "UPDATE" and basis.get("note_id"):
             # Optimistic concurrency: refuse a stale edit whose basis note has
             # changed (or been deleted) since it was proposed — the model's full
@@ -60,8 +55,13 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
                 live_hash = hashlib.sha256((live["content_md"] or "").encode("utf-8")).hexdigest()
                 if live_hash != basis["content_hash"]:
                     raise HTTPException(status_code=409, detail="The note changed since this edit was proposed — re-open it and re-propose.")
-        notes_svc.upsert_note(conn, title, payload.get("content") or "",
-                              create_only=create_only, **kw)
+            # Update the EXISTING note by id (keeps its title; no notes/ re-root).
+            notes_svc.upsert_note(conn, title, payload.get("content") or "", note_id=basis["note_id"], **kw)
+        else:
+            # CREATE, or an UPDATE whose title didn't exist at propose time, makes a
+            # NEW note under the notes/ root (create-only so it can't clobber).
+            title = notes_svc.root_title(title, "notes")
+            notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True, **kw)
     elif action_type == "LINK":
         source_title = (payload.get("source_title") or "").strip()
         target_title = (payload.get("target_title") or "").strip()
@@ -248,6 +248,16 @@ def undo_action(action_id: int):
         quicktasks.insert_line_in_note(conn, undo["title"], undo["index"], undo["line"], source="user")
     elif op == "set_tags":
         notes_svc.set_tags(conn, undo["note_id"], undo.get("tags", []))
+    elif op == "revoke_share":
+        conn.execute("UPDATE share_links SET status='revoked', revoked_at=datetime('now') WHERE token=?",
+                     (undo.get("token"),))
+    elif op == "reactivate_share":
+        if undo.get("token"):
+            conn.execute("UPDATE share_links SET status='active', revoked_at=NULL WHERE token=?", (undo["token"],))
+        elif undo.get("title"):
+            note = notes_svc.get_by_title(conn, undo["title"])
+            if note:
+                conn.execute("UPDATE share_links SET status='active', revoked_at=NULL WHERE note_id=?", (note["id"],))
     elif op == "restore_note":
         conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (undo["note_id"],))
         r = conn.execute("SELECT title, content_md FROM notes WHERE id = ?", (undo["note_id"],)).fetchone()

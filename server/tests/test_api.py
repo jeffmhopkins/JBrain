@@ -1118,7 +1118,7 @@ def test_push_send_prunes_dead_endpoints(client, monkeypatch):
     fake = types.ModuleType("pywebpush"); fake.webpush = webpush; fake.WebPushException = WebPushException
     monkeypatch.setitem(sys.modules, "pywebpush", fake)
 
-    push._send_worker("JBrain", "x")   # run the worker body synchronously
+    push._send_all(get_conn(), "JBrain", "x")   # run the send synchronously
     assert set(sent) == {"https://push/ok", "https://push/gone"}   # tried all
     left = [r["endpoint"] for r in get_conn().execute("SELECT endpoint FROM push_subscriptions")]
     assert left == ["https://push/ok"]   # 410 endpoint pruned

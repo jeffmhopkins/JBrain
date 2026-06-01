@@ -45,7 +45,8 @@ export default function SystemPage() {
       if (!r.vapid) setNotifMsg("Push isn’t configured on the server.");
       else if (!r.subscriptions) setNotifMsg("No subscribed devices yet — try again in a moment.");
       else if (r.delay) setNotifMsg(`Test scheduled in ${r.delay}s to ${devices}. Close the app now to test closed-app delivery.`);
-      else setNotifMsg(`Test sent to ${devices}. Watch for the banner.`);
+      else if (r.failed && !r.sent) setNotifMsg(`Send failed (${devices}): ${r.errors?.[0] || "unknown error"}`);
+      else setNotifMsg(`Sent to ${r.sent}/${r.subscriptions} device(s). ${r.failed ? r.failed + " failed." : "Watch for the banner."}`);
     } catch (e: any) {
       setNotifMsg(e?.message || "Couldn’t send the test.");
     } finally { setNotifBusy(false); }

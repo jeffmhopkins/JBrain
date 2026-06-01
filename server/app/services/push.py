@@ -93,60 +93,75 @@ def send_test(conn, delay_seconds: int = 0) -> dict:
     n = conn.execute("SELECT COUNT(*) AS c FROM push_subscriptions").fetchone()["c"]
     has_vapid = bool(get_meta(_PRIV_META))
     delay = max(0, min(int(delay_seconds or 0), 300))   # clamp 0–5min
-    if n and has_vapid:
-        fire = lambda: notify_review_created("JBrain", "Test notification — push is working.")
-        if delay:
-            t = threading.Timer(delay, fire); t.daemon = True; t.start()
-        else:
-            fire()
-    return {"subscriptions": n, "vapid": has_vapid, "delay": delay}
+    if not (n and has_vapid):
+        return {"subscriptions": n, "vapid": has_vapid, "delay": delay}
+    title, body = "JBrain", "Test notification — push is working."
+    if delay:
+        t = threading.Timer(delay, lambda: notify_review_created(title, body))
+        t.daemon = True; t.start()
+        return {"subscriptions": n, "vapid": has_vapid, "delay": delay, "scheduled": True}
+    # Immediate: send synchronously and report the REAL outcome so the UI/logs can
+    # show exactly what the push service said.
+    res = _send_all(conn, title, body)
+    return {"subscriptions": n, "vapid": has_vapid, "delay": 0, **res}
 
 
 def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> None:
     """Fire-and-forget: spawn a worker that pushes to all subscriptions. Safe to
     call from inside a request handler AFTER its commit — never raises."""
-    threading.Thread(target=_send_worker, args=(title, body), daemon=True).start()
+    threading.Thread(target=lambda: _send_all(get_conn(), title, body), daemon=True).start()
 
 
-def _send_worker(title: str, body: str) -> None:
-    conn = get_conn()   # daemon thread → its own thread-local connection
+def _send_all(conn, title: str, body: str) -> dict:
+    """Send a push to every subscription. Returns {sent, failed, errors}. Logs each
+    attempt to stdout (visible in `docker compose logs api`) and prunes dead
+    endpoints. Never raises."""
     try:
         priv = get_meta(_PRIV_META)
         if not priv:
-            return
-        subs = conn.execute(
-            "SELECT id, endpoint, p256dh, auth FROM push_subscriptions"
-        ).fetchall()
+            print("[push] no VAPID private key configured", flush=True)
+            return {"sent": 0, "failed": 0, "errors": ["no VAPID key"]}
+        subs = conn.execute("SELECT id, endpoint, p256dh, auth FROM push_subscriptions").fetchall()
         if not subs:
-            return
+            return {"sent": 0, "failed": 0, "errors": []}
         count = reviews_svc.pending_count(conn)
-        # Generic payload — banners show on the lock screen, so no note titles or
-        # names; just a count for the badge.
         payload = json.dumps({"title": title, "body": body, "count": count,
                               "url": "/shares", "tag": "jbrain-reviews"})
         try:
             from pywebpush import webpush, WebPushException
-        except Exception:
-            return   # dependency missing (not in the production image) — degrade silently
+        except Exception as exc:
+            print(f"[push] pywebpush import failed: {exc!r}", flush=True)
+            return {"sent": 0, "failed": len(subs), "errors": [f"pywebpush unavailable: {exc}"]}
         subject = get_settings().vapid_subject
-        dead: list[int] = []
+        sent = 0; failed = 0; errors: list[str] = []; dead: list[int] = []
         for s in subs:
+            ep = s["endpoint"]
             try:
-                webpush(
-                    subscription_info={"endpoint": s["endpoint"],
-                                       "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}},
-                    data=payload, vapid_private_key=priv,
-                    vapid_claims={"sub": subject},
-                    timeout=10,
+                r = webpush(
+                    subscription_info={"endpoint": ep, "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}},
+                    data=payload, vapid_private_key=priv, vapid_claims={"sub": subject}, timeout=10,
                 )
+                sent += 1
+                print(f"[push] OK status={getattr(r, 'status_code', '?')} -> {ep[:64]}", flush=True)
             except WebPushException as exc:
-                resp = getattr(exc, "response", None)
-                if resp is not None and resp.status_code in (404, 410):
-                    dead.append(s["id"])   # endpoint gone — prune
-            except Exception:
-                pass   # push service down / timeout — best-effort; resume-refresh recovers
+                failed += 1
+                code = getattr(getattr(exc, "response", None), "status_code", None)
+                msg = f"{code} {str(exc)[:160]}"
+                errors.append(msg)
+                print(f"[push] FAIL {msg} -> {ep[:64]}", flush=True)
+                if code in (404, 410):
+                    dead.append(s["id"])
+            except Exception as exc:
+                failed += 1
+                errors.append(str(exc)[:180])
+                print(f"[push] ERROR {exc!r} -> {ep[:64]}", flush=True)
         if dead:
             conn.executemany("DELETE FROM push_subscriptions WHERE id = ?", [(i,) for i in dead])
             conn.commit()
+        print(f"[push] done: sent={sent} failed={failed}", flush=True)
+        return {"sent": sent, "failed": failed, "errors": errors[:5]}
+    except Exception as exc:
+        print(f"[push] _send_all crashed: {exc!r}", flush=True)
+        return {"sent": 0, "failed": 0, "errors": [str(exc)[:180]]}
     except Exception:
         pass   # a notification must never break the request that triggered it

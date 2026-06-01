@@ -143,7 +143,7 @@ export default function NotePage() {
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
       </h1>
       {editing === null && (
-        <div className="row" style={{ marginTop: 10, gap: 8 }}>
+        <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: "flex-end" }}>
           <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>
           <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>
           <button className="ghost danger-hover" onClick={remove}>Delete</button>

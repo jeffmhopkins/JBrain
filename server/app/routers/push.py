@@ -34,3 +34,9 @@ class UnsubIn(BaseModel):
 def unsubscribe(body: UnsubIn):
     push.delete_subscription(get_conn(), body.endpoint)
     return {"ok": True}
+
+
+@router.post("/test")
+def test():
+    """Send a test notification to all subscribed devices."""
+    return push.send_test(get_conn())

@@ -1,16 +1,19 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useAuth } from "../App";
+import { enablePush, pushSupported } from "../push";
 import { useGeo } from "../hooks";
 
 // "System" card: version + server update (reusing the same endpoints the
 // header UpdateBanner reads), the opt-in location toggle (which previously had
 // no UI at all), and Disconnect (moved off the top bar to keep it calm).
 export default function SystemPage() {
-  const { disconnect, pwaVersion, serverVersion, versionMismatch } = useAuth();
+  const { disconnect, pwaVersion, serverVersion, versionMismatch, vapidPublicKey } = useAuth();
   const geo = useGeo();
   const [info, setInfo] = useState<any>(null);
   const [msg, setMsg] = useState("");
+  const [notifMsg, setNotifMsg] = useState("");
+  const [notifBusy, setNotifBusy] = useState(false);
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
 
@@ -18,6 +21,31 @@ export default function SystemPage() {
     setMsg("Requesting update…");
     const r = await post("/api/system/update");
     setMsg(r.message || (r.started ? "Updating…" : "Update requested."));
+  }
+
+  // Subscribe THIS device (asking permission if needed), then have the server
+  // push a test to all devices — so a banner should appear here within seconds.
+  async function sendTestNotification() {
+    setNotifMsg(""); setNotifBusy(true);
+    try {
+      if (!pushSupported()) {
+        setNotifMsg("Notifications aren’t available here. On iPhone, install the app to your Home Screen first; on desktop, install the PWA.");
+        return;
+      }
+      if (Notification.permission === "default") await Notification.requestPermission();
+      if (Notification.permission !== "granted") {
+        setNotifMsg("Notifications are blocked — enable them for this app in your device settings, then try again.");
+        return;
+      }
+      const ok = await enablePush(vapidPublicKey);
+      if (!ok) { setNotifMsg("Couldn’t subscribe this device to push."); return; }
+      const r = await post("/api/push/test");
+      if (!r.vapid) setNotifMsg("Push isn’t configured on the server.");
+      else if (!r.subscriptions) setNotifMsg("No subscribed devices yet — try again in a moment.");
+      else setNotifMsg(`Test sent to ${r.subscriptions} device${r.subscriptions === 1 ? "" : "s"}. Watch for the banner.`);
+    } catch (e: any) {
+      setNotifMsg(e?.message || "Couldn’t send the test.");
+    } finally { setNotifBusy(false); }
   }
 
   return (
@@ -54,6 +82,17 @@ export default function SystemPage() {
         {geo.enabled && geo.coords && (
           <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Current: {geo.coords.lat}, {geo.coords.lon}</p>
         )}
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Notifications</h3>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Get a banner + badge when someone proposes an edit to a shared note — even with the app closed. Send a test to confirm it reaches this device.
+        </p>
+        <button className="ghost" onClick={sendTestNotification} disabled={notifBusy}>
+          {notifBusy ? "Sending…" : "Send test notification"}
+        </button>
+        {notifMsg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{notifMsg}</p>}
       </div>
 
       <div className="card">

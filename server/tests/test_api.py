@@ -1089,6 +1089,15 @@ def test_push_subscribe_upsert_and_requires_auth(client):
     assert TestClient(app).post("/api/push/subscribe", json=body).status_code == 401   # no key
 
 
+def test_push_test_endpoint_reports_state(client):
+    from app.services import push
+    push.ensure_vapid()
+    r = client.post("/api/push/test").json()
+    assert r["subscriptions"] == 0 and r["vapid"] is True   # no devices yet; VAPID present
+    client.post("/api/push/subscribe", json={"endpoint": "https://p/x", "keys": {"p256dh": "a", "auth": "b"}})
+    assert client.post("/api/push/test").json()["subscriptions"] == 1
+
+
 def test_push_send_prunes_dead_endpoints(client, monkeypatch):
     import sys, types
     from app.db import get_conn

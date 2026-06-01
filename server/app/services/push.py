@@ -85,6 +85,16 @@ def delete_subscription(conn, endpoint: str) -> None:
 
 # --- Sending ----------------------------------------------------------------
 
+def send_test(conn) -> dict:
+    """Fire a test push to every subscribed device. Returns what was attempted so
+    the UI can guide the user (how many devices, whether VAPID is configured)."""
+    n = conn.execute("SELECT COUNT(*) AS c FROM push_subscriptions").fetchone()["c"]
+    has_vapid = bool(get_meta(_PRIV_META))
+    if n and has_vapid:
+        notify_review_created("JBrain", "Test notification — push is working.")
+    return {"subscriptions": n, "vapid": has_vapid}
+
+
 def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> None:
     """Fire-and-forget: spawn a worker that pushes to all subscriptions. Safe to
     call from inside a request handler AFTER its commit — never raises."""

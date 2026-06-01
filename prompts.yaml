@@ -18,7 +18,7 @@ modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
-            read_attachment, query_sql, geo_distance, nearby_notes, add_list_item, read_list,
+            read_attachment, query_sql, current_location, geo_distance, nearby_notes, add_list_item, read_list,
             set_item_checked, set_item_priority, add_sublist, log_entry, capture_inbox,
             mark_inbox_processed, set_tags, create_share_link, list_share_links,
             revoke_share_link, propose_actions]
@@ -52,7 +52,7 @@ modes:
   # "Research" — read-only Q&A over the brain. No write tools are exposed.
   research:
     tools: [search_notes, read_note, list_recent_notes, search_attachments,
-            read_attachment, query_sql, geo_distance, nearby_notes]
+            read_attachment, query_sql, current_location, geo_distance, nearby_notes]
     system: |
       You are the Researcher for "{brain_name}", a personal knowledge base. Answer
       the user's questions from their own notes and entries. You are STRICTLY
@@ -75,6 +75,7 @@ modes:
 tools:
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Read before you propose."
   read_note: "When you need a note's full text: read its complete markdown by exact title (includes the note's stored coordinates + location label when set)."
+  current_location: "When the user asks where they are now (or to use 'my/current location'): report the device GPS stamped on this conversation's latest message (lat/lon + label). Read-only; says so when no location has been shared."
   geo_distance: "When the user asks how far apart two places/notes are: great-circle distance (km + miles) + bearing between two points. Each point is a note title or 'lat,lon'; omit 'to' to measure from the user's current location. Read-only — never invent coordinates."
   nearby_notes: "When the user asks what notes are near a place ('what did I note near here / near [[X]]'): notes with coordinates within radius_km, nearest first. Omit center to use the current location. Read-only."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."

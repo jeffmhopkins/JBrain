@@ -495,8 +495,10 @@ def test_geo_tools(client):
     near = architect._tool_nearby_notes(conn, None, "40.71,-74.0", 50, 10)
     assert "notes/Home" in near and "notes/Office" not in near
     # both tools available in research (read-only) and assisted
+    # current_location reports "none" when no GPS was shared in the conversation.
+    assert "No current location" in architect._tool_current_location(conn, None)
     research = {t.name for t in architect._tools_for("research")}
-    assert "geo_distance" in research and "nearby_notes" in research
+    assert {"geo_distance", "nearby_notes", "current_location"} <= research
 
 
 def test_share_link_bind(client):

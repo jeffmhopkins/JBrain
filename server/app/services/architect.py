@@ -36,12 +36,12 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
-                 "read_attachment", "query_sql", "geo_distance", "nearby_notes", "add_list_item", "read_list",
+                 "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "list_share_links",
                  "revoke_share_link", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
-                 "read_attachment", "query_sql", "geo_distance", "nearby_notes"],
+                 "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -49,6 +49,7 @@ _TOOL_SCHEMAS = {
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+    "current_location": {"type": "object", "properties": {}},
     "geo_distance": {"type": "object", "properties": {
         "from": {"type": "string", "description": "Note title OR 'lat,lon'."},
         "to": {"type": "string", "description": "Note title OR 'lat,lon'. Omit to measure from the current location."}},
@@ -241,6 +242,19 @@ def _resolve_point(conn, ref: str):
     if note["lat"] is None or note["lon"] is None:
         return f"Note '{note['title']}' has no stored location."
     return (note["lat"], note["lon"], note["title"])
+
+
+def _tool_current_location(conn, conversation_id):
+    """The device's live GPS — the location stamped on the user's latest message
+    in this conversation (the app attaches it when location sharing is on)."""
+    loc = notes_svc.conversation_location(conn, conversation_id)
+    if not loc or loc["lat"] is None:
+        return ("No current location available — the user hasn't shared GPS in this "
+                "conversation (location sharing may be off in the app).")
+    s = f"Current location: {loc['lat']:.5f}, {loc['lon']:.5f}"
+    if loc["location_label"]:
+        s += f" ({loc['location_label']})"
+    return _untrusted("location", s)
 
 
 def _tool_geo_distance(conn, conversation_id, frm, to=None):
@@ -535,6 +549,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
         return _tool_read_note(conn, args["title"]), None
+    if name == "current_location":
+        return _tool_current_location(conn, conversation_id), None
     if name == "geo_distance":
         return _tool_geo_distance(conn, conversation_id, args["from"], args.get("to")), None
     if name == "nearby_notes":

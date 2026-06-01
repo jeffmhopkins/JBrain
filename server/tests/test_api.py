@@ -910,7 +910,10 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", fake_complete)
 
     client.post("/api/notes", json={"title": "Photo host", "content_md": "Trip photos.\n"})
+    # Opt out of upload-time auto-analysis so this test drives analyze() itself
+    # deterministically (auto-analyze is covered by its own test).
     att = client.post("/api/notes/photo-host/attachments",
+                      data={"analyze": "false"},
                       files={"file": ("pic.png", _png_bytes(), "image/png")}).json()
 
     ia.analyze(att["id"])   # run worker synchronously (own-thread codepath, same conn in tests)
@@ -934,6 +937,7 @@ def test_image_analysis_strips_block_on_attachment_delete(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "Desc.\n\n**Salient facts**\n- x")
     client.post("/api/notes", json={"title": "Del host", "content_md": "Keep me.\n"})
     att = client.post("/api/notes/del-host/attachments",
+                      data={"analyze": "false"},   # drive analyze() manually for determinism
                       files={"file": ("p.png", _png_bytes(), "image/png")}).json()
     ia.analyze(att["id"])
     assert "AI image summary" in client.get("/api/notes/del-host").json()["content_md"]
@@ -954,28 +958,100 @@ def test_image_analysis_non_image_and_unsupported(client, monkeypatch):
     assert client.post(f"/api/attachments/{txt['id']}/analyze").json()["status"] == "error"
     # An image whose bytes don't decode → graceful error, note untouched.
     bad = client.post("/api/notes/mix-host/attachments",
+                      data={"analyze": "false"},
                       files={"file": ("broken.png", b"\x89PNG\r\nnotreal", "image/png")}).json()
     ia.analyze(bad["id"])
     assert client.get(f"/api/attachments/{bad['id']}/analysis-status").json()["status"] == "error"
 
 
-def test_image_analysis_upload_flag_triggers_run(client, monkeypatch):
-    from app.services import image_analysis as ia, llm
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
-    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Auto desc.\n\n**Salient facts**\n- y")
-
-    # Make the worker thread run inline so the test is deterministic.
+def _inline_threads(monkeypatch, ia):
+    """Run the analysis worker inline (no real thread) for deterministic tests."""
     class _Inline:
         def __init__(self, target, args=(), daemon=None): self._t, self._a = target, args
         def start(self): self._t(*self._a)
     monkeypatch.setattr(ia.threading, "Thread", _Inline)
 
+
+def test_image_upload_auto_analyzes_by_default(client, monkeypatch):
+    # No opt-in flag anymore: an image upload analyzes automatically.
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Auto desc.\n\n**Salient facts**\n- y")
+    _inline_threads(monkeypatch, ia)
+
     client.post("/api/notes", json={"title": "Auto host", "content_md": "Base.\n"})
     up = client.post("/api/notes/auto-host/attachments",
-                     data={"analyze": "true"},
-                     files={"file": ("auto.png", _png_bytes(), "image/png")}).json()
+                     files={"file": ("auto.png", _png_bytes(), "image/png")}).json()   # no data={analyze}
     assert up.get("analysis", {}).get("status") in ("pending", "done")
     assert "Auto desc." in client.get("/api/notes/auto-host").json()["content_md"]
+
+
+def test_image_upload_opt_out_skips_analysis(client, monkeypatch):
+    # analyze=false (the chat carrier path) must NOT trigger analysis.
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "should not run")
+    _inline_threads(monkeypatch, ia)
+    client.post("/api/notes", json={"title": "Carrier", "content_md": "Attached file: x.png"})
+    up = client.post("/api/notes/carrier/attachments",
+                     data={"analyze": "false"},
+                     files={"file": ("x.png", _png_bytes(), "image/png")}).json()
+    assert "analysis" not in up
+    assert "AI image summary" not in client.get("/api/notes/carrier").json()["content_md"]
+
+
+def test_image_upload_no_llm_key_does_not_analyze(client, monkeypatch):
+    from app.services import llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: False)
+    client.post("/api/notes", json={"title": "Nokey", "content_md": "x"})
+    up = client.post("/api/notes/nokey/attachments",
+                     files={"file": ("a.png", _png_bytes(), "image/png")}).json()
+    assert "analysis" not in up   # no key -> no trigger, no spinner
+
+
+def test_image_analysis_feeds_note_context_without_prior_summary(client, monkeypatch):
+    # The note body (minus any prior AI block) is fed to the model as context.
+    from app.services import image_analysis as ia, llm
+    captured = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def fake_complete(messages, **k):
+        captured["texts"] = [b["text"] for b in messages[0]["content"] if b["type"] == "text"]
+        return "Desc.\n\n**Salient facts**\n- z"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    _inline_threads(monkeypatch, ia)
+
+    body = ("My trip to Rome with Jeff.\n\n"
+            "<!-- jbrain:image-summary att=999 -->\n**AI image summary** (old.png)\n\nPRIOR\n"
+            "<!-- /jbrain:image-summary att=999 -->\n")
+    client.post("/api/notes", json={"title": "Trip", "content_md": body})
+    client.post("/api/notes/trip/attachments", files={"file": ("p.png", _png_bytes(), "image/png")})
+
+    joined = "\n".join(captured["texts"])
+    assert "My trip to Rome with Jeff." in joined   # note prose reached the model
+    assert "PRIOR" not in joined                     # prior AI summary was stripped (no feedback loop)
+
+
+def test_image_analysis_empty_note_sends_no_context(client, monkeypatch):
+    from app.services import image_analysis as ia, llm
+    captured = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def fake_complete(messages, **k):
+        captured["n_text"] = sum(1 for b in messages[0]["content"] if b["type"] == "text")
+        return "Desc.\n\n**Salient facts**\n- z"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    _inline_threads(monkeypatch, ia)
+    client.post("/api/notes", json={"title": "Blank", "content_md": ""})
+    client.post("/api/notes/blank/attachments", files={"file": ("p.png", _png_bytes(), "image/png")})
+    assert captured["n_text"] == 1   # instruction only; no empty context block
+
+
+def test_strip_all_summary_blocks_preserves_prose_between_blocks():
+    from app.services import image_analysis as ia
+    md = ("A\n\n<!-- jbrain:image-summary att=1 -->\nx\n<!-- /jbrain:image-summary att=1 -->\n\n"
+          "MIDDLE\n\n<!-- jbrain:image-summary att=10 -->\ny\n<!-- /jbrain:image-summary att=10 -->\n\nB\n")
+    out = ia.strip_all_summary_blocks(md)
+    assert "A" in out and "MIDDLE" in out and "B" in out
+    assert "jbrain:image-summary" not in out
 
 
 def test_attachments_schema_v16_columns_exist(client):

@@ -25,7 +25,6 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [items, setItems] = useState<Attachment[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [analyze, setAnalyze] = useState(false);
   const [progress, setProgress] = useState<{ name: string; pct: number; processing: boolean } | null>(null);
   const [viewing, setViewing] = useState<Viewing>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -83,9 +82,9 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         if (f.size > MAX_ATTACHMENT_BYTES) { setError(`${f.name} is over 10 MB.`); continue; }
         setProgress({ name: label, pct: 0, processing: false });
         try {
-          const wantAnalyze = analyze && hasLlm && isImage(f.type || "");
+          // Images auto-analyze server-side; the response carries analysis.status.
           const res: any = await uploadAttachment(slug, f, (pct) =>
-            setProgress((p) => (p ? { ...p, pct, processing: pct >= 100 } : p)), wantAnalyze);
+            setProgress((p) => (p ? { ...p, pct, processing: pct >= 100 } : p)));
           await load();   // show each file as it lands
           if (res?.analysis?.status === "pending" && res?.id) startPoll(res.id);
         } catch (e: any) {
@@ -117,14 +116,10 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         <button className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
           {busy ? "Uploading…" : "+ Attach file"}
         </button>
-        {hasLlm && (
-          <label className="row" style={{ gap: 6, fontSize: 12, cursor: "pointer" }} title="Send uploaded images to the AI; a summary + facts are added to this note.">
-            <input type="checkbox" checked={analyze} onChange={(e) => setAnalyze(e.target.checked)} />
-            Analyze images with AI
-          </label>
-        )}
       </div>
-      <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>Any file up to 10 MB. Text, PDFs, and image metadata are searchable.</p>
+      <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
+        Any file up to 10 MB. Text, PDFs, and image metadata are searchable.{hasLlm ? " Images are summarized by AI automatically." : ""}
+      </p>
       {progress && (
         <div className="upload-progress">
           <div className="row" style={{ fontSize: 12 }}>

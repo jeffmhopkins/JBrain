@@ -172,9 +172,10 @@ export default function Chat() {
     if (!convId) return;
     let extra = "";
     if (mode === "assisted" && file) {
-      // Save the file to a note so there's something to attach it to.
+      // Save the file to a note so there's something to attach it to. Skip
+      // auto-analysis: this carrier note has no real content to inform it.
       const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
-      await uploadAttachment(r.slug, file, setUploadPct);
+      await uploadAttachment(r.slug, file, setUploadPct, false);
       setUploadPct(null);
       extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
     }

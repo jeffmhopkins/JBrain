@@ -23,7 +23,7 @@ def _note_id_for_slug(conn, slug: str) -> int:
 
 
 @router.post("/notes/{slug}/attachments")
-async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(False)):
+async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(True)):
     conn = get_conn()
     note_id = _note_id_for_slug(conn, slug)
 
@@ -35,8 +35,9 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(F
     result = att_svc.add_attachment(conn, note_id, file.filename, mime, raw)
     conn.commit()
 
-    # Fire-and-forget AI analysis when requested for an image (server-side so it
-    # still runs if the client navigates away right after the upload).
+    # Auto-analyze images by default (server-side, so it runs even if the client
+    # navigates away). Callers opt out with analyze=false — e.g. the chat
+    # assisted-attachment path, whose carrier note has no real content to inform it.
     if analyze and mime.startswith("image/") and llm.has_credentials():
         result["analysis"] = image_analysis.start_analysis(conn, result["id"])
     return result

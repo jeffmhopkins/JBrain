@@ -27,13 +27,15 @@ def list_pending():
     ]
 
 
-def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None) -> None:
+def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None,
+                  action_id: int | None = None) -> None:
     # Architect-applied edits are attributed to 'architect' in the version history,
     # and stamped with where the user was when they had this conversation.
     loc = notes_svc.conversation_location(conn, conversation_id)
     kw = {"source": "architect", "conversation_id": conversation_id}
     if loc:
         kw.update(lat=loc["lat"], lon=loc["lon"], location_label=loc["location_label"])
+    undo = None   # destructive staged actions record an inverse so they're undoable
     if action_type in ("CREATE", "UPDATE"):
         title = (payload.get("title") or "").strip()
         if not title:
@@ -86,14 +88,55 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], **kw)
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="A note with that title already exists.")
+    elif action_type == "LIST_REMOVE_ITEM":
+        try:
+            r = quicktasks.remove_item(conn, payload.get("list_title") or "", payload.get("item") or "",
+                                       ordinal=payload.get("item_index"), source="architect",
+                                       conversation_id=conversation_id, location=loc)
+        except LookupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        undo = {"op": "insert_line", "title": r["note_title"], "index": r["index"], "line": r["removed_line"]}
+    elif action_type == "LIST_EDIT_ITEM":
+        new_text = (payload.get("new_item") or "").strip()
+        if not new_text:
+            raise HTTPException(status_code=400, detail="LIST_EDIT_ITEM needs new_item")
+        try:
+            r = quicktasks.edit_item(conn, payload.get("list_title") or "", payload.get("item") or "",
+                                     new_text, ordinal=payload.get("item_index"), source="architect",
+                                     conversation_id=conversation_id, location=loc)
+        except LookupError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
+    elif action_type == "DELETE_LIST":
+        title = notes_svc.root_title(payload.get("list_title") or "", "lists")
+        note = notes_svc.get_by_title(conn, title)
+        if note is None or note["kind"] != "list":
+            raise HTTPException(status_code=404, detail=f"No list titled '{title}' to delete")
+        notes_svc.soft_delete(conn, note["id"])
+        undo = {"op": "restore_note", "note_id": note["id"]}
+    elif action_type == "DELETE":
+        title = (payload.get("title") or "").strip()
+        note = notes_svc.get_by_title(conn, title)
+        if note is None:
+            raise HTTPException(status_code=404, detail=f"No note titled '{title}' to delete")
+        notes_svc.soft_delete(conn, note["id"])
+        undo = {"op": "restore_note", "note_id": note["id"]}
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
+    # Make the applied (staged) destructive action undoable by stashing the inverse
+    # on its row, so the chat ✓ chip's Undo can replay it.
+    if undo and action_id is not None:
+        conn.execute("UPDATE staging_actions SET payload_json = ? WHERE id = ?",
+                     (json.dumps({**payload, "undo": undo}), action_id))
     # Record the approval in the conversation so it stays in the chat.
     if conversation_id is not None:
+        ev = {"summary": _applied_summary(action_type, payload)}
+        if undo and action_id is not None:
+            ev["undo_id"] = action_id
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'event', ?)",
-            (conversation_id, json.dumps({"summary": _applied_summary(action_type, payload)})),
+            (conversation_id, json.dumps(ev)),
         )
 
 
@@ -102,6 +145,15 @@ def _applied_summary(action_type: str, payload: dict) -> str:
         return f"Linked [[{payload.get('source_title', '')}]] → [[{payload.get('target_title', '')}]]"
     if action_type == "RENAME":
         return f"Renamed “{(payload.get('title') or '').strip()}” → [[{(payload.get('new_title') or '').strip()}]]"
+    if action_type == "DELETE":
+        return f"Deleted [[{(payload.get('title') or '').strip()}]]"
+    lt = notes_svc.root_title(payload.get("list_title") or "", "lists")
+    if action_type == "DELETE_LIST":
+        return f"Deleted list [[{lt}]]"
+    if action_type == "LIST_REMOVE_ITEM":
+        return f"Removed “{(payload.get('item') or '').strip()}” from [[{lt}]]"
+    if action_type == "LIST_EDIT_ITEM":
+        return f"Edited “{(payload.get('item') or '').strip()}” → “{(payload.get('new_item') or '').strip()}” in [[{lt}]]"
     verb = "Created" if action_type == "CREATE" else "Updated"
     return f"{verb} [[{(payload.get('title') or '').strip()}]]"
 
@@ -124,7 +176,7 @@ def apply_action(action_id: int):
         conn.rollback()
         raise HTTPException(status_code=409, detail="Action is no longer pending")
     try:
-        _apply_action(conn, row["type"], json.loads(row["payload_json"]), row["conversation_id"])
+        _apply_action(conn, row["type"], json.loads(row["payload_json"]), row["conversation_id"], action_id=row["id"])
     except Exception:
         conn.rollback()  # undoes the claim + any partial write -> the row stays pending
         raise
@@ -150,7 +202,7 @@ def apply_all():
             )
             if claim.rowcount != 1:
                 continue
-            _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
+            _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"], action_id=r["id"])
             applied += 1
         conn.commit()
     except Exception:
@@ -198,6 +250,9 @@ def undo_action(action_id: int):
         notes_svc.set_tags(conn, undo["note_id"], undo.get("tags", []))
     elif op == "restore_note":
         conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (undo["note_id"],))
+        r = conn.execute("SELECT title, content_md FROM notes WHERE id = ?", (undo["note_id"],)).fetchone()
+        if r:
+            notes_svc._sync_fts(conn, undo["note_id"], r["title"], r["content_md"])  # re-index keyword search
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

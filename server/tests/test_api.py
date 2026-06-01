@@ -1330,6 +1330,50 @@ def test_id_targeted_upsert_does_not_flip_kind(client):
     assert conn.execute("SELECT kind FROM notes WHERE id = ?", (nid,)).fetchone()["kind"] == "entry"
 
 
+def test_staged_list_and_delete_actions(client):
+    # Remove/edit a list item, delete a list, and delete a note — all staged,
+    # confirmed, and undoable.
+    import json as _json
+    from app.db import get_conn
+    from app.services import quicktasks, notes as notes_svc
+    conn = get_conn()
+    quicktasks.add_list_item(conn, "Chores", "vacuum", source="user")
+    quicktasks.add_list_item(conn, "Chores", "dishes", source="user")
+    conn.commit()
+
+    def stage_apply(action):
+        conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES (?, ?)",
+                     (action["type"], _json.dumps(action)))
+        conn.commit()
+        aid = client.get("/api/staging").json()[-1]["id"]
+        return aid, client.post(f"/api/staging/{aid}/apply").status_code
+
+    aid, code = stage_apply({"type": "LIST_REMOVE_ITEM", "list_title": "Chores", "item": "vacuum", "summary": "s"})
+    assert code == 200
+    body = notes_svc.get_by_title(conn, "lists/Chores")["content_md"]
+    assert "vacuum" not in body and "dishes" in body
+    # Undo restores the removed item.
+    assert client.post(f"/api/staging/{aid}/undo").status_code == 200
+    assert "vacuum" in notes_svc.get_by_title(conn, "lists/Chores")["content_md"]
+
+    _, code = stage_apply({"type": "LIST_EDIT_ITEM", "list_title": "Chores", "item": "dishes",
+                           "new_item": "wash dishes", "summary": "s"})
+    assert code == 200 and "wash dishes" in notes_svc.get_by_title(conn, "lists/Chores")["content_md"]
+
+    # Delete the whole list (soft) + undo restores it.
+    aid, code = stage_apply({"type": "DELETE_LIST", "list_title": "Chores", "summary": "s"})
+    assert code == 200 and notes_svc.get_by_title(conn, "lists/Chores") is None
+    assert client.post(f"/api/staging/{aid}/undo").status_code == 200
+    assert notes_svc.get_by_title(conn, "lists/Chores") is not None
+
+    # Delete a note (soft), with a fail-closed 409 when the item is already gone.
+    client.post("/api/notes", json={"title": "Junk", "content_md": "x"})
+    _, code = stage_apply({"type": "DELETE", "title": "Junk", "summary": "s"})
+    assert code == 200 and client.get("/api/notes/junk").status_code == 404
+    _, code = stage_apply({"type": "LIST_REMOVE_ITEM", "list_title": "Chores", "item": "ghost", "summary": "s"})
+    assert code == 409   # item not found -> refuse, don't guess
+
+
 def test_list_item_tools(client):
     # Check-off, priority, sub-list, and tags are additive tools with undo.
     from app.db import get_conn

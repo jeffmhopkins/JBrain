@@ -1,10 +1,26 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 
-interface Action {
-  id: number;
-  type: "CREATE" | "UPDATE" | "LINK" | "RENAME";
-  payload: any;
+type ActionType = "CREATE" | "UPDATE" | "LINK" | "RENAME" | "DELETE"
+  | "LIST_REMOVE_ITEM" | "LIST_EDIT_ITEM" | "DELETE_LIST";
+interface Action { id: number; type: ActionType; payload: any; }
+
+const TAG_CLASS: Record<string, string> = {
+  CREATE: "tag-create", UPDATE: "tag-update", LINK: "tag-link", RENAME: "tag-update",
+  LIST_EDIT_ITEM: "tag-update", DELETE: "tag-delete", DELETE_LIST: "tag-delete", LIST_REMOVE_ITEM: "tag-delete",
+};
+
+function actionTitle(a: Action): string {
+  const p = a.payload;
+  switch (a.type) {
+    case "RENAME": return `${p.title} → ${p.new_title}`;
+    case "LINK": return `${p.source_title} → ${p.target_title}`;
+    case "DELETE": return `Delete ${p.title}`;
+    case "DELETE_LIST": return `Delete list ${p.list_title}`;
+    case "LIST_REMOVE_ITEM": return `Remove “${p.item}” from ${p.list_title}`;
+    case "LIST_EDIT_ITEM": return `“${p.item}” → “${p.new_item}”`;
+    default: return p.title || "";
+  }
 }
 
 export default function StagingPanel({ tick, onChange }: { tick: number; onChange: () => void }) {
@@ -31,11 +47,8 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
         <button className="primary" onClick={applyAll}>Apply all</button>
       </div>
       {actions.map((a) => {
-        const cls = a.type === "CREATE" ? "tag-create" : a.type === "UPDATE" ? "tag-update"
-          : a.type === "RENAME" ? "tag-update" : "tag-link";
-        const title = a.type === "RENAME"
-          ? `${a.payload.title} → ${a.payload.new_title}`
-          : a.payload.title || `${a.payload.source_title} → ${a.payload.target_title}`;
+        const cls = TAG_CLASS[a.type] || "tag-link";
+        const title = actionTitle(a);
         return (
           <div className="card" key={a.id}>
             <div className="row">

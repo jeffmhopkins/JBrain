@@ -1,8 +1,8 @@
 import { ReactNode, useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { del, get, post, put } from "../api";
 import { slugify } from "../util";
-import { Icon } from "../components/Icon";
+import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface NoteRow { slug: string; }
@@ -32,10 +32,7 @@ const leaf = (t: string) => t.replace(/^lists\//i, "");
 export default function ListsPage() {
   const [lists, setLists] = useState<ListNote[]>([]);
   const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState<Record<string, string>>({});
   const [newName, setNewName] = useState("");
-  const [params] = useSearchParams();
-  const focus = params.get("focus");   // a note linked here to edit one specific list
 
   async function load() {
     setLoading(true);
@@ -48,41 +45,12 @@ export default function ListsPage() {
   }
   useEffect(() => { load(); }, []);
 
-  // Came from a list note's "Edit list" → scroll to and briefly highlight it.
-  useEffect(() => {
-    if (!focus || loading) return;
-    const el = document.getElementById(`list-${focus}`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    el.classList.add("flash-focus");
-    const t = setTimeout(() => el.classList.remove("flash-focus"), 1600);
-    return () => clearTimeout(t);
-  }, [focus, loading, lists]);
-
+  // The Lists card persists every edit immediately.
   async function persist(list: ListNote, parsed: Parsed) {
     const content_md = serialize(parsed);
     setLists((ls) => ls.map((l) => (l.slug === list.slug ? { ...l, content_md } : l)));   // optimistic
     try { await put(`/api/notes/${list.slug}`, { title: list.title, content_md }); }
     catch { load(); }
-  }
-  function mutate(list: ListNote, fn: (p: Parsed) => void) {
-    const p = parseList(list.content_md);
-    fn(p);
-    persist(list, p);
-  }
-
-  const toggle = (l: ListNote, i: number, checked: boolean) => mutate(l, (p) => { p.items[i].checked = checked; });
-  const toggleQueue = (l: ListNote) => mutate(l, (p) => { p.queue = !p.queue; });
-  const move = (l: ListNote, i: number, dir: -1 | 1) => mutate(l, (p) => {
-    const k = i + dir;
-    if (k < 0 || k >= p.items.length) return;
-    [p.items[i], p.items[k]] = [p.items[k], p.items[i]];
-  });
-  function addItem(l: ListNote) {
-    const text = (draft[l.slug] || "").trim();
-    if (!text) return;
-    setDraft((d) => ({ ...d, [l.slug]: "" }));
-    mutate(l, (p) => { p.items.push({ checked: false, text, priority: null }); });
   }
   async function removeList(l: ListNote) {
     if (!confirm(`Delete the list “${leaf(l.title)}”? (soft-deleted, restorable)`)) return;
@@ -120,43 +88,16 @@ export default function ListsPage() {
         const p = parseList(l.content_md);
         const done = p.items.filter((i) => i.checked).length;
         return (
-          <div className="card" key={l.slug} id={`list-${l.slug}`}>
+          <div className="card" key={l.slug}>
             <div className="row">
               <strong>{leaf(l.title)}</strong>
               <span className="badge">{done}/{p.items.length}</span>
               <span className="spacer" />
-              <button className={"ghost queue-toggle" + (p.queue ? " on" : "")} style={{ fontSize: 12 }}
-                      title="Order sets numeric priority (top = P1)" onClick={() => toggleQueue(l)}>
-                {p.queue ? "✓ Priority queue" : "Priority queue"}
-              </button>
               <Link className="ghost" to={`/note/${l.slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open</Link>
               <button className="ghost danger-hover" style={{ fontSize: 13, padding: "4px 8px" }} onClick={() => removeList(l)}>Delete</button>
             </div>
-            <div className="checklist">
-              {p.items.map((it, i) => (
-                <div key={i} className="check-row">
-                  <label className={"check-item" + (it.checked ? " done" : "")}>
-                    <input type="checkbox" checked={it.checked} onChange={(e) => toggle(l, i, e.target.checked)} />
-                    {p.queue ? <span className="badge prio">{i + 1}</span>
-                             : (it.priority != null && <span className="badge prio">P{it.priority}</span>)}
-                    <span className="check-text">{renderText(it.text, progress)}</span>
-                  </label>
-                  <span className="reorder">
-                    <button className="reorder-btn" title="Move up" disabled={i === 0}
-                            onClick={() => move(l, i, -1)}><Icon name="chevron" size={14} /></button>
-                    <button className="reorder-btn down" title="Move down" disabled={i === p.items.length - 1}
-                            onClick={() => move(l, i, 1)}><Icon name="chevron" size={14} /></button>
-                  </span>
-                </div>
-              ))}
-              {p.items.length === 0 && <span className="muted" style={{ fontSize: 13 }}>Empty list.</span>}
-            </div>
-            <div className="row" style={{ marginTop: 8, gap: 6 }}>
-              <input placeholder="Add an item…" value={draft[l.slug] || ""}
-                     onChange={(e) => setDraft((d) => ({ ...d, [l.slug]: e.target.value }))}
-                     onKeyDown={(e) => { if (e.key === "Enter") addItem(l); }} />
-              <button className="ghost" onClick={() => addItem(l)}>Add</button>
-            </div>
+            <ListEditor value={p} onChange={(next) => persist(l, next)}
+                        renderItemText={(t) => renderText(t, progress)} />
           </div>
         );
       })}

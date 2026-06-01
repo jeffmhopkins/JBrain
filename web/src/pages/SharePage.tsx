@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
 import { renderWikiLinks } from "../util";
-import { Icon } from "../components/Icon";
+import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
@@ -31,7 +31,6 @@ export default function SharePage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState<Parsed | null>(null);
-  const [newItem, setNewItem] = useState("");
   const [pname, setPname] = useState(() => localStorage.getItem("jbrain_share_name") || "");
   const [pnote, setPnote] = useState("");
   const [sent, setSent] = useState(false);
@@ -103,17 +102,6 @@ export default function SharePage() {
     if (isList) setModel(parseList(n.content_md));
     else setDraft(n.content_md);
   }
-  function up(fn: (p: Parsed) => void) {
-    if (!model) return;
-    const c: Parsed = { header: model.header, queue: model.queue, items: model.items.map((i) => ({ ...i })) };
-    fn(c); setModel(c);
-  }
-  function addItem() {
-    const t = newItem.trim();
-    if (!t) return;
-    setNewItem("");
-    up((p) => { p.items.push({ checked: false, text: t, priority: null }); });
-  }
   async function submit() {
     const name = (data!.bound_name || pname).trim();
     if (!name) { alert("Please enter your name."); return; }
@@ -144,35 +132,7 @@ export default function SharePage() {
           <div>
             <div className="share-banner">Edits here are <strong>proposals</strong> — they're sent to the owner and aren't published until accepted.</div>
             {isList && model ? (
-              <>
-                <div className="checklist">
-                  {model.items.map((it, i) => (
-                    <div key={i} className="check-row">
-                      <label className={"check-item" + (it.checked ? " done" : "")}>
-                        <input type="checkbox" checked={it.checked}
-                               onChange={(e) => up((p) => { p.items[i].checked = e.target.checked; })} />
-                        {model.queue && <span className="badge prio">{i + 1}</span>}
-                        <span className="check-text">{it.text}</span>
-                      </label>
-                      <span className="reorder">
-                        <button className="reorder-btn" title="Up" disabled={i === 0}
-                                onClick={() => up((p) => { [p.items[i - 1], p.items[i]] = [p.items[i], p.items[i - 1]]; })}><Icon name="chevron" size={14} /></button>
-                        <button className="reorder-btn down" title="Down" disabled={i === model.items.length - 1}
-                                onClick={() => up((p) => { [p.items[i + 1], p.items[i]] = [p.items[i], p.items[i + 1]]; })}><Icon name="chevron" size={14} /></button>
-                        <button className="ghost" style={{ padding: "2px 6px" }} title="Remove"
-                                onClick={() => up((p) => { p.items.splice(i, 1); })}>✕</button>
-                      </span>
-                    </div>
-                  ))}
-                  {model.items.length === 0 && <span className="muted" style={{ fontSize: 13 }}>Empty list.</span>}
-                </div>
-                <div className="row" style={{ marginTop: 8, gap: 6 }}>
-                  <input placeholder="Add an item…" value={newItem}
-                         onChange={(e) => setNewItem(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === "Enter") addItem(); }} />
-                  <button className="ghost" onClick={addItem}>Add</button>
-                </div>
-              </>
+              <ListEditor value={model} onChange={setModel} showQueueToggle={false} />
             ) : (
               <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={draft}
                         onChange={(e) => setDraft(e.target.value)} />

@@ -8,6 +8,8 @@ import { makeLinkRenderer, renderWikiLinks } from "../util";
 import Attachments from "../components/Attachments";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
+import ListEditor from "../components/ListEditor";
+import { Parsed, parseList, serialize } from "../lists";
 
 interface Note {
   id: number; title: string; slug: string; content_md: string; kind: string;
@@ -28,6 +30,7 @@ export default function NotePage() {
   const [diffing, setDiffing] = useState<{ from: TimelineEntry; to: TimelineEntry } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  const [listModel, setListModel] = useState<Parsed | null>(null);   // card editor for list notes
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
@@ -52,6 +55,7 @@ export default function NotePage() {
   function startEdit() {
     if (!note) return;
     setEditTitle(note.title);
+    setListModel(note.kind === "list" ? parseList(note.content_md) : null);   // card editor for lists
     setEditing(note.content_md);
   }
 
@@ -59,10 +63,11 @@ export default function NotePage() {
     if (!note) return;
     const title = editTitle.trim();
     if (!title) { alert("Title can't be empty."); return; }
+    const content_md = listModel ? serialize(listModel) : editing;
     setSaving(true);
     try {
       // PUT renames in place (id-targeted); use it to move notes under notes//kb/.
-      const r = await put<{ slug: string }>(`/api/notes/${note.slug}`, { title, content_md: editing });
+      const r = await put<{ slug: string }>(`/api/notes/${note.slug}`, { title, content_md });
       setEditing(null);
       if (r.slug !== note.slug) navigate(`/note/${r.slug}`);  // title changed -> slug changed
       else reload();
@@ -127,9 +132,7 @@ export default function NotePage() {
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
         <span className="spacer" />
         {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
-        {editing === null && (note.kind === "list"
-          ? <button className="ghost" onClick={() => navigate(`/lists?focus=${note.slug}`)}>Edit list</button>
-          : <button className="ghost" onClick={startEdit}>Edit</button>)}
+        {editing === null && <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>}
         {editing === null && <button className="ghost danger-hover" onClick={remove}>Delete</button>}
       </div>
       {sharing && (
@@ -180,8 +183,12 @@ export default function NotePage() {
         <div>
           <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
                  placeholder="Title — e.g. notes/Jeff or kb/Jeff" style={{ marginBottom: 8 }} />
-          <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={editing}
-                    onChange={(e) => setEditing(e.target.value)} />
+          {listModel ? (
+            <ListEditor value={listModel} onChange={setListModel} />
+          ) : (
+            <textarea className="note-edit-area" style={{ fontFamily: "monospace" }} value={editing}
+                      onChange={(e) => setEditing(e.target.value)} />
+          )}
           <div className="row" style={{ marginTop: 10 }}>
             <button className="primary" onClick={saveEdit} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
             <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>

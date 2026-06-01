@@ -63,6 +63,31 @@ def flush_entry_events(conn) -> None:
         _fire_entry_created(conn, note_id, title, commit=True)
 
 
+def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int) -> None:
+    """When a note is renamed, rewrite [[old title]] -> [[new title]] (keeping any
+    |display alias) in every OTHER note that links to it, so inline links keep
+    resolving. Backlinks (tracked by note id) already survive; this fixes the
+    link *text/href* in referencing notes."""
+    pat = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(\|[^\]]*)?\]\]", re.IGNORECASE)
+    sources = conn.execute(
+        "SELECT DISTINCT source_note_id FROM links WHERE lower(target_title) = lower(?)",
+        (old_title,),
+    ).fetchall()
+    for s in sources:
+        sid = s["source_note_id"]
+        if sid == renamed_id:
+            continue
+        row = conn.execute(
+            "SELECT title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (sid,)
+        ).fetchone()
+        if not row:
+            continue
+        new_content = pat.sub(lambda m: f"[[{new_title}{m.group(1) or ''}]]", row["content_md"])
+        if new_content != row["content_md"]:
+            upsert_note(conn, row["title"], new_content, note_id=sid, source="rename",
+                        version_note=f"link rename: {old_title} → {new_title}", fire_events=False)
+
+
 def slugify(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     # Non-ASCII titles (emoji/CJK/RTL) collapse to empty — derive a stable,
@@ -198,10 +223,12 @@ def upsert_note(
 
     has_location = lat is not None or lon is not None or location_label is not None
 
+    renamed_from = None
     if existing:
         note_id = existing["id"]
         slug = existing["slug"]
         if existing["title"].lower() != title.lower():
+            renamed_from = existing["title"]   # rewrite inbound [[links]] after the write
             slug = _unique_slug(conn, title, exclude_id=note_id)
         conn.execute(
             "UPDATE notes SET title = ?, slug = ?, content_md = ?, "
@@ -240,6 +267,11 @@ def upsert_note(
     _sync_fts(conn, note_id, title, content_md)
     wikilinks.reconcile_links(conn, note_id, content_md)
     embeddings.upsert_note_embedding(conn, note_id, title, content_md)
+
+    # Renamed? Rewrite [[old title]] references in other notes so their inline
+    # links don't dangle at the old slug.
+    if renamed_from:
+        _rename_inbound_links(conn, renamed_from, title, note_id)
 
     # "On every new entry" hook — fires for human/architect-created entry notes
     # only (not kb/workflow/restore writes), so workflows can enrich them.

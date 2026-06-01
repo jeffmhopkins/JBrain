@@ -288,6 +288,9 @@ def test_update_note_renames_in_place(client):
     assert client.get("/api/notes/notes-jeff").status_code == 404
     titles = [n["title"] for n in client.get("/api/notes").json()]
     assert "kb/Jeff" in titles and "notes/Jeff" not in titles
+    # Inbound [[notes/Jeff]] references were rewritten so links don't dangle.
+    assert "[[kb/Jeff]]" in client.get("/api/notes/friend").json()["content_md"]
+    assert any(b["title"] == "Friend" for b in client.get("/api/notes/kb-jeff").json()["backlinks"])
     # Renaming onto an existing title is rejected.
     client.post("/api/notes/entry", json={"text": "x", "title": "Taken"})
     assert client.put("/api/notes/kb-jeff", json={"title": "notes/Taken", "content_md": "body"}).status_code == 409

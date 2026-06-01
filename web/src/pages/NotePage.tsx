@@ -117,7 +117,7 @@ export default function NotePage() {
             <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
           </div>
           <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            Renaming changes the note’s URL. Use “notes/…” for captures, “kb/…” for articles.
+            Renaming updates links from other notes automatically. Use “notes/…” for captures, “kb/…” for articles.
           </p>
         </div>
       ) : (

@@ -80,7 +80,7 @@ export default function SharePage() {
         <h2 style={{ marginTop: 12 }}>{data.can_edit ? "Accept to start editing" : "Accept to view"}</h2>
         <p className="muted">{data.can_edit
           ? "Once you accept, you'll only be able to propose edits from this browser. Your name is shown to the owner on each suggestion."
-          : "Once you accept, only this browser will be able to open this link. (If it lands on the wrong browser, ask the sender to reset it.)"}</p>
+          : "Once you accept, only this browser will be able to open this link. (If it lands on the wrong browser — or you clear your browser data — ask the sender to reset it.)"}</p>
         {data.can_edit && (
           <input placeholder="Your name *" value={pname} onChange={(e) => setPname(e.target.value)}
                  onKeyDown={(e) => { if (e.key === "Enter") accept(); }} />

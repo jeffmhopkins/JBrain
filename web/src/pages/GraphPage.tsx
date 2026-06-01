@@ -8,6 +8,8 @@ interface GraphData {
   links: { source: number; target: number }[];
 }
 
+const NODE_REL = 5;   // node radius scale; labels are positioned from this
+
 export default function GraphPage() {
   const navigate = useNavigate();
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
@@ -39,6 +41,7 @@ export default function GraphPage() {
           nodeId="id"
           nodeLabel="title"
           nodeVal="val"
+          nodeRelSize={NODE_REL}
           nodeColor={() => "#38bdf8"}
           linkColor={() => "rgba(148,163,184,0.4)"}
           backgroundColor="transparent"
@@ -46,10 +49,20 @@ export default function GraphPage() {
           nodeCanvasObjectMode={() => "after"}
           nodeCanvasObject={(node: any, ctx, scale) => {
             const label = node.title as string;
-            ctx.font = `${12 / scale}px system-ui`;
-            ctx.fillStyle = "#94a3b8";
+            const fontSize = 13 / scale;
+            ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
             ctx.textAlign = "center";
-            ctx.fillText(label, node.x, node.y + 10 / scale);
+            ctx.textBaseline = "top";
+            // Drop the label clear of the node, below its rim.
+            const r = Math.sqrt(Math.max(node.val || 1, 1)) * NODE_REL;
+            const y = node.y + r + 3 / scale;
+            // Dark outline so the bright text stays readable over nodes/edges.
+            ctx.lineWidth = 3 / scale;
+            ctx.lineJoin = "round";
+            ctx.strokeStyle = "rgba(8,10,14,0.92)";
+            ctx.strokeText(label, node.x, y);
+            ctx.fillStyle = "#e6edf3";
+            ctx.fillText(label, node.x, y);
           }}
         />
       </div>

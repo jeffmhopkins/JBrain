@@ -89,9 +89,12 @@ export default function Chat() {
     const dx = t.clientX - s.x, dy = t.clientY - s.y;
     // Require a clear, mostly-horizontal swipe so it doesn't fight vertical scroll.
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    slideFrom.current = dx < 0 ? 22 : -22;
+    // Carousel of 4 stops: Entry ↔ Assisted ↔ Research ↔ Advanced (wraps).
+    const n = MODES.length;
     const i = MODES.findIndex((m) => m.key === mode);
-    const ni = (i + (dx < 0 ? 1 : -1) + MODES.length) % MODES.length;
+    const ni = (i + (dx < 0 ? 1 : -1) + (n + 1)) % (n + 1);
+    if (ni === n) { navigate("/advanced"); return; }   // the 4th stop is Advanced
+    slideFrom.current = dx < 0 ? 22 : -22;
     pick(MODES[ni].key);
   }
 

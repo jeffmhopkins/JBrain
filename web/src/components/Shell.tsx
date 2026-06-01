@@ -131,11 +131,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   const advTool = !capture && !review && !advHome;   // a tool open full-screen
   const advanced = advHome || advTool;
 
-  // Vertical swipe navigation between the main views. Edge-gated so it never
-  // hijacks scrolling: swipe-down only fires at the top, swipe-up at the bottom.
-  //   chat:  ↓ → Advanced (same as the bolt),  ↑ → Lists
-  //   advanced/tool:  ↑ → chat
-  //   lists:  ↓ → chat
+  // Vertical swipe between chat and Lists. Edge-gated so it never hijacks
+  // scrolling: swipe-up only fires at the bottom, swipe-down only at the top.
+  //   chat:  ↑ → Lists      (Advanced is on the horizontal carousel instead)
+  //   lists: ↓ → chat
   const swipe = useRef<{ y: number; x: number; atTop: boolean; atBottom: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
@@ -153,9 +152,8 @@ export default function Shell({ children }: { children: ReactNode }) {
     const down = dy > 0;
     if (down && !s.atTop) return;       // swipe-down only from the top
     if (!down && !s.atBottom) return;   // swipe-up only from the bottom
-    if (path === "/chat") nav(down ? "/advanced" : "/lists");
+    if (path === "/chat") { if (!down) nav("/lists"); }   // swipe up → Lists
     else if (path === "/lists") { if (down) nav("/chat"); }
-    else if (advHome) { if (!down) nav("/chat"); }   // the Advanced grid only
   }
 
   return (

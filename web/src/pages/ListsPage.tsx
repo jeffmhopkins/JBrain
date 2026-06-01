@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, put } from "../api";
 import { slugify } from "../util";
+import { Icon } from "../components/Icon";
 
 interface NoteRow { id: number; title: string; slug: string; kind: string; }
 interface ListNote { slug: string; title: string; content_md: string; }
@@ -89,6 +90,17 @@ export default function ListsPage() {
   function toggle(list: ListNote, idx: number, checked: boolean) {
     persist(list, setLineChecked(list.content_md, idx, checked));
   }
+  // Reorder: swap the source lines of two display-adjacent items (j and j+dir),
+  // so moving works within a priority tier (and freely on unprioritised lists).
+  function move(list: ListNote, displayed: Item[], j: number, dir: -1 | 1) {
+    const k = j + dir;
+    if (k < 0 || k >= displayed.length) return;
+    const lines = list.content_md.split("\n");
+    const a = displayed[j].idx, b = displayed[k].idx;
+    [lines[a], lines[b]] = [lines[b], lines[a]];
+    persist(list, lines.join("\n"));
+  }
+
   function addItem(list: ListNote) {
     const text = (draft[list.slug] || "").trim();
     if (!text) return;
@@ -122,13 +134,21 @@ export default function ListsPage() {
               <Link className="ghost" to={`/note/${l.slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open</Link>
             </div>
             <div className="checklist">
-              {items.map((it) => (
-                <label key={it.idx} className={"check-item" + (it.checked ? " done" : "")}>
-                  <input type="checkbox" checked={it.checked}
-                         onChange={(e) => toggle(l, it.idx, e.target.checked)} />
-                  {it.priority != null && <span className="badge prio">P{it.priority}</span>}
-                  <span className="check-text">{renderText(it.text, progress)}</span>
-                </label>
+              {items.map((it, j) => (
+                <div key={it.idx} className="check-row">
+                  <label className={"check-item" + (it.checked ? " done" : "")}>
+                    <input type="checkbox" checked={it.checked}
+                           onChange={(e) => toggle(l, it.idx, e.target.checked)} />
+                    {it.priority != null && <span className="badge prio">P{it.priority}</span>}
+                    <span className="check-text">{renderText(it.text, progress)}</span>
+                  </label>
+                  <span className="reorder">
+                    <button className="reorder-btn" title="Move up" disabled={j === 0}
+                            onClick={() => move(l, items, j, -1)}><Icon name="chevron" size={14} /></button>
+                    <button className="reorder-btn down" title="Move down" disabled={j === items.length - 1}
+                            onClick={() => move(l, items, j, 1)}><Icon name="chevron" size={14} /></button>
+                  </span>
+                </div>
               ))}
               {items.length === 0 && <span className="muted" style={{ fontSize: 13 }}>Empty list.</span>}
             </div>

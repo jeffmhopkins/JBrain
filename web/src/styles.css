@@ -407,6 +407,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .check-item .check-text { font-size: 14px; line-height: 1.3; }
 .check-item.done .check-text { text-decoration: line-through; color: var(--text-dim); }
 .badge.prio { background: var(--accent-soft); color: var(--text); border-color: var(--accent); font-weight: 600; }
+.check-row { display: flex; align-items: center; gap: 6px; }
+.check-row .check-item { flex: 1; min-width: 0; }
+.reorder { display: inline-flex; gap: 2px; opacity: 0.55; }
+.reorder-btn { background: none; border: none; color: var(--text-dim); padding: 2px; cursor: pointer; display: inline-flex; }
+.reorder-btn .icon { transform: rotate(-90deg); }
+.reorder-btn.down .icon { transform: rotate(90deg); }
+.reorder-btn:disabled { opacity: 0.25; cursor: default; }
 
 /* Manual trigger run status: spinner while running, then a result pill. */
 .run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;

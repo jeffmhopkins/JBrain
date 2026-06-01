@@ -36,10 +36,14 @@ def mint(body: MintIn):
 
 @router.get("")
 def list_shares():
-    """Active links (with absolute URL) + pending proposals (with a diff preview)."""
+    """Active links (+ absolute URL), pending proposals (with a diff preview), and
+    the recent proposal HISTORY (accepted / rejected / superseded) so the owner can
+    see the status of everything in one place."""
     conn = get_conn()
     links = conn.execute(
-        "SELECT sl.id, sl.token, sl.scope, sl.created_at, n.title AS note_title, n.slug AS note_slug "
+        "SELECT sl.id, sl.token, sl.scope, sl.label, sl.created_at, sl.last_used_at, "
+        "       n.title AS note_title, n.slug AS note_slug, "
+        "       (SELECT COUNT(*) FROM share_proposals p WHERE p.share_link_id = sl.id AND p.status='pending') AS pending "
         "FROM share_links sl JOIN notes n ON n.id = sl.note_id "
         "WHERE sl.status='active' ORDER BY sl.created_at DESC"
     ).fetchall()
@@ -50,11 +54,18 @@ def list_shares():
         "FROM share_proposals p JOIN notes n ON n.id = p.note_id JOIN share_links sl ON sl.id = p.share_link_id "
         "WHERE p.status='pending' ORDER BY p.created_at DESC"
     ).fetchall()
+    history = conn.execute(
+        "SELECT p.id, p.proposer_name, p.status, p.created_at, p.resolved_at, "
+        "       n.title AS note_title, n.slug AS note_slug "
+        "FROM share_proposals p JOIN notes n ON n.id = p.note_id "
+        "WHERE p.status != 'pending' ORDER BY COALESCE(p.resolved_at, p.created_at) DESC LIMIT 50"
+    ).fetchall()
     return {
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),
                        "stale": hashlib.sha256((r["current_content"] or "").encode()).hexdigest() != r["basis_hash"]}
                       for r in proposals],
+        "history": [dict(r) for r in history],
     }
 
 

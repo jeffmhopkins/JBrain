@@ -54,9 +54,16 @@ def share_read(token: str, request: Request):
     }
 
 
+# Only these render inline on the public page; everything else (esp. SVG/HTML,
+# which can carry script) is forced to download as an opaque blob so it can never
+# execute on this origin.
+_SAFE_INLINE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
 @router.get("/{token}/attachments/{att_id}")
 def share_attachment(token: str, att_id: int, request: Request):
-    """Serve an attachment — only if it belongs to THIS token's note."""
+    """Serve an attachment — only if it belongs to THIS token's note. Hardened:
+    nosniff + restrictive CSP, and only image types render inline (others download)."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
     row = conn.execute(
@@ -66,8 +73,17 @@ def share_attachment(token: str, att_id: int, request: Request):
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
     data = bytes(row["content_blob"]) if row["content_blob"] is not None else (row["content_text"] or "").encode()
-    return Response(content=data, media_type=row["mime"] or "application/octet-stream",
-                    headers={"Content-Disposition": f'inline; filename="{row["filename"]}"'})
+    inline = (row["mime"] or "") in _SAFE_INLINE
+    fn = (row["filename"] or "file").replace('"', "")
+    return Response(
+        content=data,
+        media_type=row["mime"] if inline else "application/octet-stream",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{fn}"',
+        },
+    )
 
 
 @router.post("/{token}/propose")

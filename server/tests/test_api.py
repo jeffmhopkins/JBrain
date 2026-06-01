@@ -402,7 +402,9 @@ def test_share_links_flow(client):
 
     pub = anon.get(f"/api/share/{token}").json()                 # public read, no auth
     assert pub["note"]["title"] == "Shared Doc" and pub["can_edit"] is False
-    assert "backlinks" not in pub["note"] and "tags" not in pub["note"]   # not exposed
+    # Strict projection: nothing that could leak other notes or PII (lat/lon/tags/
+    # slug/id/backlinks) is ever exposed on the public surface.
+    assert set(pub["note"].keys()) == {"title", "content_md", "kind", "updated_at", "attachments"}
     assert anon.post(f"/api/share/{token}/propose", json={"content_md": "x"}).status_code == 403  # view can't edit
     assert anon.get("/api/share/" + "z" * 40).status_code == 404          # bad token → uniform 404
 

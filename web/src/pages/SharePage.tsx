@@ -159,7 +159,7 @@ export default function SharePage() {
               <div style={{ marginTop: 16 }}>
                 <h3>Attachments</h3>
                 {n.attachments.map((a) => (
-                  a.mime.startsWith("image/")
+                  ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(a.mime)
                     ? <img key={a.id} src={shareAttachmentUrl(token, a.id)} alt={a.filename}
                            style={{ maxWidth: "100%", borderRadius: 8, margin: "6px 0" }} />
                     : <a key={a.id} className="list-item" href={shareAttachmentUrl(token, a.id)}

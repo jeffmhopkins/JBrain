@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, TouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
@@ -109,6 +109,16 @@ function toolTitle(pathname: string): string {
   return TOOL_TITLES[pathname] || "Advanced";
 }
 
+// Nearest scrollable ancestor of an element (to gate edge swipes on scroll state).
+function scrollParent(el: HTMLElement | null): HTMLElement | null {
+  while (el && el !== document.body) {
+    const oy = getComputedStyle(el).overflowY;
+    if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 2) return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
   const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
@@ -120,6 +130,33 @@ export default function Shell({ children }: { children: ReactNode }) {
   const advHome = path === "/advanced";              // the launcher grid
   const advTool = !capture && !review && !advHome;   // a tool open full-screen
   const advanced = advHome || advTool;
+
+  // Vertical swipe navigation between the main views. Edge-gated so it never
+  // hijacks scrolling: swipe-down only fires at the top, swipe-up at the bottom.
+  //   chat:  ↓ → Advanced (same as the bolt),  ↑ → Lists
+  //   advanced/tool:  ↑ → chat
+  //   lists:  ↓ → chat
+  const swipe = useRef<{ y: number; x: number; atTop: boolean; atBottom: boolean } | null>(null);
+  function onTouchStart(e: TouchEvent) {
+    const t = e.touches[0];
+    const sc = scrollParent(e.target as HTMLElement);
+    const atTop = !sc || sc.scrollTop <= 2;
+    const atBottom = !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 2;
+    swipe.current = { y: t.clientY, x: t.clientX, atTop, atBottom };
+  }
+  function onTouchEnd(e: TouchEvent) {
+    const s = swipe.current; swipe.current = null;
+    if (!s) return;
+    const t = e.changedTouches[0];
+    const dy = t.clientY - s.y, dx = t.clientX - s.x;
+    if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe
+    const down = dy > 0;
+    if (down && !s.atTop) return;       // swipe-down only from the top
+    if (!down && !s.atBottom) return;   // swipe-up only from the bottom
+    if (path === "/chat") nav(down ? "/advanced" : "/lists");
+    else if (path === "/lists") { if (down) nav("/chat"); }
+    else if (advHome) { if (!down) nav("/chat"); }   // the Advanced grid only
+  }
 
   return (
     <div className="ushell">
@@ -150,7 +187,8 @@ export default function Shell({ children }: { children: ReactNode }) {
       )}
       {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
 
-      <div className={"ubody" + (advanced ? " adv" : "")}>{children}</div>
+      <div className={"ubody" + (advanced ? " adv" : "")}
+           onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>{children}</div>
     </div>
   );
 }

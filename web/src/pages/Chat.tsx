@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, TouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { createEntry, get, post, streamChat, uploadAttachment } from "../api";
@@ -68,6 +68,25 @@ export default function Chat() {
   }, [input]);
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
+
+  // Swipe left/right across the conversation to move between modes.
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  function onTouchStart(e: TouchEvent) {
+    const t = e.touches[0];
+    touchStart.current = { x: t.clientX, y: t.clientY };
+  }
+  function onTouchEnd(e: TouchEvent) {
+    const s = touchStart.current;
+    touchStart.current = null;
+    if (!s) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - s.x, dy = t.clientY - s.y;
+    // Require a clear, mostly-horizontal swipe so it doesn't fight vertical scroll.
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const i = MODES.findIndex((m) => m.key === mode);
+    const ni = dx < 0 ? Math.min(i + 1, MODES.length - 1) : Math.max(i - 1, 0);
+    if (ni !== i) pick(MODES[ni].key);
+  }
 
   const convKey = (m: Mode) => `jbrain_conv_${m}`;
 
@@ -172,7 +191,8 @@ export default function Chat() {
 
   return (
     <div className="chat-wrap">
-      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}>
+      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}
+           onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {mode === "entry" ? (
           entries.length === 0
             ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>

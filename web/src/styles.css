@@ -180,7 +180,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 }
 .composer-box textarea {
   background: transparent; border: none; padding: 0; width: 100%; resize: none;
-  color: var(--text); font-size: 16px;
+  color: var(--text); font-size: 16px; min-height: 2.6em; overflow-y: hidden;
 }
 .composer-box textarea:focus { outline: none; border: none; }
 .composer-box textarea::placeholder { color: var(--text-dim); }

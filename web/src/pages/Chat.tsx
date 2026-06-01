@@ -14,7 +14,7 @@ const MODES: { key: Mode; label: string; icon: string }[] = [
   { key: "research", label: "Research", icon: "search" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
-  entry: "Write an entry…",
+  entry: "Write an entry… (the first line becomes its title)",
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };
@@ -37,6 +37,18 @@ export default function Chat() {
 
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Grow the compose box upward as you type, up to ~half the visible height,
+  // then scroll inside it.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const max = Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.5);
+    el.style.height = Math.min(el.scrollHeight, max) + "px";
+    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+  }, [input]);
 
   function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
@@ -156,7 +168,8 @@ export default function Chat() {
           </div>
         )}
         <textarea
-          rows={2}
+          ref={taRef}
+          rows={1}
           placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
           value={input} disabled={!online}
           onChange={(e) => setInput(e.target.value)}

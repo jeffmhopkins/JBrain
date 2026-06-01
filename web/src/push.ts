@@ -15,8 +15,17 @@ function urlB64ToUint8Array(b64: string): Uint8Array {
 }
 
 export function pushSupported(): boolean {
-  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window
-    && !isDemo() && getServer() === "";   // same-origin deploy only
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return false;
+  if (isDemo()) return false;
+  // The service worker is registered for THIS page's origin, so push works only
+  // when the API is same-origin. Empty server = same origin; a configured server
+  // URL is fine as long as it resolves to this same origin.
+  const srv = getServer();
+  if (srv) {
+    try { return new URL(srv).origin === window.location.origin; }
+    catch { return false; }
+  }
+  return true;
 }
 
 // Subscribe (idempotent) and register with the API. Returns true if this browser

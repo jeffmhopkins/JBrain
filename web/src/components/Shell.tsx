@@ -2,6 +2,7 @@ import { ReactNode, TouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
+import { enablePush, pushSupported } from "../push";
 import { useOnline } from "../hooks";
 import { Icon } from "./Icon";
 
@@ -11,31 +12,50 @@ interface ReviewItem { id: number; title: string; message: string; link_slug: st
 // page), so the Advanced bolt stays visible beside it. The bell fills + brightens
 // (same treatment as the active bolt) while the menu is open.
 function ReviewBell() {
+  const { vapidPublicKey } = useAuth();
   const [count, setCount] = useState(0);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<ReviewItem[]>([]);
+  const [pushReady, setPushReady] = useState(false);   // this browser is push-subscribed
   const ref = useRef<HTMLDivElement>(null);
 
   const refresh = () => get("/api/reviews/count").then((r) => setCount(r.pending)).catch(() => {});
+
+  // Subscribe to push on load if permission is already granted (so a relaunch
+  // re-subscribes silently and the bell can drop to the slow poll).
+  useEffect(() => {
+    if (pushSupported() && "Notification" in window && Notification.permission === "granted") {
+      enablePush(vapidPublicKey).then(setPushReady);
+    }
+  }, [vapidPublicKey]);
+
   useEffect(() => {
     refresh();
-    // Poll, but also re-check the instant the app returns to the foreground —
-    // mobile/PWA throttle or pause setInterval while backgrounded, so without this
-    // a new alert (e.g. a share editor's proposal) wouldn't show until a manual
-    // refresh. visibilitychange/focus/pageshow cover tab switch, app resume, and
-    // bfcache restore.
-    const id = setInterval(refresh, 30000);
+    // When push is the live channel, a much slower poll is enough — it's only a
+    // safety net against a silently-dropped push. Otherwise keep the 30s poll.
+    // Resume-refresh (visibilitychange/focus/pageshow) always runs: mobile/PWA
+    // pause setInterval while backgrounded, so this catches alerts on resume.
+    const active = pushSupported() && Notification.permission === "granted" && pushReady;
+    const id = setInterval(refresh, active ? 120000 : 30000);
     const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    // A push wakes any open page so the bell updates live (count rides in the msg).
+    const onMsg = (e: MessageEvent) => {
+      if (e.data?.type === "jbrain-review") {
+        if (typeof e.data.count === "number") setCount(e.data.count); else refresh();
+      }
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", refresh);
     window.addEventListener("pageshow", refresh);
+    navigator.serviceWorker?.addEventListener("message", onMsg);
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("pageshow", refresh);
+      navigator.serviceWorker?.removeEventListener("message", onMsg);
     };
-  }, []);
+  }, [pushReady]);
 
   // Mirror the pending count onto the installed-app icon badge (App Badging API:
   // desktop PWAs, and iOS 16.4+ Home Screen apps once notification permission is
@@ -57,10 +77,12 @@ function ReviewBell() {
   async function toggle() {
     if (open) { setOpen(false); return; }
     // First time the user engages with alerts, ask for notification permission so
-    // the icon badge can show (required on installed iOS PWAs). User-gesture only.
+    // the icon badge + push can work (required on installed iOS PWAs). Then
+    // subscribe to push and flip off the fast poll. User-gesture only.
     if ("Notification" in window && Notification.permission === "default") {
       try { await Notification.requestPermission(); } catch { /* ignore */ }
     }
+    if (Notification.permission === "granted") enablePush(vapidPublicKey).then(setPushReady);
     let list: ReviewItem[] = [];
     try { list = await get("/api/reviews"); } catch { /* ignore */ }
     setItems(list);

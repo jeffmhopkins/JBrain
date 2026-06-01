@@ -192,4 +192,8 @@ def share_propose(token: str, body: ProposeIn, request: Request):
     except Exception:
         conn.rollback()
         raise
+    # Post-commit, fire-and-forget: notify the owner (banner + badge, even if the
+    # app is closed). Generic body — push banners show on the lock screen.
+    from ..services import push
+    push.notify_review_created("JBrain", "New edit proposal to review")
     return {"ok": True, **r}

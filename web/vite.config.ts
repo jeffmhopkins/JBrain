@@ -39,6 +39,9 @@ export default defineConfig({
         clientsClaim: true,
         skipWaiting: true,
         cleanupOutdatedCaches: true,
+        // Pull our push/notificationclick handlers into the generated SW. Relative
+        // specifier => resolves to <base>push-sw.js (correct at "/" and "/JBrain/").
+        importScripts: ["push-sw.js"],
         navigateFallback: base + "index.html",
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [

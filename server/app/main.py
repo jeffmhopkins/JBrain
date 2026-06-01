@@ -15,6 +15,7 @@ from .routers import (
     action_defs,
     attachments,
     auth_router,
+    push,
     capture,
     lists,
     share,
@@ -85,6 +86,9 @@ async def lifespan(app: FastAPI):
     from .services import image_analysis
     image_analysis.reset_stale(get_conn())     # fail any attachment analysis left 'pending'
 
+    from .services import push as _push
+    _push.ensure_vapid()                       # generate/seed the Web Push VAPID keypair
+
     from .services import pipeline as _pipeline
     _pipeline.ingest_repo_action_defs(get_conn())  # seed/update action recipes
 
@@ -125,7 +129,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push):
     app.include_router(r.router)
 
 
@@ -148,5 +152,9 @@ if STATIC_DIR.exists():
             return JSONResponse({"detail": "Not found"}, status_code=404)
         candidate = STATIC_DIR / full_path
         if full_path and candidate.is_file():
+            # Service-worker scripts must always revalidate so a new push handler
+            # ships promptly (they're not content-hashed like /assets).
+            if full_path in ("sw.js", "push-sw.js"):
+                return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
             return FileResponse(candidate)
         return FileResponse(STATIC_DIR / "index.html")

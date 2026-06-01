@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 def init_db() -> None:
@@ -198,6 +198,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         _add_column(conn, "attachments", "analysis_status", "TEXT")   # NULL|pending|done|error
         _add_column(conn, "attachments", "analysis_detail", "TEXT")   # error message for the UI
         _add_column(conn, "attachments", "analyzed_at", "TEXT")
+
+    if current < 17:
+        # Web Push subscriptions (idempotent create; schema.sql carries it for fresh DBs).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT UNIQUE NOT NULL,
+              p256dh TEXT NOT NULL, auth TEXT NOT NULL, ua TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              last_seen_at TEXT NOT NULL DEFAULT (datetime('now')));
+        """)
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     db_path: str = "/data/brain.db"
 
+    # Web Push (VAPID). Keys auto-generate on first boot into the DB `meta` table
+    # if these are blank, so existing installs gain push with zero config. Set
+    # them here only to pin a keypair across machines/restores. `vapid_subject` is
+    # the required contact URL sent to push services.
+    vapid_subject: str = Field("mailto:admin@localhost", validation_alias=AliasChoices("VAPID_SUBJECT", "vapid_subject"))
+    vapid_private_key: str = Field("", validation_alias=AliasChoices("VAPID_PRIVATE_KEY", "vapid_private_key"))
+    vapid_public_key: str = Field("", validation_alias=AliasChoices("VAPID_PUBLIC_KEY", "vapid_public_key"))
+
     # Loaded from the JBRAIN_DOMAIN env var; used for cookie/CORS context.
     jbrain_domain: str = "localhost"
 

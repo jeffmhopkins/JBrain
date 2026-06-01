@@ -249,3 +249,15 @@ CREATE TABLE IF NOT EXISTS share_proposals (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_prop_one_pending
   ON share_proposals(share_link_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_share_prop_status ON share_proposals(status);
+
+-- Web Push subscriptions (one row per browser/device that opted in). The endpoint
+-- is a push-service capability URL; p256dh/auth are the client's encryption keys.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  endpoint     TEXT UNIQUE NOT NULL,
+  p256dh       TEXT NOT NULL,
+  auth         TEXT NOT NULL,
+  ua           TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

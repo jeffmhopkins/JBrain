@@ -30,6 +30,7 @@ interface AuthState {
   versionMismatch: boolean;
   hasLlm: boolean;
   appTz: string;
+  vapidPublicKey: string;
   demo: boolean;
   connect: (key: string, server: string) => Promise<void>;
   exploreDemo: () => void;
@@ -47,6 +48,7 @@ export default function App() {
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [hasLlm, setHasLlm] = useState(false);
   const [appTz, setAppTz] = useState<string>("");
+  const [vapidPublicKey, setVapidPublicKey] = useState<string>("");
 
   // Load public server info (brain name) from the configured server. The version
   // is authed-only now, so it comes from /verify instead.
@@ -65,6 +67,7 @@ export default function App() {
     setServerVersion(v.version || null);
     setHasLlm(!!v.has_llm);
     setAppTz(v.app_tz || "");
+    setVapidPublicKey(v.vapid_public_key || "");
     setAuthed(true);
   }
 
@@ -89,7 +92,7 @@ export default function App() {
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
-        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setAuthed(true); })
+        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setVapidPublicKey(v?.vapid_public_key || ""); setAuthed(true); })
         // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
         // A network error or 5xx (offline, server restarting) must NOT log the
         // user out: stay authed so cached pages still work.
@@ -103,7 +106,7 @@ export default function App() {
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {
     authenticated: authed, brainName, server: getServer(),
-    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, hasLlm, appTz, demo: isDemo(),
+    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, hasLlm, appTz, vapidPublicKey, demo: isDemo(),
     connect, exploreDemo, disconnect,
   };
 

@@ -191,14 +191,18 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
               .replace("{instructions}", extra)
               .replace("{entries}", entries_text)
               .replace("{existing_kb}", kb_text))
-    text = llm.complete([{"role": "user", "content": prompt}], max_tokens=4096)
+    text = llm.complete([{"role": "user", "content": prompt}], max_tokens=8192)
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end == -1:
         return []
     try:
         data = _json.loads(text[start:end + 1])
     except Exception:
-        return []
+        # Brackets present but unparseable almost always means the output was
+        # truncated (too many/large articles for one batch). Surface it as a run
+        # error instead of silently dropping the batch — the watermark won't
+        # advance, so it retries (and the run log tells you to shrink the batch).
+        raise RuntimeError("synthesis output was truncated or invalid JSON — lower the workflow's batch_limit")
     return [a for a in data if isinstance(a, dict) and a.get("title") and a.get("content_md")]
 
 

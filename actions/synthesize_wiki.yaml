@@ -13,7 +13,7 @@
 #   review        — set to false to suppress the review card (default on)
 type: synthesize_wiki
 config:
-  - { key: batch_limit, label: Max entries per run, type: number, help: "Default 50" }
+  - { key: batch_limit, label: Max entries per run, type: number, help: "Default 20 (smaller = more thorough per run)" }
   - { key: instructions, label: Extra guidance, type: textarea }
   - { key: review, label: Post a review card, type: review, default: true }
 steps:
@@ -26,7 +26,7 @@ steps:
     with:
       kind: entry
       since_id: "{{ wm }}"
-      limit: "{{ config.batch_limit | default(50) }}"
+      limit: "{{ config.batch_limit | default(20) }}"
     stop_when_empty: "no new entries since last run"
 
   - id: kb

@@ -979,3 +979,18 @@ def test_wiki_relevant_kb_retrieval(client, monkeypatch):
     assert [k["title"] for k in kb] == ["Marathon Training"]            # retrieved + kb-filtered
     fb = [{"title": "Cooking", "content_md": "x"}]
     assert wf._relevant_kb(None, entries, fallback_kb=fb) == fb         # cold start -> fallback
+
+
+def test_wiki_synthesis_truncation_surfaces(monkeypatch):
+    # A bracketed-but-unparseable reply means the LLM ran out of output budget
+    # mid-array. We must RAISE (so the watermark doesn't advance and the batch
+    # retries) instead of silently dropping the entries.
+    import pytest as _pytest
+    from app.services import workflows as wf, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(wf, "_relevant_kb", lambda *a, **k: [])
+    monkeypatch.setattr(
+        llm, "complete",
+        lambda *a, **k: '[{"title":"A","content_md":"ok"}, {"title":"B","content_md":"trunc]')
+    with _pytest.raises(RuntimeError, match="batch_limit"):
+        wf._synthesize_actions([{"title": "e", "content_md": "x"}], [], conn=None)

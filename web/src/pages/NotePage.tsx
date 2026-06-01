@@ -145,9 +145,9 @@ export default function NotePage() {
                 <option value={7}>Expires in 7 days</option>
                 <option value={30}>Expires in 30 days</option>
               </select>
-              <label className="row" style={{ gap: 4, fontSize: 13 }} title="After someone opens it, the link stops working in other browsers (resettable).">
+              <label className="row" style={{ gap: 4, fontSize: 13 }} title="Ties the link to the first BROWSER that opens it — others get a 'locked' page (resettable). Friction against re-sharing, not strong security.">
                 <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareBind}
-                       onChange={(e) => setShareBind(e.target.checked)} /> Lock to first device
+                       onChange={(e) => setShareBind(e.target.checked)} /> Lock to first browser
               </label>
             </div>
           ) : (

@@ -71,6 +71,10 @@ export const put = <T = any>(p: string, body?: unknown) =>
 export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
 // Public, UNAUTHENTICATED share endpoints — no bearer key (a recipient has none).
+// Uses default same-origin credentials so the bind cookie rides along (recipients
+// always open the canonical JBRAIN_DOMAIN share URL = same origin as the API). Do
+// NOT switch to credentials:"include" without also enabling credentialed CORS with
+// an explicit origin list — `*` + credentials is spec-incompatible and would brick bind.
 async function publicApi<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(u(path), { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (!res.ok) {

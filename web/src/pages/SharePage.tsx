@@ -50,7 +50,7 @@ export default function SharePage() {
     <div className="share-page"><div className="share-card">
       <h2>{error === 429 ? "Too many requests." : error === 403 ? "This link is locked." : "This link isn't available."}</h2>
       <p className="muted">{error === 429 ? "Please wait a moment and reload."
-        : error === 403 ? "It was opened on another device first. Ask the owner to reset the lock."
+        : error === 403 ? "It was opened in another browser first. Ask the owner to reset the lock."
         : "It may have been revoked, expired, or never existed."}</p>
     </div></div>
   );

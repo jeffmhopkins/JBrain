@@ -115,7 +115,7 @@ export default function SharesPage() {
           <div className="row" style={{ marginTop: 6, gap: 6 }}>
             <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
             <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied" : "Copy"}</button>
-            {l.bind ? <button className="ghost" onClick={() => resetBind(l)} title="Forget the bound device">Reset lock</button> : null}
+            {l.bind ? <button className="ghost" onClick={() => resetBind(l)} title="Forget the locked browser so the link can be opened fresh">Reset lock</button> : null}
             <button className="ghost" onClick={() => revoke(l)}>Revoke</button>
           </div>
         </div>

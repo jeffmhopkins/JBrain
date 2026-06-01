@@ -320,7 +320,15 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   72%  { opacity: 1; transform: translate(-50%, 0); }
   100% { opacity: 0; transform: translate(-50%, -6px); }
 }
-.messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
+.messages {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  padding: 8px 8px 8px 0;                 /* right inset so bubbles clear the scrollbar */
+  scrollbar-width: thin; scrollbar-color: transparent transparent;   /* hidden until scrolling */
+}
+.messages.scrolling { scrollbar-color: var(--border) transparent; }
+.messages::-webkit-scrollbar { width: 8px; }
+.messages::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+.messages.scrolling::-webkit-scrollbar-thumb { background: var(--border); }
 .msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }
 .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
 .msg.assistant { align-self: flex-start; background: var(--bg-elev); }

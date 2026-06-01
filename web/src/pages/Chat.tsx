@@ -50,10 +50,15 @@ export default function Chat() {
   // Only auto-follow new content when the user is already at the bottom; if they
   // scroll up to read, leave them there even as the reply streams in.
   const atBottomRef = useRef(true);
+  const scrollHideTimer = useRef<number>();
   function onMessagesScroll() {
     const el = scrollRef.current;
     if (!el) return;
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Reveal the scrollbar only while scrolling, then auto-hide it.
+    el.classList.add("scrolling");
+    clearTimeout(scrollHideTimer.current);
+    scrollHideTimer.current = window.setTimeout(() => el.classList.remove("scrolling"), 900);
   }
 
   // Grow the compose box upward as you type, up to ~half the visible height,

@@ -85,14 +85,21 @@ def delete_subscription(conn, endpoint: str) -> None:
 
 # --- Sending ----------------------------------------------------------------
 
-def send_test(conn) -> dict:
-    """Fire a test push to every subscribed device. Returns what was attempted so
-    the UI can guide the user (how many devices, whether VAPID is configured)."""
+def send_test(conn, delay_seconds: int = 0) -> dict:
+    """Fire a test push to every subscribed device, optionally after a delay (so
+    the user can close the app and confirm closed-app delivery). The delay is
+    server-side — it survives the app being backgrounded/closed. Returns what was
+    attempted so the UI can guide the user."""
     n = conn.execute("SELECT COUNT(*) AS c FROM push_subscriptions").fetchone()["c"]
     has_vapid = bool(get_meta(_PRIV_META))
+    delay = max(0, min(int(delay_seconds or 0), 300))   # clamp 0–5min
     if n and has_vapid:
-        notify_review_created("JBrain", "Test notification — push is working.")
-    return {"subscriptions": n, "vapid": has_vapid}
+        fire = lambda: notify_review_created("JBrain", "Test notification — push is working.")
+        if delay:
+            t = threading.Timer(delay, fire); t.daemon = True; t.start()
+        else:
+            fire()
+    return {"subscriptions": n, "vapid": has_vapid, "delay": delay}
 
 
 def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> None:

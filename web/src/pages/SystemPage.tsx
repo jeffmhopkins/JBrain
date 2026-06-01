@@ -14,6 +14,7 @@ export default function SystemPage() {
   const [msg, setMsg] = useState("");
   const [notifMsg, setNotifMsg] = useState("");
   const [notifBusy, setNotifBusy] = useState(false);
+  const [notifDelay, setNotifDelay] = useState(0);   // seconds before the test fires
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
 
@@ -39,10 +40,12 @@ export default function SystemPage() {
       }
       const ok = await enablePush(vapidPublicKey);
       if (!ok) { setNotifMsg("Couldn’t subscribe this device to push."); return; }
-      const r = await post("/api/push/test");
+      const r = await post("/api/push/test", { delay: notifDelay });
+      const devices = `${r.subscriptions} device${r.subscriptions === 1 ? "" : "s"}`;
       if (!r.vapid) setNotifMsg("Push isn’t configured on the server.");
       else if (!r.subscriptions) setNotifMsg("No subscribed devices yet — try again in a moment.");
-      else setNotifMsg(`Test sent to ${r.subscriptions} device${r.subscriptions === 1 ? "" : "s"}. Watch for the banner.`);
+      else if (r.delay) setNotifMsg(`Test scheduled in ${r.delay}s to ${devices}. Close the app now to test closed-app delivery.`);
+      else setNotifMsg(`Test sent to ${devices}. Watch for the banner.`);
     } catch (e: any) {
       setNotifMsg(e?.message || "Couldn’t send the test.");
     } finally { setNotifBusy(false); }
@@ -89,9 +92,18 @@ export default function SystemPage() {
         <p className="muted" style={{ fontSize: 13 }}>
           Get a banner + badge when someone proposes an edit to a shared note — even with the app closed. Send a test to confirm it reaches this device.
         </p>
-        <button className="ghost" onClick={sendTestNotification} disabled={notifBusy}>
-          {notifBusy ? "Sending…" : "Send test notification"}
-        </button>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button className="ghost" onClick={sendTestNotification} disabled={notifBusy}>
+            {notifBusy ? "Sending…" : "Send test notification"}
+          </button>
+          <select value={notifDelay} onChange={(e) => setNotifDelay(Number(e.target.value))}
+                  style={{ width: "auto", fontSize: 13, padding: "6px 8px" }} title="Delay before the test fires">
+            <option value={0}>Immediately</option>
+            <option value={10}>after 10s</option>
+            <option value={30}>after 30s</option>
+            <option value={60}>after 1 min</option>
+          </select>
+        </div>
         {notifMsg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{notifMsg}</p>}
       </div>
 

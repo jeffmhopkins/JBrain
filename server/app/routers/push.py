@@ -36,7 +36,11 @@ def unsubscribe(body: UnsubIn):
     return {"ok": True}
 
 
+class TestIn(BaseModel):
+    delay: int = 0   # seconds before firing (server-side; survives app close)
+
+
 @router.post("/test")
-def test():
-    """Send a test notification to all subscribed devices."""
-    return push.send_test(get_conn())
+def test(body: TestIn | None = None):
+    """Send a test notification to all subscribed devices, optionally after a delay."""
+    return push.send_test(get_conn(), body.delay if body else 0)

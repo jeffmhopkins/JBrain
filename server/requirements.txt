@@ -9,5 +9,5 @@ PyYAML==6.0.2
 croniter==3.0.3
 tzdata==2024.2
 pypdf==5.1.0
-Pillow==11.0.0
+Pillow==10.4.0   # fastembed 0.5.1 requires pillow <11.0.0,>=10.3.0
 # Test-only deps (pytest, httpx) live in requirements-dev.txt — not in the image.

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ForceGraph2D from "react-force-graph-2d";
+import { forceCollide } from "d3-force-3d";
 import { get } from "../api";
+import { leaf, truncate } from "../util";
 
-interface GNode { id: number; title: string; slug: string; kind: string; val: number }
+interface GNode { id: number; title: string; slug: string; kind: string; val: number; _label?: string }
 interface GLink { source: number | GNode; target: number | GNode }
 interface GraphData { nodes: GNode[]; links: GLink[] }
 
@@ -24,6 +26,7 @@ export default function GraphPage() {
   const [focusId, setFocusId] = useState<number | null>(null);
   const [depth, setDepth] = useState(2);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const fgRef = useRef<any>(null);
   const [size, setSize] = useState({ w: 600, h: 600 });
 
   useEffect(() => { get<GraphData>("/api/graph").then(setData).catch(() => {}); }, []);
@@ -63,8 +66,25 @@ export default function GraphPage() {
       }
       links = links.filter((l) => keep.has(l.source as number) && keep.has(l.target as number));
     }
-    return { nodes: data.nodes.filter((n) => keep.has(n.id)).map((n) => ({ ...n })), links };
+    // Precompute the on-canvas label: root prefix stripped always, and clipped to
+    // 24 chars for every node except the focused one (which shows its full leaf
+    // title for discoverability). This is what stops long names overlapping.
+    const nodes = data.nodes.filter((n) => keep.has(n.id)).map((n) => ({
+      ...n,
+      _label: n.id === focusId ? leaf(n.title) : truncate(leaf(n.title), 24),
+    }));
+    return { nodes, links };
   }, [data, kind, focusId, depth]);
+
+  // Spread nodes apart so labels have room: a stronger charge plus a collision
+  // force sized to the node radius + label padding. Reapply when the view set
+  // changes (force-graph rebuilds its sim on new data).
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    fg.d3Force("charge")?.strength(-180);
+    fg.d3Force("collide", forceCollide((n: any) => Math.sqrt(Math.max(n.val, 1)) * NODE_REL + 12));
+  }, [view]);
 
   const focusNode = focusId != null ? data.nodes.find((n) => n.id === focusId) : undefined;
   const kinds: { key: Kind; label: string }[] = [
@@ -113,10 +133,13 @@ export default function GraphPage() {
         </div>
       )}
 
-      {data.nodes.length === 0 && <p className="muted">No notes to graph yet.</p>}
+      {data.nodes.length === 0
+        ? <p className="muted">No notes to graph yet.</p>
+        : !focusNode && <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>Tap a node to focus · tap again to open</p>}
 
       <div ref={wrapRef} style={{ flex: 1, minHeight: 0 }}>
         <ForceGraph2D
+          ref={fgRef}
           width={size.w}
           height={size.h}
           graphData={view as any}
@@ -127,6 +150,8 @@ export default function GraphPage() {
           nodeColor={(n: any) => colorOf(n.kind)}
           linkColor={() => "rgba(148,163,184,0.4)"}
           backgroundColor="transparent"
+          cooldownTicks={120}
+          onEngineStop={() => fgRef.current?.zoomToFit(400, 40)}
           onBackgroundClick={() => setFocusId(null)}
           onNodeClick={(n: any) => (focusId === n.id ? navigate(`/note/${n.slug}`) : setFocusId(n.id))}
           nodeCanvasObjectMode={() => "after"}
@@ -148,9 +173,9 @@ export default function GraphPage() {
             ctx.lineWidth = 3 / scale;
             ctx.lineJoin = "round";
             ctx.strokeStyle = "rgba(8,10,14,0.92)";
-            ctx.strokeText(node.title, node.x, y);
+            ctx.strokeText(node._label ?? node.title, node.x, y);
             ctx.fillStyle = "#e6edf3";
-            ctx.fillText(node.title, node.x, y);
+            ctx.fillText(node._label ?? node.title, node.x, y);
           }}
         />
       </div>

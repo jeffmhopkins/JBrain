@@ -7,6 +7,14 @@ export function slugify(title: string): string {
   return s || "note";
 }
 
+// Strip the root prefix (notes/ kb/ lists/ logs/) so a title reads as its bare
+// leaf. Titles are stored root-prefixed; this is the human-facing short form.
+export const leaf = (t: string) => (t || "").replace(/^(notes|kb|lists|logs)\//i, "");
+
+// Clip to n chars with an ellipsis. Used for graph labels so long titles don't
+// overlap; the focused node still shows its full (leaf) title elsewhere.
+export const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
 // Rewrite [[Title]] and [[Title|display]] into markdown links to the note route.
 export function renderWikiLinks(md: string): string {
   return (md || "").replace(/\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g, (_m, title, disp) => {

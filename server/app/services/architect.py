@@ -6,6 +6,7 @@ router. Tools are executed server-side against SQLite.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -77,12 +78,20 @@ _TOOL_SCHEMAS = {
 }
 
 
+# Tables the research prompt must NOT advertise to the model: secrets (meta holds
+# the access-key hash) and internal/config tables (not user content to query).
+_NON_CONTENT_TABLES = {"meta", "prompt_overrides", "staging_actions",
+                       "workflows", "workflow_runs", "action_defs", "review_items"}
+
+
 def _schema_tables(conn) -> str:
-    """Live, user-facing table list for the research prompt (excludes fts/vec shadows)."""
+    """Live, user-facing table list for the research prompt (excludes fts/vec
+    shadows and secret/internal tables)."""
     try:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
         names = [r[0] for r in rows
-                 if not r[0].startswith("sqlite_") and "fts" not in r[0] and not r[0].startswith("vec_")]
+                 if not r[0].startswith("sqlite_") and "fts" not in r[0]
+                 and not r[0].startswith("vec_") and r[0] not in _NON_CONTENT_TABLES]
         return ", ".join(names)
     except Exception:
         return ""
@@ -181,8 +190,9 @@ def _tool_read_attachment(conn, attachment_id: int) -> str:
 
 
 def _tool_query_sql(conn, sql: str, limit: int = 50) -> str:
+    from ..db import get_query_conn  # a read-only connection — writes can't reach the DB
     try:
-        cols, rows = sqlsafe.run_select(conn, sql, limit)
+        cols, rows = sqlsafe.run_select(get_query_conn(), sql, limit)
     except ValueError as exc:
         return f"query rejected: {exc}"
     if not rows:
@@ -199,7 +209,8 @@ def _tool_list_recent(conn, limit: int = 10) -> str:
     ).fetchall()
     if not rows:
         return "The wiki is empty — this is a fresh brain."
-    return "Recent notes:\n" + "\n".join(f"- {r['title']}" for r in rows)
+    # Titles are user-controlled -> fence as untrusted data, like search_notes.
+    return _untrusted("recent-notes", "\n".join(f"- {r['title']}" for r in rows))
 
 
 def _tool_read_inbox(conn) -> str:
@@ -215,12 +226,14 @@ def _tool_read_inbox(conn) -> str:
 def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]) -> tuple[str, dict]:
     staged = []
     for a in actions:
-        # For an UPDATE, capture the note's identity + version at propose time so
-        # apply can detect (and refuse) a lost update if the note changed since.
+        # For an UPDATE, capture the note's identity + a content hash at propose
+        # time so apply can detect (and refuse) a lost update if the note changed
+        # since. A hash beats updated_at, which is only second-resolution.
         if a.get("type") == "UPDATE" and (a.get("title") or "").strip():
             note = notes_svc.get_by_title(conn, a["title"].strip())
             if note:
-                a = {**a, "_basis": {"note_id": note["id"], "updated_at": note["updated_at"]}}
+                h = hashlib.sha256((note["content_md"] or "").encode("utf-8")).hexdigest()
+                a = {**a, "_basis": {"note_id": note["id"], "content_hash": h}}
         conn.execute(
             "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (?, ?, ?)",
             (conversation_id, a["type"], json.dumps(a)),

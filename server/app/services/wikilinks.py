@@ -16,7 +16,9 @@ def extract_links(content_md: str) -> list[str]:
     seen: dict[str, None] = {}
     for match in WIKILINK_RE.finditer(content_md or ""):
         title = match.group(1).strip()
-        if title:
+        # Real note titles are single-line and bounded; ignore junk so a giant or
+        # multi-line [[…]] body can't bloat the links table or be re-scanned forever.
+        if title and "\n" not in title and len(title) <= 200:
             seen.setdefault(title, None)
     return list(seen.keys())
 

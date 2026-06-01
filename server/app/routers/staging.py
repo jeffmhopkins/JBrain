@@ -2,6 +2,7 @@
 
 Nothing the architect proposes touches the wiki until it is applied here.
 """
+import hashlib
 import json
 
 from fastapi import APIRouter, HTTPException
@@ -36,24 +37,27 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
-        if action_type == "UPDATE":
+        basis = payload.get("_basis") or {}
+        # CREATE always makes a new note. An UPDATE with no captured basis (the
+        # title didn't exist at propose time) is also treated as create-only, so
+        # it can't overwrite a note that appeared in the meantime.
+        create_only = action_type == "CREATE" or not basis.get("note_id")
+        if action_type == "UPDATE" and basis.get("note_id"):
             # Optimistic concurrency: refuse a stale edit whose basis note has
             # changed (or been deleted) since it was proposed — the model's full
             # content would otherwise silently clobber the intervening change.
-            basis = payload.get("_basis") or {}
-            if basis.get("note_id"):
-                live = conn.execute(
-                    "SELECT updated_at FROM notes WHERE id = ? AND deleted_at IS NULL",
-                    (basis["note_id"],),
-                ).fetchone()
-                if live is None:
-                    raise HTTPException(status_code=409, detail="The target note no longer exists — re-propose the change.")
-                if basis.get("updated_at") and live["updated_at"] != basis["updated_at"]:
+            live = conn.execute(
+                "SELECT content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
+                (basis["note_id"],),
+            ).fetchone()
+            if live is None:
+                raise HTTPException(status_code=409, detail="The target note no longer exists — re-propose the change.")
+            if basis.get("content_hash"):
+                live_hash = hashlib.sha256((live["content_md"] or "").encode("utf-8")).hexdigest()
+                if live_hash != basis["content_hash"]:
                     raise HTTPException(status_code=409, detail="The note changed since this edit was proposed — re-open it and re-propose.")
-        # CREATE must never overwrite an existing note (create_only disambiguates
-        # the title on collision); UPDATE intentionally targets the note by title.
         notes_svc.upsert_note(conn, title, payload.get("content") or "",
-                              create_only=(action_type == "CREATE"), **kw)
+                              create_only=create_only, **kw)
     elif action_type == "LINK":
         source_title = (payload.get("source_title") or "").strip()
         target_title = (payload.get("target_title") or "").strip()
@@ -101,18 +105,23 @@ def apply_all():
     ).fetchall()
     # All-or-nothing: a bad action rolls back the whole batch instead of leaving
     # some rows applied and committed while the rest are abandoned.
+    applied = 0
     try:
         for r in rows:
-            _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
-            conn.execute(
+            # Claim each row first; skip any a concurrent single-apply already took.
+            claim = conn.execute(
                 "UPDATE staging_actions SET status = 'applied' WHERE id = ? AND status = 'pending'",
                 (r["id"],),
             )
+            if claim.rowcount != 1:
+                continue
+            _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
+            applied += 1
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return {"ok": True, "applied": len(rows)}
+    return {"ok": True, "applied": applied}
 
 
 @router.post("/{action_id}/reject")

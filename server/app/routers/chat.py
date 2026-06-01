@@ -1,5 +1,6 @@
 """Chat: conversations, message history, and the streaming architect endpoint."""
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -78,8 +79,10 @@ def send_message(conversation_id: int, body: MessageIn):
         try:
             async for event in architect.run(conversation_id, body.text, location, mode):
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
-        except Exception as exc:  # surface to the client rather than hanging
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+        except Exception:  # don't hang the client; log detail server-side, not to the user
+            logging.getLogger("jbrain").exception("chat stream failed")
+            msg = "Something went wrong while generating the reply. Please try again."
+            yield f"event: error\ndata: {json.dumps({'message': msg})}\n\n"
 
     return StreamingResponse(
         event_stream(),

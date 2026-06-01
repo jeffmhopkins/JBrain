@@ -5,8 +5,10 @@ identically.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
+import threading
 
 from . import embeddings, wikilinks
 
@@ -14,8 +16,11 @@ from . import embeddings, wikilinks
 # are tiny, so this is generous; it just bounds runaway growth on churny notes.
 MAX_VERSIONS_PER_NOTE = 50
 
-# Guard so an entry-event workflow that writes can't recursively re-fire.
-_suppress_entry_events = False
+# Per-thread state: the re-entrancy guard (so an entry-event workflow that writes
+# can't recursively re-fire) and the deferred entry_created queue. Thread-local
+# (not a module global) because sync request handlers run on a shared threadpool,
+# each with its own DB connection — a global flag would leak across requests.
+_state = threading.local()
 
 
 def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
@@ -35,26 +40,34 @@ def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
     return norm
 
 
-def _fire_entry_created(conn, note_id: int, title: str) -> None:
-    global _suppress_entry_events
-    if _suppress_entry_events:
+def _fire_entry_created(conn, note_id: int, title: str, *, commit: bool = False) -> None:
+    if getattr(_state, "suppress", False):
         return
-    _suppress_entry_events = True
+    _state.suppress = True
     try:
         from . import workflows as wf_svc  # lazy import avoids a cycle
-        # commit=False: this fires INSIDE upsert_note's transaction, so the
-        # workflow's writes ride the caller's single commit (keeping the note +
-        # its enrichments atomic) instead of committing the half-built note.
-        wf_svc.fire_event(conn, "entry_created", {"note_title": title, "note_id": note_id}, commit=False)
+        wf_svc.fire_event(conn, "entry_created", {"note_title": title, "note_id": note_id}, commit=commit)
     except Exception:  # noqa: BLE001 — a workflow must never break note creation
         pass
     finally:
-        _suppress_entry_events = False
+        _state.suppress = False
+
+
+def flush_entry_events(conn) -> None:
+    """Fire entry_created for notes created with fire_events=False, AFTER the
+    caller has committed. Run post-commit so a slow (LLM-backed) workflow doesn't
+    hold the note's write transaction open and block other writers."""
+    pending = getattr(_state, "pending", None) or []
+    _state.pending = []
+    for note_id, title in pending:
+        _fire_entry_created(conn, note_id, title, commit=True)
 
 
 def slugify(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return s or "note"
+    # Non-ASCII titles (emoji/CJK/RTL) collapse to empty — derive a stable,
+    # distinct slug from the title so they don't all become "note".
+    return s or ("note-" + hashlib.sha1(title.strip().encode("utf-8")).hexdigest()[:8])
 
 
 def _unique_slug(conn, title: str, exclude_id: int | None = None) -> str:
@@ -136,6 +149,7 @@ def upsert_note(
     location_label: str | None = None,
     kind: str | None = None,
     create_only: bool = False,
+    fire_events: bool = True,
 ) -> int:
     """Create or update a note and append a version row for the new state.
 
@@ -150,8 +164,13 @@ def upsert_note(
       - cross-kind — an explicit `kind` that differs from the matched note (e.g.
         a wiki-synthesis `kind='kb'` write must not overwrite a user's entry).
     In those cases we fall back to a uniquely-titled new note instead.
+
+    `fire_events=False` defers the entry_created hook: the caller fires it via
+    flush_entry_events() AFTER committing (so a slow workflow doesn't hold the
+    note's write transaction open).
     """
     title = title.strip()
+    id_targeted = note_id is not None
     if note_id is not None:
         existing = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     else:
@@ -177,7 +196,10 @@ def upsert_note(
                 "UPDATE notes SET lat = ?, lon = ?, location_label = ? WHERE id = ?",
                 (lat, lon, location_label, note_id),
             )
-        if kind is not None:  # only change kind when explicitly set
+        # Only change kind on a title-keyed write (where the cross-kind guard
+        # above already ensured kinds match). Never flip kind on an id-targeted
+        # write — that would let a caller convert e.g. a user entry into a kb note.
+        if kind is not None and not id_targeted:
             conn.execute("UPDATE notes SET kind = ? WHERE id = ?", (kind, note_id))
         created = False
     else:
@@ -206,7 +228,12 @@ def upsert_note(
     # only (not kb/workflow/restore writes), so workflows can enrich them.
     effective_kind = kind if kind is not None else (existing["kind"] if existing else "entry")
     if created and effective_kind == "entry" and source in ("user", "architect"):
-        _fire_entry_created(conn, note_id, title)
+        if fire_events:
+            _fire_entry_created(conn, note_id, title)
+        else:  # defer to the caller's flush_entry_events() after it commits
+            pending = getattr(_state, "pending", None) or []
+            pending.append((note_id, title))
+            _state.pending = pending
     return note_id
 
 

@@ -15,16 +15,24 @@ _initialized = False
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(*, query_only: bool = False) -> sqlite3.Connection:
     settings = get_settings()
     Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Wait for a concurrent writer (WAL serialises writes) instead of failing the
+    # request immediately with "database is locked".
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+    if query_only:
+        # Structurally block writes — defense in depth behind the SQL keyword
+        # filter, so ad-hoc SELECTs can never mutate the DB even if the filter is
+        # bypassed. (PRAGMA itself is rejected by the filter, so it can't be undone.)
+        conn.execute("PRAGMA query_only=ON")
     return conn
 
 
@@ -34,6 +42,16 @@ def get_conn() -> sqlite3.Connection:
     if conn is None:
         conn = _connect()
         _local.conn = conn
+    return conn
+
+
+def get_query_conn() -> sqlite3.Connection:
+    """A per-thread READ-ONLY connection for ad-hoc SQL (the SQL console and the
+    research-mode query_sql tool). Writes are impossible through it."""
+    conn = getattr(_local, "query_conn", None)
+    if conn is None:
+        conn = _connect(query_only=True)
+        _local.query_conn = conn
     return conn
 
 

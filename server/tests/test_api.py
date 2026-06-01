@@ -1140,13 +1140,84 @@ def test_staged_update_conflict_is_rejected(client):
     architect._tool_propose_actions(conn, None, [
         {"type": "UPDATE", "title": "Doc", "content": "model rewrite", "summary": "s"}])
     conn.commit()
-    # Simulate an intervening edit by bumping updated_at away from the basis.
-    nid = client.get("/api/notes/doc").json()["id"]
-    conn.execute("UPDATE notes SET updated_at = '2099-01-01 00:00:00' WHERE id = ?", (nid,))
-    conn.commit()
+    # Intervening edit changes the note's content -> the basis hash no longer matches.
+    client.post("/api/notes", json={"title": "Doc", "content_md": "v2 body (user edit)"})
     aid = client.get("/api/staging").json()[0]["id"]
     assert client.post(f"/api/staging/{aid}/apply").status_code == 409
-    assert client.get("/api/notes/doc").json()["content_md"] == "v1 body"   # not clobbered
+    assert client.get("/api/notes/doc").json()["content_md"] == "v2 body (user edit)"  # not clobbered
+
+
+def test_non_ascii_titles_get_distinct_slugs(client):
+    # Emoji/CJK titles used to all collapse to slug "note"; now each is distinct.
+    a = client.post("/api/notes/entry", json={"text": "🎉"}).json()
+    b = client.post("/api/notes/entry", json={"text": "日本語"}).json()
+    assert a["slug"] != b["slug"]
+    assert a["slug"].startswith("note-") and b["slug"].startswith("note-")
+
+
+def test_query_sql_is_read_only_and_blocks_schema_and_secrets(client):
+    # The SQL console / research query_sql runs on a read-only connection AND
+    # the keyword filter blocks meta + the sqlite_* schema tables.
+    assert client.post("/api/sql", json={"sql": "SELECT name FROM sqlite_master"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT value FROM meta"}).status_code == 400
+    # A write is rejected by the filter, and even a filter-bypassing write can't
+    # mutate the DB: PRAGMA query_only=ON is set on the connection.
+    from app.db import get_query_conn
+    import sqlite3 as _sqlite
+    try:
+        get_query_conn().execute("INSERT INTO notes (title, slug, content_md) VALUES ('x','x','x')")
+        raised = False
+    except _sqlite.OperationalError:
+        raised = True
+    assert raised  # read-only connection refuses writes structurally
+
+
+def test_research_schema_tables_excludes_secrets(client):
+    from app.services import architect
+    from app.db import get_conn
+    tables = architect._schema_tables(get_conn())
+    assert "notes" in tables
+    assert "meta" not in tables and "prompt_overrides" not in tables and "staging_actions" not in tables
+
+
+def test_list_recent_notes_is_fenced(client):
+    # Titles are user-controlled; the tool output must be wrapped as untrusted.
+    from app.db import get_conn
+    from app.services import architect, notes as notes_svc
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "A Title", "body")
+    conn.commit()
+    out = architect._tool_list_recent(conn)
+    assert "untrusted content" in out and "A Title" in out
+
+
+def test_basisless_update_does_not_clobber(client):
+    # An UPDATE proposed for a title that didn't exist at propose time must NOT
+    # overwrite a note later created under that title — it creates a new one.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    architect._tool_propose_actions(conn, None, [
+        {"type": "UPDATE", "title": "Later", "content": "model content", "summary": "s"}])
+    conn.commit()
+    client.post("/api/notes/entry", json={"text": "user body", "title": "Later"})
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    assert client.get("/api/notes/later").json()["content_md"] == "user body"  # untouched
+    assert any(n["title"] == "Later (2)" for n in client.get("/api/notes").json())
+
+
+def test_id_targeted_upsert_does_not_flip_kind(client):
+    # Writing by note_id must never convert a note's kind (the cross-kind guard
+    # only covers the title path; the id path must refuse the flip).
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "Mine", "body", source="user")  # kind=entry
+    conn.commit()
+    notes_svc.upsert_note(conn, "Mine", "new body", note_id=nid, kind="kb")
+    conn.commit()
+    assert conn.execute("SELECT kind FROM notes WHERE id = ?", (nid,)).fetchone()["kind"] == "entry"
 
 
 def test_undo_noop_does_not_mark_undone(client):

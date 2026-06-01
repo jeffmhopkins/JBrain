@@ -26,15 +26,6 @@ class EntryIn(BaseModel):
     lon: float | None = Field(default=None, ge=-180, le=180)
 
 
-def _unique_title(conn, base: str) -> str:
-    base = base.strip()[:80] or "Entry"
-    title, i = base, 2
-    while conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?)", (title,)).fetchone():
-        title = f"{base} ({i})"
-        i += 1
-    return title
-
-
 class RestoreIn(BaseModel):
     version_id: int
     note: str | None = None
@@ -94,8 +85,13 @@ def get_note(slug: str):
 @router.post("")
 def create_or_update(body: NoteIn):
     conn = get_conn()
-    note_id = notes_svc.upsert_note(conn, body.title, body.content_md)
-    conn.commit()
+    try:
+        note_id = notes_svc.upsert_note(conn, body.title, body.content_md, fire_events=False)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    notes_svc.flush_entry_events(conn)  # fire entry_created AFTER commit
     row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return dict(row)
 
@@ -111,15 +107,18 @@ def create_entry(body: EntryIn):
         raise HTTPException(status_code=422, detail="Entry text cannot be empty")
     if not base:  # text-only with no usable first line (e.g. attachment placeholder)
         base = f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
-    title = _unique_title(conn, base)
+    title = notes_svc._unique_title(conn, base)
     try:
         note_id = notes_svc.upsert_note(
-            conn, title, text, source="user", lat=body.lat, lon=body.lon,
+            conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,
         )
         conn.commit()
     except Exception:
         conn.rollback()  # don't leave a half-written note on the pooled connection
         raise
+    # Fire entry_created AFTER commit so an (optional, LLM-backed) auto-tag
+    # workflow doesn't hold the note's write lock or freeze the "no-LLM" Send.
+    notes_svc.flush_entry_events(conn)
     row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return dict(row)
 
@@ -203,17 +202,21 @@ def restore(slug: str, body: RestoreIn):
     if not v:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    notes_svc.upsert_note(
-        conn,
-        v["title"],
-        v["content_md"],
-        note_id=note["id"],
-        source="restore",
-        version_note=body.note or f"restored from version {body.version_id}",
-    )
-    # Restoring resurrects a soft-deleted note (upsert re-indexed it).
-    conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (note["id"],))
-    conn.commit()
+    try:
+        notes_svc.upsert_note(
+            conn,
+            v["title"],
+            v["content_md"],
+            note_id=note["id"],
+            source="restore",
+            version_note=body.note or f"restored from version {body.version_id}",
+        )
+        # Restoring resurrects a soft-deleted note (upsert re-indexed it).
+        conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (note["id"],))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     out = conn.execute(
         "SELECT id, title, slug FROM notes WHERE id = ?", (note["id"],)
     ).fetchone()

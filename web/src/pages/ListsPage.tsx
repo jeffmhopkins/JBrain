@@ -102,7 +102,7 @@ export default function ListsPage() {
 
   return (
     <div className="content">
-      <div className="row" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ marginBottom: 14, justifyContent: "flex-end" }}>
         <button className="primary" onClick={() => { setNewName(""); setCreating(true); }}>+ New list</button>
       </div>
 

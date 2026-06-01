@@ -15,6 +15,7 @@ from typing import AsyncGenerator
 from ..config import get_settings
 from ..db import get_conn
 from . import embeddings
+from . import geo
 from . import llm
 from . import notes as notes_svc
 from . import prompts
@@ -35,11 +36,12 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
-                 "read_attachment", "query_sql", "add_list_item", "read_list", "set_item_checked",
-                 "set_item_priority", "add_sublist", "log_entry", "capture_inbox", "mark_inbox_processed",
-                 "set_tags", "create_share_link", "list_share_links", "revoke_share_link", "propose_actions"],
+                 "read_attachment", "query_sql", "geo_distance", "nearby_notes", "add_list_item", "read_list",
+                 "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
+                 "mark_inbox_processed", "set_tags", "create_share_link", "list_share_links",
+                 "revoke_share_link", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
-                 "read_attachment", "query_sql"],
+                 "read_attachment", "query_sql", "geo_distance", "nearby_notes"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -47,6 +49,14 @@ _TOOL_SCHEMAS = {
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+    "geo_distance": {"type": "object", "properties": {
+        "from": {"type": "string", "description": "Note title OR 'lat,lon'."},
+        "to": {"type": "string", "description": "Note title OR 'lat,lon'. Omit to measure from the current location."}},
+        "required": ["from"]},
+    "nearby_notes": {"type": "object", "properties": {
+        "center": {"type": "string", "description": "Note title or 'lat,lon'. Omit to use the current location."},
+        "radius_km": {"type": "number", "default": 25},
+        "limit": {"type": "integer", "default": 10}}},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     "read_inbox": {"type": "object", "properties": {}},
     "add_list_item": {"type": "object", "properties": {
@@ -205,7 +215,84 @@ def _tool_read_note(conn, title: str) -> str:
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
-    return _untrusted("note", f"# {row['title']}\n\n{row['content_md']}")
+    body = f"# {row['title']}\n\n{row['content_md']}"
+    if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
+        body += f"\n\nLocation: {row['lat']:.5f}, {row['lon']:.5f}"
+        if row["location_label"]:
+            body += f" ({row['location_label']})"
+    return _untrusted("note", body)
+
+
+_COORD_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def _resolve_point(conn, ref: str):
+    """Resolve a geo endpoint given as 'lat,lon' OR a note title.
+    Returns (lat, lon, label) or an error string."""
+    m = _COORD_RE.match(ref or "")
+    if m:
+        lat, lon = float(m.group(1)), float(m.group(2))
+        if not geo.valid_coord(lat, lon):
+            return f"'{ref}' is out of range (lat -90..90, lon -180..180)."
+        return (lat, lon, None)
+    note = notes_svc.get_by_title(conn, (ref or "").strip())
+    if note is None:
+        return f"No note titled '{ref}' (give a note title or 'lat,lon')."
+    if note["lat"] is None or note["lon"] is None:
+        return f"Note '{note['title']}' has no stored location."
+    return (note["lat"], note["lon"], note["title"])
+
+
+def _tool_geo_distance(conn, conversation_id, frm, to=None):
+    a = _resolve_point(conn, frm)
+    if isinstance(a, str):
+        return a
+    if to:
+        b = _resolve_point(conn, to)
+        if isinstance(b, str):
+            return b
+    else:  # "to" omitted → measure from the user's current location
+        loc = notes_svc.conversation_location(conn, conversation_id)
+        if not loc or loc["lat"] is None:
+            return "No destination: give a second point, or share your location first."
+        b = (loc["lat"], loc["lon"], "your current location")
+    km = geo.haversine_km(a[0], a[1], b[0], b[1])
+    brg = geo.bearing_deg(a[0], a[1], b[0], b[1])
+    return _untrusted("geo", f"{a[2] or 'point A'} → {b[2] or 'point B'}: "
+                      f"{km:.2f} km ({geo.km_to_miles(km):.2f} mi), bearing {brg:.0f}° {geo.compass(brg)}.")
+
+
+def _tool_nearby_notes(conn, conversation_id, center=None, radius_km=25, limit=10):
+    if center:
+        c = _resolve_point(conn, center)
+        if isinstance(c, str):
+            return c
+    else:
+        loc = notes_svc.conversation_location(conn, conversation_id)
+        if not loc or loc["lat"] is None:
+            return "No center: give a note title or 'lat,lon', or share your location first."
+        c = (loc["lat"], loc["lon"], "your current location")
+    try:
+        radius_km = float(radius_km)
+    except (TypeError, ValueError):
+        radius_km = 25.0
+    limit = max(1, min(int(limit or 10), 50))
+    rows = conn.execute(
+        "SELECT title, lat, lon, location_label FROM notes "
+        "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL"
+    ).fetchall()
+    near = []
+    for r in rows:
+        d = geo.haversine_km(c[0], c[1], r["lat"], r["lon"])
+        if d <= radius_km:
+            near.append((d, r))
+    near.sort(key=lambda x: x[0])
+    if not near:
+        return f"No notes with a location within {radius_km:.0f} km of {c[2] or 'that point'}."
+    lines = [f"- {r['title']} — {d:.1f} km ({geo.km_to_miles(d):.1f} mi)"
+             + (f" [{r['location_label']}]" if r["location_label"] else "")
+             for d, r in near[:limit]]
+    return _untrusted("nearby-notes", f"Near {c[2] or 'that point'}:\n" + "\n".join(lines))
 
 
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
@@ -448,6 +535,11 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
         return _tool_read_note(conn, args["title"]), None
+    if name == "geo_distance":
+        return _tool_geo_distance(conn, conversation_id, args["from"], args.get("to")), None
+    if name == "nearby_notes":
+        return _tool_nearby_notes(conn, conversation_id, args.get("center"),
+                                  args.get("radius_km", 25), args.get("limit", 10)), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
     if name == "read_inbox":

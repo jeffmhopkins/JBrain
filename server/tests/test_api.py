@@ -474,6 +474,31 @@ def test_delete_list_resolves_robustly(client):
     assert client.get("/api/notes/shopping-list").status_code == 404
 
 
+def test_geo_tools(client):
+    # read_note surfaces coords; geo_distance + nearby_notes work in both modes.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    client.post("/api/notes/entry", json={"text": "home base", "title": "Home", "lat": 40.7128, "lon": -74.0060})
+    client.post("/api/notes/entry", json={"text": "the office", "title": "Office", "lat": 34.0522, "lon": -118.2437})
+
+    assert "Location: 40.71" in architect._tool_read_note(conn, "notes/Home")
+    # distance by note titles
+    out = architect._tool_geo_distance(conn, None, "notes/Home", "notes/Office")
+    assert "km" in out and "mi" in out
+    # distance with a raw coordinate endpoint
+    assert "km" in architect._tool_geo_distance(conn, None, "notes/Home", "34.05,-118.24")
+    # a note without coords is reported, not guessed
+    client.post("/api/notes", json={"title": "Plain", "content_md": "x"})
+    assert "no stored location" in architect._tool_geo_distance(conn, None, "notes/Home", "Plain")
+    # nearby: within 50km of NYC finds Home, not LA
+    near = architect._tool_nearby_notes(conn, None, "40.71,-74.0", 50, 10)
+    assert "notes/Home" in near and "notes/Office" not in near
+    # both tools available in research (read-only) and assisted
+    research = {t.name for t in architect._tools_for("research")}
+    assert "geo_distance" in research and "nearby_notes" in research
+
+
 def test_share_link_bind(client):
     # A 'bind' link shows a consent landing; ACCEPT (claim) locks it to that
     # browser. Others are locked out until the owner resets.

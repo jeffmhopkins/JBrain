@@ -1076,16 +1076,93 @@ def test_wiki_relevant_kb_retrieval(client, monkeypatch):
     assert wf._relevant_kb(None, entries, fallback_kb=fb) == fb         # cold start -> fallback
 
 
-def test_wiki_synthesis_truncation_surfaces(monkeypatch):
-    # A bracketed-but-unparseable reply means the LLM ran out of output budget
-    # mid-array. We must RAISE (so the watermark doesn't advance and the batch
-    # retries) instead of silently dropping the entries.
-    import pytest as _pytest
+def test_wiki_synthesis_recovers_truncated_array(monkeypatch):
+    # A reply truncated mid-array must NOT drop the whole batch: we salvage the
+    # complete objects parsed before the truncation point.
     from app.services import workflows as wf, llm
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(wf, "_relevant_kb", lambda *a, **k: [])
     monkeypatch.setattr(
         llm, "complete",
-        lambda *a, **k: '[{"title":"A","content_md":"ok"}, {"title":"B","content_md":"trunc]')
-    with _pytest.raises(RuntimeError, match="batch_limit"):
-        wf._synthesize_actions([{"title": "e", "content_md": "x"}], [], conn=None)
+        lambda *a, **k: 'Here you go: [{"title":"A","content_md":"ok"}, {"title":"B","content_md":"trunc')
+    out = wf._synthesize_actions([{"title": "e", "content_md": "x"}], [], conn=None)
+    assert [a["title"] for a in out] == ["A"]   # the one complete article survives
+
+
+def test_agent_loop_signals_when_it_stops_early(client, monkeypatch):
+    # When the model keeps wanting tools until the iteration cap, the reply must
+    # carry a visible "stopped early" notice rather than being silently cut off.
+    import asyncio
+    from app.services import architect, llm
+
+    class _FakeProvider:
+        name = "fake"
+        def has_credentials(self): return True
+        def default_model(self): return "m"
+        def supports_tools(self): return True
+        async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+            yield llm.TextDelta("thinking ")
+            call = llm.ToolCall(id="t1", name="list_recent_notes", args={})
+            yield llm.ToolCallEvent(call)
+            yield llm.TurnEnd([call], usage={"input_tokens": 1, "output_tokens": 1})
+        def append_tool_results(self, messages, results):
+            messages.append({"role": "user", "content": "tool results"})
+
+    monkeypatch.setattr(llm, "get_provider", lambda: _FakeProvider())
+    conv_id = client.post("/api/chat/conversations").json()["id"]
+
+    async def drain():
+        return [ev async for ev in architect.run(conv_id, "hello")]
+
+    events = asyncio.run(drain())
+    text = "".join(e.get("text", "") for e in events if e.get("type") == "token")
+    assert "stopped here" in text.lower() or "limit" in text.lower()
+    assert events[-1] == {"type": "done"}
+
+
+def test_parse_json_array_handles_brackets_in_strings():
+    from app.services.workflows import _parse_json_array
+    # Square brackets inside content_md (wiki-links) and prose around the array
+    # must not confuse the extractor.
+    txt = 'sure:\n[{"title":"T","content_md":"see [[Other]] and [list]"}]\nthanks!'
+    assert _parse_json_array(txt) == [{"title": "T", "content_md": "see [[Other]] and [list]"}]
+    assert _parse_json_array("nothing here") == []
+    assert _parse_json_array("[]") == []
+
+
+def test_staged_update_conflict_is_rejected(client):
+    # Optimistic concurrency: an UPDATE proposed against a note that then changes
+    # must be refused at apply, not silently clobber the newer content.
+    from app.db import get_conn
+    from app.services import architect
+    client.post("/api/notes/entry", json={"text": "v1 body", "title": "Doc"})
+    conn = get_conn()
+    architect._tool_propose_actions(conn, None, [
+        {"type": "UPDATE", "title": "Doc", "content": "model rewrite", "summary": "s"}])
+    conn.commit()
+    # Simulate an intervening edit by bumping updated_at away from the basis.
+    nid = client.get("/api/notes/doc").json()["id"]
+    conn.execute("UPDATE notes SET updated_at = '2099-01-01 00:00:00' WHERE id = ?", (nid,))
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 409
+    assert client.get("/api/notes/doc").json()["content_md"] == "v1 body"   # not clobbered
+
+
+def test_undo_noop_does_not_mark_undone(client):
+    # If the line to remove is already gone, undo must report a conflict rather
+    # than lying to the UI by marking the action 'undone'.
+    import json as _json
+    from app.db import get_conn
+    from app.services import quicktasks
+    conn = get_conn()
+    quicktasks.add_list_item(conn, "Tasks", "buy milk")
+    cur = conn.execute(
+        "INSERT INTO staging_actions (type, payload_json, status) VALUES ('ADD_ITEM', ?, 'applied')",
+        (_json.dumps({"summary": "x", "undo": {"op": "remove_line", "title": "Tasks", "line": "- [ ] NOT PRESENT"}}),),
+    )
+    conn.commit()
+    assert client.post(f"/api/staging/{cur.lastrowid}/undo").status_code == 409
+    # Still 'applied' (truthful), not falsely 'undone'.
+    row = conn.execute("SELECT status FROM staging_actions WHERE id = ?", (cur.lastrowid,)).fetchone()
+    assert row["status"] == "applied"

@@ -9,9 +9,10 @@
 # override the action defaults below.
 
 agent:
-  model: ""            # blank => the LLM_MODEL env value (provider default)
-  max_tokens: 2048
-  max_iterations: 8
+  model: ""              # blank => the LLM_MODEL env value (provider default)
+  max_tokens: 2048       # per model turn
+  max_iterations: 8      # max tool-use rounds in one reply
+  max_total_tokens: 60000  # cumulative in/out budget across a reply's tool loop (0 = off)
 
 modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.

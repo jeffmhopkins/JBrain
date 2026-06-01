@@ -22,6 +22,7 @@ from . import sqlsafe
 
 _DEFAULT_MAX_TOKENS = 2048
 _DEFAULT_MAX_ITERATIONS = 8
+_DEFAULT_MAX_TOTAL_TOKENS = 60000  # cumulative budget across a turn's tool loop (0 = off)
 
 # Minimal fallbacks if prompts.yaml is missing; prompts.yaml is the source of truth.
 _FALLBACK_SYSTEM = {
@@ -214,6 +215,12 @@ def _tool_read_inbox(conn) -> str:
 def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]) -> tuple[str, dict]:
     staged = []
     for a in actions:
+        # For an UPDATE, capture the note's identity + version at propose time so
+        # apply can detect (and refuse) a lost update if the note changed since.
+        if a.get("type") == "UPDATE" and (a.get("title") or "").strip():
+            note = notes_svc.get_by_title(conn, a["title"].strip())
+            if note:
+                a = {**a, "_basis": {"note_id": note["id"], "updated_at": note["updated_at"]}}
         conn.execute(
             "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (?, ?, ?)",
             (conversation_id, a["type"], json.dumps(a)),
@@ -343,7 +350,10 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     model = prompts.get("agent.model") or provider.default_model()
     max_tokens = prompts.get_int("agent.max_tokens", _DEFAULT_MAX_TOKENS)
     max_iterations = prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS)
+    token_budget = prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS)
     assistant_text_parts: list[str] = []
+    total_tokens = 0
+    stopped_early = False
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -357,7 +367,8 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 yield {"type": "token", "text": ev.text}
             elif isinstance(ev, llm.ToolCallEvent):
                 calls.append(ev.call)
-            # TurnEnd is the terminator; tool calls were collected above.
+            elif isinstance(ev, llm.TurnEnd) and ev.usage:
+                total_tokens += ev.usage.get("input_tokens", 0) + ev.usage.get("output_tokens", 0)
 
         if not calls:
             break
@@ -374,6 +385,19 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 yield event  # {"type": "staging"|"applied", ...}
             results.append(llm.ToolResult(tool_call_id=call.id, content=result_text))
         provider.append_tool_results(messages, results)
+
+        # Cumulative-cost backstop: stop before running another (ever-larger) turn.
+        if token_budget and total_tokens >= token_budget:
+            stopped_early = True
+            break
+    else:
+        # Loop ran out of iterations while the model still wanted to call tools.
+        stopped_early = True
+
+    if stopped_early:
+        notice = "\n\n_(I reached this turn's step/token limit and stopped here. Ask me to continue if you'd like.)_"
+        assistant_text_parts.append(notice)
+        yield {"type": "token", "text": notice}
 
     final_text = "".join(assistant_text_parts).strip()
     if final_text:

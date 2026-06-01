@@ -180,7 +180,6 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
     base prompt; the JSON-output contract is always enforced."""
     if not llm.has_credentials():
         raise RuntimeError("no LLM API key configured")
-    import json as _json
 
     kb = _relevant_kb(conn, entries, existing_kb)
     entries_text = "\n\n".join(_entry_block(e) for e in entries)
@@ -192,18 +191,59 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
               .replace("{entries}", entries_text)
               .replace("{existing_kb}", kb_text))
     text = llm.complete([{"role": "user", "content": prompt}], max_tokens=8192)
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1:
+    data = _parse_json_array(text)
+    return [a for a in data if isinstance(a, dict) and a.get("title") and a.get("content_md")]
+
+
+def _parse_json_array(text: str) -> list:
+    """Extract the JSON array of articles from an LLM reply, tolerating prose
+    around it AND a truncated trailing object — we recover the complete prefix
+    rather than dropping the whole batch. Brackets inside string values (e.g.
+    [[wiki-links]]) are ignored via string/escape tracking, so the naive
+    find('[')/rfind(']') over/under-reach problems don't apply.
+
+    Returns the parsed list, or [] if not even one complete object is recoverable
+    (an empty result is treated as 'nothing durable', so the watermark won't
+    advance and the batch is retried)."""
+    import json as _json
+    start = text.find("[")
+    if start == -1:
+        return []
+    depth = in_str = esc = 0
+    end = -1            # index past the array's closing ']', if reached
+    last_obj_end = -1   # index past the last COMPLETE top-level object
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = 0
+            elif c == "\\":
+                esc = 1
+            elif c == '"':
+                in_str = 0
+            continue
+        if c == '"':
+            in_str = 1
+        elif c in "[{":
+            depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth == 1 and c == "}":      # closed a top-level array element
+                last_obj_end = i + 1
+            elif depth == 0 and c == "]":    # closed the array itself
+                end = i + 1
+                break
+    if end != -1:
+        candidate = text[start:end]
+    elif last_obj_end != -1:                 # truncated mid-array: salvage the prefix
+        candidate = text[start:last_obj_end] + "]"
+    else:
         return []
     try:
-        data = _json.loads(text[start:end + 1])
+        data = _json.loads(candidate)
     except Exception:
-        # Brackets present but unparseable almost always means the output was
-        # truncated (too many/large articles for one batch). Surface it as a run
-        # error instead of silently dropping the batch — the watermark won't
-        # advance, so it retries (and the run log tells you to shrink the batch).
-        raise RuntimeError("synthesis output was truncated or invalid JSON — lower the workflow's batch_limit")
-    return [a for a in data if isinstance(a, dict) and a.get("title") and a.get("content_md")]
+        return []
+    return data if isinstance(data, list) else []
 
 
 DEFAULT_TAG_PROMPT = (

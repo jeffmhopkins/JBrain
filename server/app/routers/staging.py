@@ -36,6 +36,20 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
+        if action_type == "UPDATE":
+            # Optimistic concurrency: refuse a stale edit whose basis note has
+            # changed (or been deleted) since it was proposed — the model's full
+            # content would otherwise silently clobber the intervening change.
+            basis = payload.get("_basis") or {}
+            if basis.get("note_id"):
+                live = conn.execute(
+                    "SELECT updated_at FROM notes WHERE id = ? AND deleted_at IS NULL",
+                    (basis["note_id"],),
+                ).fetchone()
+                if live is None:
+                    raise HTTPException(status_code=409, detail="The target note no longer exists — re-propose the change.")
+                if basis.get("updated_at") and live["updated_at"] != basis["updated_at"]:
+                    raise HTTPException(status_code=409, detail="The note changed since this edit was proposed — re-open it and re-propose.")
         # CREATE must never overwrite an existing note (create_only disambiguates
         # the title on collision); UPDATE intentionally targets the note by title.
         notes_svc.upsert_note(conn, title, payload.get("content") or "",
@@ -125,7 +139,11 @@ def undo_action(action_id: int):
     op = undo.get("op")
 
     if op == "remove_line":
-        quicktasks.remove_line_from_note(conn, undo["title"], undo["line"], source="user")
+        if not quicktasks.remove_line_from_note(conn, undo["title"], undo["line"], source="user"):
+            # The line was already edited/removed — don't mark the action undone
+            # (which would lie to the UI), report that there's nothing to undo.
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="Nothing to undo — that line was already changed or removed.")
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

@@ -63,6 +63,7 @@ class ToolCallEvent:
 @dataclass
 class TurnEnd:
     tool_calls: list[ToolCall]  # empty => the model is done (no tools requested)
+    usage: dict | None = None   # {"input_tokens", "output_tokens"} if the provider reports it
 
 
 StreamEvent = TextDelta | ToolCallEvent | TurnEnd
@@ -140,7 +141,10 @@ class AnthropicProvider:
         ]
         for c in calls:
             yield ToolCallEvent(c)
-        yield TurnEnd(calls)
+        u = getattr(final, "usage", None)
+        usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
+                 "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
+        yield TurnEnd(calls, usage=usage)
 
     def append_tool_results(self, messages, results):
         messages.append({

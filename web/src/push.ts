@@ -14,18 +14,24 @@ function urlB64ToUint8Array(b64: string): Uint8Array {
   return out;
 }
 
-export function pushSupported(): boolean {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return false;
-  if (isDemo()) return false;
-  // The service worker is registered for THIS page's origin, so push works only
-  // when the API is same-origin. Empty server = same origin; a configured server
-  // URL is fine as long as it resolves to this same origin.
+// Empty string = supported; otherwise a short reason why push can't run here.
+export function pushSupportReason(): string {
+  if (!("serviceWorker" in navigator)) return "this browser has no service worker (open the installed app, not an in-app browser)";
+  if (!("PushManager" in window)) return "no Push API (on iPhone, push needs the app installed to the Home Screen)";
+  if (!("Notification" in window)) return "no Notification API";
+  if (isDemo()) return "demo mode";
   const srv = getServer();
   if (srv) {
-    try { return new URL(srv).origin === window.location.origin; }
-    catch { return false; }
+    try {
+      const o = new URL(srv).origin;
+      if (o !== window.location.origin) return `server ${o} is a different origin than ${window.location.origin}`;
+    } catch { return "the configured server URL is invalid"; }
   }
-  return true;
+  return "";
+}
+
+export function pushSupported(): boolean {
+  return pushSupportReason() === "";
 }
 
 // Subscribe (idempotent) and register with the API. Returns true if this browser

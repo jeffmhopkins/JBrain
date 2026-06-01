@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useAuth } from "../App";
-import { enablePush, pushSupported } from "../push";
+import { enablePush, pushSupported, pushSupportReason } from "../push";
 import { useGeo } from "../hooks";
 
 // "System" card: version + server update (reusing the same endpoints the
@@ -30,7 +30,7 @@ export default function SystemPage() {
     setNotifMsg(""); setNotifBusy(true);
     try {
       if (!pushSupported()) {
-        setNotifMsg("Notifications aren’t available here. On iPhone, install the app to your Home Screen first; on desktop, install the PWA.");
+        setNotifMsg(`Notifications aren’t available here: ${pushSupportReason()}.`);
         return;
       }
       if (Notification.permission === "default") await Notification.requestPermission();

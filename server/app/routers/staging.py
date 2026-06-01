@@ -108,10 +108,12 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             raise HTTPException(status_code=409, detail=str(e))
         undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
     elif action_type == "DELETE_LIST":
-        title = notes_svc.root_title(payload.get("list_title") or "", "lists")
-        note = notes_svc.get_by_title(conn, title)
-        if note is None or note["kind"] != "list":
-            raise HTTPException(status_code=404, detail=f"No list titled '{title}' to delete")
+        # Resolve by the title as given, then under lists/ — don't force-re-root or
+        # require kind='list' (the user confirmed deleting this note).
+        raw = (payload.get("list_title") or payload.get("title") or "").strip()
+        note = notes_svc.get_by_title(conn, raw) or notes_svc.get_by_title(conn, notes_svc.root_title(raw, "lists"))
+        if note is None:
+            raise HTTPException(status_code=404, detail=f"No list titled '{raw}' to delete")
         notes_svc.soft_delete(conn, note["id"])
         undo = {"op": "restore_note", "note_id": note["id"]}
     elif action_type == "DELETE":

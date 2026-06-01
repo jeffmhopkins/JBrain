@@ -449,6 +449,31 @@ def test_share_link_expiry_and_propose_limit(client):
     assert 429 in codes
 
 
+def test_delete_list_resolves_robustly(client):
+    # DELETE_LIST must find the list whether it's under lists/ (kind='list') OR
+    # stored under a bare/legacy title (e.g. pre-lists/ formalization).
+    import json as _json
+    from app.db import get_conn
+    from app.services import quicktasks, notes as notes_svc
+    conn = get_conn()
+
+    def stage_delete(list_title):
+        conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('DELETE_LIST', ?)",
+                     (_json.dumps({"type": "DELETE_LIST", "list_title": list_title, "summary": "s"}),))
+        conn.commit()
+        return client.post(f"/api/staging/{client.get('/api/staging').json()[-1]['id']}/apply").status_code
+
+    # (a) Proper list under lists/.
+    quicktasks.add_list_item(conn, "Groceries", "milk", source="user"); conn.commit()
+    assert stage_delete("Groceries") == 200
+    assert notes_svc.get_by_title(conn, "lists/Groceries") is None
+
+    # (b) A note named like a list but NOT under lists/ (legacy) — deletes by exact title.
+    client.post("/api/notes", json={"title": "Shopping List", "content_md": "- [ ] eggs"})
+    assert stage_delete("Shopping List") == 200
+    assert client.get("/api/notes/shopping-list").status_code == 404
+
+
 def test_share_link_bind(client):
     # A 'bind' link shows a consent landing; ACCEPT (claim) locks it to that
     # browser. Others are locked out until the owner resets.

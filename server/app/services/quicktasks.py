@@ -81,8 +81,14 @@ def add_list_item(
 
 
 def _load_list(conn, list_title: str):
-    title = notes_svc.root_title(list_title, "lists")
-    return title, notes_svc.get_by_title(conn, title)
+    """Find a list note: try the title as given, then under the lists/ root (so a
+    list that predates the lists/ convention, or one the model named without the
+    prefix, still resolves). Returns (actual_title, note_or_None) — the actual title
+    so writes target the real note instead of a re-rooted guess."""
+    raw = (list_title or "").strip()
+    note = notes_svc.get_by_title(conn, raw) or notes_svc.get_by_title(conn, notes_svc.root_title(raw, "lists"))
+    title = note["title"] if note else notes_svc.root_title(raw, "lists")
+    return title, note
 
 
 def _write_list(conn, title, lines, *, source, version_note, conversation_id=None, location=None):

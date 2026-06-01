@@ -31,9 +31,16 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
   }
   useEffect(() => { load(); }, [tick]);
 
-  async function apply(id: number) { await post(`/api/staging/${id}/apply`); onChange(); }
-  async function reject(id: number) { await post(`/api/staging/${id}/reject`); onChange(); }
-  async function applyAll() { await post("/api/staging/apply-all"); onChange(); }
+  // Always surface a failure (and refresh) — a swallowed error makes Apply look
+  // like it did nothing.
+  async function run(fn: () => Promise<unknown>, what: string) {
+    try { await fn(); }
+    catch (e: any) { alert(e?.message || `Couldn't ${what}.`); }
+    finally { onChange(); load(); }
+  }
+  const apply = (id: number) => run(() => post(`/api/staging/${id}/apply`), "apply this change");
+  const reject = (id: number) => run(() => post(`/api/staging/${id}/reject`), "reject this change");
+  const applyAll = () => run(() => post("/api/staging/apply-all"), "apply all");
 
   if (actions.length === 0) {
     return <p className="muted" style={{ fontSize: 13 }}>No pending proposals.</p>;

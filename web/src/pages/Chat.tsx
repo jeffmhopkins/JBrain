@@ -1,9 +1,11 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import { createEntry, post, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import { Icon } from "../components/Icon";
+import { makeLinkRenderer, renderWikiLinks } from "../util";
 
 interface Msg { role: "user" | "assistant"; content: string; }
 type Mode = "entry" | "assisted" | "research";
@@ -22,6 +24,7 @@ const PLACEHOLDER: Record<Mode, string> = {
 export default function Chat() {
   const online = useOnline();
   const geo = useGeo();
+  const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -148,7 +151,15 @@ export default function Chat() {
               </div>
             )}
             {messages.map((m, i) => (
-              <div key={i} className={`msg ${m.role}`}>{m.content || (streaming && i === messages.length - 1 ? "…" : "")}</div>
+              <div key={i} className={`msg ${m.role}`}>
+                {m.role === "assistant" && m.content ? (
+                  <div className="md msg-md">
+                    <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                  </div>
+                ) : (
+                  m.content || (streaming && i === messages.length - 1 ? "…" : "")
+                )}
+              </div>
             ))}
             {mode === "assisted" && applied.map((a) => (
               <div key={`a${a.id}`} className="applied-chip">

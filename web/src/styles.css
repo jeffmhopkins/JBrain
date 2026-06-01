@@ -320,6 +320,16 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .has-tabbar .composer { bottom: var(--tabbar-h); }
 
 /* ---- Markdown ----------------------------------------------------------- */
+/* Markdown rendered inside a chat bubble: the bubble uses pre-wrap for plain
+   text, but rendered markdown manages its own structure, so reset it and
+   collapse the outer block margins so the bubble hugs the content. */
+.msg-md { white-space: normal; }
+.msg-md > :first-child { margin-top: 0; }
+.msg-md > :last-child { margin-bottom: 0; }
+.msg-md p { margin: 0 0 0.5em; }
+.msg-md ul, .msg-md ol { margin: 0.35em 0; padding-left: 1.3em; }
+.msg-md pre { margin: 0.5em 0; }
+
 .md { line-height: 1.65; }
 .md h1, .md h2, .md h3 { line-height: 1.25; }
 .md pre { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; }

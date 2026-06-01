@@ -138,14 +138,17 @@ export default function NotePage() {
 
   const article = (
     <div className="content">
-      <div className="row">
-        <h1 className="note-title">{breakableTitle(note.title)}</h1>
-        {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8 }}>KB</span>}
-        <span className="spacer" />
-        {editing === null && <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>}
-        {editing === null && <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>}
-        {editing === null && <button className="ghost danger-hover" onClick={remove}>Delete</button>}
-      </div>
+      <h1 className="note-title">
+        {breakableTitle(note.title)}
+        {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
+      </h1>
+      {editing === null && (
+        <div className="row" style={{ marginTop: 10, gap: 8 }}>
+          <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>
+          <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>
+          <button className="ghost danger-hover" onClick={remove}>Delete</button>
+        </div>
+      )}
       {sharing && (
         <div className="share-panel">
           {!minted ? (

@@ -78,6 +78,11 @@ export default function Chat() {
         const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords);
         if (file) await uploadAttachment(r.slug, file);
         setEntries((xs) => [...xs, { text: text || (file ? `📎 ${file.name}` : ""), title: r.title, slug: r.slug }]);
+      } catch (err) {
+        // Don't silently lose the entry: put the text back and tell the user.
+        setInput(text);
+        if (file) setPendingFile(file);
+        alert("Couldn't save entry: " + (err instanceof Error ? err.message : "please try again."));
       } finally { setBusy(false); }
       return;
     }

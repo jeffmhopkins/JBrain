@@ -122,8 +122,10 @@ def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=N
         content = body_in
         vn = version_note or "workflow synthesis"
     nid = notes_svc.upsert_note(ctx.conn, title, content, source="workflow", version_note=vn, kind=kind)
-    note = notes_svc.get_by_title(ctx.conn, title)
-    return {"id": nid, "title": title, "slug": note["slug"] if note else None}
+    # Resolve by id, not title: upsert_note may have disambiguated the title to
+    # avoid clobbering an existing note of a different kind.
+    note = ctx.conn.execute("SELECT title, slug FROM notes WHERE id = ?", (nid,)).fetchone()
+    return {"id": nid, "title": note["title"] if note else title, "slug": note["slug"] if note else None}
 
 
 def _p_create_review(ctx, title, message="", link_title=None):
@@ -149,7 +151,9 @@ def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
         sql += " AND id > ?"
         params.append(int(since_id))
     sql += " ORDER BY id LIMIT ?"
-    params.append(int(limit))
+    # Clamp: a non-positive limit is SQLite's "no limit" (would pull every row
+    # into one LLM prompt); cap the upper bound too.
+    params.append(max(1, min(int(limit), 1000)))
     return [dict(r) for r in ctx.conn.execute(sql, params).fetchall()]
 
 

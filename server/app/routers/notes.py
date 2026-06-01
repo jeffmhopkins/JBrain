@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser
 from ..db import get_conn
@@ -20,8 +20,10 @@ class NoteIn(BaseModel):
 class EntryIn(BaseModel):
     text: str
     title: str | None = None
-    lat: float | None = None
-    lon: float | None = None
+    # Bounded so a stray reading (incl. NaN/inf, which fail the bounds) can't be
+    # stored and break downstream distance math / JSON serialisation.
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
 
 
 def _unique_title(conn, base: str) -> str:
@@ -104,13 +106,20 @@ def create_entry(body: EntryIn):
     Fires the entry_created hooks (auto-tag, etc.)."""
     conn = get_conn()
     text = body.text.strip()
-    base = body.title or next((ln.strip() for ln in text.splitlines() if ln.strip()), "") \
-        or f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+    base = (body.title or "").strip() or next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not text and not base:
+        raise HTTPException(status_code=422, detail="Entry text cannot be empty")
+    if not base:  # text-only with no usable first line (e.g. attachment placeholder)
+        base = f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
     title = _unique_title(conn, base)
-    note_id = notes_svc.upsert_note(
-        conn, title, text, source="user", lat=body.lat, lon=body.lon,
-    )
-    conn.commit()
+    try:
+        note_id = notes_svc.upsert_note(
+            conn, title, text, source="user", lat=body.lat, lon=body.lon,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()  # don't leave a half-written note on the pooled connection
+        raise
     row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return dict(row)
 

@@ -33,10 +33,19 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
     if loc:
         kw.update(lat=loc["lat"], lon=loc["lon"], location_label=loc["location_label"])
     if action_type in ("CREATE", "UPDATE"):
-        notes_svc.upsert_note(conn, payload["title"], payload.get("content", ""), **kw)
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
+        # CREATE must never overwrite an existing note (create_only disambiguates
+        # the title on collision); UPDATE intentionally targets the note by title.
+        notes_svc.upsert_note(conn, title, payload.get("content") or "",
+                              create_only=(action_type == "CREATE"), **kw)
     elif action_type == "LINK":
-        source = notes_svc.get_by_title(conn, payload["source_title"])
-        target_title = payload["target_title"]
+        source_title = (payload.get("source_title") or "").strip()
+        target_title = (payload.get("target_title") or "").strip()
+        if not source_title or not target_title:
+            raise HTTPException(status_code=400, detail="LINK action needs source_title and target_title")
+        source = notes_svc.get_by_title(conn, source_title)
         if source and f"[[{target_title}]]" not in source["content_md"]:
             new_content = source["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
             notes_svc.upsert_note(conn, source["title"], new_content, **kw)
@@ -52,8 +61,20 @@ def apply_action(action_id: int):
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Pending action not found")
-    _apply_action(conn, row["type"], json.loads(row["payload_json"]), row["conversation_id"])
-    conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (action_id,))
+    # Claim the row atomically first so two concurrent applies can't both pass
+    # the pending check and apply the same action twice.
+    claim = conn.execute(
+        "UPDATE staging_actions SET status = 'applied' WHERE id = ? AND status = 'pending'",
+        (action_id,),
+    )
+    if claim.rowcount != 1:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="Action is no longer pending")
+    try:
+        _apply_action(conn, row["type"], json.loads(row["payload_json"]), row["conversation_id"])
+    except Exception:
+        conn.rollback()  # undoes the claim + any partial write -> the row stays pending
+        raise
     conn.commit()
     return {"ok": True}
 
@@ -64,10 +85,19 @@ def apply_all():
     rows = conn.execute(
         "SELECT * FROM staging_actions WHERE status = 'pending' ORDER BY id"
     ).fetchall()
-    for r in rows:
-        _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
-        conn.execute("UPDATE staging_actions SET status = 'applied' WHERE id = ?", (r["id"],))
-    conn.commit()
+    # All-or-nothing: a bad action rolls back the whole batch instead of leaving
+    # some rows applied and committed while the rest are abandoned.
+    try:
+        for r in rows:
+            _apply_action(conn, r["type"], json.loads(r["payload_json"]), r["conversation_id"])
+            conn.execute(
+                "UPDATE staging_actions SET status = 'applied' WHERE id = ? AND status = 'pending'",
+                (r["id"],),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {"ok": True, "applied": len(rows)}
 
 

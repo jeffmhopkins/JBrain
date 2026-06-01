@@ -42,7 +42,10 @@ def _fire_entry_created(conn, note_id: int, title: str) -> None:
     _suppress_entry_events = True
     try:
         from . import workflows as wf_svc  # lazy import avoids a cycle
-        wf_svc.fire_event(conn, "entry_created", {"note_title": title, "note_id": note_id})
+        # commit=False: this fires INSIDE upsert_note's transaction, so the
+        # workflow's writes ride the caller's single commit (keeping the note +
+        # its enrichments atomic) instead of committing the half-built note.
+        wf_svc.fire_event(conn, "entry_created", {"note_title": title, "note_id": note_id}, commit=False)
     except Exception:  # noqa: BLE001 — a workflow must never break note creation
         pass
     finally:
@@ -67,6 +70,20 @@ def _unique_slug(conn, title: str, exclude_id: int | None = None) -> str:
             return slug
         slug = f"{base}-{i}"
         i += 1
+
+
+def _unique_title(conn, base: str, exclude_id: int | None = None) -> str:
+    """A title not already used by a live note (case-insensitive), suffixing
+    ' (2)', ' (3)', … on collision. Used to avoid clobbering an existing note."""
+    base = base.strip()[:120] or "Untitled"
+    title, i = base, 2
+    while conn.execute(
+        "SELECT 1 FROM notes WHERE lower(title)=lower(?) AND id IS NOT ? AND deleted_at IS NULL",
+        (title, exclude_id),
+    ).fetchone():
+        title = f"{base} ({i})"
+        i += 1
+    return title
 
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
@@ -118,6 +135,7 @@ def upsert_note(
     lon: float | None = None,
     location_label: str | None = None,
     kind: str | None = None,
+    create_only: bool = False,
 ) -> int:
     """Create or update a note and append a version row for the new state.
 
@@ -125,12 +143,22 @@ def upsert_note(
     with `source` (who authored this content), so the newest version always
     equals the live note. Pass `note_id` to target a specific note (used by
     restore, which may also change the title).
+
+    A title-keyed write must never silently clobber an unrelated note. When the
+    title matches an existing note we still UPDATE it, EXCEPT:
+      - `create_only` — the caller wants a brand-new note (e.g. a staged CREATE);
+      - cross-kind — an explicit `kind` that differs from the matched note (e.g.
+        a wiki-synthesis `kind='kb'` write must not overwrite a user's entry).
+    In those cases we fall back to a uniquely-titled new note instead.
     """
     title = title.strip()
     if note_id is not None:
         existing = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     else:
         existing = get_by_title(conn, title)
+        if existing and (create_only or (kind is not None and existing["kind"] != kind)):
+            title = _unique_title(conn, title)
+            existing = None
 
     has_location = lat is not None or lon is not None or location_label is not None
 

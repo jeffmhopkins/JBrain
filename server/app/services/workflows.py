@@ -253,7 +253,7 @@ def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
     )
 
 
-def run_workflow(conn, wf, context: dict | None = None) -> tuple[str, str]:
+def run_workflow(conn, wf, context: dict | None = None, commit: bool = True) -> tuple[str, str]:
     from . import pipeline
 
     cfg = json.loads(wf["action_config"] or "{}")
@@ -272,12 +272,16 @@ def run_workflow(conn, wf, context: dict | None = None) -> tuple[str, str]:
         (status, wf["id"]),
     )
     _log_run(conn, wf["id"], status, detail)
-    conn.commit()
+    if commit:  # synchronous in-transaction callers (entry_created hook) commit themselves
+        conn.commit()
     return status, detail
 
 
-def fire_event(conn, event: str, context: dict | None = None) -> None:
-    """Run enabled event-workflows whose trigger matches `event` (+ optional match)."""
+def fire_event(conn, event: str, context: dict | None = None, commit: bool = True) -> None:
+    """Run enabled event-workflows whose trigger matches `event` (+ optional match).
+
+    `commit=False` when fired from inside another write transaction so the
+    workflow's writes are flushed by the caller's commit (atomicity)."""
     rows = conn.execute(
         "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'event'"
     ).fetchall()
@@ -288,7 +292,7 @@ def fire_event(conn, event: str, context: dict | None = None) -> None:
         match = tc.get("match") or {}
         if match and context and not all(context.get(k) == v for k, v in match.items()):
             continue
-        run_workflow(conn, wf, context)
+        run_workflow(conn, wf, context, commit=commit)
 
 
 def _parse_utc(ts: str | None):

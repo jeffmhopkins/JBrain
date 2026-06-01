@@ -246,6 +246,101 @@ def test_staging_apply(client):
     assert client.get("/api/notes/staged").json()["title"] == "Staged"
 
 
+def test_staged_create_does_not_clobber_existing_note(client):
+    # A staged CREATE whose title collides with an existing note must NOT
+    # overwrite it — it gets a disambiguated title instead.
+    import json as _json
+    from app.db import get_conn
+    client.post("/api/notes/entry", json={"text": "my savings plan", "title": "Finances"})
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "title": "Finances", "content": "REPLACED", "summary": "s"}),),
+    )
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    # Original note is untouched; a second, distinctly-titled note was created.
+    assert client.get("/api/notes/finances").json()["content_md"] == "my savings plan"
+    titles = [n["title"] for n in client.get("/api/notes").json()]
+    assert "Finances" in titles and "Finances (2)" in titles
+
+
+def test_staged_action_missing_title_is_400_not_500(client):
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "summary": "no title here"}),),
+    )
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 400
+    # The failed apply rolled back -> the row is still pending (retryable), not lost.
+    assert client.get("/api/staging").json()[0]["status"] == "pending"
+
+
+def test_apply_action_is_not_double_applied(client):
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('CREATE', ?)",
+        (_json.dumps({"type": "CREATE", "title": "Once", "content": "x", "summary": "s"}),),
+    )
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    # Re-applying the same (now non-pending) row is rejected, not silently redone.
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 404
+
+
+def test_synthesis_does_not_overwrite_user_note_of_other_kind(client, monkeypatch):
+    # A kb synthesis write whose title collides with a user ENTRY must not
+    # clobber/convert the entry.
+    from app.services import workflows as wf_svc
+    client.post("/api/notes/entry", json={"text": "user-authored body", "title": "Project Atlas"})
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
+        {"title": "Project Atlas", "content_md": "ENCYCLOPEDIA VERSION"}
+    ])
+    wf = client.post("/api/workflows", json={
+        "name": "Synth", "trigger_type": "schedule", "trigger_config": {"interval_seconds": 86400},
+        "action_type": "synthesize_wiki", "action_config": {}, "enabled": True,
+    }).json()
+    assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
+    atlas = client.get("/api/notes/project-atlas").json()
+    assert atlas["content_md"] == "user-authored body"   # untouched
+    assert atlas["kind"] == "entry"                        # kind not flipped
+    # The KB article lives under a disambiguated title.
+    assert any(n["title"] == "Project Atlas (2)" and n["kind"] == "kb"
+               for n in client.get("/api/notes?kind=kb").json())
+
+
+def test_empty_entry_rejected(client):
+    assert client.post("/api/notes/entry", json={"text": "   "}).status_code == 422
+
+
+def test_out_of_range_coords_rejected(client):
+    r = client.post("/api/notes/entry", json={"text": "here", "lat": 999, "lon": 0})
+    assert r.status_code == 422
+
+
+def test_research_mode_blocks_write_tools():
+    # The mode boundary is enforced in _run_tool, not just by tool advertisement.
+    from app.services import architect
+    msg, event = architect._run_tool(None, None, "propose_actions", {"actions": []}, mode="research")
+    assert "not available" in msg and event is None
+
+
+def test_untrusted_fence_uses_a_nonce():
+    from app.services import architect
+    a = architect._untrusted("note", "body")
+    b = architect._untrusted("note", "body")
+    # Random per-call delimiter => a crafted body can't predict/close the fence.
+    assert a != b and "body" in a
+
+
 def test_attachments_upload_list_delete(client):
     client.post("/api/notes", json={"title": "Host", "content_md": "host note"})
 

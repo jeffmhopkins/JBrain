@@ -108,7 +108,7 @@ export default function NotePage() {
   const rail = (
     <>
       <h3 style={{ marginTop: 0 }}>Attachments</h3>
-      <Attachments slug={note.slug} />
+      <Attachments slug={note.slug} onNoteChanged={reload} />
 
       <h3 style={{ marginTop: 20 }}>Backlinks</h3>
       {note.backlinks.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No notes link here yet.</p>}

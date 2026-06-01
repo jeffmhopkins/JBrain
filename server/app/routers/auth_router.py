@@ -22,4 +22,6 @@ def info():
 @router.get("/verify", dependencies=[CurrentUser])
 def verify():
     # Version is returned here (authed) so the PWA can do its compatibility check.
-    return {"ok": True, "brain_name": get_settings().brain_name, "version": APP_VERSION}
+    # has_llm lets the UI gate LLM-only affordances (e.g. the image-analysis toggle).
+    return {"ok": True, "brain_name": get_settings().brain_name, "version": APP_VERSION,
+            "has_llm": get_settings().has_llm}

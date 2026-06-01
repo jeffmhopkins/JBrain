@@ -114,11 +114,18 @@ def _sync_attachment_fts(conn, att_id, note_id, filename, content):
 def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: bytes) -> dict:
     sha = hashlib.sha256(raw).hexdigest()
     existing = conn.execute(
-        "SELECT id, filename, mime, byte_size FROM attachments WHERE note_id IS ? AND sha256 = ?",
+        "SELECT id, filename, mime, byte_size, content_text FROM attachments "
+        "WHERE note_id IS ? AND sha256 = ?",
         (note_id, sha),
     ).fetchone()
     if existing:
-        return {**dict(existing), "duplicate": True}
+        # Same shape as the insert path (incl. note_id/has_text) so callers can
+        # act on the returned id regardless of whether it was a duplicate.
+        return {
+            "id": existing["id"], "note_id": note_id, "filename": existing["filename"],
+            "mime": existing["mime"], "byte_size": existing["byte_size"],
+            "has_text": bool(existing["content_text"]), "duplicate": True,
+        }
 
     content_text = extract_text(raw, mime, filename)
     cur = conn.execute(
@@ -136,6 +143,26 @@ def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: byt
 
 
 def delete_attachment(conn, att_id: int) -> None:
+    # If this attachment had an AI image summary appended to its note, strip that
+    # block (versioned) so deleting the image cleanly removes its summary.
+    row = conn.execute(
+        "SELECT note_id, analyzed_at FROM attachments WHERE id = ?", (att_id,)
+    ).fetchone()
+    if row and row["analyzed_at"] and row["note_id"] is not None:
+        from . import image_analysis  # lazy import: avoids a service import cycle
+        from . import notes as notes_svc
+        note = conn.execute(
+            "SELECT title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
+            (row["note_id"],),
+        ).fetchone()
+        if note:
+            stripped = image_analysis.strip_summary_block(note["content_md"], att_id)
+            if stripped != note["content_md"]:
+                notes_svc.upsert_note(
+                    conn, note["title"], stripped, note_id=row["note_id"],
+                    source="image-analysis",
+                    version_note="strip AI summary (attachment deleted)",
+                )
     conn.execute("DELETE FROM attachments_fts WHERE attachment_id = ?", (att_id,))
     embeddings.delete_attachment_embeddings(conn, att_id)
     conn.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
@@ -143,7 +170,8 @@ def delete_attachment(conn, att_id: int) -> None:
 
 def list_for_note(conn, note_id: int) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, filename, mime, byte_size, created_at FROM attachments "
+        "SELECT id, filename, mime, byte_size, created_at, "
+        "analysis_status, analysis_detail, analyzed_at FROM attachments "
         "WHERE note_id = ? ORDER BY created_at DESC",
         (note_id,),
     ).fetchall()

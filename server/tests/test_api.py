@@ -737,6 +737,121 @@ def test_attachment_text_is_extracted_and_downloads(client):
     assert dl.content == b"searchable plain text here"
 
 
+# --- AI image analysis ------------------------------------------------------
+
+def _png_bytes(color=(220, 30, 30), size=(40, 40)) -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_image_summary_block_helpers_are_idempotent_and_id_scoped():
+    from app.services import image_analysis as ia
+    md = "User prose.\n"
+    md1 = ia.append_summary_block(md, 1, "a.png", "Summary one")
+    md10 = ia.append_summary_block(md1, 10, "b.png", "Summary ten")
+    assert md10.count("jbrain:image-summary att=1 ") == 2   # open + close for att=1
+    assert "Summary one" in md10 and "Summary ten" in md10
+    # Re-analysing att=1 replaces in place (no duplicate), leaves att=10 intact.
+    md10b = ia.append_summary_block(md10, 1, "a.png", "Summary one v2")
+    assert md10b.count("att=1 -->") == 2 and "Summary one v2" in md10b and "Summary one\n" not in md10b
+    assert "Summary ten" in md10b
+    # Stripping att=1 must NOT touch att=10 (no false prefix match).
+    stripped = ia.strip_summary_block(md10b, 1)
+    assert "att=1 -->" not in stripped and "Summary ten" in stripped
+    assert "User prose." in stripped
+
+
+def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    calls = {"n": 0}
+    def fake_complete(messages, **kw):
+        calls["n"] += 1
+        # Confirm a real image block was built and reached the provider.
+        assert messages[0]["content"][0]["type"] == "image"
+        return f"A solid square (call {calls['n']}).\n\n**Salient facts**\n- one colour"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    client.post("/api/notes", json={"title": "Photo host", "content_md": "Trip photos.\n"})
+    att = client.post("/api/notes/photo-host/attachments",
+                      files={"file": ("pic.png", _png_bytes(), "image/png")}).json()
+
+    ia.analyze(att["id"])   # run worker synchronously (own-thread codepath, same conn in tests)
+
+    body = client.get("/api/notes/photo-host").json()["content_md"]
+    assert "AI image summary" in body and "A solid square (call 1)" in body
+    assert "Trip photos." in body            # user content preserved
+    status = client.get(f"/api/attachments/{att['id']}/analysis-status").json()
+    assert status["status"] == "done"
+
+    # Re-run replaces the block rather than stacking it.
+    ia.analyze(att["id"])
+    body2 = client.get("/api/notes/photo-host").json()["content_md"]
+    assert body2.count("AI image summary") == 1
+    assert "A solid square (call 2)" in body2 and "call 1" not in body2
+
+
+def test_image_analysis_strips_block_on_attachment_delete(client, monkeypatch):
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Desc.\n\n**Salient facts**\n- x")
+    client.post("/api/notes", json={"title": "Del host", "content_md": "Keep me.\n"})
+    att = client.post("/api/notes/del-host/attachments",
+                      files={"file": ("p.png", _png_bytes(), "image/png")}).json()
+    ia.analyze(att["id"])
+    assert "AI image summary" in client.get("/api/notes/del-host").json()["content_md"]
+
+    client.delete(f"/api/attachments/{att['id']}")
+    after = client.get("/api/notes/del-host").json()["content_md"]
+    assert "AI image summary" not in after and "Keep me." in after
+
+
+def test_image_analysis_non_image_and_unsupported(client, monkeypatch):
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "should not be called")
+    client.post("/api/notes", json={"title": "Mix host", "content_md": "x"})
+    # A non-image attachment can't be analysed.
+    txt = client.post("/api/notes/mix-host/attachments",
+                      files={"file": ("n.txt", b"hello", "text/plain")}).json()
+    assert client.post(f"/api/attachments/{txt['id']}/analyze").json()["status"] == "error"
+    # An image whose bytes don't decode → graceful error, note untouched.
+    bad = client.post("/api/notes/mix-host/attachments",
+                      files={"file": ("broken.png", b"\x89PNG\r\nnotreal", "image/png")}).json()
+    ia.analyze(bad["id"])
+    assert client.get(f"/api/attachments/{bad['id']}/analysis-status").json()["status"] == "error"
+
+
+def test_image_analysis_upload_flag_triggers_run(client, monkeypatch):
+    from app.services import image_analysis as ia, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Auto desc.\n\n**Salient facts**\n- y")
+
+    # Make the worker thread run inline so the test is deterministic.
+    class _Inline:
+        def __init__(self, target, args=(), daemon=None): self._t, self._a = target, args
+        def start(self): self._t(*self._a)
+    monkeypatch.setattr(ia.threading, "Thread", _Inline)
+
+    client.post("/api/notes", json={"title": "Auto host", "content_md": "Base.\n"})
+    up = client.post("/api/notes/auto-host/attachments",
+                     data={"analyze": "true"},
+                     files={"file": ("auto.png", _png_bytes(), "image/png")}).json()
+    assert up.get("analysis", {}).get("status") in ("pending", "done")
+    assert "Auto desc." in client.get("/api/notes/auto-host").json()["content_md"]
+
+
+def test_attachments_schema_v16_columns_exist(client):
+    from app.db import get_conn
+    cols = {r["name"] for r in get_conn().execute("PRAGMA table_info(attachments)")}
+    assert {"analysis_status", "analysis_detail", "analyzed_at"} <= cols
+    assert client.get("/api/auth/verify").json().get("has_llm") in (True, False)
+
+
 def _write_workflow(tmp, name, body):
     import os
     os.makedirs(tmp, exist_ok=True)

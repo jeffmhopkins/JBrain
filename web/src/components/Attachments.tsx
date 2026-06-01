@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { attachmentObjectUrl, del, downloadAttachment, get, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
+import { analyzeAttachment, attachmentObjectUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
+import { useAuth } from "../App";
 import { Icon } from "./Icon";
 import Modal from "./Modal";
 
-interface Attachment { id: number; filename: string; mime: string; byte_size: number; created_at: string; }
+interface Attachment {
+  id: number; filename: string; mime: string; byte_size: number; created_at: string;
+  analysis_status?: "none" | "pending" | "done" | "error" | null;
+  analysis_detail?: string | null; analyzed_at?: string | null;
+}
 type Viewing =
   | { kind: "image"; filename: string; url: string }
   | { kind: "md" | "text"; filename: string; text: string }
@@ -13,20 +18,59 @@ type Viewing =
 function humanSize(n: number): string {
   return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+const isImage = (mime: string) => mime.startsWith("image/");
 
-export default function Attachments({ slug }: { slug: string }) {
+export default function Attachments({ slug, onNoteChanged }: { slug: string; onNoteChanged?: () => void }) {
+  const { hasLlm } = useAuth();
   const [items, setItems] = useState<Attachment[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [analyze, setAnalyze] = useState(false);
   const [progress, setProgress] = useState<{ name: string; pct: number; processing: boolean } | null>(null);
   const [viewing, setViewing] = useState<Viewing>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const polling = useRef<Set<number>>(new Set());
+  const alive = useRef(true);
 
   async function load() {
-    try { setItems(await get(`/api/notes/${slug}/attachments`)); } catch { /* ignore */ }
+    try {
+      const next: Attachment[] = await get(`/api/notes/${slug}/attachments`);
+      setItems(next);
+      // Resume polling anything the server still reports as pending (e.g. a run
+      // that outlived a page navigation).
+      for (const a of next) if (a.analysis_status === "pending") startPoll(a.id);
+    } catch { /* ignore */ }
   }
   useEffect(() => { load(); }, [slug]);
+  useEffect(() => () => { alive.current = false; }, []);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
+
+  // Poll a single attachment until analysis settles, then refresh the list and
+  // tell the parent note to re-fetch (the summary is appended to the note body).
+  function startPoll(id: number) {
+    if (polling.current.has(id)) return;
+    polling.current.add(id);
+    let tries = 0;
+    const tick = async () => {
+      if (!alive.current) return;
+      try {
+        const s = await getAnalysisStatus(id);
+        if (s.status === "pending" && tries++ < 60) { setTimeout(tick, 2000); return; }
+      } catch { /* fall through to cleanup */ }
+      polling.current.delete(id);
+      if (alive.current) { await load(); onNoteChanged?.(); }
+    };
+    setTimeout(tick, 1500);
+  }
+
+  async function reanalyze(a: Attachment) {
+    setError("");
+    try {
+      await analyzeAttachment(a.id, a.analysis_status === "done" || a.analysis_status === "error");
+      setItems((xs) => xs.map((x) => (x.id === a.id ? { ...x, analysis_status: "pending" } : x)));
+      startPoll(a.id);
+    } catch (e: any) { setError(e.message || "Could not start analysis."); }
+  }
 
   async function onFiles(files: FileList | null) {
     if (!files) return;
@@ -39,9 +83,11 @@ export default function Attachments({ slug }: { slug: string }) {
         if (f.size > MAX_ATTACHMENT_BYTES) { setError(`${f.name} is over 10 MB.`); continue; }
         setProgress({ name: label, pct: 0, processing: false });
         try {
-          await uploadAttachment(slug, f, (pct) =>
-            setProgress((p) => (p ? { ...p, pct, processing: pct >= 100 } : p)));
+          const wantAnalyze = analyze && hasLlm && isImage(f.type || "");
+          const res: any = await uploadAttachment(slug, f, (pct) =>
+            setProgress((p) => (p ? { ...p, pct, processing: pct >= 100 } : p)), wantAnalyze);
           await load();   // show each file as it lands
+          if (res?.analysis?.status === "pending" && res?.id) startPoll(res.id);
         } catch (e: any) {
           setError(`${f.name}: ${e.message || "upload failed"}`);
         }
@@ -61,16 +107,22 @@ export default function Attachments({ slug }: { slug: string }) {
   }
 
   async function remove(a: Attachment) {
-    if (confirm(`Delete attachment “${a.filename}”?`)) { await del(`/api/attachments/${a.id}`); load(); }
+    if (confirm(`Delete attachment “${a.filename}”?`)) { await del(`/api/attachments/${a.id}`); load(); onNoteChanged?.(); }
   }
 
   return (
     <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); onFiles(e.dataTransfer.files); }}>
-      <div className="row">
+      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
         <input ref={inputRef} type="file" multiple style={{ display: "none" }} onChange={(e) => onFiles(e.target.files)} />
         <button className="ghost" onClick={() => inputRef.current?.click()} disabled={busy}>
           {busy ? "Uploading…" : "+ Attach file"}
         </button>
+        {hasLlm && (
+          <label className="row" style={{ gap: 6, fontSize: 12, cursor: "pointer" }} title="Send uploaded images to the AI; a summary + facts are added to this note.">
+            <input type="checkbox" checked={analyze} onChange={(e) => setAnalyze(e.target.checked)} />
+            Analyze images with AI
+          </label>
+        )}
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>Any file up to 10 MB. Text, PDFs, and image metadata are searchable.</p>
       {progress && (
@@ -95,9 +147,21 @@ export default function Attachments({ slug }: { slug: string }) {
             <span className="spacer" />
             <span className="muted" style={{ fontSize: 11 }}>{humanSize(a.byte_size)}</span>
           </div>
-          <div className="row" style={{ marginTop: 6, gap: 6 }}>
+          {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (
+            <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
+              {a.analysis_status === "pending" && <span className="muted">⏳ Analyzing image…</span>}
+              {a.analysis_status === "done" && <span style={{ color: "var(--accent)" }}>✓ AI summary added to note</span>}
+              {a.analysis_status === "error" && <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>⚠ AI analysis failed</span>}
+            </div>
+          )}
+          <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => downloadAttachment(a.id, a.filename)}>Download</button>
+            {hasLlm && isImage(a.mime) && a.analysis_status !== "pending" && (
+              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => reanalyze(a)}>
+                {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-analyze" : "Analyze with AI"}
+              </button>
+            )}
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => remove(a)}>Delete</button>
           </div>
         </div>

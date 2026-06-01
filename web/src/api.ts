@@ -100,13 +100,14 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 // bytes sent; the server then extracts text/embeds before responding, so callers
 // can show a "processing" phase once it hits 100.
 export function uploadAttachment<T = any>(
-  slug: string, file: File, onProgress?: (pct: number) => void,
+  slug: string, file: File, onProgress?: (pct: number) => void, analyze = false,
 ): Promise<T> {
   if (file.size > MAX_ATTACHMENT_BYTES) return Promise.reject(new ApiError("File too large (10 MB max).", 413));
   if (isDemo()) { onProgress?.(100); return Promise.resolve({ id: 1, filename: file.name } as T); }
   return new Promise<T>((resolve, reject) => {
     const fd = new FormData();
     fd.append("file", file);
+    if (analyze) fd.append("analyze", "true");
     const xhr = new XMLHttpRequest();
     xhr.open("POST", u(`/api/notes/${encodeURIComponent(slug)}/attachments`));
     if (accessKey) xhr.setRequestHeader("Authorization", `Bearer ${accessKey}`);
@@ -125,6 +126,16 @@ export function uploadAttachment<T = any>(
     xhr.send(fd);
   });
 }
+
+// AI image analysis: kick off (or re-run) and poll status. Demo-guarded so the
+// PWA's offline demo never hits a real server.
+export interface AnalysisStatus { status: "none" | "pending" | "done" | "error"; detail?: string | null; analyzed_at?: string | null; }
+export const analyzeAttachment = (id: number, force = false) =>
+  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
+           : post<AnalysisStatus>(`/api/attachments/${id}/analyze`, { force });
+export const getAnalysisStatus = (id: number) =>
+  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
+           : get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);
 
 // Attachments need the auth header, so a plain <a>/<img> won't work — fetch+blob.
 async function attachmentBlob(id: number): Promise<Blob> {

@@ -1,12 +1,14 @@
 """Attachment REST API: upload (multipart), list, view, download, delete."""
 import re
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import attachments as att_svc
+from ..services import image_analysis, llm
 
 router = APIRouter(prefix="/api", tags=["attachments"], dependencies=[CurrentUser])
 
@@ -21,7 +23,7 @@ def _note_id_for_slug(conn, slug: str) -> int:
 
 
 @router.post("/notes/{slug}/attachments")
-async def upload(slug: str, file: UploadFile = File(...)):
+async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(False)):
     conn = get_conn()
     note_id = _note_id_for_slug(conn, slug)
 
@@ -32,7 +34,49 @@ async def upload(slug: str, file: UploadFile = File(...)):
     mime = att_svc.resolve_mime(file.filename or "", file.content_type)
     result = att_svc.add_attachment(conn, note_id, file.filename, mime, raw)
     conn.commit()
+
+    # Fire-and-forget AI analysis when requested for an image (server-side so it
+    # still runs if the client navigates away right after the upload).
+    if analyze and mime.startswith("image/") and llm.has_credentials():
+        result["analysis"] = image_analysis.start_analysis(conn, result["id"])
     return result
+
+
+class AnalyzeBody(BaseModel):
+    force: bool = False
+
+
+def _require_attachment(conn, att_id: int) -> None:
+    if not conn.execute("SELECT 1 FROM attachments WHERE id = ?", (att_id,)).fetchone():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+
+@router.post("/attachments/{att_id}/analyze")
+def analyze_attachment(att_id: int, body: AnalyzeBody | None = None):
+    conn = get_conn()
+    _require_attachment(conn, att_id)
+    force = bool(body and body.force)
+    row = conn.execute(
+        "SELECT analysis_status FROM attachments WHERE id = ?", (att_id,)
+    ).fetchone()
+    if row["analysis_status"] == "pending" and not force:
+        raise HTTPException(status_code=409, detail="Analysis already running.")
+    return image_analysis.start_analysis(conn, att_id, force=force)
+
+
+@router.get("/attachments/{att_id}/analysis-status")
+def analysis_status(att_id: int):
+    row = get_conn().execute(
+        "SELECT analysis_status, analysis_detail, analyzed_at FROM attachments WHERE id = ?",
+        (att_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return {
+        "status": row["analysis_status"] or "none",
+        "detail": row["analysis_detail"],
+        "analyzed_at": row["analyzed_at"],
+    }
 
 
 @router.get("/notes/{slug}/attachments")

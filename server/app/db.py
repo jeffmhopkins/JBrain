@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def init_db() -> None:
@@ -191,6 +191,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 15:
         # Name captured when a bind link is accepted (reused on the editor's proposals).
         _add_column(conn, "share_links", "bound_name", "TEXT")
+
+    if current < 16:
+        # Optional AI vision analysis of image attachments. Latest-status only
+        # (no run history): a background worker sets these and the UI polls them.
+        _add_column(conn, "attachments", "analysis_status", "TEXT")   # NULL|pending|done|error
+        _add_column(conn, "attachments", "analysis_detail", "TEXT")   # error message for the UI
+        _add_column(conn, "attachments", "analyzed_at", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

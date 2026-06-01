@@ -116,7 +116,10 @@ CREATE TABLE IF NOT EXISTS attachments (
   content_blob BLOB,                        -- raw bytes (in-DB so backups are complete)
   byte_size    INTEGER NOT NULL DEFAULT 0,
   sha256       TEXT NOT NULL,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  analysis_status TEXT,                      -- NULL|pending|done|error (AI image analysis)
+  analysis_detail TEXT,                      -- error message surfaced to the UI
+  analyzed_at  TEXT                          -- when analysis last completed
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_note ON attachments(note_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_sha  ON attachments(note_id, sha256);

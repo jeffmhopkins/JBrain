@@ -28,6 +28,7 @@ interface AuthState {
   pwaVersion: string;
   serverVersion: string | null;
   versionMismatch: boolean;
+  hasLlm: boolean;
   demo: boolean;
   connect: (key: string, server: string) => Promise<void>;
   exploreDemo: () => void;
@@ -43,6 +44,7 @@ export default function App() {
   const [authed, setAuthed] = useState(false);
   const [brainName, setBrainName] = useState("JBrain");
   const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const [hasLlm, setHasLlm] = useState(false);
 
   // Load public server info (brain name) from the configured server. The version
   // is authed-only now, so it comes from /verify instead.
@@ -59,12 +61,14 @@ export default function App() {
     await loadInfo();                       // resolves the server (surfaces bad URLs)
     const v = await get("/api/auth/verify"); // 401 -> throws ApiError
     setServerVersion(v.version || null);
+    setHasLlm(!!v.has_llm);
     setAuthed(true);
   }
 
   function exploreDemo() {
     setDemo(true);
     setBrainName("Demo Brain");
+    setHasLlm(true);   // demo stubs the analysis calls, so the toggle can show
     setAuthed(true);
   }
 
@@ -82,7 +86,7 @@ export default function App() {
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
-        .then((v) => { setServerVersion(v?.version || null); setAuthed(true); })
+        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAuthed(true); })
         // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
         // A network error or 5xx (offline, server restarting) must NOT log the
         // user out: stay authed so cached pages still work.
@@ -96,7 +100,7 @@ export default function App() {
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {
     authenticated: authed, brainName, server: getServer(),
-    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, demo: isDemo(),
+    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, hasLlm, demo: isDemo(),
     connect, exploreDemo, disconnect,
   };
 

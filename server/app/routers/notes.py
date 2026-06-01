@@ -107,7 +107,7 @@ def create_entry(body: EntryIn):
         raise HTTPException(status_code=422, detail="Entry text cannot be empty")
     if not base:  # text-only with no usable first line (e.g. attachment placeholder)
         base = f"Entry {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
-    title = notes_svc._unique_title(conn, base)
+    title = notes_svc._unique_title(conn, notes_svc.root_title(base, "notes"))
     try:
         note_id = notes_svc.upsert_note(
             conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,

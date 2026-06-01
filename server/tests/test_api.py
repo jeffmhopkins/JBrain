@@ -65,9 +65,9 @@ def test_entry_mode_creates_unique_notes(client):
     b = client.post("/api/notes/entry", json={"text": "second thought", "title": "Idea"}).json()
     assert a["slug"] != b["slug"]
     assert client.get(f"/api/notes/{a['slug']}").json()["content_md"] == "first thought"
-    # No title -> derived from first line.
+    # No title -> derived from first line; entries live under the notes/ root.
     c = client.post("/api/notes/entry", json={"text": "buy a tent\nfor camping"}).json()
-    assert c["title"].startswith("buy a tent")
+    assert c["title"].startswith("notes/buy a tent")
 
 
 def test_research_mode_is_read_only(client):
@@ -220,7 +220,7 @@ def test_architect_edits_attributed(client):
     conn.commit()
     pending = client.get("/api/staging").json()
     client.post(f"/api/staging/{pending[0]['id']}/apply")
-    tl = client.get("/api/notes/fromai/versions").json()
+    tl = client.get("/api/notes/notes-fromai/versions").json()
     assert tl[0]["source"] == "architect"
     assert tl[0]["conversation_id"] == 99
 
@@ -243,7 +243,7 @@ def test_staging_apply(client):
     pending = client.get("/api/staging").json()
     assert len(pending) == 1
     client.post(f"/api/staging/{pending[0]['id']}/apply")
-    assert client.get("/api/notes/staged").json()["title"] == "Staged"
+    assert client.get("/api/notes/notes-staged").json()["title"] == "notes/Staged"
 
 
 def test_staged_create_does_not_clobber_existing_note(client):
@@ -261,9 +261,9 @@ def test_staged_create_does_not_clobber_existing_note(client):
     aid = client.get("/api/staging").json()[0]["id"]
     assert client.post(f"/api/staging/{aid}/apply").status_code == 200
     # Original note is untouched; a second, distinctly-titled note was created.
-    assert client.get("/api/notes/finances").json()["content_md"] == "my savings plan"
+    assert client.get("/api/notes/notes-finances").json()["content_md"] == "my savings plan"
     titles = [n["title"] for n in client.get("/api/notes").json()]
-    assert "Finances" in titles and "Finances (2)" in titles
+    assert "notes/Finances" in titles and "notes/Finances (2)" in titles
 
 
 def test_graph_nodes_include_kind(client):
@@ -274,7 +274,7 @@ def test_graph_nodes_include_kind(client):
     conn.commit()
     client.post("/api/notes/entry", json={"text": "a raw entry", "title": "An Entry"})
     nodes = {n["title"]: n["kind"] for n in client.get("/api/graph").json()["nodes"]}
-    assert nodes["An Article"] == "kb" and nodes["An Entry"] == "entry"
+    assert nodes["An Article"] == "kb" and nodes["notes/An Entry"] == "entry"
 
 
 def test_apply_records_event_message_in_conversation(client):
@@ -326,9 +326,9 @@ def test_apply_action_is_not_double_applied(client):
     assert client.post(f"/api/staging/{aid}/apply").status_code == 404
 
 
-def test_synthesis_does_not_overwrite_user_note_of_other_kind(client, monkeypatch):
-    # A kb synthesis write whose title collides with a user ENTRY must not
-    # clobber/convert the entry.
+def test_synthesis_lives_under_kb_root_separate_from_entry(client, monkeypatch):
+    # Entries (notes/) and the synthesized article (kb/) occupy separate title
+    # roots, so the same topic never collides and the entry is untouched.
     from app.services import workflows as wf_svc
     client.post("/api/notes/entry", json={"text": "user-authored body", "title": "Project Atlas"})
     monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
@@ -339,11 +339,10 @@ def test_synthesis_does_not_overwrite_user_note_of_other_kind(client, monkeypatc
         "action_type": "synthesize_wiki", "action_config": {}, "enabled": True,
     }).json()
     assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
-    atlas = client.get("/api/notes/project-atlas").json()
-    assert atlas["content_md"] == "user-authored body"   # untouched
-    assert atlas["kind"] == "entry"                        # kind not flipped
-    # The KB article lives under a disambiguated title.
-    assert any(n["title"] == "Project Atlas (2)" and n["kind"] == "kb"
+    atlas = client.get("/api/notes/notes-project-atlas").json()
+    assert atlas["content_md"] == "user-authored body" and atlas["kind"] == "entry"  # untouched
+    # The KB article takes the clean topic name under kb/ (no "(2)").
+    assert any(n["title"] == "kb/Project Atlas" and n["kind"] == "kb"
                for n in client.get("/api/notes?kind=kb").json())
 
 
@@ -651,11 +650,11 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
     assert client.post(f"/api/workflows/{wf['id']}/run").json()["status"] == "ok"
 
     kb = client.get("/api/notes?kind=kb").json()
-    assert any(n["title"] == "Health & Habits" for n in kb)
-    note = client.get("/api/notes/health-habits").json()
+    assert any(n["title"] == "kb/Health & Habits" for n in kb)
+    note = client.get("/api/notes/kb-health-habits").json()
     assert note["kind"] == "kb"
     # It links to the source entries -> they gain backlinks.
-    assert any(b["title"] == "Health & Habits" for b in client.get("/api/notes/ran-5k").json()["backlinks"])
+    assert any(b["title"] == "kb/Health & Habits" for b in client.get("/api/notes/ran-5k").json()["backlinks"])
     assert any("KB updated" in i["title"] for i in client.get("/api/reviews").json())
 
     # Re-run with no new entries -> no-op (watermark advanced).
@@ -810,7 +809,7 @@ def test_staging_apply_stamps_location(client):
     conn.commit()
     pending = client.get("/api/staging").json()
     client.post(f"/api/staging/{pending[0]['id']}/apply")
-    note = client.get("/api/notes/placed-note").json()
+    note = client.get("/api/notes/notes-placed-note").json()
     assert note["lat"] == 12.34 and note["lon"] == 56.78
 
 
@@ -877,7 +876,7 @@ def test_synthesize_wiki_watermark_not_advanced_on_empty_plan(client, monkeypatc
     monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
         {"op": "create", "title": "Topic", "content_md": "from [[Entry One]]"}])
     client.post(f"/api/workflows/{wf['id']}/run")
-    assert any(n["title"] == "Topic" for n in client.get("/api/notes?kind=kb").json())
+    assert any(n["title"] == "kb/Topic" for n in client.get("/api/notes?kind=kb").json())
 
 
 def test_pipeline_unknown_primitive_raises():
@@ -1168,21 +1167,21 @@ def test_staged_update_conflict_is_rejected(client):
     client.post("/api/notes/entry", json={"text": "v1 body", "title": "Doc"})
     conn = get_conn()
     architect._tool_propose_actions(conn, None, [
-        {"type": "UPDATE", "title": "Doc", "content": "model rewrite", "summary": "s"}])
+        {"type": "UPDATE", "title": "notes/Doc", "content": "model rewrite", "summary": "s"}])
     conn.commit()
     # Intervening edit changes the note's content -> the basis hash no longer matches.
-    client.post("/api/notes", json={"title": "Doc", "content_md": "v2 body (user edit)"})
+    client.post("/api/notes", json={"title": "notes/Doc", "content_md": "v2 body (user edit)"})
     aid = client.get("/api/staging").json()[0]["id"]
     assert client.post(f"/api/staging/{aid}/apply").status_code == 409
-    assert client.get("/api/notes/doc").json()["content_md"] == "v2 body (user edit)"  # not clobbered
+    assert client.get("/api/notes/notes-doc").json()["content_md"] == "v2 body (user edit)"  # not clobbered
 
 
 def test_non_ascii_titles_get_distinct_slugs(client):
-    # Emoji/CJK titles used to all collapse to slug "note"; now each is distinct.
+    # Emoji/CJK titles still get distinct (non-colliding) slugs under notes/.
     a = client.post("/api/notes/entry", json={"text": "🎉"}).json()
     b = client.post("/api/notes/entry", json={"text": "日本語"}).json()
     assert a["slug"] != b["slug"]
-    assert a["slug"].startswith("note-") and b["slug"].startswith("note-")
+    assert a["title"].startswith("notes/") and b["title"].startswith("notes/")
 
 
 def test_query_sql_is_read_only_and_blocks_schema_and_secrets(client):
@@ -1228,13 +1227,13 @@ def test_basisless_update_does_not_clobber(client):
     from app.services import architect
     conn = get_conn()
     architect._tool_propose_actions(conn, None, [
-        {"type": "UPDATE", "title": "Later", "content": "model content", "summary": "s"}])
+        {"type": "UPDATE", "title": "notes/Later", "content": "model content", "summary": "s"}])
     conn.commit()
     client.post("/api/notes/entry", json={"text": "user body", "title": "Later"})
     aid = client.get("/api/staging").json()[0]["id"]
     assert client.post(f"/api/staging/{aid}/apply").status_code == 200
-    assert client.get("/api/notes/later").json()["content_md"] == "user body"  # untouched
-    assert any(n["title"] == "Later (2)" for n in client.get("/api/notes").json())
+    assert client.get("/api/notes/notes-later").json()["content_md"] == "user body"  # untouched
+    assert any(n["title"] == "notes/Later (2)" for n in client.get("/api/notes").json())
 
 
 def test_id_targeted_upsert_does_not_flip_kind(client):

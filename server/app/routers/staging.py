@@ -37,6 +37,7 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
+        title = notes_svc.root_title(title, "notes")   # assisted captures live under notes/
         basis = payload.get("_basis") or {}
         # CREATE always makes a new note. An UPDATE with no captured basis (the
         # title didn't exist at propose time) is also treated as create-only, so

@@ -70,6 +70,23 @@ def slugify(title: str) -> str:
     return s or ("note-" + hashlib.sha1(title.strip().encode("utf-8")).hexdigest()[:8])
 
 
+# The wiki is organised under two top-level folders: raw captures live under
+# "notes/", the synthesized encyclopedia under "kb/". Keeping them in separate
+# title roots means an entry and its KB article never collide (and the "/"-path
+# tree groups them automatically).
+def root_title(title: str, root: str) -> str:
+    """Place `title` under the given root ('notes' or 'kb') without doubling or
+    cross-prefixing. 'Jeff'->'notes/Jeff'; 'kb/Jeff' under 'kb' stays 'kb/Jeff';
+    'notes/Jeff' under 'kb' becomes 'kb/Jeff'. Deeper sub-paths are preserved."""
+    t = (title or "").strip().strip("/")
+    low = t.lower()
+    for r in ("notes/", "kb/"):
+        if low.startswith(r):
+            t = t[len(r):]
+            break
+    return f"{root}/{t}" if t else root
+
+
 def _unique_slug(conn, title: str, exclude_id: int | None = None) -> str:
     base = slugify(title)
     slug = base

@@ -113,6 +113,8 @@ def _p_read_note(ctx, title=None, id=None):
 
 def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=None, version_note=None):
     body_in = content_md if content_md is not None else (text or "")
+    if kind == "kb":
+        title = notes_svc.root_title(title, "kb")   # the encyclopedia lives under kb/
     if mode == "append":
         note = notes_svc.get_by_title(ctx.conn, title)
         base = note["content_md"] if note else f"# {title}\n"

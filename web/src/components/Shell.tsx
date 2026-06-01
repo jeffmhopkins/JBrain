@@ -17,7 +17,25 @@ function ReviewBell() {
   const ref = useRef<HTMLDivElement>(null);
 
   const refresh = () => get("/api/reviews/count").then((r) => setCount(r.pending)).catch(() => {});
-  useEffect(() => { refresh(); const id = setInterval(refresh, 60000); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    refresh();
+    // Poll, but also re-check the instant the app returns to the foreground —
+    // mobile/PWA throttle or pause setInterval while backgrounded, so without this
+    // a new alert (e.g. a share editor's proposal) wouldn't show until a manual
+    // refresh. visibilitychange/focus/pageshow cover tab switch, app resume, and
+    // bfcache restore.
+    const id = setInterval(refresh, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;

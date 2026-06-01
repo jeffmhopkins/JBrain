@@ -46,6 +46,7 @@ export default function NotePage() {
   const [sharing, setSharing] = useState(false);
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
   const [shareBind, setShareBind] = useState(false);   // lock to first device
+  const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
 
   async function remove() {
@@ -152,11 +153,12 @@ export default function NotePage() {
       {sharing && (
         <div className="share-panel">
           {!minted ? (
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <span className="muted" style={{ fontSize: 13 }}>Create a public link:</span>
-              <button className="ghost" onClick={() => mintShare("view")}>View-only</button>
-              <button className="ghost" onClick={() => mintShare("edit")}>Editable (proposals)</button>
-              <span className="spacer" />
+              <label className="row" style={{ gap: 4, fontSize: 13 }} title="Recipients can submit edits that come back as proposals for you to approve (never applied live). Off = read-only.">
+                <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareEditable}
+                       onChange={(e) => setShareEditable(e.target.checked)} /> Editable
+              </label>
               <select value={shareTtl} onChange={(e) => setShareTtl(Number(e.target.value))}
                       style={{ width: "auto", fontSize: 13, padding: "6px 8px" }} title="Link expiry">
                 <option value={0}>No expiry</option>
@@ -168,6 +170,8 @@ export default function NotePage() {
                 <input type="checkbox" style={{ width: 16, height: 16 }} checked={shareBind}
                        onChange={(e) => setShareBind(e.target.checked)} /> Lock to first browser
               </label>
+              <span className="spacer" />
+              <button className="primary" onClick={() => mintShare(shareEditable ? "edit" : "view")}>Create link</button>
             </div>
           ) : (
             <div className="row" style={{ gap: 6 }}>

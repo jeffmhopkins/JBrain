@@ -82,7 +82,7 @@ const PROMPT_DEFAULTS: Record<string, string> = {
   "actions.daylog_summary": "Summarise one day's log lines into a tight paragraph plus 3-6 key bullets. No preamble. Do not invent anything not in the lines. The log lines follow:",
   "actions.generate_tags": "Output 3-6 short lowercase topic tags for this note as a single comma-separated line. No preamble, no labels, no quotes, no '#', no trailing period. Example: running, marathon training, nutrition",
   "actions.synthesize": "Summarise the content below: open with a one-sentence overview, then concise bullets. Be faithful to the source and add nothing. No preamble.",
-  "actions.wiki_synthesis": "Curate a personal KNOWLEDGE BASE from raw entries: CREATE a topic note when none fits, UPDATE the existing note (exact title, full merged content) when it does, cite sources as [[Entry Title]] and cross-link [[KB Title]]. Reply with a single JSON array only of {op,title,content_md} objects (or [] if nothing).",
+  "actions.wiki_synthesis": "Edit a personal ENCYCLOPEDIA from raw entries: extract durable knowledge into evergreen, one-topic articles (lead + sections). FIND-OR-CREATE by exact title (recurring topics accrete into one article; updates return the FULL merged content). Cite every fact inline as [[Entry Title]] and end each article with a ## Sources list (with dates); cross-link [[Topic]] and branch large sections into 'Parent/Subtopic' articles. Reply with a single JSON array only of {title,content_md} objects (or [] if nothing).",
 };
 const PROMPTS = Object.entries(PROMPT_DEFAULTS).map(
   ([key, d]) => ({ key, default: d, override: null as string | null, effective: d }),

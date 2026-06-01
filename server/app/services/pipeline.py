@@ -140,7 +140,7 @@ def _p_semantic_search(ctx, query, limit=8):
 
 
 def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
-    sql = "SELECT id, title, slug, content_md FROM notes WHERE deleted_at IS NULL"
+    sql = "SELECT id, title, slug, content_md, created_at FROM notes WHERE deleted_at IS NULL"
     params: list = []
     if kind:
         sql += " AND kind = ?"
@@ -182,7 +182,8 @@ def _p_summarise_entries(ctx, entries, prompt=None):
 
 def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
     from . import workflows as wf
-    return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions)
+    # conn enables semantic retrieval of only the relevant existing KB articles.
+    return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions, conn=ctx.conn)
 
 
 def _p_gather_context(ctx, source_title=None, context_query=None):

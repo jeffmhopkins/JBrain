@@ -85,25 +85,59 @@ actions:
   generate_tags: "Output 3-6 short lowercase topic tags for this note as a single comma-separated line: spaces allowed inside a tag, commas only between tags. No preamble, no labels, no quotes, no '#', no trailing period. Example: running, marathon training, nutrition"
   synthesize: "Summarise the content below: open with a one-sentence overview, then concise bullets. Be faithful to the source and add nothing. No preamble."
   wiki_synthesis: |
-    You are the curator of a personal KNOWLEDGE BASE synthesized from raw
-    journal/note entries. Read the NEW ENTRIES and fold their durable knowledge
-    into topic notes.
+    You are the editor of a personal ENCYCLOPEDIA — a growing, Wikipedia-style
+    knowledge base built from the owner's raw note entries. Extract DURABLE
+    knowledge from the NEW ENTRIES and fold it into evergreen, cited articles.
+    Ignore transient chatter (moods, logistics, one-off errands) unless it
+    establishes a lasting fact.
 
-    CREATE a new note when no existing topic fits. UPDATE an existing note when the
-    topic already exists — match its title EXACTLY and return the FULL merged
-    content (existing + new), not a fragment. Keep one topic per note; split or
-    merge to keep granularity sensible. Write evergreen prose, cite the source
-    entries inline as [[Entry Title]], and cross-link related topics as [[KB Title]].
-    {instructions}
+    AN ARTICLE covers ONE topic — a person, project, place, concept, or recurring
+    theme. It opens with a 1-3 sentence lead that defines the topic, then uses
+    "## " sections. Write in neutral, timeless encyclopedic prose, not a diary.
 
-    NEW ENTRIES:
+    WORKFLOW for each piece of durable knowledge:
+    1. EXTRACT the fact and the topic it belongs to.
+    2. FIND-OR-CREATE: scan the EXISTING ARTICLES for that topic. If one fits, you
+       are UPDATING it — copy its title EXACTLY. If none fits, CREATE a new article.
+       Never fork a near-duplicate of an existing title. Let recurring topics
+       accrete into ONE canonical article.
+    3. INTEGRATE: place each fact in the right section; merge, dedupe, and reconcile
+       contradictions — prefer the most RECENT entry, and note a meaningful change.
+
+    CITATIONS — every fact must trace to its source entry:
+    - Inline: end each claim with its source as [[Entry Title]], copying the entry's
+      title EXACTLY as shown so the link resolves.
+    - Each article ends with a "## Sources" section: a bullet list, one per source
+      entry, "- [[Entry Title]] — YYYY-MM-DD", using the entry's logged date. On
+      UPDATE keep the existing sources and add the new ones; never drop a cited one.
+
+    CROSS-LINKING: link related topics as [[Topic]], matching an existing article's
+    EXACT title where one exists.
+
+    BRANCHING (summary style): when a section grows large and self-contained, SPLIT
+    it into a child article titled "Parent/Subtopic"; leave a short summary plus a
+    [[Parent/Subtopic]] link in the parent. Emit BOTH the trimmed parent AND the new
+    child as separate objects in the same array.
+
+    QUALITY: evergreen (no "today"/"yesterday" — use dates), deduped, one topic per
+    article, every claim cited, nothing invented beyond the entries.{instructions}
+
+    NEW ENTRIES (each: a "## <exact title>" heading, then "Logged <date>" and a cite
+    hint, then the content. Cite an entry as [[<exact title>]]; use its date in Sources):
     {entries}
 
-    EXISTING KB NOTES:
+    EXISTING ARTICLES (the relevant ones, each "### <title>" then its full content;
+    to update one, reuse its title EXACTLY):
     {existing_kb}
 
-    OUTPUT CONTRACT: reply with a single JSON array and nothing else — no prose, no
-    code fences, no text before the first character "[" or after the last "]". Each
-    element is an object with keys "op" (the string "create" or "update"), "title",
-    and "content_md"; "title" and "content_md" must be non-empty. If there is
-    nothing to record, reply exactly: []
+    OUTPUT CONTRACT — obey exactly:
+    - Reply with a SINGLE JSON array and nothing else: first character "[", last "]".
+      No prose, no code fences, no text outside the array.
+    - Each element is an object: {"title": "Article Title", "content_md": "full markdown"}.
+      Both "title" and "content_md" must be non-empty.
+    - content_md is the COMPLETE article every time — on update return the FULL merged
+      content (existing + new), never a fragment or diff (it overwrites by title).
+    - The ONLY square brackets allowed anywhere are wiki-links [[...]] INSIDE
+      content_md string values.
+    - Multiple objects are fine (e.g. a trimmed parent plus its new child).
+    - If nothing durable is worth recording, reply exactly: []

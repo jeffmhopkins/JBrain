@@ -31,7 +31,7 @@ steps:
 
   - id: kb
     do: query_notes
-    with: { kind: kb }
+    with: { kind: kb, limit: 50 }   # cold-start fallback; wiki_plan retrieves the relevant ones
 
   - id: plan
     do: wiki_plan

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from . import embeddings
 from . import llm
 from . import notes as notes_svc
 from . import prompts
@@ -130,18 +131,60 @@ def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
     return llm.complete([{"role": "user", "content": f"{instruction}\n{joined}"}], max_tokens=512)
 
 
-def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None) -> list[dict]:
-    """Ask the LLM to fold new entries into the knowledge base. Returns a list of
-    {op, title, content_md}. Factored out so it can be stubbed in tests.
+def _relevant_kb(conn, entries: list, fallback_kb: list, k: int = 12) -> list[dict]:
+    """The existing KB articles most relevant to this batch of entries, so
+    synthesis scales as the KB grows (instead of sending every article). Per-entry
+    semantic search, unioned by best distance, filtered to kb. Falls back to the
+    passed-in list at cold start (no conn / no embeddings yet)."""
+    if conn is None:
+        return fallback_kb[:k]
+    best: dict[int, float] = {}
+    for e in entries:
+        query = f"{e.get('title', '')}\n{(e.get('content_md') or '')[:500]}"
+        try:
+            hits = embeddings.semantic_search(conn, query, limit=8)
+        except Exception:
+            hits = []
+        for r in hits:
+            if r["id"] not in best or r["distance"] < best[r["id"]]:
+                best[r["id"]] = r["distance"]
+    top_ids = [nid for nid, _ in sorted(best.items(), key=lambda kv: kv[1])][:k]
+    if not top_ids:
+        return fallback_kb[:k]
+    rows = conn.execute(
+        f"SELECT id, title, content_md FROM notes WHERE id IN "
+        f"({','.join('?' * len(top_ids))}) AND kind = 'kb' AND deleted_at IS NULL",
+        top_ids,
+    ).fetchall()
+    by_id = {r["id"]: dict(r) for r in rows}
+    kb = [by_id[i] for i in top_ids if i in by_id]
+    return kb or fallback_kb[:k]
 
-    `instructions` (from the workflow YAML config) is extra guidance appended to
-    the base prompt; the JSON-output contract is always enforced."""
+
+def _entry_block(e: dict) -> str:
+    """Render one source entry for the prompt: heading is the EXACT title (so a
+    [[cite]] resolves), then the date + an explicit cite hint, then the content."""
+    date = (e.get("created_at") or "")[:10]
+    cite = (f"Logged {date}. " if date else "") + f"Cite this entry as [[{e['title']}]]."
+    return f"## {e['title']}\n{cite}\n{e['content_md']}"
+
+
+def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None,
+                        *, conn=None) -> list[dict]:
+    """Ask the LLM to fold new entries into the knowledge base. Returns a list of
+    {title, content_md}. Factored out so it can be stubbed in tests.
+
+    `conn` (injected by the wiki_plan primitive) enables semantic retrieval of only
+    the relevant existing KB articles; without it the passed-in existing_kb is used.
+    `instructions` (from the workflow YAML config) is extra guidance appended to the
+    base prompt; the JSON-output contract is always enforced."""
     if not llm.has_credentials():
         raise RuntimeError("no LLM API key configured")
     import json as _json
 
-    entries_text = "\n\n".join(f"## {e['title']}\n{e['content_md']}" for e in entries)
-    kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in existing_kb) or "(none yet)"
+    kb = _relevant_kb(conn, entries, existing_kb)
+    entries_text = "\n\n".join(_entry_block(e) for e in entries)
+    kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in kb) or "(none yet)"
     extra = f"\nAdditional guidance: {instructions}" if instructions else ""
     template = prompts.get("actions.wiki_synthesis", _DEFAULT_WIKI_TEMPLATE)
     prompt = (template

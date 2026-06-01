@@ -513,7 +513,7 @@ def test_wiki_synthesis_workflow(client, monkeypatch):
     client.post("/api/notes", json={"title": "Read on habits", "content_md": "tiny habits compound"})
 
     # Stub the Claude call with a deterministic KB action.
-    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
         {"op": "create", "title": "Health & Habits",
          "content_md": "Synthesis. See [[Ran 5k]] and [[Read on habits]]."}
     ])
@@ -744,12 +744,12 @@ def test_synthesize_wiki_watermark_not_advanced_on_empty_plan(client, monkeypatc
     }).json()
 
     # Run 1: LLM yields nothing → no KB note, watermark stays put.
-    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [])
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [])
     client.post(f"/api/workflows/{wf['id']}/run")
     assert client.get("/api/notes?kind=kb").json() == []
 
     # Run 2: LLM works → the SAME entry is still processed (not skipped).
-    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None: [
+    monkeypatch.setattr(wf_svc, "_synthesize_actions", lambda entries, kb, instructions=None, **_: [
         {"op": "create", "title": "Topic", "content_md": "from [[Entry One]]"}])
     client.post(f"/api/workflows/{wf['id']}/run")
     assert any(n["title"] == "Topic" for n in client.get("/api/notes?kind=kb").json())
@@ -951,3 +951,31 @@ def test_call_action_chaining_cycle_and_returns(client):
     # returns: channel hands a value back to the caller.
     out = pipeline._p_call_action(pipeline._Ctx(conn, None, None), "greet", config={"who": "world"})
     assert out["return"] == "world" and out["type"] == "greet"
+
+
+def test_wiki_entry_block_is_citeable():
+    from app.services import workflows as wf
+    b = wf._entry_block({"title": "Daily Log", "content_md": "woke up", "created_at": "2026-05-30 09:00:00"})
+    assert b.startswith("## Daily Log\n")           # heading is the exact title (link resolves)
+    assert "Cite this entry as [[Daily Log]]." in b and "Logged 2026-05-30" in b
+
+
+def test_wiki_relevant_kb_retrieval(client, monkeypatch):
+    # Retrieval returns the semantically-matched KB articles (filtered to kind=kb);
+    # falls back to the passed list at cold start (no conn).
+    from app.db import get_conn
+    from app.services import workflows as wf, embeddings, notes as notes_svc
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "Marathon Training", "training", kind="kb")
+    notes_svc.upsert_note(conn, "An Entry", "raw note", kind="entry")  # not kb -> must be filtered out
+    conn.commit()
+    mid = notes_svc.get_by_title(conn, "Marathon Training")["id"]
+    eid = notes_svc.get_by_title(conn, "An Entry")["id"]
+    monkeypatch.setattr(embeddings, "semantic_search",
+                        lambda c, q, limit=8: [{"id": mid, "title": "Marathon Training", "slug": "x", "distance": 0.1},
+                                               {"id": eid, "title": "An Entry", "slug": "y", "distance": 0.2}])
+    entries = [{"id": 99, "title": "Tempo run", "content_md": "ran fast"}]
+    kb = wf._relevant_kb(conn, entries, fallback_kb=[{"title": "Cooking", "content_md": "x"}])
+    assert [k["title"] for k in kb] == ["Marathon Training"]            # retrieved + kb-filtered
+    fb = [{"title": "Cooking", "content_md": "x"}]
+    assert wf._relevant_kb(None, entries, fallback_kb=fb) == fb         # cold start -> fallback

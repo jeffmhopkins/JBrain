@@ -67,9 +67,10 @@ _TOOL_SCHEMAS = {
     "propose_actions": {"type": "object", "properties": {"actions": {"type": "array", "items": {
         "type": "object",
         "properties": {
-            "type": {"type": "string", "enum": ["CREATE", "UPDATE", "LINK"]},
-            "title": {"type": "string", "description": "Note title (CREATE/UPDATE)"},
+            "type": {"type": "string", "enum": ["CREATE", "UPDATE", "LINK", "RENAME"]},
+            "title": {"type": "string", "description": "Note title (CREATE/UPDATE; RENAME: the note's CURRENT exact title)"},
             "content": {"type": "string", "description": "Full markdown content (CREATE/UPDATE)"},
+            "new_title": {"type": "string", "description": "RENAME: the note's new title (e.g. notes/Foo or kb/Foo)"},
             "source_title": {"type": "string", "description": "LINK: note that links out"},
             "target_title": {"type": "string", "description": "LINK: note being linked to"},
             "summary": {"type": "string", "description": "Short human-readable description"},

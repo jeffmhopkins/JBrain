@@ -335,6 +335,26 @@ def test_manual_run_is_async_with_status(client, monkeypatch):
     assert any(n["title"] == "kb/Async Topic" for n in client.get("/api/notes?kind=kb").json())
 
 
+def test_staged_rename_action(client):
+    # The architect can propose a RENAME; applying it renames in place (kept under
+    # the note's root), removes the old slug, and rewrites inbound links.
+    import json as _json
+    from app.db import get_conn
+    client.post("/api/notes/entry", json={"text": "body", "title": "Old Name"})
+    client.post("/api/notes", json={"title": "Refers", "content_md": "see [[notes/Old Name]]"})
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('RENAME', ?)",
+        (_json.dumps({"type": "RENAME", "title": "notes/Old Name", "new_title": "New Name", "summary": "s"}),),
+    )
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    assert client.get("/api/notes/notes-new-name").json()["title"] == "notes/New Name"
+    assert client.get("/api/notes/notes-old-name").status_code == 404
+    assert "[[notes/New Name]]" in client.get("/api/notes/refers").json()["content_md"]
+
+
 def test_apply_records_event_message_in_conversation(client):
     # Applying a staged action leaves a persistent 'event' record in the chat
     # (so approvals stay in the conversation across reloads).

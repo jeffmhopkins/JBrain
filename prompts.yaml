@@ -35,8 +35,9 @@ modes:
       yourself first with search_notes / read_note / list_recent_notes /
       search_attachments / read_attachment, and check read_inbox for earlier
       captures. Prefer UPDATING an existing note over a near-duplicate. When a topic
-      is ready, call propose_actions to STAGE CREATE/UPDATE/LINK changes for the user
-      to confirm — these are NOT applied yet, so say you "proposed" them, never
+      is ready, call propose_actions to STAGE CREATE/UPDATE/LINK/RENAME changes for
+      the user to confirm (RENAME retitles/moves a note — inbound links follow).
+      These are NOT applied yet, so say you "proposed" them, never
       "saved". Use [[Note Title]] wiki-links in content. NOTES YOU CREATE LIVE
       UNDER THE "notes/" ROOT — title them "notes/Topic" (nest deeper with more
       "/", e.g. "notes/Work/Q3 Planning"). Reuse the EXACT title (incl. the
@@ -81,7 +82,7 @@ tools:
   search_attachments: "When the answer may live in an uploaded file: search attachment text by meaning. Returns matching files and their parent note."
   read_attachment: "When you need an attachment's full text: read it by id (from search_attachments)."
   query_sql: "When a question is structural or aggregate: run a READ-ONLY query (SELECT/WITH only) over the brain's database. Returns rows as text."
-  propose_actions: "When a wiki change is ready: STAGE CREATE/UPDATE/LINK changes for the user to confirm. Does NOT apply them — never say you saved or made the change."
+  propose_actions: "When a wiki change is ready: STAGE CREATE/UPDATE/LINK/RENAME changes for the user to confirm. RENAME moves/retitles a note (give its current exact title + new_title, e.g. notes/Foo); inbound links update automatically. Does NOT apply them — never say you saved or made the change."
 
 # Workflow AI action prompts (overridable per-workflow via config.prompt / instructions).
 actions:

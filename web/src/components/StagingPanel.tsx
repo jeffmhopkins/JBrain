@@ -3,7 +3,7 @@ import { get, post } from "../api";
 
 interface Action {
   id: number;
-  type: "CREATE" | "UPDATE" | "LINK";
+  type: "CREATE" | "UPDATE" | "LINK" | "RENAME";
   payload: any;
 }
 
@@ -31,8 +31,11 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
         <button className="primary" onClick={applyAll}>Apply all</button>
       </div>
       {actions.map((a) => {
-        const cls = a.type === "CREATE" ? "tag-create" : a.type === "UPDATE" ? "tag-update" : "tag-link";
-        const title = a.payload.title || `${a.payload.source_title} → ${a.payload.target_title}`;
+        const cls = a.type === "CREATE" ? "tag-create" : a.type === "UPDATE" ? "tag-update"
+          : a.type === "RENAME" ? "tag-update" : "tag-link";
+        const title = a.type === "RENAME"
+          ? `${a.payload.title} → ${a.payload.new_title}`
+          : a.payload.title || `${a.payload.source_title} → ${a.payload.target_title}`;
         return (
           <div className="card" key={a.id}>
             <div className="row">

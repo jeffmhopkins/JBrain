@@ -4,6 +4,7 @@ Nothing the architect proposes touches the wiki until it is applied here.
 """
 import hashlib
 import json
+import sqlite3
 
 from fastapi import APIRouter, HTTPException
 
@@ -68,6 +69,23 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         if source and f"[[{target_title}]]" not in source["content_md"]:
             new_content = source["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
             notes_svc.upsert_note(conn, source["title"], new_content, **kw)
+    elif action_type == "RENAME":
+        cur_title = (payload.get("title") or "").strip()
+        new_title = (payload.get("new_title") or "").strip()
+        if not cur_title or not new_title:
+            raise HTTPException(status_code=400, detail="RENAME needs the current title and a new_title")
+        note = notes_svc.get_by_title(conn, cur_title)
+        if note is None:
+            raise HTTPException(status_code=404, detail=f"No note titled '{cur_title}' to rename")
+        # Keep the note under its proper root (notes/ vs kb/) regardless of how the
+        # new title was phrased; rename in place (id-targeted) so inbound [[links]]
+        # are rewritten and the kind is preserved.
+        root = "kb" if note["kind"] == "kb" else "notes"
+        new_title = notes_svc.root_title(new_title, root)
+        try:
+            notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], **kw)
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="A note with that title already exists.")
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -82,6 +100,8 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
 def _applied_summary(action_type: str, payload: dict) -> str:
     if action_type == "LINK":
         return f"Linked [[{payload.get('source_title', '')}]] → [[{payload.get('target_title', '')}]]"
+    if action_type == "RENAME":
+        return f"Renamed “{(payload.get('title') or '').strip()}” → [[{(payload.get('new_title') or '').strip()}]]"
     verb = "Created" if action_type == "CREATE" else "Updated"
     return f"{verb} [[{(payload.get('title') or '').strip()}]]"
 

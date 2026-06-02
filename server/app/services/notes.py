@@ -233,11 +233,14 @@ def upsert_note(
     note's write transaction open).
     """
     title = title.strip()
+    is_loc = title == "loc" or title.startswith("loc/")
+    explicit_kind = kind
     # A note under the loc/ root is a PLACE note: it backs a geofence and must stay
     # OUT of KB synthesis (which only pulls entry/daily) while remaining searchable.
-    if kind is None and (title == "loc" or title.startswith("loc/")):
+    if kind is None and is_loc:
         kind = "place"
     id_targeted = note_id is not None
+    old_slug = None
     if note_id is not None:
         existing = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     else:
@@ -252,6 +255,7 @@ def upsert_note(
     if existing:
         note_id = existing["id"]
         slug = existing["slug"]
+        old_slug = existing["slug"]   # pre-rename slug (to re-pair a linked place)
         if existing["title"].lower() != title.lower():
             renamed_from = existing["title"]   # rewrite inbound [[links]] after the write
             slug = _unique_slug(conn, title, exclude_id=note_id)
@@ -270,6 +274,14 @@ def upsert_note(
         # write — that would let a caller convert e.g. a user entry into a kb note.
         if kind is not None and not id_targeted:
             conn.execute("UPDATE notes SET kind = ? WHERE id = ?", (kind, note_id))
+        elif id_targeted and explicit_kind is None:
+            # The loc/ prefix is authoritative for place-ness even on a rename, so a
+            # note moved INTO loc/ can't keep leaking into synthesis, and one moved
+            # OUT can't stay frozen as a place.
+            if is_loc and existing["kind"] != "place":
+                conn.execute("UPDATE notes SET kind = 'place' WHERE id = ?", (note_id,))
+            elif not is_loc and existing["kind"] == "place":
+                conn.execute("UPDATE notes SET kind = 'entry' WHERE id = ?", (note_id,))
         created = False
     else:
         created = True
@@ -297,6 +309,14 @@ def upsert_note(
     # links don't dangle at the old slug.
     if renamed_from:
         _rename_inbound_links(conn, renamed_from, title, note_id)
+        # Keep a place geofence paired with its loc/ note when the NOTE is renamed in
+        # the wiki (the place→note direction is handled by the places router). Renamed
+        # out of loc/ → it's no longer a place note, so unlink it from any place.
+        if is_loc and title.startswith("loc/"):
+            conn.execute("UPDATE places SET note_slug = ?, name = ? WHERE note_slug = ?",
+                         (slug, title[4:][:80], old_slug))
+        elif not is_loc:
+            conn.execute("UPDATE places SET note_slug = NULL WHERE note_slug = ?", (old_slug,))
 
     # "On every new entry" hook — fires for human/architect-created entry notes
     # only (not kb/workflow/restore writes), so workflows can enrich them.

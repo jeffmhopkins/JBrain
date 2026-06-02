@@ -1,4 +1,6 @@
 """Named geofences ("places") for the location tools + triggers. Owner-only."""
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -62,16 +64,23 @@ def rename_place(place_id: int, body: PlacePatch):
     place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         raise HTTPException(status_code=404, detail="No such place")
-    conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
-    # Keep the linked loc/ note's title in sync so the place and its page stay paired.
-    if place["note_slug"]:
-        note = _note_by_slug(conn, place["note_slug"])
-        if note is not None:
-            notes_svc.upsert_note(conn, _loc_title(name), note["content_md"],
-                                  note_id=note["id"], source="user", kind="place")
-            new = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
-            conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
-    conn.commit()
+    try:
+        conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
+        # Keep the linked loc/ note's title in sync so the place and its page stay paired.
+        if place["note_slug"]:
+            note = _note_by_slug(conn, place["note_slug"])
+            if note is not None:
+                notes_svc.upsert_note(conn, _loc_title(name), note["content_md"],
+                                      note_id=note["id"], source="user", kind="place")
+                new = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
+                conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="A place note with that name already exists.")
+    except Exception:
+        conn.rollback()
+        raise
     return {"ok": True, "name": name}
 
 
@@ -85,14 +94,21 @@ def ensure_place_note(place_id: int):
     if place is None:
         raise HTTPException(status_code=404, detail="No such place")
     title = _loc_title(place["name"])
-    note = (_note_by_slug(conn, place["note_slug"]) if place["note_slug"] else None) \
-        or notes_svc.get_by_title(conn, title)
-    if note is None:
-        nid = notes_svc.upsert_note(conn, title, f"# {place['name']}\n\n", source="user",
-                                    kind="place", fire_events=False)
-        note = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()
-    conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (note["slug"], place_id))
-    conn.commit()
+    try:
+        note = (_note_by_slug(conn, place["note_slug"]) if place["note_slug"] else None) \
+            or notes_svc.get_by_title(conn, title)
+        if note is None:
+            nid = notes_svc.upsert_note(conn, title, f"# {place['name']}\n\n", source="user",
+                                        kind="place", fire_events=False)
+            note = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()
+        conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (note["slug"], place_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="A note with that title already exists.")
+    except Exception:
+        conn.rollback()
+        raise
     return {"slug": note["slug"]}
 
 

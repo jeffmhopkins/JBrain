@@ -994,6 +994,41 @@ def test_place_note_backing(client):
     assert client.get(f"/api/notes/{linked}").json()["title"] == "loc/The Gym"
 
 
+def test_place_note_rename_collision_is_clean(client):
+    """Renaming a place so its loc/ note would collide returns 409 (not 500) and rolls
+    back — the place keeps its old name, no dirty transaction."""
+    from app.db import get_conn
+    conn = get_conn()
+    a = client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0}).json()["id"]
+    client.post(f"/api/places/{a}/note")          # loc/Gym
+    b = client.post("/api/places", json={"name": "Spa", "lat": 41.0, "lon": -75.0}).json()["id"]
+    client.post(f"/api/places/{b}/note")          # loc/Spa
+    r = client.patch(f"/api/places/{b}", json={"name": "Gym"})   # loc/Spa → loc/Gym collides
+    assert r.status_code == 409
+    assert conn.execute("SELECT name FROM places WHERE id=?", (b,)).fetchone()["name"] == "Spa"
+
+
+def test_loc_note_rename_syncs_place(client):
+    """Renaming the loc/ note in the wiki re-pairs the place (note_slug + name)."""
+    from app.db import get_conn
+    conn = get_conn()
+    pid = client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0}).json()["id"]
+    slug = client.post(f"/api/places/{pid}/note").json()["slug"]
+    new_slug = client.put(f"/api/notes/{slug}", json={"title": "loc/Fitness", "content_md": "x"}).json()["slug"]
+    place = conn.execute("SELECT name, note_slug FROM places WHERE id=?", (pid,)).fetchone()
+    assert place["name"] == "Fitness" and place["note_slug"] == new_slug
+
+
+def test_loc_kind_tracks_prefix_on_rename(client):
+    """Moving a note into loc/ makes it kind='place' (out of synthesis); moving it back
+    out reverts to 'entry'."""
+    slug = client.post("/api/notes", json={"title": "notes/Foo", "content_md": "x"}).json()["slug"]
+    moved = client.put(f"/api/notes/{slug}", json={"title": "loc/Foo", "content_md": "x"}).json()["slug"]
+    assert client.get(f"/api/notes/{moved}").json()["kind"] == "place"
+    back = client.put(f"/api/notes/{moved}", json={"title": "notes/Foo", "content_md": "x"}).json()["slug"]
+    assert client.get(f"/api/notes/{back}").json()["kind"] == "entry"
+
+
 def test_loc_note_kind_inferred(client):
     """A note created under loc/ is kind='place' — so it's searchable but excluded
     from KB synthesis (which only folds entry/daily)."""

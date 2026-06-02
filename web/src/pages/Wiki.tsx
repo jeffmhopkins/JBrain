@@ -46,6 +46,30 @@ export default function Wiki() {
 
   const tree = useMemo(() => buildTree(notes), [notes]);
 
+  // On load (and whenever the visible set changes), start with every folder
+  // collapsed EXCEPT the branch where the most recent note lives — so you open
+  // focused on where you last added something, not a fully-expanded wall.
+  useEffect(() => {
+    if (notes.length === 0) { setCollapsed(new Set()); return; }
+    const norm = (t: string) => t.split("/").map((s) => s.trim()).filter(Boolean);
+    const recent = notes.reduce((a, b) => (a.updated_at >= b.updated_at ? a : b));
+    // Folder paths along the recent note's branch — keep these open.
+    const keepOpen = new Set<string>();
+    let acc = "";
+    for (const seg of norm(recent.title)) { acc = acc ? `${acc}/${seg}` : seg; keepOpen.add(acc); }
+    // Every collapsible folder = any strict ancestor prefix across all titles.
+    const next = new Set<string>();
+    for (const n of notes) {
+      const parts = norm(n.title);
+      let p = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        p = p ? `${p}/${parts[i]}` : parts[i];
+        if (!keepOpen.has(p)) next.add(p);
+      }
+    }
+    setCollapsed(next);
+  }, [notes]);
+
   function toggle(path: string) {
     setCollapsed((s) => {
       const next = new Set(s);

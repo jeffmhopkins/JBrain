@@ -187,23 +187,21 @@ export default function Shell({ children }: { children: ReactNode }) {
   const advTool = !capture && !review && !advHome;   // a tool open full-screen
   const advanced = advHome || advTool;
 
-  // Vertical swipe between chat and Lists. Edge-gated so it never hijacks
-  // scrolling: swipe-up only fires at the bottom, swipe-down only at the top.
-  //   chat:  ↑ → Lists      (Advanced is on the horizontal carousel instead)
-  //   lists: ↓ → chat
-  const swipe = useRef<{ y: number; x: number; atTop: boolean; atBottom: boolean } | null>(null);
+  // Vertical swipe between chat and Lists.
+  //   chat:  ↑ starting in the composer text box → Lists. Gating on the composer
+  //          (not the scroll position) means swiping/scrolling the message body
+  //          never navigates — only a deliberate swipe up from the input does.
+  //   lists: ↓ from the top → chat.
+  const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
-    const sc = scrollParent(e.target as HTMLElement);
-    // Slop so "essentially at the edge" counts as the edge. A 2px gate only ever
-    // matched the non-scrolling composer (its scroll parent is null → always an
-    // edge), so the swipe felt like it worked only from the text field; sub-pixel
-    // scroll offsets left the message body just shy of the bottom. 48px matches the
-    // chat's own near-bottom threshold so the gesture works from the body too.
-    const EDGE = 48;
-    const atTop = !sc || sc.scrollTop <= EDGE;
-    const atBottom = !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight <= EDGE;
-    swipe.current = { y: t.clientY, x: t.clientX, atTop, atBottom };
+    const el = e.target as HTMLElement;
+    const sc = scrollParent(el);
+    swipe.current = {
+      y: t.clientY, x: t.clientX,
+      fromComposer: !!el.closest(".composer"),
+      atTop: !sc || sc.scrollTop <= 2,
+    };
   }
   function onTouchEnd(e: TouchEvent) {
     const s = swipe.current; swipe.current = null;
@@ -212,10 +210,8 @@ export default function Shell({ children }: { children: ReactNode }) {
     const dy = t.clientY - s.y, dx = t.clientX - s.x;
     if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe
     const down = dy > 0;
-    if (down && !s.atTop) return;       // swipe-down only from the top
-    if (!down && !s.atBottom) return;   // swipe-up only from the bottom
-    if (path === "/chat") { if (!down) nav("/lists"); }   // swipe up → Lists
-    else if (path === "/lists") { if (down) nav("/chat"); }
+    if (path === "/chat") { if (!down && s.fromComposer) nav("/lists"); }   // swipe up from the text box → Lists
+    else if (path === "/lists") { if (down && s.atTop) nav("/chat"); }
   }
 
   return (

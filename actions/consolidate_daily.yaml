@@ -39,6 +39,19 @@ steps:
           kind: daily
           version_note: "daily consolidation"
 
+      # If a located entry clearly names a reusable place, stage it for one-tap
+      # approval (the coordinate comes from the entry — nothing geocoded, nothing
+      # auto-written). Only runs for days that have GPS-stamped entries.
+      - id: places
+        when: "{{ item.located }}"
+        do: suggest_places
+        with:
+          entries: "{{ item.located }}"
+      - when: "{{ places.candidates }}"
+        do: stage_places
+        with:
+          candidates: "{{ places.candidates }}"
+
   - do: create_review
     when: "{{ config.review != false }}"
     with:

@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { get, post } from "../api";
 
 type ActionType = "CREATE" | "UPDATE" | "LINK" | "RENAME" | "DELETE"
-  | "LIST_REMOVE_ITEM" | "LIST_EDIT_ITEM" | "DELETE_LIST";
+  | "LIST_REMOVE_ITEM" | "LIST_EDIT_ITEM" | "DELETE_LIST" | "ADD_PLACE";
 interface Action { id: number; type: ActionType; payload: any; current_content?: string | null; }
 
 const TAG_CLASS: Record<string, string> = {
   CREATE: "tag-create", UPDATE: "tag-update", LINK: "tag-link", RENAME: "tag-update",
   LIST_EDIT_ITEM: "tag-update", DELETE: "tag-delete", DELETE_LIST: "tag-delete", LIST_REMOVE_ITEM: "tag-delete",
+  ADD_PLACE: "tag-create",
 };
 
 // Cheap line-level diff (set difference of non-empty trimmed lines) so a proposal's
@@ -27,6 +28,7 @@ function actionTitle(a: Action): string {
     case "DELETE_LIST": return `Delete list ${p.list_title}`;
     case "LIST_REMOVE_ITEM": return `Remove “${p.item}” from ${p.list_title}`;
     case "LIST_EDIT_ITEM": return `“${p.item}” → “${p.new_item}”`;
+    case "ADD_PLACE": return `📍 ${p.name}`;
     default: return p.title || "";
   }
 }

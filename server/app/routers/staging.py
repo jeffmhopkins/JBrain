@@ -147,6 +147,19 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             raise HTTPException(status_code=404, detail=f"No note titled '{title}' to delete")
         notes_svc.soft_delete(conn, note["id"])
         undo = {"op": "restore_note", "note_id": note["id"]}
+    elif action_type == "ADD_PLACE":
+        name = (payload.get("name") or "").strip()[:80]
+        if not name or payload.get("lat") is None or payload.get("lon") is None:
+            raise HTTPException(status_code=400, detail="ADD_PLACE needs name, lat, lon")
+        # Idempotent: if the owner already saved this name, applying is a no-op success.
+        exists = conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE LIMIT 1", (name,)).fetchone()
+        if not exists:
+            cur = conn.execute(
+                "INSERT INTO places (name, lat, lon, radius_m, note_slug) VALUES (?, ?, ?, ?, ?)",
+                (name, payload["lat"], payload["lon"], max(20, min(int(payload.get("radius_m") or 150), 20000)),
+                 payload.get("note_slug")),
+            )
+            undo = {"op": "delete_place", "id": cur.lastrowid}
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -173,6 +186,8 @@ def _applied_summary(action_type: str, payload: dict) -> str:
         return f"Renamed “{(payload.get('title') or '').strip()}” → [[{(payload.get('new_title') or '').strip()}]]"
     if action_type == "DELETE":
         return f"Deleted [[{(payload.get('title') or '').strip()}]]"
+    if action_type == "ADD_PLACE":
+        return f"Saved place “{(payload.get('name') or '').strip()}”"
     lt = notes_svc.root_title(payload.get("list_title") or "", "lists")
     if action_type == "DELETE_LIST":
         return f"Deleted list [[{lt}]]"
@@ -286,6 +301,9 @@ def undo_action(action_id: int):
                 conn.execute("UPDATE share_links SET status='active', revoked_at=NULL WHERE note_id=?", (note["id"],))
     elif op == "restore_note":
         notes_svc.restore(conn, undo["note_id"])   # un-delete + rebuild links/index/embedding
+    elif op == "delete_place":
+        conn.execute("DELETE FROM places WHERE id = ?", (undo["id"],))
+        conn.execute("DELETE FROM location_state WHERE place_id = ?", (undo["id"],))
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

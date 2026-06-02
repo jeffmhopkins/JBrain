@@ -903,6 +903,34 @@ def test_location_dwell_trigger_fires_once(client, monkeypatch):
     assert len(pushes) == 1
 
 
+def test_consolidation_place_suggestion(client, monkeypatch):
+    """A located entry that clearly names a place becomes a staged ADD_PLACE that,
+    when applied, creates the place. Coords come from the entry, not the LLM."""
+    from app.db import get_conn
+    from app.services import llm, pipeline
+    conn = get_conn()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: '[{"index": 1, "name": "The Gym"}]')
+
+    ctx = pipeline._Ctx(conn, None, None)
+    entries = [{"title": "notes/daily/2026/06/01/1", "content": "Leg day at the new gym", "lat": 40.0, "lon": -74.0}]
+    cands = pipeline._PRIMITIVES["suggest_places"](ctx, entries=entries)["candidates"]
+    assert cands and cands[0]["name"] == "The Gym" and cands[0]["lat"] == 40.0   # coord from the entry
+
+    assert pipeline._PRIMITIVES["stage_places"](ctx, candidates=cands)["staged"] == 1
+    conn.commit()
+
+    pending = client.get("/api/staging").json()
+    add = next(p for p in pending if p["type"] == "ADD_PLACE")
+    assert add["payload"]["name"] == "The Gym"
+    assert client.post(f"/api/staging/{add['id']}/apply").json()["ok"] is True
+    assert any(p["name"] == "The Gym" for p in client.get("/api/places").json())
+
+    # Now that it's saved, re-suggesting the same spot is deduped (no re-stage).
+    assert pipeline._PRIMITIVES["suggest_places"](ctx, entries=entries)["candidates"] == []
+
+
 def test_places_crud(client):
     """Places CRUD: add (radius clamped), list, delete (cascades location_state)."""
     r = client.post("/api/places", json={"name": "Home", "lat": 40.0, "lon": -74.0, "radius_m": 5})

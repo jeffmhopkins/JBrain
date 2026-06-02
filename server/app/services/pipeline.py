@@ -28,6 +28,7 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from . import clock
 from . import embeddings
+from . import geo
 from . import llm
 from . import notes as notes_svc
 from . import reviews as reviews_svc
@@ -543,7 +544,7 @@ def _p_daily_pending(ctx, limit_days=60):
     backlinks). Today is excluded (it's still being written into)."""
     today = _local_day_path()
     rows = ctx.conn.execute(
-        "SELECT title, content_md FROM notes "
+        "SELECT title, content_md, lat, lon FROM notes "
         "WHERE title LIKE 'notes/daily/%' AND kind = 'entry' AND deleted_at IS NULL "
         "ORDER BY title",
     ).fetchall()
@@ -574,6 +575,12 @@ def _p_daily_pending(ctx, limit_days=60):
             # Pre-rendered "## Entries" backlink list so the YAML stays a simple
             # substitution (no Jinja loop needed in the recipe).
             "entries_md": "\n".join(f"- [[{c['title']}]]" for c in children),
+            # Entries that carry a capture coordinate — candidates for promoting to
+            # a named place (suggest_places reads this).
+            "located": [
+                {"title": c["title"], "content": c["content_md"], "lat": c["lat"], "lon": c["lon"]}
+                for c in children if c["lat"] is not None and c["lon"] is not None
+            ],
         })
     return {"days": days[: max(1, int(limit_days))], "count": len(days)}
 
@@ -735,6 +742,94 @@ def _p_notify(ctx, title, body="", url="/"):
     return {"queued": True}
 
 
+def _existing_place(conn, name, lat, lon, radius_m):
+    """True if a place by this name already exists, OR any place sits within this
+    one's radius of the coord (so we don't re-suggest a spot already saved)."""
+    if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE LIMIT 1", (name,)).fetchone():
+        return True
+    for p in conn.execute("SELECT lat, lon FROM places").fetchall():
+        if geo.haversine_km(lat, lon, p["lat"], p["lon"]) * 1000.0 <= float(radius_m):
+            return True
+    return False
+
+
+def _p_suggest_places(ctx, entries):
+    """From entries that carry a capture coordinate, ask the LLM which clearly
+    happened AT a nameable, reusable place. The LLM only picks an index + a name;
+    the COORDINATE comes from the entry (never invented). Returns deduped
+    candidates {name, lat, lon, radius_m, source_title}. No-op without an LLM key."""
+    items = [e for e in (entries or []) if isinstance(e, dict) and e.get("lat") is not None and e.get("lon") is not None]
+    if not items or not llm.has_credentials():
+        return {"candidates": []}
+    block = "\n".join(
+        f'{i + 1}. "{(e.get("title") or "").split("/")[-1]}" — {(e.get("content") or "")[:200]}'
+        for i, e in enumerate(items)
+    )
+    prompt = (
+        "These journal entries each have GPS coordinates. Identify ONLY the ones that "
+        "clearly happened AT a specific, nameable, REUSABLE place (a gym, a café, an "
+        "office, a park) — not a vague area, a one-off, or a place merely mentioned but "
+        "not visited. For each such entry, give a short place name (≤ 4 words).\n\n"
+        "ENTRIES:\n" + block + "\n\n"
+        'Reply with ONLY a JSON array, e.g. [{"index":1,"name":"The Gym"}]. Omit entries '
+        "that don't clearly identify a reusable place. If none qualify, reply []."
+    )
+    raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=600)
+    m = re.search(r"\[.*\]", raw or "", re.DOTALL)
+    if not m:
+        return {"candidates": []}
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return {"candidates": []}
+    out, seen = [], set()
+    for d in data if isinstance(data, list) else []:
+        if not isinstance(d, dict):
+            continue
+        try:
+            e = items[int(d.get("index", 0)) - 1]
+        except (ValueError, IndexError, TypeError):
+            continue
+        name = (d.get("name") or "").strip()[:80]
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        if _existing_place(ctx.conn, name, e["lat"], e["lon"], 150):
+            continue
+        seen.add(key)
+        out.append({"name": name, "lat": e["lat"], "lon": e["lon"],
+                    "radius_m": 150, "source_title": e["title"]})
+    return {"candidates": out}
+
+
+def _p_stage_places(ctx, candidates):
+    """Stage each place candidate as a pending ADD_PLACE action for the owner to
+    approve (nothing is written to `places` until they tap Apply). Skips ones
+    already pending or already saved since suggestion."""
+    staged = 0
+    for c in (candidates or []):
+        if not isinstance(c, dict) or not (c.get("name") and c.get("lat") is not None and c.get("lon") is not None):
+            continue
+        name = str(c["name"])[:80]
+        if _existing_place(ctx.conn, name, c["lat"], c["lon"], c.get("radius_m") or 150):
+            continue
+        dup = ctx.conn.execute(
+            "SELECT 1 FROM staging_actions WHERE type='ADD_PLACE' AND status='pending' "
+            "AND json_extract(payload_json, '$.name') = ? LIMIT 1", (name,)
+        ).fetchone()
+        if dup:
+            continue
+        payload = {"type": "ADD_PLACE", "name": name, "lat": c["lat"], "lon": c["lon"],
+                   "radius_m": int(c.get("radius_m") or 150), "source_title": c.get("source_title"),
+                   "summary": f"Save “{name}” as a place (from [[{c.get('source_title', '')}]])"}
+        ctx.conn.execute(
+            "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (NULL, 'ADD_PLACE', ?)",
+            (json.dumps(payload),),
+        )
+        staged += 1
+    return {"staged": staged}
+
+
 def _p_research_nudges(ctx):
     """Post review-inbox nudges for active research links that have new candidate
     notes the owner hasn't reviewed yet (the approve-to-add tray)."""
@@ -774,6 +869,8 @@ _PRIMITIVES = {
     "stage_moves": _p_stage_moves,
     "research_nudges": _p_research_nudges,
     "notify": _p_notify,
+    "suggest_places": _p_suggest_places,
+    "stage_places": _p_stage_places,
 }
 
 
@@ -813,6 +910,10 @@ _PRIMITIVE_META: dict[str, dict] = {
     "notify": {"summary": "Send a Web Push to all devices (custom title/body/deep-link).",
                "inputs": [{"name": "title", "type": "str", "required": True}, {"name": "body", "type": "str"},
                           {"name": "url", "type": "str"}], "output": "object"},
+    "suggest_places": {"summary": "From located entries, LLM-pick which clearly name a reusable place (coords from the entry).",
+                       "inputs": [{"name": "entries", "type": "list", "required": True}], "output": "object"},
+    "stage_places": {"summary": "Stage place candidates as pending ADD_PLACE actions for owner approval.",
+                     "inputs": [{"name": "candidates", "type": "list", "required": True}], "output": "object"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

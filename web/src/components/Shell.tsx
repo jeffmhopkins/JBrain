@@ -199,7 +199,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     const sc = scrollParent(el);
     swipe.current = {
       y: t.clientY, x: t.clientX,
-      fromComposer: !!el.closest(".composer"),
+      fromComposer: !!el.closest(".composer-box"),
       atTop: !sc || sc.scrollTop <= 2,
     };
   }

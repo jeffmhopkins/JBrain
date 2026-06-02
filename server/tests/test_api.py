@@ -845,7 +845,31 @@ def test_location_trail_dedup_rule(client):
     assert post(40.0020, -74.0000, "2026-06-02T11:03:00Z")["stored"] is True
 
     pts = client.get("/api/locations").json()
-    assert len(pts) == 3 and pts[0]["recorded_at"] >= pts[-1]["recorded_at"]   # newest first
+    assert len(pts) == 3 and pts[0]["recorded_at"] <= pts[-1]["recorded_at"]   # chronological (ASC)
+    # Date-range filter (ISO bounds are normalized to the stored format).
+    ranged = client.get("/api/locations", params={"since": "2026-06-02T11:00:00Z"}).json()
+    assert len(ranged) == 1 and ranged[0]["recorded_at"].startswith("2026-06-02 11:")
+
+
+def test_tile_proxy(client, monkeypatch):
+    """The tile proxy validates coords, serves PNG bytes, and caches (no auth — it's
+    public OSM imagery loaded via <img>, which can't carry the bearer token)."""
+    from app.routers import tiles
+    calls = {"n": 0}
+    def fake_fetch(z, x, y):
+        calls["n"] += 1
+        return b"\x89PNG\r\n\x1a\n" + bytes([z, x % 256, y % 256])
+    monkeypatch.setattr(tiles, "_fetch", fake_fetch)
+
+    r = client.get("/api/tiles/10/300/400.png")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert r.content.startswith(b"\x89PNG")
+    # Second hit is served from cache — _fetch not called again.
+    client.get("/api/tiles/10/300/400.png")
+    assert calls["n"] == 1
+    # Out-of-range coordinates are rejected.
+    assert client.get("/api/tiles/3/99/0.png").status_code == 400   # x must be < 2^3
+    assert client.get("/api/tiles/25/0/0.png").status_code == 400   # z too high
 
 
 def test_research_scope_boundary(client, monkeypatch):

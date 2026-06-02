@@ -66,11 +66,24 @@ def add_location(body: LocationIn):
     return {"stored": True, "id": cur.lastrowid}
 
 
+def _norm(ts: str | None) -> str | None:
+    # Normalise an ISO bound ("2026-06-01T00:00:00Z") to the stored format so string
+    # comparison against recorded_at ("YYYY-MM-DD HH:MM:SS") works.
+    return ts.strip().replace("T", " ").replace("Z", "").strip() if ts else None
+
+
 @router.get("")
-def list_locations(limit: int = 200):
-    rows = get_conn().execute(
-        "SELECT id, lat, lon, accuracy_m, recorded_at FROM locations "
-        "ORDER BY recorded_at DESC LIMIT ?",
-        (max(1, min(int(limit), 5000)),),
-    ).fetchall()
-    return [dict(r) for r in rows]
+def list_locations(since: str | None = None, until: str | None = None, limit: int = 5000):
+    sql = "SELECT id, lat, lon, accuracy_m, recorded_at FROM locations WHERE 1=1"
+    params: list = []
+    s, u = _norm(since), _norm(until)
+    if s:
+        sql += " AND recorded_at >= ?"
+        params.append(s)
+    if u:
+        sql += " AND recorded_at <= ?"
+        params.append(u)
+    # ASC: chronological order suits trail/playback; the trail viewer is the main reader.
+    sql += " ORDER BY recorded_at ASC LIMIT ?"
+    params.append(max(1, min(int(limit), 20000)))
+    return [dict(r) for r in get_conn().execute(sql, params).fetchall()]

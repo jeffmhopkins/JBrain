@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 def init_db() -> None:
@@ -304,6 +304,21 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               workflow_id INTEGER NOT NULL, kind TEXT NOT NULL, marker TEXT,
               fired_at TEXT NOT NULL DEFAULT (datetime('now')),
               PRIMARY KEY (workflow_id, kind));
+        """)
+
+    if current < 24:
+        # LLM token-usage ledger (in-app cost awareness).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS llm_usage (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL DEFAULT (datetime('now')),
+              model TEXT NOT NULL,
+              input_tokens INTEGER NOT NULL DEFAULT 0,
+              output_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+              context TEXT);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
         """)
 
 

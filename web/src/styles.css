@@ -367,6 +367,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .geofence-card { display: flex; align-items: center; gap: 8px; margin: 6px 0 12px; padding: 8px 12px;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); font-size: 13px; }
 .geofence-card .spacer { flex: 1; }
+/* System → Maintenance: key/value rows for storage, uptime, token usage. */
+.maint-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: baseline; font-size: 14px; }
+.maint-k { color: var(--text-dim); white-space: nowrap; }
+.maint-v { color: var(--text); }
+.maint-warn { color: var(--danger, #ff6b6b); font-size: 12px; margin-left: 6px; }
 .geofence-card a { color: var(--accent); text-decoration: none; }
 .geofence-card a:hover { text-decoration: underline; }
 /* Inline image-attachment preview: capped so a huge photo never blows out the page. */

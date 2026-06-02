@@ -389,3 +389,18 @@ CREATE TABLE IF NOT EXISTS location_fired (
   fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (workflow_id, kind)
 );
+
+-- LLM token-usage ledger: one row per provider call (recorded on a dedicated
+-- connection so it never touches the caller's transaction). Token counts are
+-- exact; the dollar figure derived from them is an ESTIMATE (see services/usage.py).
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                 TEXT NOT NULL DEFAULT (datetime('now')),   -- UTC
+  model              TEXT NOT NULL,
+  input_tokens       INTEGER NOT NULL DEFAULT 0,
+  output_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  context            TEXT                                        -- 'agent' | 'action' (informational)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);

@@ -1138,6 +1138,22 @@ def test_where_was_i_far_gap_refuses(client):
     assert "an unlabeled spot" in near
 
 
+def test_system_stats_and_token_meter(client):
+    """The meter records a call and /api/system/stats reports storage, uptime, and
+    today+MTD token counts with an estimated $ (exact counts, estimated dollars)."""
+    from app.services import usage
+    usage.record("claude-opus-4-8", input_tokens=1_000_000, output_tokens=1_000_000, context="agent")
+    r = client.get("/api/system/stats").json()
+    assert r["storage"]["db_bytes"] > 0 and r["storage"]["percent"] >= 0
+    assert r["uptime_seconds"] >= 0 and r["started_at"]
+    tok = r["tokens"]
+    assert tok["estimated"] is True
+    assert tok["today"]["input"] == 1_000_000 and tok["today"]["output"] == 1_000_000
+    assert tok["today"]["cost"] == 90.0 and tok["month"]["cost"] == 90.0   # opus: 1M*$15 + 1M*$75
+    assert any(m["model"] == "claude-opus-4-8" for m in tok["today"]["by_model"])
+    assert r["daily_warn_usd"] > 0
+
+
 def test_attachment_download_roundtrip_is_byte_exact(client):
     """The download endpoint must return the uploaded bytes verbatim (image preview +
     Download both depend on this). Guards against any server-side corruption."""

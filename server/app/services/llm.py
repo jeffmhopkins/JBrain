@@ -109,6 +109,7 @@ class AnthropicProvider:
         if system:
             kwargs["system"] = system
         msg = client.messages.create(**kwargs)
+        _record_usage(kwargs["model"], getattr(msg, "usage", None), "action")
         return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens):
@@ -142,6 +143,7 @@ class AnthropicProvider:
         for c in calls:
             yield ToolCallEvent(c)
         u = getattr(final, "usage", None)
+        _record_usage(model or self.default_model(), u, "agent")
         usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
                  "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
         yield TurnEnd(calls, usage=usage)
@@ -154,6 +156,26 @@ class AnthropicProvider:
                 for r in results
             ],
         })
+
+
+def _record_usage(model: str, u, context: str | None = None) -> None:
+    """Log a call's token usage to the meter (best-effort). Reads the standard +
+    prompt-cache token fields the Anthropic SDK reports so the cost estimate is
+    sane when caching is on."""
+    if u is None:
+        return
+    try:
+        from . import usage as _usage
+        _usage.record(
+            model,
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+            cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            context=context,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --- Selection --------------------------------------------------------------

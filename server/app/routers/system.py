@@ -31,6 +31,10 @@ router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[CurrentU
 GITHUB_REPO = os.environ.get("JBRAIN_REPO", "jeffmhopkins/JBrain")
 _cache: dict = {"ts": 0.0, "data": None}
 
+# Process start ≈ module import (startup). Used for the uptime stat.
+_START_TS = time.time()
+_START_ISO = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
 
 def _http_json(path: str):
     req = urllib.request.Request(
@@ -127,6 +131,45 @@ def version():
         "update_available": avail,
         "release_url": main["url"] if (avail and main) else (rel["url"] if rel else None),
         "release_name": None,
+    }
+
+
+@router.get("/stats")
+def stats():
+    """Maintenance snapshot: data-volume storage, process uptime, and LLM token
+    usage today + month-to-date (token counts exact; $ estimated). Owner-only."""
+    import shutil
+    from ..db import get_conn, get_meta
+    from ..services import usage as usage_svc
+
+    conn = get_conn()
+    db_path = Path(get_settings().db_path)
+    try:
+        du = shutil.disk_usage(db_path.parent)
+        disk = {"total": du.total, "used": du.used, "free": du.free,
+                "percent": round(du.used / du.total * 100, 1) if du.total else 0.0}
+    except OSError:
+        disk = {"total": 0, "used": 0, "free": 0, "percent": 0.0}
+    # The DB file plus its WAL sidecar is the real on-disk DB footprint.
+    db_bytes = sum(
+        (db_path.parent / f"{db_path.name}{suffix}").stat().st_size
+        for suffix in ("", "-wal", "-shm")
+        if (db_path.parent / f"{db_path.name}{suffix}").exists()
+    )
+    att = conn.execute("SELECT COUNT(*) c, COALESCE(SUM(byte_size), 0) b FROM attachments").fetchone()
+
+    try:
+        warn_usd = float(get_meta("daily_cost_warn_usd") or 5.0)
+    except (TypeError, ValueError):
+        warn_usd = 5.0
+
+    return {
+        "storage": {**disk, "db_bytes": db_bytes,
+                    "attachments_bytes": att["b"], "attachments_count": att["c"]},
+        "uptime_seconds": int(time.time() - _START_TS),
+        "started_at": _START_ISO,
+        "tokens": usage_svc.summary(conn),
+        "daily_warn_usd": warn_usd,
     }
 
 

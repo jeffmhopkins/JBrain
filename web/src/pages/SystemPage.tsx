@@ -11,12 +11,14 @@ export default function SystemPage() {
   const { disconnect, pwaVersion, serverVersion, versionMismatch, vapidPublicKey } = useAuth();
   const geo = useGeo();
   const [info, setInfo] = useState<any>(null);
+  const [stats, setStats] = useState<any>(null);
   const [msg, setMsg] = useState("");
   const [notifMsg, setNotifMsg] = useState("");
   const [notifBusy, setNotifBusy] = useState(false);
   const [notifDelay, setNotifDelay] = useState(0);   // seconds before the test fires
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
+  useEffect(() => { get("/api/system/stats").then(setStats).catch(() => {}); }, []);
 
   async function doUpdate() {
     setMsg("Requesting update…");
@@ -52,6 +54,18 @@ export default function SystemPage() {
     } finally { setNotifBusy(false); }
   }
 
+  const fmtBytes = (n: number) => {
+    if (!n) return "0 B";
+    const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0, v = n;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
+  };
+  const fmtUptime = (s: number) => {
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+  };
+  const fmtTok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`;
+
   return (
     <div className="content">
       <div className="card">
@@ -73,6 +87,41 @@ export default function SystemPage() {
         )}
         {msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
       </div>
+
+      {stats && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Maintenance</h3>
+          <div className="maint-grid">
+            <span className="maint-k">Storage</span>
+            <span className="maint-v">
+              {stats.storage.percent}% used · {fmtBytes(stats.storage.free)} free of {fmtBytes(stats.storage.total)}
+              <span className="muted" style={{ display: "block", fontSize: 12 }}>
+                Database {fmtBytes(stats.storage.db_bytes)} · Attachments {fmtBytes(stats.storage.attachments_bytes)} ({stats.storage.attachments_count})
+              </span>
+            </span>
+            <span className="maint-k">Uptime</span>
+            <span className="maint-v">{fmtUptime(stats.uptime_seconds)}
+              <span className="muted" style={{ fontSize: 12 }}> · since {stats.started_at} UTC</span>
+            </span>
+            <span className="maint-k">LLM today</span>
+            <span className="maint-v">
+              ~${stats.tokens.today.cost.toFixed(2)}
+              <span className="muted" style={{ fontSize: 12 }}> · {fmtTok(stats.tokens.today.input + stats.tokens.today.output)} tokens · {stats.tokens.today.calls} calls</span>
+              {stats.tokens.today.cost >= stats.daily_warn_usd && (
+                <span className="maint-warn"> ⚠ high — over ${stats.daily_warn_usd.toFixed(2)}/day</span>
+              )}
+            </span>
+            <span className="maint-k">LLM this month</span>
+            <span className="maint-v">
+              ~${stats.tokens.month.cost.toFixed(2)}
+              <span className="muted" style={{ fontSize: 12 }}> · {fmtTok(stats.tokens.month.input + stats.tokens.month.output)} tokens</span>
+            </span>
+          </div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+            Cost is an estimate (token counts are exact); month resets on the 1st in {stats.tokens.tz}. Won’t exactly match your provider bill.
+          </p>
+        </div>
+      )}
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Location stamping</h3>

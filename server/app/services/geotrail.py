@@ -42,8 +42,12 @@ def fixes(conn, since: str | None = None, until: str | None = None) -> list[dict
         sql += " AND recorded_at >= ?"; params.append(s)
     if u:
         sql += " AND recorded_at <= ?"; params.append(u)
-    sql += " ORDER BY recorded_at ASC LIMIT 20000"
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    # Cap the scan, but keep the MOST RECENT fixes when a window is huge (ASC + LIMIT
+    # would silently drop newest); re-sort to ascending for the trail math.
+    sql += " ORDER BY recorded_at DESC LIMIT 20000"
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows.reverse()
+    return rows
 
 
 def label_point(conn, lat: float, lon: float) -> str | None:

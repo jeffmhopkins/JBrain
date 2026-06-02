@@ -1075,6 +1075,32 @@ def test_places_crud(client):
     assert client.get("/api/places").json() == []
 
 
+def test_fixes_chronological(client):
+    """fixes() returns ascending by time (the DESC-LIMIT-then-reverse keeps the newest
+    when a window is huge, but must still present chronological order)."""
+    from app.db import get_conn
+    from app.services import geotrail
+    conn = get_conn()
+    for ts in ("2026-06-01 11:00:00", "2026-06-01 09:00:00", "2026-06-01 10:00:00"):
+        conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (40,-74,?,'t')", (ts,))
+    conn.commit()
+    assert [f["recorded_at"] for f in geotrail.fixes(conn)] == [
+        "2026-06-01 09:00:00", "2026-06-01 10:00:00", "2026-06-01 11:00:00"]
+
+
+def test_where_was_i_far_gap_refuses(client):
+    """where_was_i won't label a fix that's hours from the asked time."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (40,-74,'2026-06-01 12:00:00','t')")
+    conn.commit()
+    far, _ = architect._run_tool(conn, None, "where_was_i", {"when": "2026-06-03T12:00:00Z"})  # 48 h off
+    assert "No location fix near" in far
+    near, _ = architect._run_tool(conn, None, "where_was_i", {"when": "2026-06-01T13:00:00Z"})  # 1 h off
+    assert "an unlabeled spot" in near
+
+
 def test_attachment_download_roundtrip_is_byte_exact(client):
     """The download endpoint must return the uploaded bytes verbatim (image preview +
     Download both depend on this). Guards against any server-side corruption."""

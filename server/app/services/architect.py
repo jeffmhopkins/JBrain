@@ -395,10 +395,17 @@ def _resolve_place(conn, ref: str, radius_m: float = 150.0):
     return (p[0], p[1], r, p[2] or (ref or "").strip())
 
 
+_WHERE_WAS_I_MAX_GAP_MIN = 360.0   # > 6 h from the asked time = no real fix; don't pretend
+
+
 def _tool_where_was_i(conn, when: str) -> str:
     fix, gap = geotrail.nearest_fix(conn, when)
     if not fix:
         return "No location fixes have been recorded yet."
+    if gap > _WHERE_WAS_I_MAX_GAP_MIN:
+        # The closest fix is hours away — labeling it would misrepresent where they
+        # were. Say there's a gap rather than confidently naming a distant spot.
+        return _untrusted("location", f"No location fix near that time — the closest is {gap / 60.0:.1f} h away.")
     label = geotrail.label_point(conn, fix["lat"], fix["lon"])
     where = label or "an unlabeled spot"   # never leak raw coords through a tool
     near = "" if gap <= 30 else f" — but the nearest fix is {gap:.0f} min off, so this is approximate"

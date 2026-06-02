@@ -6,11 +6,11 @@
 export interface FieldSpec {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "select" | "review";
+  type: "text" | "textarea" | "number" | "select" | "boolean" | "review";
   required?: boolean;
   help?: string;
   options?: string[];
-  default?: boolean; // for review: whether the action posts a review by default
+  default?: boolean; // review: post a review by default · boolean: the default value
 }
 
 function Help({ t }: { t?: string }) {
@@ -50,6 +50,20 @@ export default function ConfigFields({
 function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v: any) => void }) {
   if (f.type === "review") return <ReviewField f={f} value={value} set={set} />;
 
+  if (f.type === "boolean") {
+    const checked = value === undefined ? f.default === true : !!value;
+    return (
+      <div style={{ marginTop: 12 }}>
+        <label className="row" style={{ gap: 8 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={checked}
+                 onChange={(e) => set(f.key, e.target.checked)} />
+          {f.label}
+        </label>
+        <Help t={f.help} />
+      </div>
+    );
+  }
+
   const label = (
     <label className="muted" style={{ display: "block", marginTop: 10 }}>
       {f.label}{f.required && " *"}
@@ -64,7 +78,7 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
   }
   if (f.type === "number") {
     return <div>{label}
-      <input type="number" value={value ?? ""}
+      <input type="number" value={value ?? ""} placeholder="default"
              onChange={(e) => set(f.key, e.target.value === "" ? undefined : Number(e.target.value))} />
       <Help t={f.help} />
     </div>;
@@ -78,7 +92,7 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
     </div>;
   }
   return <div>{label}
-    <input value={value ?? ""} onChange={(e) => set(f.key, e.target.value || undefined)} />
+    <input value={value ?? ""} placeholder="default" onChange={(e) => set(f.key, e.target.value || undefined)} />
     <Help t={f.help} />
   </div>;
 }

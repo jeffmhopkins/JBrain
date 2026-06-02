@@ -186,7 +186,7 @@ export async function attachmentObjectUrl(id: number): Promise<string> {
 // server returns 200 with a non-image body (e.g. an older backend whose SPA
 // fallback serves index.html for /api/attachments/.../download), surface a clear
 // reason instead of a silently broken <img>.
-export async function attachmentImageUrl(id: number): Promise<string> {
+export async function attachmentImageUrl(id: number, expectedBytes?: number): Promise<string> {
   const blob = await attachmentBlob(id);
   if (!blob.type.startsWith("image/")) {
     throw new Error(
@@ -194,6 +194,11 @@ export async function attachmentImageUrl(id: number): Promise<string> {
         ? "server returned a page, not the image — the backend is likely out of date (rebuild it)"
         : `unexpected response type “${blob.type}”`,
     );
+  }
+  // Body far smaller than the known file size ⇒ the server sent wrong/empty bytes
+  // (e.g. the stored image data is missing and it fell back to the summary text).
+  if (expectedBytes && expectedBytes > 4096 && blob.size < expectedBytes * 0.5) {
+    throw new Error(`server sent ${blob.size} bytes but the file is ${expectedBytes} — the image data looks missing on the server`);
   }
   return URL.createObjectURL(blob);
 }

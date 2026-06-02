@@ -57,7 +57,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
       for (const a of items) {
         if (!isImage(a.mime) || thumbsRef.current[a.id]) continue;
         try {
-          const url = await attachmentImageUrl(a.id);
+          const url = await attachmentImageUrl(a.id, a.byte_size);
           if (cancelled) { URL.revokeObjectURL(url); return; }
           setThumbs((t) => ({ ...t, [a.id]: url }));
         } catch (e: any) {
@@ -126,7 +126,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   async function view(a: Attachment) {
     try {
       if (a.mime.startsWith("image/")) {
-        setViewing({ kind: "image", filename: a.filename, url: await attachmentImageUrl(a.id) });
+        setViewing({ kind: "image", filename: a.filename, url: await attachmentImageUrl(a.id, a.byte_size) });
       } else if (a.mime.includes("markdown") || a.mime.startsWith("text/")) {
         const full = await get(`/api/attachments/${a.id}`);
         setViewing({ kind: a.mime.includes("markdown") ? "md" : "text", filename: a.filename, text: full.content_text || "(empty)" });
@@ -183,11 +183,16 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             // below the fold — lazy + off-screen blob images render broken on mobile.
             <img src={thumbs[a.id]} alt={a.filename} className="att-thumb"
                  title="Click to view full size" onClick={() => view(a)}
-                 onError={() => setThumbErr((m) => ({ ...m, [a.id]: "decode failed (not image data?)" }))} />
+                 onError={() => {
+                   // Decode failed despite type/size checks — drop the broken <img>
+                   // and surface the reason (the error line was hidden behind it before).
+                   setThumbs((t) => { const n = { ...t }; if (n[a.id]) URL.revokeObjectURL(n[a.id]); delete n[a.id]; return n; });
+                   setThumbErr((m) => ({ ...m, [a.id]: "the downloaded bytes didn’t decode as an image" }));
+                 }} />
           )}
-          {isImage(a.mime) && !thumbs[a.id] && thumbErr[a.id] && (
-            <div className="muted" style={{ fontSize: 11, color: "var(--danger)", margin: "6px 0 2px" }}>
-              Couldn’t load preview — {thumbErr[a.id]}
+          {isImage(a.mime) && thumbErr[a.id] && !thumbs[a.id] && (
+            <div style={{ fontSize: 11, color: "var(--danger)", margin: "6px 0 2px" }}>
+              Couldn’t show image — {thumbErr[a.id]}
             </div>
           )}
           {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (

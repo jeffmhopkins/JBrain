@@ -46,10 +46,30 @@ android {
         jvmTarget = "17"
     }
 
+    // Sign the release build. CI supplies a real keystore via env vars
+    // (KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD) for a stable signature
+    // so updates install in place; without one we fall back to the debug key below so
+    // the APK is still signed and installable (e.g. via Wear Installer 2).
+    val releaseKeystore = System.getenv("KEYSTORE_FILE")?.takeIf { file(it).exists() }
+    signingConfigs {
+        create("release") {
+            if (releaseKeystore != null) {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = if (releaseKeystore != null)
+                signingConfigs.getByName("release")
+            else
+                signingConfigs.getByName("debug")
         }
     }
 }

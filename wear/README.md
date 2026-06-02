@@ -60,6 +60,31 @@ JBrain PWA under today's daily entries.
 3. Add the tile: long-press the watch face → **Tiles → +** → pick **JBrain Note** so capture
    is one tap from the wrist.
 
+## Build the APK in CI (no Android Studio) → install with Wear Installer 2
+
+The repo ships a GitHub Actions workflow (`.github/workflows/wear-apk.yml`) that
+compiles the app and produces a ready-to-install **release APK** as a run artifact.
+
+1. In the repo: **Settings → Secrets and variables → Actions** and add:
+   - **Variable** `JBRAIN_DOMAIN` — `https://your-brain.example.com`
+   - **Secret** `JBRAIN_KEY` — the same access key the JBrain PWA uses
+   - *(Optional, for a stable signing key so updates install in place)* secrets
+     `KEYSTORE_BASE64` (base64 of your `release.keystore`), `KEYSTORE_PASSWORD`,
+     `KEY_ALIAS`, `KEY_PASSWORD`. Without these, the APK is signed with an ephemeral
+     debug key — still installable, but you must uninstall before each update.
+2. Run it: **Actions → Build Wear OS APK → Run workflow** (it also runs automatically
+   on pushes that touch `wear/`).
+3. Download the **`jbrain-watch-apk`** artifact from the finished run, unzip it to get
+   `jbrain-watch.apk`, put it on your phone, and **install it with Wear Installer 2**
+   (which pushes it to the paired watch).
+
+> Generating a release keystore (one time), if you want stable signing:
+> ```bash
+> keytool -genkey -v -keystore release.keystore -alias jbrain \
+>   -keyalg RSA -keysize 2048 -validity 10000
+> base64 -w0 release.keystore   # paste output into the KEYSTORE_BASE64 secret
+> ```
+
 ## How to use
 
 - Open the app (or tap the tile) → speak → it shows **Saving…** then **Saved ✓** (with a

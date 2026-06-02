@@ -301,7 +301,7 @@ export default function SharesPage() {
 
       <div className="adv-section">Active links</div>
       {!loading && links.length === 0 && (
-        <p className="muted">No active share links. Open a note and mint one, or ask the assistant to “share [[X]] as a view link.”</p>
+        <p className="share-hint">No links yet — share a note from its page, or ask the assistant.</p>
       )}
       {links.map((l) => (
         <div className="card" key={l.id}>

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { get } from "../api";
 import { Icon } from "../components/Icon";
@@ -27,6 +27,17 @@ export default function SearchPage() {
   const [results, setResults] = useState<Result[]>([]);
   const [searched, setSearched] = useState(false);
   const reqId = useRef(0);
+
+  // A 0–100% relevance badge per result. Semantic = true cosine similarity from
+  // the vector distance. Hybrid blends keyword + semantic via a rank-fusion score
+  // that has no absolute scale, so show it normalised to the top hit (best = 100%).
+  // Keyword (bm25 fusion) has no meaningful absolute weight, so no badge.
+  const maxScore = useMemo(() => results.reduce((m, r) => Math.max(m, r.score || 0), 0), [results]);
+  const weightOf = (r: Result): number | null => {
+    if (mode === "semantic") return r.distance != null ? weightPct(r.distance) : null;
+    if (mode === "hybrid") return maxScore > 0 ? Math.round((r.score / maxScore) * 100) : null;
+    return null;
+  };
 
   // Search as you type: debounce input, and re-run when the mode changes too.
   // A request id guards against out-of-order responses overwriting newer ones.
@@ -61,21 +72,22 @@ export default function SearchPage() {
       </form>
       <div style={{ marginTop: 18 }}>
         {searched && results.length === 0 && <p className="muted">No results.</p>}
-        {results.map((r, i) => (
-          <Link key={i} to={`/note/${r.slug}`} className="list-item">
-            <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
-              <div style={{ fontWeight: 600 }}>{r.title}</div>
-              {mode === "semantic" && r.distance != null && (
-                <span className="search-weight">{weightPct(r.distance)}%</span>
-              )}
-            </div>
-            {r.kind === "attachment" && (
-              <div className="muted" style={{ fontSize: 12 }}>
-                <Icon name="clip" size={13} /> in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}
+        {results.map((r, i) => {
+          const w = weightOf(r);
+          return (
+            <Link key={i} to={`/note/${r.slug}`} className="list-item">
+              <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
+                <div style={{ fontWeight: 600 }}>{r.title}</div>
+                {w != null && <span className="search-weight">{w}%</span>}
               </div>
-            )}
-          </Link>
-        ))}
+              {r.kind === "attachment" && (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  <Icon name="clip" size={13} /> in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}
+                </div>
+              )}
+            </Link>
+          );
+        })}
       </div>
     </div>
   );

@@ -105,7 +105,7 @@ def root_title(title: str, root: str) -> str:
     'notes/Jeff' under 'kb' becomes 'kb/Jeff'. Deeper sub-paths are preserved."""
     t = (title or "").strip().strip("/")
     low = t.lower()
-    for r in ("notes/", "kb/", "lists/", "logs/"):
+    for r in ("notes/", "kb/", "lists/", "logs/", "loc/"):
         if low.startswith(r):
             t = t[len(r):]
             break
@@ -233,6 +233,10 @@ def upsert_note(
     note's write transaction open).
     """
     title = title.strip()
+    # A note under the loc/ root is a PLACE note: it backs a geofence and must stay
+    # OUT of KB synthesis (which only pulls entry/daily) while remaining searchable.
+    if kind is None and (title == "loc" or title.startswith("loc/")):
+        kind = "place"
     id_targeted = note_id is not None
     if note_id is not None:
         existing = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()

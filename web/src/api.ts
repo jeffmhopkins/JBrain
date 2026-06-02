@@ -288,6 +288,7 @@ export const addPlace = (p: { name: string; lat: number; lon: number; radius_m?:
   post<{ id: number; name: string }>("/api/places", p);
 export const renamePlace = (id: number, name: string) =>
   api(`/api/places/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+export const ensurePlaceNote = (id: number) => post<{ slug: string }>(`/api/places/${id}/note`);
 export const deletePlace = (id: number) => del(`/api/places/${id}`);
 
 // Notes that carry a capture coordinate — the Map's note pins.

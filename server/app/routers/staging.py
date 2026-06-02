@@ -81,8 +81,13 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         else:
             # CREATE, or an UPDATE whose title didn't exist at propose time, makes a
             # NEW note (create-only so it can't clobber). A kb proposal lands under
-            # kb/ with kind='kb'; everything else under notes/.
-            root = "kb" if payload.get("kind") == "kb" else "notes"
+            # kb/; a place note keeps the loc/ root; everything else under notes/.
+            if payload.get("kind") == "place" or title.lower().startswith("loc/"):
+                root = "loc"
+            elif payload.get("kind") == "kb":
+                root = "kb"
+            else:
+                root = "notes"
             title = notes_svc.root_title(title, root)
             notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True,
                                   kind=payload.get("kind"), **kw)

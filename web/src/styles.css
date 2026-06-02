@@ -363,6 +363,12 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .note-pop .muted { font-size: 12px; }
 .note-pop button { margin-top: 4px; align-self: flex-start; background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .note-pop button:hover { color: var(--text); border-color: var(--accent); }
+/* Geofence card atop a loc/ place note: the API specifics above the note content. */
+.geofence-card { display: flex; align-items: center; gap: 8px; margin: 6px 0 12px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); font-size: 13px; }
+.geofence-card .spacer { flex: 1; }
+.geofence-card a { color: var(--accent); text-decoration: none; }
+.geofence-card a:hover { text-decoration: underline; }
 /* Inline image-attachment preview: capped so a huge photo never blows out the page. */
 .att-thumb {
   display: block; margin: 8px 0 2px; max-width: 100%; max-height: 320px;

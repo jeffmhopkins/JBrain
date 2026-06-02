@@ -4,16 +4,17 @@ import { get } from "../api";
 import { Icon } from "../components/Icon";
 
 interface NoteRow { id: number; title: string; slug: string; kind: string; updated_at: string; }
-type Filter = "" | "entry" | "kb" | "list";
+type Filter = "" | "entry" | "kb" | "list" | "place";
 type TNode = { name: string; note?: NoteRow; children: Record<string, TNode> };
 
 const TABS: { key: Filter; label: string }[] = [
   { key: "", label: "All" },
   { key: "entry", label: "Entries" },
   { key: "list", label: "Lists" },
+  { key: "place", label: "Places" },
   { key: "kb", label: "Knowledge base" },
 ];
-const KIND_BADGE: Record<string, string> = { kb: "KB", list: "List" };
+const KIND_BADGE: Record<string, string> = { kb: "KB", list: "List", place: "📍" };
 
 // Build a tree from "/"-separated titles (e.g. "Work/Q3 Planning").
 function buildTree(notes: NoteRow[]): TNode {

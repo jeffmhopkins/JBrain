@@ -2,7 +2,7 @@ import { Children, isValidElement, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { del, get, post, put } from "../api";
+import { del, get, post, put, getPlaces, Place } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
 import { fmtTs, expandTimeTokens } from "../time";
@@ -59,6 +59,7 @@ export default function NotePage() {
   const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
+  const [place, setPlace] = useState<Place | null>(null);   // geofence backing a loc/ note
 
   async function remove() {
     if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
@@ -124,6 +125,17 @@ export default function NotePage() {
     reload();
   }, [slug]);
 
+  // For a loc/ place note, pull the geofence it backs (matched by note_slug, else by
+  // name) so the page can show the API specifics above the note's content.
+  useEffect(() => {
+    if (!note || !note.title.toLowerCase().startsWith("loc/")) { setPlace(null); return; }
+    const name = note.title.slice(4);
+    getPlaces()
+      .then((ps) => setPlace(ps.find((p) => p.note_slug === note.slug)
+        || ps.find((p) => p.name.toLowerCase() === name.toLowerCase()) || null))
+      .catch(() => setPlace(null));
+  }, [note?.slug, note?.title]);
+
   if (error) return <div className="content"><p className="muted">{error}</p><Link to="/wiki">← Back to wiki</Link></div>;
   if (!note) return <div className="content muted">Loading…</div>;
   const sourceLines = note.content_md.split("\n");   // for mapping rendered checkboxes back to source lines
@@ -153,7 +165,26 @@ export default function NotePage() {
       <h1 className="note-title">
         {titleCrumbs(note.title)}
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
+        {note.kind === "place" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>📍 Place</span>}
       </h1>
+      {note.kind === "place" && (
+        <div className="geofence-card">
+          {place ? (
+            <>
+              <Icon name="pin" size={14} />
+              <span>Geofence · {place.radius_m} m radius</span>
+              <span className="spacer" />
+              <Link to={`/map?place=${place.id}`}>View on map</Link>
+            </>
+          ) : (
+            <>
+              <Icon name="pin" size={14} />
+              <span className="muted">No geofence yet.</span>
+              <Link to="/map">Add one on the Map</Link>
+            </>
+          )}
+        </div>
+      )}
       {editing === null && (
         <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: "flex-end" }}>
           <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>

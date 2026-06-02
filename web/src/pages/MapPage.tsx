@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
-import { getLocations, getLocatedNotes, getPlaces, addPlace, renamePlace, deletePlace, LocPoint, LocatedNote, Place } from "../api";
+import { getLocations, getLocatedNotes, getPlaces, addPlace, renamePlace, deletePlace, ensurePlaceNote, LocPoint, LocatedNote, Place } from "../api";
 
 type Mode = "trail" | "heat";
 const RANGES = [
@@ -31,6 +31,7 @@ export default function MapPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const focus = params.get("focus");   // a note slug to center + open
+  const focusPlace = params.get("place");   // a place id to center on
 
   const mapEl = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -56,6 +57,7 @@ export default function MapPage() {
   const [adding, setAdding] = useState(false);
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
+  const openPlaceNotes = (id: number) => ensurePlaceNote(id).then((r) => navigate(`/note/${r.slug}`)).catch(() => {});
   const savePlaceAt = (lat: number, lon: number, suggested: string) => {
     const name = window.prompt("Place name:", suggested)?.trim();
     if (name) addPlace({ name, lat, lon, radius_m: 150 }).then(loadPlaces).catch(() => {});
@@ -159,6 +161,13 @@ export default function MapPage() {
     return () => clearTimeout(t);
   }, [focus, notes]);
 
+  // ?place=<id>: center on a saved place (deep-linked from its loc/ note page).
+  useEffect(() => {
+    if (!focusPlace || !places.length) return;
+    const p = places.find((x) => String(x.id) === focusPlace);
+    if (p) map.current?.setView([p.lat, p.lon], 16);
+  }, [focusPlace, places]);
+
   // Draw each saved geofence as a labeled circle so the radius is visible.
   useEffect(() => {
     const m = map.current; if (!m) return;
@@ -167,7 +176,8 @@ export default function MapPage() {
     placeLayer.current = L.layerGroup(
       places.map((p) =>
         L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 1.5, fillOpacity: 0.08 })
-          .bindTooltip(p.name, { permanent: true, direction: "center", className: "place-label" })),
+          .bindTooltip(p.name, { permanent: true, direction: "center", className: "place-label" })
+          .on("click", () => openPlaceNotes(p.id))),   // tap a geofence → its loc/ note
     ).addTo(m);
   }, [places]);
 
@@ -278,6 +288,7 @@ export default function MapPage() {
                 <li key={p.id}>
                   <button className="place-go" onClick={() => map.current?.setView([p.lat, p.lon], 16)}>{p.name}</button>
                   <span className="place-r">{p.radius_m} m</span>
+                  <button className="place-del" title="Open notes" onClick={() => openPlaceNotes(p.id)}>📝</button>
                   <button className="place-del" title="Rename" onClick={() => {
                     const name = window.prompt("Rename place:", p.name)?.trim();
                     if (name && name !== p.name) renamePlace(p.id, name).then(loadPlaces);

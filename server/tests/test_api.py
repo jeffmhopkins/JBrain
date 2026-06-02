@@ -978,6 +978,29 @@ def test_discover_stays_recurring_spot(client):
     assert pipeline._PRIMITIVES["discover_stays"](ctx, min_days=3, days_back=3650, min_minutes=20)["candidates"] == []
 
 
+def test_place_note_backing(client):
+    """A place lazily gets a loc/<name> note (kind='place'), linked by note_slug, and
+    renaming the place keeps the note's title paired."""
+    from app.db import get_conn
+    conn = get_conn()
+    pid = client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0}).json()["id"]
+    slug = client.post(f"/api/places/{pid}/note").json()["slug"]
+    note = client.get(f"/api/notes/{slug}").json()
+    assert note["title"] == "loc/Gym" and note["kind"] == "place"
+    assert conn.execute("SELECT note_slug FROM places WHERE id=?", (pid,)).fetchone()["note_slug"] == slug
+
+    client.patch(f"/api/places/{pid}", json={"name": "The Gym"})
+    linked = conn.execute("SELECT note_slug FROM places WHERE id=?", (pid,)).fetchone()["note_slug"]
+    assert client.get(f"/api/notes/{linked}").json()["title"] == "loc/The Gym"
+
+
+def test_loc_note_kind_inferred(client):
+    """A note created under loc/ is kind='place' — so it's searchable but excluded
+    from KB synthesis (which only folds entry/daily)."""
+    r = client.post("/api/notes", json={"title": "loc/Park", "content_md": "green space"})
+    assert client.get(f"/api/notes/{r.json()['slug']}").json()["kind"] == "place"
+
+
 def test_place_rename(client):
     r = client.post("/api/places", json={"name": "Old", "lat": 40.0, "lon": -74.0})
     pid = r.json()["id"]

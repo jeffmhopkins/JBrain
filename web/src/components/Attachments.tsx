@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { analyzeAttachment, attachmentObjectUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
+import { analyzeAttachment, attachmentImageUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
 import { useAuth } from "../App";
 import { Icon } from "./Icon";
 import Modal from "./Modal";
@@ -57,7 +57,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
       for (const a of items) {
         if (!isImage(a.mime) || thumbsRef.current[a.id]) continue;
         try {
-          const url = await attachmentObjectUrl(a.id);
+          const url = await attachmentImageUrl(a.id);
           if (cancelled) { URL.revokeObjectURL(url); return; }
           setThumbs((t) => ({ ...t, [a.id]: url }));
         } catch (e: any) {
@@ -126,7 +126,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   async function view(a: Attachment) {
     try {
       if (a.mime.startsWith("image/")) {
-        setViewing({ kind: "image", filename: a.filename, url: await attachmentObjectUrl(a.id) });
+        setViewing({ kind: "image", filename: a.filename, url: await attachmentImageUrl(a.id) });
       } else if (a.mime.includes("markdown") || a.mime.startsWith("text/")) {
         const full = await get(`/api/attachments/${a.id}`);
         setViewing({ kind: a.mime.includes("markdown") ? "md" : "text", filename: a.filename, text: full.content_text || "(empty)" });

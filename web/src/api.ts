@@ -182,6 +182,22 @@ export async function attachmentObjectUrl(id: number): Promise<string> {
   return URL.createObjectURL(await attachmentBlob(id));
 }
 
+// Like attachmentObjectUrl but verifies the bytes are actually an image. If the
+// server returns 200 with a non-image body (e.g. an older backend whose SPA
+// fallback serves index.html for /api/attachments/.../download), surface a clear
+// reason instead of a silently broken <img>.
+export async function attachmentImageUrl(id: number): Promise<string> {
+  const blob = await attachmentBlob(id);
+  if (!blob.type.startsWith("image/")) {
+    throw new Error(
+      blob.type.includes("html") || blob.type === ""
+        ? "server returned a page, not the image — the backend is likely out of date (rebuild it)"
+        : `unexpected response type “${blob.type}”`,
+    );
+  }
+  return URL.createObjectURL(blob);
+}
+
 export async function downloadAttachment(id: number, filename: string): Promise<void> {
   if (isDemo()) return;
   const url = URL.createObjectURL(await attachmentBlob(id));

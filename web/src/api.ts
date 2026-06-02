@@ -173,7 +173,8 @@ export const getAnalysisStatus = (id: number) =>
 async function attachmentBlob(id: number): Promise<Blob> {
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
-  const res = await fetch(u(`/api/attachments/${id}/download`), { headers });
+  // cache:no-store — never serve a possibly-stale/partial cached copy of the binary.
+  const res = await fetch(u(`/api/attachments/${id}/download`), { headers, cache: "no-store" });
   if (!res.ok) throw new ApiError("Failed to load attachment", res.status);
   return res.blob();
 }
@@ -195,10 +196,21 @@ export async function attachmentImageUrl(id: number, expectedBytes?: number): Pr
         : `unexpected response type “${blob.type}”`,
     );
   }
-  // Body far smaller than the known file size ⇒ the server sent wrong/empty bytes
-  // (e.g. the stored image data is missing and it fell back to the summary text).
+  // Sniff the magic bytes so a non-image / corrupted body gives a precise reason —
+  // the leading bytes pinpoint the cause (e.g. "3c 21" = "<!" = an HTML page).
+  const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+  const hex = Array.from(head, (b) => b.toString(16).padStart(2, "0")).join(" ");
+  const sig =
+    head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff ? "jpeg" :
+    head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47 ? "png" :
+    head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46 ? "gif" :
+    head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46 ? "webp" : null;
+  if (!sig) {
+    throw new Error(`got ${blob.size} bytes (type ${blob.type || "?"}) but it isn't a known image — starts with: ${hex}`);
+  }
+  // Body far smaller than the known file size ⇒ truncated/missing bytes on the server.
   if (expectedBytes && expectedBytes > 4096 && blob.size < expectedBytes * 0.5) {
-    throw new Error(`server sent ${blob.size} bytes but the file is ${expectedBytes} — the image data looks missing on the server`);
+    throw new Error(`server sent ${blob.size} of ~${expectedBytes} bytes — the image data looks truncated/missing on the server`);
   }
   return URL.createObjectURL(blob);
 }

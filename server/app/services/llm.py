@@ -194,6 +194,18 @@ def get_provider() -> LLMProvider:
     return cls()
 
 
+def model_for(tier: str) -> str | None:
+    """Resolve a task tier (prompts.yaml `models.<tier>`) to a model id, or None to
+    use the provider default. Lets routine jobs (tags, summaries, filing) run on a
+    cheaper model than the interactive agent. Fallback: models.<tier> ->
+    models.default -> None (provider default = LLM_MODEL)."""
+    from . import prompts
+    m = (prompts.get(f"models.{tier}") or "").strip()
+    if m:
+        return m
+    return (prompts.get("models.default") or "").strip() or None
+
+
 def has_credentials() -> bool:
     return get_provider().has_credentials()
 

@@ -460,7 +460,7 @@ def _p_recite_articles(ctx, articles):
             continue
         try:
             out = llm.complete([{"role": "user", "content": tmpl.replace("{article}", original)}],
-                               max_tokens=4096)
+                               model=llm.model_for("synthesis"), max_tokens=4096)
         except Exception as e:
             quarantined.append({"title": title, "issues": [f"LLM error: {e}"]}); continue
         out = _strip_code_fence(out)
@@ -493,7 +493,7 @@ def _p_gather_context(ctx, source_title=None, context_query=None):
     return ""
 
 
-def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise"):
+def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise", model=None):
     """Run an LLM prompt over optional context. `on_no_key` controls behaviour
     when no provider key is configured: raise | fallback (return content) | skip ('')."""
     if not llm.has_credentials():
@@ -503,7 +503,8 @@ def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise"):
             return content or ""
         return ""
     user = f"{prompt}\n\n<content>\n{content}\n</content>" if content else prompt
-    return llm.complete([{"role": "user", "content": user}], max_tokens=int(max_tokens))
+    chosen = (model or "").strip() or llm.model_for("default")
+    return llm.complete([{"role": "user", "content": user}], model=chosen, max_tokens=int(max_tokens))
 
 
 def _p_daylog_pending(ctx, log_title):
@@ -705,7 +706,7 @@ def _p_plan_moves(ctx, candidates, instructions=None):
         'Reply with ONLY a JSON array, e.g. [{"from":"notes/Sleep tips","to":"notes/Health/Sleep tips"}]. '
         'Use the EXACT current title as "from".' + extra
     )
-    raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=2000)
+    raw = llm.complete([{"role": "user", "content": prompt}], model=llm.model_for("cheap"), max_tokens=2000)
     moves = _parse_moves(raw, {n["title"] for n in items})
     return {"moves": moves, "count": len(moves)}
 
@@ -774,7 +775,7 @@ def _p_suggest_places(ctx, entries):
         'Reply with ONLY a JSON array, e.g. [{"index":1,"name":"The Gym"}]. Omit entries '
         "that don't clearly identify a reusable place. If none qualify, reply []."
     )
-    raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=600)
+    raw = llm.complete([{"role": "user", "content": prompt}], model=llm.model_for("cheap"), max_tokens=600)
     m = re.search(r"\[.*\]", raw or "", re.DOTALL)
     if not m:
         return {"candidates": []}
@@ -1013,7 +1014,8 @@ _PRIMITIVE_META: dict[str, dict] = {
     "llm": {"summary": "Run an LLM prompt over optional context.",
             "inputs": [{"name": "prompt", "type": "str", "required": True}, {"name": "content", "type": "str"},
                        {"name": "max_tokens", "type": "int"},
-                       {"name": "on_no_key", "type": "enum", "choices": ["raise", "fallback", "skip"]}],
+                       {"name": "on_no_key", "type": "enum", "choices": ["raise", "fallback", "skip"]},
+                       {"name": "model", "type": "str"}],
             "output": "scalar"},
 }
 

@@ -14,6 +14,16 @@ agent:
   max_iterations: 8      # max tool-use rounds in one reply
   max_total_tokens: 60000  # cumulative in/out budget across a reply's tool loop (0 = off)
 
+# Per-task model tiers — route routine work to a cheaper model to cut cost. Blank =>
+# models.default => the provider default (LLM_MODEL). Set `cheap` to a Haiku id to
+# save on tags/summaries/filing/place-extraction; set `synthesis` to an Opus id for
+# the highest-quality KB folding. The chat agent uses agent.model (above).
+models:
+  default: ""                          # chat agent fallback, guided/research replies, anything unspecified
+  cheap: "claude-haiku-4-5-20251001"   # tag generation, day-log summaries, note filing, place-name extraction
+  synthesis: ""                        # wiki KB synthesis + citation reformat (set an Opus id for max quality)
+  vision: ""                           # image-attachment analysis
+
 modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:

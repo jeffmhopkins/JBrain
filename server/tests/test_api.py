@@ -1167,6 +1167,29 @@ def test_search_note_hit_reports_attachments(client):
     assert note["attachments"] == 1            # surfaced via the note hit, not an attachment-text hit
 
 
+def test_model_tier_resolution(client, monkeypatch):
+    """Per-task model tiers: models.<tier> wins, else models.default, else None
+    (provider default)."""
+    from app.services import llm, prompts
+    monkeypatch.setattr(prompts, "get", lambda k, d=None: "")
+    assert llm.model_for("cheap") is None                       # nothing set → provider default
+    vals = {"models.cheap": "claude-haiku-4-5-20251001", "models.default": "claude-opus-4-8"}
+    monkeypatch.setattr(prompts, "get", lambda k, d=None: vals.get(k, ""))
+    assert llm.model_for("cheap") == "claude-haiku-4-5-20251001"  # tier wins
+    assert llm.model_for("synthesis") == "claude-opus-4-8"        # unset tier → models.default
+
+
+def test_cheap_tier_routes_calls(client, monkeypatch):
+    """A cheap-tier helper passes the resolved model down to the provider."""
+    from app.services import llm, prompts, workflows
+    monkeypatch.setattr(prompts, "get", lambda k, d=None: "claude-haiku-4-5-20251001" if k == "models.cheap" else "")
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    seen = {}
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: seen.setdefault("model", k.get("model")) or "tag1, tag2")
+    workflows._suggest_tags("Title", "body")
+    assert seen["model"] == "claude-haiku-4-5-20251001"
+
+
 def test_attachment_download_roundtrip_is_byte_exact(client):
     """The download endpoint must return the uploaded bytes verbatim (image preview +
     Download both depend on this). Guards against any server-side corruption."""

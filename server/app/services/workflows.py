@@ -130,7 +130,8 @@ def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
     if not llm.has_credentials():
         return "Entries:\n" + joined
     instruction = prompt or prompts.get("actions.daylog_summary", DEFAULT_DAYLOG_PROMPT)
-    return llm.complete([{"role": "user", "content": f"{instruction}\n{joined}"}], max_tokens=512)
+    return llm.complete([{"role": "user", "content": f"{instruction}\n{joined}"}],
+                        model=llm.model_for("cheap"), max_tokens=512)
 
 
 def _relevant_kb(conn, entries: list, fallback_kb: list, k: int = 12) -> list[dict]:
@@ -230,7 +231,8 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
               .replace("{instructions}", extra)
               .replace("{entries}", entries_text)
               .replace("{existing_kb}", kb_text))
-    text = llm.complete([{"role": "user", "content": prompt}], max_tokens=8192)
+    text = llm.complete([{"role": "user", "content": prompt}],
+                        model=llm.model_for("synthesis"), max_tokens=8192)
     data = _parse_json_array(text)
     return [a for a in data if isinstance(a, dict) and a.get("title") and a.get("content_md")]
 
@@ -299,7 +301,7 @@ def _suggest_tags(title: str, content: str, prompt: str | None = None) -> list[s
     instruction = prompt or prompts.get("actions.generate_tags", DEFAULT_TAG_PROMPT)
     text = llm.complete(
         [{"role": "user", "content": f"{instruction}\n\nTitle: {title}\n{content[:2000]}"}],
-        max_tokens=80,
+        model=llm.model_for("cheap"), max_tokens=80,
     )
     return [t.strip().lower().lstrip("#") for t in text.replace("\n", ",").split(",") if t.strip()][:6]
 

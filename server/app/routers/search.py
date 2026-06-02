@@ -71,5 +71,11 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
                 "distance": r["distance"],
             }, i)
 
-    ranked = sorted(results.values(), key=lambda x: x["score"], reverse=True)
+    if mode == "semantic":
+        # Pure semantic search: order by true vector similarity (smaller distance =
+        # more similar) so the order matches the relevance weight shown in the UI.
+        # The rank-fusion score is for blending keyword+semantic in hybrid mode.
+        ranked = sorted(results.values(), key=lambda x: (x.get("distance", float("inf")), -x["score"]))
+    else:
+        ranked = sorted(results.values(), key=lambda x: x["score"], reverse=True)
     return ranked[:limit]

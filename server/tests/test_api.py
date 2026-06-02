@@ -789,6 +789,26 @@ def test_attachments_upload_list_delete(client):
     assert client.get("/api/notes/host/attachments").json() == []
 
 
+def test_semantic_search_orders_by_similarity(client, monkeypatch):
+    """Semantic results come back ordered by vector distance (ascending), so the
+    relevance weight shown in the UI is monotonic — not by the rank-fusion score."""
+    from app.services import embeddings
+    for t in ["A", "B", "C"]:
+        client.post("/api/notes", json={"title": f"notes/{t}", "content_md": t})
+    rows = {n["title"]: n for n in client.get("/api/notes").json()}
+    # Return hits deliberately out of distance order.
+    def fake(conn, q, limit=10):
+        return [
+            {"id": rows[f"notes/{t}"]["id"], "title": f"notes/{t}", "slug": rows[f"notes/{t}"]["slug"], "distance": d}
+            for t, d in [("A", 0.6), ("B", 0.2), ("C", 0.4)]
+        ]
+    monkeypatch.setattr(embeddings, "semantic_search", fake)
+    res = client.get("/api/search?q=x&mode=semantic").json()
+    dists = [r["distance"] for r in res]
+    assert dists == sorted(dists), dists                       # ascending distance
+    assert [r["title"] for r in res] == ["notes/B", "notes/C", "notes/A"]
+
+
 def test_quicktask_add_list_item_and_undo(client):
     import json as _json
     from app.db import get_conn

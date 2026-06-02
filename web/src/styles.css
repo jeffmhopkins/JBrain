@@ -326,6 +326,21 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .share-hist-meta { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
 /* One terse, consistent caption under each Shares section header. */
 .share-hint { font-size: 12px; color: var(--text-dim); line-height: 1.45; margin: 2px 0 12px; }
+/* ---- Location-trail map tool ---- */
+.map-tool { display: flex; flex-direction: column; gap: 8px; }
+.map-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.map-canvas { height: 62vh; min-height: 320px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
+.map-play { display: flex; align-items: center; gap: 10px; padding-bottom: env(safe-area-inset-bottom); }
+.map-play input[type="range"] { flex: 1; accent-color: var(--accent); }
+.map-time { font-size: 12px; color: var(--text-dim); min-width: 130px; text-align: right; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { background: transparent; border: none; padding: 6px 12px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+.seg button.on { background: var(--accent-soft); color: var(--text); }
+/* Leaflet renders on a dark app — keep its controls legible. */
+.leaflet-container { background: var(--bg-elev-2); font: inherit; }
+.leaflet-bar a { background: var(--bg-elev); color: var(--text); border-color: var(--border); }
+.leaflet-control-attribution { background: rgba(0,0,0,0.5); color: var(--text-dim); }
+.leaflet-control-attribution a { color: var(--text-dim); }
 /* Inline image-attachment preview: capped so a huge photo never blows out the page. */
 .att-thumb {
   display: block; margin: 8px 0 2px; max-width: 100%; max-height: 320px;

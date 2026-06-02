@@ -281,6 +281,15 @@ export interface ChatEvent {
 
 // Stream the architect's reply over SSE (POST + ReadableStream, so we can send
 // a body and rely on the session cookie).
+export interface LocPoint { id: number; lat: number; lon: number; accuracy_m: number | null; recorded_at: string; }
+export const getLocations = (since?: string, until?: string) => {
+  const p = new URLSearchParams();
+  if (since) p.set("since", since);
+  if (until) p.set("until", until);
+  const qs = p.toString();
+  return get<LocPoint[]>(`/api/locations${qs ? `?${qs}` : ""}`);
+};
+
 // Append a fix to the location trail. The server enforces the 100m/60min rule, so
 // it's safe to call liberally — duplicates are dropped server-side.
 export const postLocation = (lat: number, lon: number, accuracy_m?: number) =>

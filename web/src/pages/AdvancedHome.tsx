@@ -16,6 +16,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
       { to: "/lists", label: "Lists", sub: "Checklists & todos", icon: "list" },
       { to: "/search", label: "Search", sub: "Full-text & semantic", icon: "search" },
       { to: "/graph", label: "Graph", sub: "Connections", icon: "graph" },
+      { to: "/map", label: "Map", sub: "Location trail & heatmap", icon: "pin" },
     ],
   },
   {

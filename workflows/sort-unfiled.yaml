@@ -1,0 +1,22 @@
+# Trigger for the sort_unfiled action: find LOOSE, unfiled notes (a bare title
+# with no folder, or a single level under notes/ — never dated daily captures)
+# and propose a folder home for each, reusing existing folders where they fit.
+#
+# Ships DISABLED so it never auto-runs uninvited — but it appears on the Workflows
+# page right away, so you can hit "Run now" any time. Flip `enabled: true` (or
+# toggle it in the PWA) to also run it on the weekly schedule below. Nothing ever
+# moves automatically: each proposal is staged as a RENAME for you to approve in
+# the staging area (applying one reslugs the note and rewrites inbound [[links]]).
+key: sort-unfiled
+name: Sort unfiled notes
+enabled: false
+
+trigger:
+  type: schedule
+  cron: "0 9 * * 0"   # 09:00 every Sunday (server TZ), only when enabled
+
+action:
+  type: sort_unfiled
+  config:
+    limit: 100
+    review: true

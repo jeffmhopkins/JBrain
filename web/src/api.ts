@@ -115,7 +115,6 @@ export const researchStart = <T = any>(token: string, name?: string) =>
 export const researchTurn = <T = any>(token: string, message: string) =>
   publicApi<T>(`/api/share/${encodeURIComponent(token)}/research/turn`, { method: "POST", body: JSON.stringify({ message }) });
 // Research links — owner management.
-export const researchMint = <T = any>(body: any) => post<T>("/api/shares/research/mint", body);
 export const researchDetail = <T = any>(linkId: number) => get<T>(`/api/shares/research/${linkId}`);
 export const researchSetScope = (linkId: number, prefixes: string[], kinds: string[] = []) =>
   post(`/api/shares/research/${linkId}/scope`, { prefixes, kinds });

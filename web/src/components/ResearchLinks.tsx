@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import {
-  post, researchActivate, researchApprove, researchDetail, researchDismiss,
-  researchMint, researchRemove,
+  post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
 } from "../api";
 
 interface RLink {
@@ -10,10 +9,9 @@ interface RLink {
   approved_count: number; sessions: number; reply_count: number; max_total_replies: number;
 }
 
-// Owner management for scoped Q&A "research" links: mint (draft), approve which
-// notes are exposed, activate, audit sessions, revoke.
+// Owner management for scoped Q&A "research" links: approve which notes are
+// exposed, activate, audit sessions, revoke. (Creation is via the assistant.)
 export default function ResearchLinks({ links, reload }: { links: RLink[]; reload: () => void }) {
-  const [minting, setMinting] = useState(false);
   const [manage, setManage] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
 
@@ -33,15 +31,13 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
 
   return (
     <div style={{ marginTop: 24 }}>
-      <div className="row">
-        <h3 style={{ margin: 0 }}>Research links</h3>
-        <span className="spacer" />
-        <button className="ghost" onClick={() => setMinting(true)}>+ New research link</button>
-      </div>
+      <div className="adv-section">Research links</div>
       <p className="muted" style={{ fontSize: 13 }}>
         Scoped, read-only Q&amp;A links — a recipient asks an AI that can only read the notes you approve.
+        Create one by asking the assistant (e.g. “create a research link of my medical history”), then
+        approve &amp; activate it here.
       </p>
-      {links.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No research links.</p>}
+      {links.length === 0 && <p className="muted" style={{ fontSize: 13 }}>None yet — ask the assistant to create one.</p>}
       {links.map((l) => {
         const draft = l.spec_status !== "active";
         return (
@@ -76,52 +72,8 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
           </div>
         );
       })}
-      {minting && <MintModal onClose={() => setMinting(false)}
-                             onMinted={(id) => { setMinting(false); setManage(id); reload(); }} />}
       {manage != null && <ManageModal linkId={manage} onClose={() => { setManage(null); reload(); }} />}
     </div>
-  );
-}
-
-function MintModal({ onClose, onMinted }: { onClose: () => void; onMinted: (id: number) => void }) {
-  const [label, setLabel] = useState("");
-  const [prefixes, setPrefixes] = useState("");
-  const [voice, setVoice] = useState("");
-  const [intro, setIntro] = useState("");
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function mint() {
-    const pre = prefixes.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-    if (pre.length === 0) { setErr("Add at least one folder, e.g. notes/Medical"); return; }
-    setBusy(true); setErr("");
-    try {
-      const r = await researchMint({ label: label.trim() || undefined, prefixes: pre,
-                                     persona_voice: voice.trim(), intro: intro.trim() });
-      onMinted(r.link_id);
-    } catch (e: any) { setErr(e?.message || "Couldn't create the link."); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <Modal title="New research link" onClose={onClose} footer={<>
-      <button className="primary" disabled={busy} onClick={mint}>Create draft</button>
-      <button className="ghost" onClick={onClose}>Cancel</button>
-      {err && <><span className="spacer" /><span style={{ color: "var(--danger)", fontSize: 13 }}>{err}</span></>}
-    </>}>
-      <label className="muted">Label</label>
-      <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Medical history" />
-      <label className="muted" style={{ marginTop: 12, display: "block" }}>Folders to draw from (one per line)</label>
-      <textarea className="wf-textarea-lg" value={prefixes} onChange={(e) => setPrefixes(e.target.value)}
-                placeholder={"notes/Medical"} />
-      <p className="muted" style={{ fontSize: 12 }}>
-        These only <em>find</em> candidate notes — you approve exactly which ones the link can read in the next step.
-      </p>
-      <label className="muted" style={{ marginTop: 8, display: "block" }}>Persona / tone (optional)</label>
-      <input value={voice} onChange={(e) => setVoice(e.target.value)} placeholder="e.g. warm and concise" />
-      <label className="muted" style={{ marginTop: 12, display: "block" }}>Intro shown to the recipient (optional)</label>
-      <input value={intro} onChange={(e) => setIntro(e.target.value)} placeholder="Ask me about my medical history…" />
-    </Modal>
   );
 }
 

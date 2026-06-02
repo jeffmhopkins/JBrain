@@ -47,6 +47,48 @@ export function useGeo() {
   return { enabled, coords, toggle };
 }
 
+function _haversineM(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (bLat - aLat) * rad, dLon = (bLon - aLon) * rad;
+  const s = Math.sin(dLat / 2) ** 2 +
+    Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+/** Foreground location trail: while the app is open AND location is enabled, post a
+ * fix to /api/locations when >=100 m moved OR >=60 min elapsed. Mounted ONCE (in
+ * Shell). A PWA can only do this while open; background tracking is the watch app. */
+export function useLocationTrail(): void {
+  useEffect(() => {
+    if (localStorage.getItem("jbrain_geo") !== "1" || !("geolocation" in navigator)) return;
+    let alive = true;
+    let last: { lat: number; lon: number; t: number } | null = null;
+
+    async function tick() {
+      navigator.geolocation.getCurrentPosition(
+        (p) => {
+          if (!alive) return;
+          const lat = +p.coords.latitude.toFixed(6);
+          const lon = +p.coords.longitude.toFixed(6);
+          const now = Date.now();
+          if (last && _haversineM(last.lat, last.lon, lat, lon) < 100 && (now - last.t) / 60000 < 60) return;
+          import("./api").then(({ postLocation }) =>
+            postLocation(lat, lon, p.coords.accuracy)
+              .then(() => { if (alive) last = { lat, lon, t: now }; })   // only advance on success → failed posts retry
+              .catch(() => {}),
+          );
+        },
+        () => {},
+        { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 },
+      );
+    }
+
+    tick();                                       // once on open
+    const id = window.setInterval(tick, 5 * 60 * 1000);   // re-check every 5 min while open
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+}
+
 /** Track online/offline so the UI can show a banner and gate writes. */
 export function useOnline(): boolean {
   const [online, setOnline] = useState(() => navigator.onLine);

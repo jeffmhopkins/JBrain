@@ -165,8 +165,11 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             <span className="muted" style={{ fontSize: 11 }}>{humanSize(a.byte_size)}</span>
           </div>
           {isImage(a.mime) && thumbs[a.id] && (
-            <img src={thumbs[a.id]} alt={a.filename} className="att-thumb" loading="lazy"
-                 title="Click to view full size" onClick={() => view(a)} />
+            // No loading="lazy": these are in-memory blob: URLs and the section sits
+            // below the fold — lazy + off-screen blob images render broken on mobile.
+            <img src={thumbs[a.id]} alt={a.filename} className="att-thumb"
+                 title="Click to view full size" onClick={() => view(a)}
+                 onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
           )}
           {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>

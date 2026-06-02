@@ -517,6 +517,9 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .typing-dots span:nth-child(2) { animation-delay: 0.18s; }
 .typing-dots span:nth-child(3) { animation-delay: 0.36s; }
 @keyframes typingDot { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+/* "Thinking…/Searching…" status along the bottom of the conversation while streaming. */
+.chat-status { display: flex; align-items: center; gap: 10px; padding: 6px 6px 2px; color: var(--text-dim); font-size: 13px; }
+.chat-status-text { font-style: italic; }
 .guided-doc { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; max-height: 40vh; overflow: auto; background: var(--bg-elev-2); margin-top: 8px; }
 .guided-convo { display: flex; flex-direction: column; gap: 8px; max-height: 44vh; overflow: auto; margin: 8px 0; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--bg-elev-2); }
 .guided-convo .msg { max-width: 92%; font-size: 13px; padding: 8px 11px; white-space: pre-wrap; }

@@ -22,6 +22,27 @@ const PLACEHOLDER: Record<Mode, string> = {
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };
+// Friendly status shown at the bottom of the conversation while a tool runs.
+const TOOL_LABELS: Record<string, string> = {
+  search_notes: "Searching your notes…",
+  read_note: "Reading a note…",
+  search_attachments: "Searching attachments…",
+  read_attachment: "Reading an attachment…",
+  list_recent_notes: "Looking at recent notes…",
+  read_inbox: "Checking the inbox…",
+  query_sql: "Querying the database…",
+  current_location: "Checking your location…",
+  geo_distance: "Measuring distance…",
+  nearby_notes: "Finding nearby notes…",
+  read_list: "Reading a list…",
+  add_list_item: "Updating a list…",
+  set_item_checked: "Updating a list…",
+  set_item_priority: "Updating a list…",
+  add_sublist: "Updating a list…",
+  set_tags: "Tagging the note…",
+  propose_actions: "Drafting proposed changes…",
+};
+const toolLabel = (name?: string) => (name && TOOL_LABELS[name]) || "Working…";
 
 export default function Chat() {
   const online = useOnline();
@@ -37,6 +58,7 @@ export default function Chat() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [status, setStatus] = useState("");   // live "thinking…/searching…" status while streaming
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
   // Transient chips for actions auto-applied during the current stream; at stream
@@ -183,15 +205,19 @@ export default function Chat() {
     atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setStreaming(true);
+    setStatus("Thinking…");
     let errored = false;
     try {
       await streamChat(convId, msg, (ev) => {
         if (ev.type === "token") {
+          if (ev.text) setStatus((s) => (s === "Responding…" ? s : "Responding…"));
           setMessages((m) => {
             const c = [...m];
             c[c.length - 1] = { role: "assistant", content: c[c.length - 1].content + (ev.text || "") };
             return c;
           });
+        } else if (ev.type === "tool") {
+          setStatus(toolLabel(ev.tool));
         } else if (ev.type === "staging") {
           setStagingTick((t) => t + 1);
         } else if (ev.type === "applied" && ev.action) {
@@ -207,6 +233,7 @@ export default function Chat() {
       }, coords, mode === "research" ? "research" : "assisted");
     } finally {
       setStreaming(false);
+      setStatus("");
       if (mode === "assisted") setStagingTick((t) => t + 1);
       // Re-sync from the server: the authoritative turn + any persisted approval
       // ('event') records, correctly ordered. Skip on error to keep the ⚠️.
@@ -264,14 +291,17 @@ export default function Chat() {
                   </div>
                 );
               }
+              // Empty assistant placeholder (waiting on the first token) → render
+              // nothing; the status bar at the bottom shows "Thinking…" instead.
+              if (m.role === "assistant" && !m.content) return null;
               return (
                 <div key={i} className={`msg ${m.role}`}>
-                  {m.role === "assistant" && m.content ? (
+                  {m.role === "assistant" ? (
                     <div className="md msg-md">
                       <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
                     </div>
                   ) : (
-                    m.content || (streaming && i === messages.length - 1 ? "…" : "")
+                    m.content
                   )}
                 </div>
               );
@@ -291,6 +321,12 @@ export default function Chat() {
               />
             )}
           </>
+        )}
+        {streaming && (
+          <div className="chat-status" aria-live="polite">
+            <span className="typing-dots"><span /><span /><span /></span>
+            <span className="chat-status-text">{status || "Thinking…"}</span>
+          </div>
         )}
         <div ref={endRef} />
       </div>

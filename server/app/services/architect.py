@@ -791,6 +791,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
         results = []
         for call in calls:
+            yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
             try:
                 result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)
             except Exception as exc:  # noqa: BLE001 — a bad tool call must not kill the stream

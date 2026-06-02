@@ -211,8 +211,9 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
 }
 
 export interface ChatEvent {
-  type: "token" | "staging" | "applied" | "done" | "error";
+  type: "token" | "tool" | "staging" | "applied" | "done" | "error";
   text?: string;
+  tool?: string;
   actions?: any[];
   action?: { id: number; summary: string };
   message?: string;

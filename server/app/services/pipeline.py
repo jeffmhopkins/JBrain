@@ -726,6 +726,13 @@ def _p_stage_moves(ctx, moves):
     return {"staged": staged}
 
 
+def _p_research_nudges(ctx):
+    """Post review-inbox nudges for active research links that have new candidate
+    notes the owner hasn't reviewed yet (the approve-to-add tray)."""
+    from . import research
+    return {"nudged": research.post_candidate_nudges(ctx.conn)}
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -756,6 +763,7 @@ _PRIMITIVES = {
     "find_unfiled": _p_find_unfiled,
     "plan_moves": _p_plan_moves,
     "stage_moves": _p_stage_moves,
+    "research_nudges": _p_research_nudges,
 }
 
 
@@ -790,6 +798,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                               {"name": "instructions", "type": "str"}], "output": "object"},
     "stage_moves": {"summary": "Stage proposed note moves as pending RENAME actions for approval.",
                     "inputs": [{"name": "moves", "type": "list", "required": True}], "output": "object"},
+    "research_nudges": {"summary": "Nudge the owner about new candidate notes for active research links.",
+                        "inputs": [], "output": "object"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

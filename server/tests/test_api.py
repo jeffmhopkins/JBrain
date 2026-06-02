@@ -957,6 +957,33 @@ def test_research_link_endpoints(client, monkeypatch):
     assert detail["sessions"][0]["turn_count"] == 1 and detail["sessions"][0]["retrieved"] == 1
 
 
+def test_research_candidate_nudge(client):
+    """The daily nudge posts a review card when an active research link has pending
+    candidate notes, and stops once they're approved."""
+    from app.db import get_conn
+    from app.services import research
+
+    client.post("/api/action-defs/sync")
+    assert "research_candidate_nudge" in {d["type"] for d in client.get("/api/action-defs").json()}
+
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "x"})
+    conn = get_conn()
+    aid = conn.execute("SELECT id FROM notes WHERE title='notes/Medical/Allergies'").fetchone()["id"]
+    lid = conn.execute("INSERT INTO share_links (token, note_id, scope, kind, status) "
+                       "VALUES ('tok-research-nudge-0123456789', ?, 'view', 'research', 'active')", (aid,)).lastrowid
+    research.create_spec(conn, lid, scope_json={"prefixes": ["notes/Medical"]})
+    research.activate_spec(conn, lid)
+    conn.commit()
+
+    assert research.post_candidate_nudges(conn) == 1                 # Allergies is a pending candidate
+    items = client.get("/api/reviews").json()
+    assert any("match" in ((i.get("title") or "") + (i.get("message") or "")).lower() for i in items)
+
+    research.approve(conn, lid, [aid])
+    conn.commit()
+    assert research.post_candidate_nudges(conn) == 0                 # nothing pending → no nudge
+
+
 def test_quicktask_add_list_item_and_undo(client):
     import json as _json
     from app.db import get_conn

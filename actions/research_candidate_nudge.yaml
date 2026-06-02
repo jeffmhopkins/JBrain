@@ -1,0 +1,9 @@
+# Declarative action: nudge the owner about notes that newly match an active
+# research link's folder filter but haven't been approved yet (the approve-to-add
+# tray). Posts one review-inbox card per link with pending candidates. Makes NO LLM
+# calls — it's pure SQL — so it's cheap to run on a schedule. Nothing is exposed by
+# this action; the owner still approves each note before a research link can read it.
+type: research_candidate_nudge
+category: Utility
+steps:
+  - do: research_nudges

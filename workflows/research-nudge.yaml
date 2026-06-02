@@ -1,0 +1,14 @@
+# Daily nudge for research-link "approve-to-add": if any active research link has
+# new notes matching its folder filter that you haven't approved or dismissed, this
+# posts a review-inbox card so you can include them. Nothing is exposed automatically
+# — you still approve each note. Cheap (no LLM calls), so it ships enabled.
+key: research-candidate-nudge
+name: Research link candidate nudge
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 8 * * *"   # 08:00 daily (server TZ)
+
+action:
+  type: research_candidate_nudge

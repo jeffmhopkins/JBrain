@@ -70,6 +70,50 @@ export default function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Typewriter reveal for the active assistant turn. The reply arrives over SSE in
+  // bursty chunks; we accumulate the full received-so-far into `bufRef` and reveal
+  // it a few chars per tick so the visible text flows in at a steady, fluid pace
+  // (matching GuidedChat). `shown` drives what slice of the buffer is rendered.
+  const bufRef = useRef("");            // full text received for the current turn
+  const shownRef = useRef(0);           // chars revealed so far for the current turn
+  const streamActiveRef = useRef(false); // true while SSE is still delivering tokens
+  // `tick` re-arms the typewriter effect: bumped when new tokens arrive (to wake a
+  // caught-up loop) and once per reveal frame (to schedule the next frame).
+  const [tick, setTick] = useState(0);
+  // Honour reduced-motion: reveal instantly (a plain append) with no animation.
+  const reduceMotion = useRef(
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      : false,
+  );
+  // Write the revealed slice onto the last (assistant) message bubble.
+  function paint(n: number) {
+    const text = bufRef.current.slice(0, n);
+    setMessages((m) => {
+      if (m.length === 0 || m[m.length - 1].role !== "assistant") return m;
+      const c = [...m];
+      c[c.length - 1] = { role: "assistant", content: text };
+      return c;
+    });
+  }
+  // The typewriter loop: each frame advances `shown` toward the buffer length. The
+  // step scales with how far behind we are so a long reply catches up instead of
+  // lagging seconds behind, while short bursts still animate a couple chars at a
+  // time. It schedules the next frame by bumping `tick`; it stops (no reschedule)
+  // once the buffer is fully revealed and the stream is no longer active.
+  useEffect(() => {
+    if (reduceMotion.current) return;
+    const total = bufRef.current.length;
+    if (shownRef.current >= total) return;   // caught up; a new token will re-arm us
+    const step = Math.max(2, Math.ceil((total - shownRef.current) / 8));
+    const id = window.setTimeout(() => {
+      shownRef.current = Math.min(bufRef.current.length, shownRef.current + step);
+      paint(shownRef.current);
+      setTick((t) => t + 1);
+    }, 20);
+    return () => clearTimeout(id);
+  }, [tick]);
   // Only auto-follow new content when the user is already at the bottom; if they
   // scroll up to read, leave them there even as the reply streams in.
   const atBottomRef = useRef(true);
@@ -204,6 +248,8 @@ export default function Chat() {
     const msg = (text + extra).trim();
     atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
+    // Reset the typewriter cleanly for this new turn.
+    bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = true;
     setStreaming(true);
     setStatus("Thinking…");
     let errored = false;
@@ -211,11 +257,15 @@ export default function Chat() {
       await streamChat(convId, msg, (ev) => {
         if (ev.type === "token") {
           if (ev.text) setStatus((s) => (s === "Responding…" ? s : "Responding…"));
-          setMessages((m) => {
-            const c = [...m];
-            c[c.length - 1] = { role: "assistant", content: c[c.length - 1].content + (ev.text || "") };
-            return c;
-          });
+          // Accumulate into the buffer; the typewriter loop reveals it gradually.
+          // With reduced motion, reveal instantly (a plain append).
+          bufRef.current += ev.text || "";
+          if (reduceMotion.current) {
+            shownRef.current = bufRef.current.length;
+            paint(shownRef.current);
+          } else {
+            setTick((t) => t + 1);   // wake/keep the reveal loop going
+          }
         } else if (ev.type === "tool") {
           setStatus(toolLabel(ev.tool));
         } else if (ev.type === "staging") {
@@ -224,6 +274,9 @@ export default function Chat() {
           setApplied((a) => [...a, ev.action!]);
         } else if (ev.type === "error") {
           errored = true;
+          // Show the error immediately — don't typewriter-drip it. Clear the buffer
+          // so the reveal loop won't overwrite the ⚠️ message.
+          bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
           setMessages((m) => {
             const c = [...m];
             c[c.length - 1] = { role: "assistant", content: `⚠️ ${ev.message}` };
@@ -231,7 +284,22 @@ export default function Chat() {
           });
         }
       }, coords, mode === "research" ? "research" : "assisted");
+      // Stream finished delivering: let the typewriter reveal the remaining buffered
+      // text to completion before we swap in the authoritative server copy (which is
+      // identical), so the reload is a visual no-op rather than a jarring jump.
+      if (!errored && !reduceMotion.current) {
+        streamActiveRef.current = false;
+        await new Promise<void>((resolve) => {
+          const finishRef = () => {
+            if (shownRef.current >= bufRef.current.length) { resolve(); return; }
+            setTick((t) => t + 1);
+            window.setTimeout(finishRef, 24);
+          };
+          finishRef();
+        });
+      }
     } finally {
+      streamActiveRef.current = false;
       setStreaming(false);
       setStatus("");
       if (mode === "assisted") setStagingTick((t) => t + 1);

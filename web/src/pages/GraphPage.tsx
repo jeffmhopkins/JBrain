@@ -45,9 +45,43 @@ export default function GraphPage() {
   // copies and never mutates the source data.
   const view = useMemo<GraphData>(() => {
     const ids = new Set(data.nodes.filter((n) => kind === "all" || n.kind === kind).map((n) => n.id));
-    let links = data.links
-      .map((l) => ({ source: linkEnd(l.source), target: linkEnd(l.target) }))
-      .filter((l) => ids.has(l.source as number) && ids.has(l.target as number));
+
+    // Edges among the kept nodes. Under a single-kind filter we PROJECT through the
+    // hidden layers: KB articles mostly cite ENTRIES (not each other), so two KB
+    // nodes linked only via a shared entry would otherwise drop and the KB view
+    // becomes disconnected dust. We connect two kept nodes when a path exists
+    // between them through hidden (other-kind) nodes only.
+    let links: { source: number; target: number }[];
+    if (kind === "all") {
+      links = data.links
+        .map((l) => ({ source: linkEnd(l.source), target: linkEnd(l.target) }))
+        .filter((l) => ids.has(l.source) && ids.has(l.target) && l.source !== l.target);
+    } else {
+      const adj = new Map<number, Set<number>>();
+      for (const l of data.links) {
+        const s = linkEnd(l.source), t = linkEnd(l.target);
+        if (s === t) continue;
+        (adj.get(s) ?? adj.set(s, new Set()).get(s)!).add(t);
+        (adj.get(t) ?? adj.set(t, new Set()).get(t)!).add(s);
+      }
+      const seen = new Set<string>();
+      links = [];
+      for (const start of ids) {
+        const visited = new Set<number>([start]);
+        const stack = [...(adj.get(start) ?? [])];
+        while (stack.length) {
+          const v = stack.pop()!;
+          if (visited.has(v)) continue;
+          visited.add(v);
+          if (ids.has(v)) {                                  // reached another kept node → link
+            const key = start < v ? `${start}-${v}` : `${v}-${start}`;
+            if (start !== v && !seen.has(key)) { seen.add(key); links.push({ source: start, target: v }); }
+          } else {                                            // hidden node → keep walking through it
+            for (const w of adj.get(v) ?? []) if (!visited.has(w)) stack.push(w);
+          }
+        }
+      }
+    }
 
     let keep = ids;
     if (focusId != null && ids.has(focusId)) {

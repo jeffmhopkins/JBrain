@@ -809,6 +809,55 @@ def test_semantic_search_orders_by_similarity(client, monkeypatch):
     assert [r["title"] for r in res] == ["notes/B", "notes/C", "notes/A"]
 
 
+def test_research_scope_boundary(client, monkeypatch):
+    """The research-link scope boundary: scoped_search output is always a subset of
+    the approved allowlist, even when the best semantic/keyword match is out of scope."""
+    import json
+    import sqlite_vec
+    from app.db import get_conn
+    from app.services import research_scope as rs, embeddings
+
+    def set_vec(conn, nid, *xs):
+        emb = sqlite_vec.serialize_float32(list(xs) + [0.0] * (embeddings.EMBEDDING_DIM - len(xs)))
+        conn.execute("DELETE FROM vec_notes WHERE note_id = ?", (nid,))
+        conn.execute("INSERT INTO vec_notes (note_id, embedding) VALUES (?, ?)", (nid, emb))
+
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "penicillin allergy zebra"})
+    client.post("/api/notes", json={"title": "notes/Medical/Sleep", "content_md": "insomnia"})
+    client.post("/api/notes", json={"title": "notes/Finance/Taxes", "content_md": "zebra tax secret"})
+    conn = get_conn()
+    ids = {r["title"]: r["id"] for r in conn.execute("SELECT id, title FROM notes").fetchall()}
+    allergies, sleep, taxes = ids["notes/Medical/Allergies"], ids["notes/Medical/Sleep"], ids["notes/Finance/Taxes"]
+
+    spec = {
+        "scope_json": json.dumps({"prefixes": ["notes/Medical"]}),
+        "approved_ids_json": json.dumps([allergies]),   # only Allergies is APPROVED
+        "dismissed_ids_json": "[]",
+    }
+
+    # Candidate tray: Sleep matches the filter but isn't approved; Taxes is outside it.
+    cands = rs.candidate_ids(conn, spec)
+    assert sleep in cands and taxes not in cands and allergies not in cands
+
+    # Keyword "zebra" best-matches the out-of-scope Taxes, but scoped_search can only
+    # ever return the approved Allergies (which also has "zebra"), never Taxes.
+    hit_ids = {h["id"] for h in rs.scoped_search(conn, rs.approved_ids(spec), "zebra", k=6)}
+    assert taxes not in hit_ids and hit_ids <= {allergies}
+
+    # F1 regression — semantic: make the query NEAREST to the out-of-scope Taxes,
+    # and assert scoped_search still returns only the approved Allergies.
+    set_vec(conn, allergies, 1.0, 0.0)
+    set_vec(conn, taxes, 0.0, 1.0)
+    conn.commit()
+    monkeypatch.setattr(embeddings, "embed", lambda q: [0.0, 1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 2))
+    hits = rs.scoped_search(conn, rs.approved_ids(spec), "anything", k=6)
+    assert {h["id"] for h in hits} == {allergies}
+
+    # Owner pulls the only approved note → nothing reachable. Root filter exposes nothing.
+    assert rs.scoped_search(conn, set(), "zebra", k=6) == []
+    assert rs.filter_match_ids(conn, {"prefixes": ["", "/"]}) == set()
+
+
 def test_quicktask_add_list_item_and_undo(client):
     import json as _json
     from app.db import get_conn

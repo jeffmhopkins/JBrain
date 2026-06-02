@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 def init_db() -> None:
@@ -248,6 +248,34 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # reason (status stays 'abandoned'; end_reason distinguishes 'abuse:*'/'distress').
         _add_column(conn, "guided_sessions", "strike_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column(conn, "guided_sessions", "end_reason", "TEXT")
+
+    if current < 21:
+        # Research links (kind='research'): scoped read-only Q&A. The boundary is the
+        # approved note-id allowlist; the filter only surfaces candidates to approve.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS research_specs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+              status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+              scope_json TEXT NOT NULL DEFAULT '{}',
+              approved_ids_json TEXT NOT NULL DEFAULT '[]',
+              dismissed_ids_json TEXT NOT NULL DEFAULT '[]',
+              persona_voice TEXT NOT NULL DEFAULT '', intro TEXT NOT NULL DEFAULT '',
+              bind INTEGER NOT NULL DEFAULT 0, single_use INTEGER NOT NULL DEFAULT 0,
+              max_turns INTEGER NOT NULL DEFAULT 30, max_total_replies INTEGER NOT NULL DEFAULT 200,
+              reply_count INTEGER NOT NULL DEFAULT 0, token_budget INTEGER NOT NULL DEFAULT 40000,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_research_specs_link ON research_specs(share_link_id);
+            CREATE TABLE IF NOT EXISTS research_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+              secret TEXT NOT NULL, name TEXT,
+              status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
+              transcript_json TEXT NOT NULL DEFAULT '[]', retrieved_ids_json TEXT NOT NULL DEFAULT '[]',
+              denied_count INTEGER NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0,
+              client_ip TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_at TEXT);
+            CREATE INDEX IF NOT EXISTS idx_research_sessions_link ON research_sessions(share_link_id);
+        """)
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

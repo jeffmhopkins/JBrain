@@ -292,6 +292,48 @@ CREATE TABLE IF NOT EXISTS guided_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_guided_sessions_link ON guided_sessions(share_link_id);
 
+-- Research links (kind='research'): a scoped, read-only Q&A link. The exposed
+-- boundary is the APPROVED note-id allowlist (approved_ids_json) — never the live
+-- filter (scope_json), which only surfaces candidates for the owner to approve.
+-- status draft->active is the owner's approval gate; persona_voice is an optional
+-- tone string interpolated into a FIXED template (it can't countermand the rules).
+CREATE TABLE IF NOT EXISTS research_specs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  status            TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+  scope_json        TEXT NOT NULL DEFAULT '{}',        -- candidate FILTER {prefixes:[],kinds:[]}
+  approved_ids_json TEXT NOT NULL DEFAULT '[]',        -- the exposed allowlist (the ONLY boundary)
+  dismissed_ids_json TEXT NOT NULL DEFAULT '[]',       -- candidates the owner rejected (don't re-nag)
+  persona_voice     TEXT NOT NULL DEFAULT '',          -- optional tone/role; '' = neutral default
+  intro             TEXT NOT NULL DEFAULT '',          -- recipient consent-landing text
+  bind              INTEGER NOT NULL DEFAULT 0,
+  single_use        INTEGER NOT NULL DEFAULT 0,
+  max_turns         INTEGER NOT NULL DEFAULT 30,       -- per-session answers
+  max_total_replies INTEGER NOT NULL DEFAULT 200,      -- cumulative across the link (cost cap)
+  reply_count       INTEGER NOT NULL DEFAULT 0,        -- atomic billed-answer counter
+  token_budget      INTEGER NOT NULL DEFAULT 40000,    -- per-turn cumulative token cap
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_research_specs_link ON research_specs(share_link_id);
+
+-- One recipient's Q&A run through a research link: transcript + an audit log of
+-- exactly which notes informed answers, and a counter of out-of-scope attempts.
+CREATE TABLE IF NOT EXISTS research_sessions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  secret            TEXT NOT NULL,                     -- httponly cookie tying this browser to the session
+  name              TEXT,
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
+  transcript_json   TEXT NOT NULL DEFAULT '[]',
+  retrieved_ids_json TEXT NOT NULL DEFAULT '[]',       -- audit: notes that informed answers
+  denied_count      INTEGER NOT NULL DEFAULT 0,        -- audit: out-of-scope retrieval attempts
+  turn_count        INTEGER NOT NULL DEFAULT 0,
+  client_ip         TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  last_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_research_sessions_link ON research_sessions(share_link_id);
+
 -- Web Push subscriptions (one row per browser/device that opted in). The endpoint
 -- is a push-service capability URL; p256dh/auth are the client's encryption keys.
 CREATE TABLE IF NOT EXISTS push_subscriptions (

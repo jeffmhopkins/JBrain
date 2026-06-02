@@ -1,6 +1,7 @@
 """Owner-side (AUTHENTICATED) share-link management: mint, list, revoke, and
 accept/reject the edit proposals that arrive via public EDIT links."""
 import hashlib
+import json
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -73,13 +74,19 @@ def list_shares():
         "WHERE sl.kind='guided' AND sl.status='active' ORDER BY sl.created_at DESC"
     ).fetchall()
     guided_pending = conn.execute(
-        "SELECT s.id, s.name, s.document_md, s.created_at, s.completed_at, gs.goal, "
+        "SELECT s.id, s.name, s.document_md, s.transcript_json, s.created_at, s.completed_at, gs.goal, "
         "       n.title AS note_title, n.slug AS note_slug "
         "FROM guided_sessions s JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
         "JOIN share_links sl ON sl.id=s.share_link_id JOIN notes n ON n.id=sl.note_id "
         "JOIN review_items ri ON ri.id=s.review_item_id "
         "WHERE s.status='submitted' AND ri.status='pending' ORDER BY s.completed_at DESC"
     ).fetchall()
+    def _gp(r):
+        d = dict(r)
+        # The raw chat is for OWNER REVIEW ONLY — surfaced here, never written to a
+        # note or embedded, so it stays out of brain search. Deleted on accept/reject.
+        d["transcript"] = json.loads(d.pop("transcript_json") or "[]")
+        return d
     return {
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),
@@ -87,7 +94,7 @@ def list_shares():
                       for r in proposals],
         "history": [dict(r) for r in history],
         "guided_links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in guided_links],
-        "guided_pending": [dict(r) for r in guided_pending],
+        "guided_pending": [_gp(r) for r in guided_pending],
     }
 
 
@@ -143,6 +150,8 @@ def guided_accept(sid: int):
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
+    # Approved → the raw conversation has served its review purpose; delete it.
+    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
     conn.commit()
     return {"ok": True, "note_slug": note["slug"]}
 
@@ -154,7 +163,8 @@ def guided_reject(sid: int):
     s = conn.execute("SELECT review_item_id FROM guided_sessions s WHERE id=? AND status='submitted'", (sid,)).fetchone()
     if not s:
         raise HTTPException(status_code=404, detail="No submitted guided response found.")
-    conn.execute("UPDATE guided_sessions SET status='abandoned' WHERE id=?", (sid,))
+    # Discarded → drop the document and the raw conversation entirely.
+    conn.execute("UPDATE guided_sessions SET status='abandoned', document_md=NULL, transcript_json='[]' WHERE id=?", (sid,))
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))

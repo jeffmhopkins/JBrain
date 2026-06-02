@@ -2077,10 +2077,16 @@ def test_guided_intake_full_flow(client, monkeypatch):
 
     shares = client.get("/api/shares").json()
     assert len(shares["guided_pending"]) == 1
-    sid = shares["guided_pending"][0]["id"]
+    gp = shares["guided_pending"][0]
+    sid = gp["id"]
+    # Raw chat is surfaced for owner review (and includes the recipient's words).
+    assert any("diabetes" in t["content"] for t in gp["transcript"])
     assert client.post(f"/api/shares/guided/sessions/{sid}/accept").status_code == 200
     body = client.get("/api/notes/notes-dad-medical-history").json()["content_md"]
     assert "diabetes" in body and "metformin" in body               # approved doc written
+    # Approved → the raw conversation is deleted (it was never a note / never searchable).
+    tj = get_conn().execute("SELECT transcript_json FROM guided_sessions WHERE id=?", (sid,)).fetchone()["transcript_json"]
+    assert tj == "[]"
 
 
 def test_guided_spend_cap_is_atomic(client, monkeypatch):

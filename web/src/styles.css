@@ -495,6 +495,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .typing-dots span:nth-child(3) { animation-delay: 0.36s; }
 @keyframes typingDot { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 .guided-doc { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; max-height: 40vh; overflow: auto; background: var(--bg-elev-2); margin-top: 8px; }
+.guided-convo { display: flex; flex-direction: column; gap: 8px; max-height: 44vh; overflow: auto; margin: 8px 0; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--bg-elev-2); }
+.guided-convo .msg { max-width: 92%; font-size: 13px; padding: 8px 11px; white-space: pre-wrap; }
+.guided-convo .msg.user { align-self: flex-end; }
+.guided-convo .msg.assistant { align-self: flex-start; }
+.guided-convo .convo-who { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 3px; }
 .share-diff { white-space: pre-wrap; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; margin: 8px 0; }
 .wikilink-flat { color: var(--text-dim); }
 

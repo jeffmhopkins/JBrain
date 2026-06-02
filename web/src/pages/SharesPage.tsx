@@ -9,7 +9,7 @@ interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: 
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
 interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; }
-interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; }
+interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
 const STATUS_CLR: Record<string, string> = { accepted: "#4ade80", rejected: "var(--danger)", superseded: "var(--text-dim)" };
@@ -33,6 +33,7 @@ export default function SharesPage() {
   const [copied, setCopied] = useState<number | null>(null);
   const [openDiff, setOpenDiff] = useState<number | null>(null);
   const [openPrompt, setOpenPrompt] = useState<number | null>(null);
+  const [openConvo, setOpenConvo] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
@@ -142,6 +143,26 @@ export default function SharesPage() {
                 {gp.completed_at && <span className="muted" style={{ fontSize: 12 }}>{fmtTs(gp.completed_at, appTz)}</span>}
               </div>
               <div className="md guided-doc"><ReactMarkdown>{gp.document_md || "_(empty)_"}</ReactMarkdown></div>
+              {gp.transcript.length > 0 && (
+                <>
+                  <button className="ghost" style={{ fontSize: 12, marginTop: 6 }}
+                          onClick={() => setOpenConvo(openConvo === gp.id ? null : gp.id)}>
+                    {openConvo === gp.id ? "Hide" : "View"} conversation ({gp.transcript.length})
+                  </button>
+                  {openConvo === gp.id && (
+                    <div className="guided-convo">
+                      <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                        Your eyes only — not saved to your brain or searchable, and removed when you approve or discard.
+                      </div>
+                      {gp.transcript.map((t, i) => (
+                        <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
+                          <span className="convo-who">{t.role === "assistant" ? "AI" : (gp.name || "Them")}</span>{t.content}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
               <div className="row" style={{ marginTop: 8, gap: 8 }}>
                 <button className="primary" onClick={() => acceptGuided(gp)}>Approve &amp; save</button>
                 <button className="ghost" onClick={() => rejectGuided(gp)}>Discard</button>

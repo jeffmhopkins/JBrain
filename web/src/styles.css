@@ -307,6 +307,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .tree-label { color: var(--text); cursor: pointer; }
 .tree-label.folder { color: var(--text-dim); font-weight: 500; }
 a.tree-label:hover { text-decoration: none; color: var(--accent); }
+/* Compressed path breadcrumb: folder segments muted, note segments clickable. */
+.tree-sep { color: var(--text-dim); opacity: 0.5; margin: 0 1px; }
+.tree-seg { color: var(--text-dim); cursor: pointer; }
+.tree-seg-link { color: var(--text); }
+.tree-seg-link:hover { text-decoration: none; color: var(--accent); }
 
 /* ---- Chat --------------------------------------------------------------- */
 .chat-wrap {

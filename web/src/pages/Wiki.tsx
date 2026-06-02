@@ -82,8 +82,21 @@ export default function Wiki() {
     return [...nodes]
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((node) => {
-        const path = prefix ? `${prefix}/${node.name}` : node.name;
-        const kids = Object.values(node.children);
+        // Compress a chain of single-child DIRECTORIES into one row, e.g.
+        // Work/Q3/Planning instead of three nested levels. Each segment is kept
+        // separately so a folder that's ALSO a note stays its own clickable link.
+        const segments: { name: string; path: string; note?: NoteRow }[] = [];
+        let cur = node;
+        let path = prefix ? `${prefix}/${node.name}` : node.name;
+        segments.push({ name: cur.name, path, note: cur.note });
+        for (let kids = Object.values(cur.children);
+             kids.length === 1 && Object.keys(kids[0].children).length > 0;
+             kids = Object.values(cur.children)) {
+          cur = kids[0];
+          path = `${path}/${cur.name}`;
+          segments.push({ name: cur.name, path, note: cur.note });
+        }
+        const kids = Object.values(cur.children);
         const open = !collapsed.has(path);
         return (
           <div key={path}>
@@ -93,14 +106,21 @@ export default function Wiki() {
                   <span className={"chev" + (open ? " open" : "")}><Icon name="chevron" size={14} /></span>
                 </button>
               ) : <span className="tree-spacer" />}
-              {node.note ? (
-                <Link to={`/note/${node.note.slug}`} className="tree-label">
-                  {node.name}
-                  {KIND_BADGE[node.note.kind] && <span className="badge" style={{ marginLeft: 6 }}>{KIND_BADGE[node.note.kind]}</span>}
-                </Link>
-              ) : (
-                <span className="tree-label folder" onClick={() => kids.length && toggle(path)}>{node.name}</span>
-              )}
+              <span className="tree-label folder">
+                {segments.map((s, i) => (
+                  <span key={s.path}>
+                    {i > 0 && <span className="tree-sep">/</span>}
+                    {s.note ? (
+                      <Link to={`/note/${s.note.slug}`} className="tree-seg-link">
+                        {s.name}
+                        {KIND_BADGE[s.note.kind] && <span className="badge" style={{ marginLeft: 6 }}>{KIND_BADGE[s.note.kind]}</span>}
+                      </Link>
+                    ) : (
+                      <span className="tree-seg" onClick={() => kids.length && toggle(path)}>{s.name}</span>
+                    )}
+                  </span>
+                ))}
+              </span>
             </div>
             {kids.length > 0 && open && renderNodes(kids, depth + 1, path)}
           </div>

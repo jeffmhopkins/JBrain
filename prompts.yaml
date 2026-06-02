@@ -211,13 +211,40 @@ actions:
     3. INTEGRATE: place each fact in the right section; merge, dedupe, and reconcile
        contradictions — prefer the most RECENT entry, and note a meaningful change.
 
-    CITATIONS — every fact must trace to its source entry:
-    - Inline: end each claim with its source as [[Entry Title]], copying the entry's
-      title EXACTLY as shown so the link resolves.
-    - Each article ends with a "## Sources" section: a bullet list, one per source
-      entry, "- [[Entry Title]] — YYYY-MM-DD", using the entry's logged date. On
-      UPDATE keep the existing sources and add the new ones; never drop a cited one
-      UNLESS its entry was DELETED (then remove that source line).
+    CITATIONS — every durable fact must trace to its source entry. Choose the form
+    by how it reads (Wikipedia-style):
+    - NATURAL INLINE LINK: when the source title or a topic reads naturally as part
+      of the sentence, link it inline. Use [[exact title|natural words]] so the
+      sentence flows while the EXACT title is preserved (e.g.
+      "His [[notes/Dad — Medical History|diagnosis]] dates to 2019"). Plain
+      [[exact title]] is fine when the title itself reads naturally. Copy the title
+      EXACTLY so the link resolves.
+    - ATTRIBUTION FOOTNOTE (the common case): when the citation is just source
+      attribution, do NOT clutter the prose with [[…]]. End the sentence with a
+      footnote marker [^sN] (ids s1, s2, s3…) and define each once in the References
+      block. A claim may carry more than one (…test.[^s1][^s2]). Never leave a
+      durable claim with neither a natural inline link nor a footnote marker.
+    - REFERENCES BLOCK: end every article with a "## References" section whose body
+      is ONLY footnote definitions, one per source entry, EXACTLY in the form:
+        [^s1]: [[Entry Title]] — YYYY-MM-DD
+      using the entry's EXACT title (so the link resolves AND the knowledge graph
+      records it) and its logged date. Do not number the markers yourself — the
+      renderer numbers them; the sN ids are just stable labels.
+    - LINK-GRAPH RULE (critical): a source counts as cited ONLY if its exact
+      [[title]] appears in the article — as a natural inline link OR inside its
+      footnote definition. Every [^sN] you use MUST have exactly one matching
+      definition, and every definition MUST contain the source's [[…]]. Never use a
+      marker with no definition, a definition with no [[…]], or the same sN id for
+      two different sources. (Articles that break this are rejected and not saved.)
+    - ON UPDATE: keep existing footnote definitions; reuse a source's existing [^sN]
+      id (don't renumber), pick a FRESH sN for a new source. Drop a definition only
+      when its entry was DELETED — then also remove every inline [^sN] marker that
+      pointed to it (and reconcile the claim per the DELETED rule above).
+    - MIGRATION: if an article you are ALREADY updating still uses the old style (an
+      inline [[…]] after every claim + a "## Sources" list), convert it as you
+      rewrite — move attribution-only cites to [^sN] footnotes, keep genuinely
+      natural inline links, replace "## Sources" with the "## References" footnote
+      block. Do NOT reformat an article you are not otherwise changing.
 
     CROSS-LINKING: link related topics as [[Topic]], matching an existing article's
     EXACT title where one exists.
@@ -225,7 +252,8 @@ actions:
     BRANCHING (summary style): when a section grows large and self-contained, SPLIT
     it into a child article titled "Parent/Subtopic"; leave a short summary plus a
     [[Parent/Subtopic]] link in the parent. Emit BOTH the trimmed parent AND the new
-    child as separate objects in the same array.
+    child as separate objects in the same array. Each emitted article carries its own
+    complete "## References" block for the sources it cites.
 
     QUALITY: evergreen (no "today"/"yesterday" — use dates), deduped, one topic per
     article, every claim cited, nothing invented beyond the entries. A drifting
@@ -254,7 +282,8 @@ actions:
       Both "title" and "content_md" must be non-empty.
     - content_md is the COMPLETE article every time — on update return the FULL merged
       content (existing + new), never a fragment or diff (it overwrites by title).
-    - The ONLY square brackets allowed anywhere are wiki-links [[...]] INSIDE
-      content_md string values.
+    - Inside content_md string values you may use only: wiki-links [[...]] (and the
+      [[title|display]] form), footnote markers [^sN], and footnote definitions
+      "[^sN]: [[...]] — DATE". No other use of [ or ] anywhere.
     - Multiple objects are fine (e.g. a trimmed parent plus its new child).
     - If nothing durable is worth recording, reply exactly: []

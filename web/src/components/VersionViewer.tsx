@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { get, post } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Modal from "./Modal";
@@ -94,7 +95,7 @@ export function VersionViewer({
         : undefined}
     >
       <div className="md">
-        <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(stripSummarySentinels(content))}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(stripSummarySentinels(content))}</ReactMarkdown>
       </div>
     </Modal>
   );

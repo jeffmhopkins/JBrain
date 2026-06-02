@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -221,6 +222,48 @@ def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
     return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions, conn=ctx.conn)
 
 
+_FN_DEF_RE = re.compile(r"(?m)^[ \t]*\[\^([^\]\s]+)\]:(.*)$")   # [^id]: definition line
+_FN_MARK_RE = re.compile(r"\[\^([^\]\s]+)\](?!:)")              # [^id] inline marker
+_WIKILINK_RE = re.compile(r"\[\[[^\]]+\]\]")
+
+
+def citation_issues(content_md: str) -> list[str]:
+    """Graph-safety check on a synthesized article's citations (M1): every footnote
+    marker resolves to one definition, every definition carries a [[…]] (so a links
+    row is recorded), and no id is reused for two sources. Malformed citations would
+    silently break delete/edit reconciliation, so such articles are NOT written."""
+    text = content_md or ""
+    defs: dict[str, int] = {}
+    def_has_link: dict[str, bool] = {}
+    for m in _FN_DEF_RE.finditer(text):
+        fid = m.group(1)
+        defs[fid] = defs.get(fid, 0) + 1
+        def_has_link[fid] = bool(_WIKILINK_RE.search(m.group(2)))
+    markers = {m.group(1) for m in _FN_MARK_RE.finditer(text)}
+    issues = []
+    for fid in sorted(markers - set(defs)):
+        issues.append(f"footnote [^{fid}] has no definition")
+    for fid in sorted(f for f, c in defs.items() if c > 1):
+        issues.append(f"footnote id [^{fid}] is defined more than once")
+    for fid in sorted(f for f, ok in def_has_link.items() if not ok):
+        issues.append(f"footnote [^{fid}] definition has no [[source]] link")
+    return issues
+
+
+def _p_validate_citations(ctx, articles):
+    """Split a wiki_plan into citation-VALID articles (safe to write) and
+    QUARANTINED ones (malformed footnotes → would break the link graph)."""
+    valid, quarantined = [], []
+    for a in (articles or []):
+        issues = citation_issues(a.get("content_md") or "")
+        if issues:
+            quarantined.append({**a, "issues": issues})
+        else:
+            valid.append(a)
+    return {"valid": valid, "quarantined": quarantined,
+            "ok": len(valid), "bad": len(quarantined)}
+
+
 def _p_gather_context(ctx, source_title=None, context_query=None):
     """Build context text from a named note or a semantic search (synthesize).
     @t[...] live values are expanded so the model reads the value, not the token."""
@@ -365,6 +408,7 @@ _PRIMITIVES = {
     "suggest_tags": _p_suggest_tags,
     "summarise_entries": _p_summarise_entries,
     "wiki_plan": _p_wiki_plan,
+    "validate_citations": _p_validate_citations,
     "daylog_pending": _p_daylog_pending,
     "daily_pending": _p_daily_pending,
     "gather_context": _p_gather_context,
@@ -422,6 +466,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                   "inputs": [{"name": "entries", "type": "list", "required": True},
                              {"name": "existing_kb", "type": "list", "required": True}, {"name": "instructions", "type": "str"}],
                   "output": "list"},
+    "validate_citations": {"summary": "Split a wiki_plan into citation-valid vs quarantined (malformed footnotes).",
+                           "inputs": [{"name": "articles", "type": "list", "required": True}],
+                           "output": "object"},
     "daylog_pending": {"summary": "Days of a log still to summarise (+ watermark).",
                        "inputs": [{"name": "log_title", "type": "str", "required": True}], "output": "object"},
     "daily_pending": {"summary": "Completed days with dated entries but no daily summary yet.",

@@ -40,8 +40,15 @@ steps:
       existing_kb: "{{ kb }}"
       instructions: "{{ config.instructions | default(none) }}"
 
+  # Citation safety gate (M1): only write articles whose footnote citations are
+  # well-formed; malformed ones are quarantined (not written) and surfaced below,
+  # so a dropped/duplicated citation can never silently break delete-reconcile.
+  - id: checked
+    do: validate_citations
+    with: { articles: "{{ plan }}" }
+
   - id: write
-    for_each: "{{ plan }}"
+    for_each: "{{ checked.valid }}"
     steps:
       - do: write_note
         with:
@@ -50,14 +57,20 @@ steps:
           kind: kb
 
   - do: set_meta
-    when: "{{ plan }}"            # only advance the watermark when something changed
+    when: "{{ checked.valid }}"   # advance the watermark only when something was written
     with:
       key: "wiki_synth:since"
       value: "{{ entries | map(attribute='changed_at') | max }}"
 
   - do: create_review
-    when: "{{ config.review != false and plan }}"
+    when: "{{ config.review != false and checked.valid }}"
     with:
       title: "{{ config.review.title | default('Knowledge base updated') }}"
-      message: "Updated topics: {{ plan | map(attribute='title') | join(', ') }}"
-      link_title: "{{ plan[0].title }}"
+      message: "Updated topics: {{ checked.valid | map(attribute='title') | join(', ') }}"
+      link_title: "{{ checked.valid[0].title }}"
+
+  - do: create_review
+    when: "{{ checked.quarantined }}"
+    with:
+      title: "Citations need a look"
+      message: "{{ checked.bad }} synthesized article(s) had malformed citations and were NOT saved: {{ checked.quarantined | map(attribute='title') | join(', ') }}. They'll be retried next run."

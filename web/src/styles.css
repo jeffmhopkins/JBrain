@@ -360,6 +360,14 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md pre { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; }
 .md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .wikilink { color: var(--accent); border-bottom: 1px dashed var(--accent); }
+/* Wikipedia-style citations: superscript markers + a References list (remark-gfm
+   footnotes). The auto heading reads "Footnotes" — relabel it to "References". */
+.md sup a, .md [data-footnote-ref] { color: var(--accent); text-decoration: none; font-size: 0.7em; padding: 0 1px; }
+.md .footnotes { margin-top: 1.5em; border-top: 1px solid var(--border); padding-top: 0.5em; font-size: 0.88em; color: var(--text-dim); }
+.md .footnotes ol { padding-left: 1.4em; }
+.md .footnotes li { margin: 0.2em 0; }
+.md .footnotes h2 { font-size: 0; }                         /* hide "Footnotes" label text… */
+.md .footnotes h2::after { content: "References"; font-size: 1rem; color: var(--text); }   /* …show "References" */
 
 /* ---- Lists carousel ----------------------------------------------------- */
 /* One list per screen; swipe / trackpad / drag the scrollbar to move between

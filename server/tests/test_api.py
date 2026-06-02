@@ -2310,3 +2310,53 @@ def test_restore_rebuilds_links_no_graph_orphan(client):
     # and the graph shows the edges (no orphan)
     edges = graph_route()["links"]
     assert {"source": k1, "target": k2} in edges and {"source": k2, "target": k1} in edges
+
+
+# --- Wiki-synthesis citation validator (M1) ---------------------------------
+
+def test_citation_validator_passes_good_footnotes():
+    from app.services.pipeline import citation_issues
+    good = (
+        "Lead sentence.\n\nHe was diagnosed in 2019.[^s1] He takes metformin.[^s2]\n\n"
+        "## References\n[^s1]: [[notes/Dad — Medical History]] — 2019-01-01\n"
+        "[^s2]: [[notes/Meds]] — 2020-02-02\n"
+    )
+    assert citation_issues(good) == []
+    # natural-inline-only article (no footnotes) is also fine
+    assert citation_issues("See [[kb/Topic]] for details.") == []
+
+
+def test_citation_validator_catches_graph_holes():
+    from app.services.pipeline import citation_issues, _p_validate_citations
+    # marker with no definition
+    assert any("no definition" in i for i in citation_issues("claim.[^s9]\n\n## References\n"))
+    # definition with no [[link]] (would not record a links row)
+    assert any("no [[source]]" in i for i in citation_issues("claim.[^s1]\n\n[^s1]: just text — 2020-01-01"))
+    # duplicate id for two different sources
+    dup = "a.[^s1] b.[^s1]\n\n[^s1]: [[notes/A]] — 1\n[^s1]: [[notes/B]] — 2"
+    assert any("more than once" in i for i in citation_issues(dup))
+    # the primitive splits valid vs quarantined
+    out = _p_validate_citations(None, [
+        {"title": "kb/Good", "content_md": "x.[^s1]\n\n[^s1]: [[notes/A]] — 1"},
+        {"title": "kb/Bad", "content_md": "y.[^s2]\n\n## References\n"},
+    ])
+    assert out["ok"] == 1 and out["bad"] == 1
+    assert out["valid"][0]["title"] == "kb/Good"
+    assert out["quarantined"][0]["title"] == "kb/Bad" and out["quarantined"][0]["issues"]
+
+
+def test_footnote_wikilink_records_a_links_row(client):
+    # A footnote DEFINITION's [[…]] must still populate the links table so
+    # delete/edit reconcile keeps working with the new citation style.
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    conn = get_conn()
+    src = notes_svc.upsert_note(conn, "notes/Source", "# src", source="user", fire_events=False)
+    art = notes_svc.upsert_note(
+        conn, "kb/Article",
+        "Topic lead.\n\nA durable fact.[^s1]\n\n## References\n[^s1]: [[notes/Source]] — 2026-01-01",
+        kind="kb", source="user", fire_events=False)
+    conn.commit()
+    row = conn.execute("SELECT target_note_id FROM links WHERE source_note_id=? AND target_title=?",
+                       (art, "notes/Source")).fetchone()
+    assert row is not None and row["target_note_id"] == src     # footnote cite → resolvable link

@@ -39,13 +39,17 @@ def list_places():
 
 @router.post("")
 def add_place(body: PlaceIn):
-    name = body.name.strip()
+    name = body.name.strip()[:80]
     if not name:
         raise HTTPException(status_code=422, detail="Name required")
     conn = get_conn()
+    # Names are the place's identity (they map 1:1 to a loc/<name> note), so keep them
+    # unique (case-insensitive) — otherwise two places fight over one note.
+    if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+        raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
     cur = conn.execute(
         "INSERT INTO places (name, lat, lon, radius_m, note_slug) VALUES (?, ?, ?, ?, ?)",
-        (name[:80], body.lat, body.lon, max(20, min(int(body.radius_m), 20000)), body.note_slug),
+        (name, body.lat, body.lon, max(20, min(int(body.radius_m), 20000)), body.note_slug),
     )
     conn.commit()
     return {"id": cur.lastrowid, "name": name}
@@ -64,6 +68,9 @@ def rename_place(place_id: int, body: PlacePatch):
     place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         raise HTTPException(status_code=404, detail="No such place")
+    if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
+                    (name, place_id)).fetchone():
+        raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
     try:
         conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
         # Keep the linked loc/ note's title in sync so the place and its page stay paired.
@@ -98,14 +105,30 @@ def ensure_place_note(place_id: int):
         note = (_note_by_slug(conn, place["note_slug"]) if place["note_slug"] else None) \
             or notes_svc.get_by_title(conn, title)
         if note is None:
-            nid = notes_svc.upsert_note(conn, title, f"# {place['name']}\n\n", source="user",
-                                        kind="place", fire_events=False)
-            note = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()
+            # A soft-deleted note still owns the (UNIQUE) title; restore it instead of
+            # colliding — re-opening a place's notes brings the prior content back.
+            tomb = conn.execute(
+                "SELECT id, slug FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NOT NULL",
+                (title,),
+            ).fetchone()
+            if tomb is not None:
+                notes_svc.restore(conn, tomb["id"])
+                note = tomb
+            else:
+                nid = notes_svc.upsert_note(conn, title, f"# {place['name']}\n\n", source="user",
+                                            kind="place", fire_events=False)
+                note = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()
         conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (note["slug"], place_id))
         conn.commit()
     except sqlite3.IntegrityError:
+        # Lost a create race — the note exists now; adopt it (idempotent "ensure").
         conn.rollback()
-        raise HTTPException(status_code=409, detail="A note with that title already exists.")
+        existing = notes_svc.get_by_title(conn, title)
+        if existing is None:
+            raise HTTPException(status_code=409, detail="Couldn't create the place note.")
+        conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (existing["slug"], place_id))
+        conn.commit()
+        return {"slug": existing["slug"]}
     except Exception:
         conn.rollback()
         raise

@@ -1029,6 +1029,27 @@ def test_loc_kind_tracks_prefix_on_rename(client):
     assert client.get(f"/api/notes/{back}").json()["kind"] == "entry"
 
 
+def test_place_note_restored_after_delete(client):
+    """Deleting a place's loc/ note then re-opening it RESTORES the note (was a 500
+    before — the soft-deleted title collided on re-create)."""
+    pid = client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0}).json()["id"]
+    slug = client.post(f"/api/places/{pid}/note").json()["slug"]
+    client.put(f"/api/notes/{slug}", json={"title": "loc/Gym", "content_md": "leg day notes"})
+    client.delete(f"/api/notes/{slug}")
+    r = client.post(f"/api/places/{pid}/note")
+    assert r.status_code == 200
+    assert "leg day notes" in client.get(f"/api/notes/{r.json()['slug']}").json()["content_md"]
+
+
+def test_duplicate_place_name_rejected(client):
+    """Place names are unique (case-insensitive) on both add and rename, so two places
+    can't fight over one loc/<name> note."""
+    client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0})
+    assert client.post("/api/places", json={"name": "gym", "lat": 41.0, "lon": -75.0}).status_code == 409
+    b = client.post("/api/places", json={"name": "Spa", "lat": 42.0, "lon": -76.0}).json()["id"]
+    assert client.patch(f"/api/places/{b}", json={"name": "Gym"}).status_code == 409
+
+
 def test_loc_note_kind_inferred(client):
     """A note created under loc/ is kind='place' — so it's searchable but excluded
     from KB synthesis (which only folds entry/daily)."""

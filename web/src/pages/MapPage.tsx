@@ -177,7 +177,8 @@ export default function MapPage() {
       places.map((p) =>
         L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 1.5, fillOpacity: 0.08 })
           .bindTooltip(p.name, { permanent: true, direction: "center", className: "place-label" })
-          .on("click", () => openPlaceNotes(p.id))),   // tap a geofence → its loc/ note
+          // Tap a geofence → its loc/ note, except while dropping a new place.
+          .on("click", () => { if (!addingRef.current) openPlaceNotes(p.id); })),
     ).addTo(m);
   }, [places]);
 

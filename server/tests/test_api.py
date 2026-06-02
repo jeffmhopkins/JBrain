@@ -2414,3 +2414,23 @@ def test_kb_coverage_check_stages_then_applies(client, monkeypatch):
     assert client.post(f"/api/staging/{aid}/apply").status_code == 200
     row = conn.execute("SELECT kind FROM notes WHERE title='kb/Ideas' AND deleted_at IS NULL").fetchone()
     assert row is not None and row["kind"] == "kb"      # kind-aware apply
+
+
+def test_synthesis_no_entries_is_noop_not_llm_call(monkeypatch):
+    # Empty entries must NOT hit the LLM (prod "check failed" was a no-candidates
+    # coverage run dumping the whole KB into a no-entries prompt).
+    from app.services import workflows as wf
+    def boom(*a, **k):
+        raise AssertionError("LLM must not be called with no entries")
+    monkeypatch.setattr(wf.llm, "complete", boom)
+    assert wf._synthesize_actions([], [{"title": "kb/X", "content_md": "y"}], None) == []
+
+
+def test_kb_coverage_stops_clean_with_no_candidates(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import pipeline
+    from app.services import workflows as wf
+    monkeypatch.setattr(wf.llm, "complete", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no LLM")))
+    # Fresh DB: no uncited entries → recipe stops before wiki_plan, no LLM call, no error.
+    detail = pipeline.run_pipeline(get_conn(), pipeline.get_action_def("kb_coverage_check"), {}, None, None)
+    assert "no uncited" in detail

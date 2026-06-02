@@ -210,6 +210,8 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
     the relevant existing KB articles; without it the passed-in existing_kb is used.
     `instructions` (from the workflow YAML config) is extra guidance appended to the
     base prompt; the JSON-output contract is always enforced."""
+    if not entries:
+        return []                       # nothing to synthesize — never call the LLM
     if not llm.has_credentials():
         raise RuntimeError("no LLM API key configured")
 

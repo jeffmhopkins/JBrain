@@ -12,19 +12,21 @@ type: kb_coverage_check
 config:
   - { key: batch_limit, label: Max uncited entries per run, type: number }
   - { key: reconsider, label: Re-feed already-evaluated entries, type: boolean, default: false }
+  - { key: since_floor, label: Skip entries created on/before (ISO date), type: text }
   - { key: instructions, label: Extra guidance, type: textarea }
 steps:
-  - id: floor
-    do: get_meta
-    with: { key: "wiki_synth:since", default: "" }
-
+  # Candidate entries. since_floor is OFF by default so historical uncited entries
+  # (the ones a watermark jumped) are actually found; the per-entry 'evaluated'
+  # marker keeps a re-run from reprocessing what synthesis already considered.
   - id: pending
     do: kb_uncited_pending
     with:
       limit: "{{ config.batch_limit | default(25) }}"
-      since_floor: "{{ floor }}"
+      since_floor: "{{ config.since_floor | default('') }}"
       reconsider: "{{ config.reconsider | default(false) }}"
-    stop_when_empty: "no uncited, unevaluated entries — KB coverage looks complete"
+
+  - stop_when: "{{ not pending.entries }}"
+    stop_message: "no uncited, unevaluated entries — KB coverage looks complete"
 
   - id: kb
     do: query_notes

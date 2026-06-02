@@ -6,6 +6,7 @@ import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../a
 import { renderWikiLinks, stripSummarySentinels } from "../util";
 import { fmtTs, expandTimeTokens } from "../time";
 import GuidedChat from "../components/GuidedChat";
+import ResearchChat from "../components/ResearchChat";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
@@ -57,6 +58,11 @@ export default function SharePage() {
   if (data.kind === "guided") {
     return <GuidedChat token={token} brainName={data.brain_name}
                        intro={data.intro} consent={data.consent} goal={data.goal} />;
+  }
+
+  // --- Research Q&A: scope-bounded question answering ----------------------
+  if (data.kind === "research") {
+    return <ResearchChat token={token} brainName={data.brain_name} intro={data.intro} />;
   }
 
   // --- Consent landing for a not-yet-accepted bind link --------------------

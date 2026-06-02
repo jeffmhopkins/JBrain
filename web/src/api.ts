@@ -109,6 +109,22 @@ export const guidedResetBind = (linkId: number) => post(`/api/shares/guided/${li
 export const guidedReopen = (sid: number) => post(`/api/shares/guided/sessions/${sid}/reopen`);
 export const guidedAcknowledge = (sid: number) => post(`/api/shares/guided/sessions/${sid}/acknowledge`);
 
+// Research links — public (recipient) Q&A.
+export const researchStart = <T = any>(token: string, name?: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/research/start`, { method: "POST", body: JSON.stringify({ name }) });
+export const researchTurn = <T = any>(token: string, message: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/research/turn`, { method: "POST", body: JSON.stringify({ message }) });
+// Research links — owner management.
+export const researchMint = <T = any>(body: any) => post<T>("/api/shares/research/mint", body);
+export const researchDetail = <T = any>(linkId: number) => get<T>(`/api/shares/research/${linkId}`);
+export const researchSetScope = (linkId: number, prefixes: string[], kinds: string[] = []) =>
+  post(`/api/shares/research/${linkId}/scope`, { prefixes, kinds });
+export const researchSetDetails = (linkId: number, body: any) => post(`/api/shares/research/${linkId}/details`, body);
+export const researchApprove = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/approve`, { ids });
+export const researchDismiss = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/dismiss`, { ids });
+export const researchRemove = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/remove`, { ids });
+export const researchActivate = (linkId: number) => post(`/api/shares/research/${linkId}/activate`);
+
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, post } from "../api";
+import ResearchLinks from "../components/ResearchLinks";
 import { useAuth } from "../App";
 import { fmtTs } from "../time";
 
@@ -36,6 +37,7 @@ export default function SharesPage() {
   const [guidedPending, setGuidedPending] = useState<GuidedPending[]>([]);
   const [guidedEnded, setGuidedEnded] = useState<GuidedEnded[]>([]);
   const [guidedHistory, setGuidedHistory] = useState<GuidedHist[]>([]);
+  const [researchLinks, setResearchLinks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [openDiff, setOpenDiff] = useState<number | null>(null);
@@ -49,6 +51,7 @@ export default function SharesPage() {
       setLinks(r.links); setProposals(r.proposals); setHistory(r.history || []);
       setGuidedLinks(r.guided_links || []); setGuidedPending(r.guided_pending || []);
       setGuidedEnded(r.guided_ended || []); setGuidedHistory(r.guided_history || []);
+      setResearchLinks(r.research_links || []);
     } catch { /* ignore */ }
     setLoading(false);
   }
@@ -346,6 +349,8 @@ export default function SharesPage() {
           </div>
         </>
       )}
+
+      <ResearchLinks links={researchLinks} reload={load} />
     </div>
   );
 }

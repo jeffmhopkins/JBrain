@@ -89,6 +89,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
 
+    // Background location (FusedLocationProviderClient) for the trail tracker.
+    implementation(libs.play.services.location)
+
     // Tile (one-tap capture from the watch face)
     implementation(libs.wear.tiles)
     implementation(libs.wear.tiles.material)

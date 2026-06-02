@@ -90,6 +90,24 @@ compiles the app and produces a ready-to-install **release APK** as a run artifa
 - Open the app (or tap the tile) → speak → it shows **Saving…** then **Saved ✓** (with a
   short haptic). If offline, **Saved offline ✓** — it'll sync next launch.
 
+## Background location trail (optional)
+
+Tap **"Track my location"** in the app to log a location trail to JBrain even when the
+app is closed. It runs a foreground service using `FusedLocationProvider` that emits a
+fix **at most hourly, or as soon as you move 100 m**, and POSTs it to `/api/locations`
+(bearer-authed). The **server** enforces the "≥100 m moved OR ≥60 min elapsed" rule, so
+duplicates are dropped. Realities to expect:
+
+- Android asks for location **twice** — first "while using", then **"Allow all the time"**
+  (background) — both are required. On Android 13+ it also asks to post notifications.
+- A persistent low-priority **"Logging your location trail"** notification is mandatory
+  for a location foreground service; it stays until you toggle tracking off.
+- "Hourly" is **best-effort** — Doze/battery optimization can stretch the interval; the
+  100 m distance trigger is honored well. A phone tracks more reliably than a watch.
+- It resumes after a reboot if it was on. The owner can read the trail at `GET /api/locations`.
+- A **PWA cannot do this** (no background geolocation on the web) — that's why it lives
+  in the native watch app.
+
 ## Project layout
 
 ```

@@ -11,6 +11,7 @@ okhttp = "4.12.0"
 tiles = "1.4.1"
 protolayout = "1.2.1"
 guava = "33.3.1-android"
+playServicesLocation = "21.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -33,6 +34,7 @@ wear-tiles-material = { group = "androidx.wear.tiles", name = "tiles-material", 
 wear-protolayout = { group = "androidx.wear.protolayout", name = "protolayout", version.ref = "protolayout" }
 wear-protolayout-material = { group = "androidx.wear.protolayout", name = "protolayout-material", version.ref = "protolayout" }
 guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
+play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

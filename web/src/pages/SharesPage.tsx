@@ -78,6 +78,16 @@ export default function SharesPage() {
   async function activateGuided(g: GuidedLink) {
     try { await guidedActivate(g.id); load(); } catch (e: any) { alert(e?.message || "Couldn't activate."); }
   }
+  async function revokeGuided(g: GuidedLink) {
+    const draft = g.spec_status !== "active";
+    const name = g.goal || leaf(g.note_title);
+    const msg = draft
+      ? `Delete this draft intake “${name}”? It was never live, so nothing is lost.`
+      : `Revoke this guided intake link “${name}”? It stops working immediately and anyone mid-conversation can't continue.`;
+    if (!confirm(msg)) return;
+    setGuidedLinks((ls) => ls.filter((x) => x.id !== g.id));
+    try { await post(`/api/shares/${g.id}/revoke`); load(); } catch { load(); }
+  }
   async function toggleGuidedOpt(g: GuidedLink, key: "bind" | "single_use") {
     const next = { bind: !!g.bind, single_use: !!g.single_use, [key]: !g[key] };
     setGuidedLinks((ls) => ls.map((x) => x.id === g.id ? { ...x, bind: next.bind ? 1 : 0, single_use: next.single_use ? 1 : 0 } : x));
@@ -272,13 +282,13 @@ export default function SharesPage() {
                 <div className="row" style={{ marginTop: 6, gap: 6 }}>
                   <input readOnly value={g.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
                   <button className="ghost" onClick={() => copyText(g.url, 10000 + g.id)}>{copied === 10000 + g.id ? "Copied" : "Copy"}</button>
-                  <button className="ghost danger-hover" onClick={() => revoke({ id: g.id, scope: "view", note_title: g.note_title } as any)}>Revoke</button>
+                  <button className="ghost danger-hover" onClick={() => revokeGuided(g)}>Revoke</button>
                 </div>
               )}
               {g.spec_status !== "active" && (
                 <div className="row" style={{ marginTop: 8, gap: 8 }}>
                   <button className="primary" onClick={() => activateGuided(g)}>Activate link (approval #1)</button>
-                  <button className="ghost danger-hover" onClick={() => revoke({ id: g.id, scope: "view", note_title: g.note_title } as any)}>Delete</button>
+                  <button className="ghost danger-hover" onClick={() => revokeGuided(g)}>Delete</button>
                 </div>
               )}
             </div>

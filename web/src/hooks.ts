@@ -69,7 +69,8 @@ export function useLocationTrail(): void {
     let lastPosted: { lat: number; lon: number; t: number } | null = null;   // mirrors the server dedup
     let lastSample: { lat: number; lon: number } | null = null;              // for motion detection
 
-    const schedule = (delay: number) => { if (alive) timer = window.setTimeout(tick, delay); };
+    const clear = () => { if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; } };
+    const schedule = (delay: number) => { clear(); if (alive) timer = window.setTimeout(tick, delay); };
 
     function tick() {
       navigator.geolocation.getCurrentPosition(
@@ -99,8 +100,22 @@ export function useLocationTrail(): void {
       );
     }
 
-    tick();                                       // once on open
-    return () => { alive = false; if (timer) window.clearTimeout(timer); };
+    // A PWA's timers get suspended/throttled while backgrounded (locked screen, app
+    // switch), so without this the loop sits on a stale, late-firing timer when you
+    // return. Pause while hidden; take a FRESH fix the moment we're visible again.
+    const onVisibility = () => {
+      if (!alive) return;
+      if (document.visibilityState === "visible") tick();   // immediate refresh + reschedule
+      else clear();                                          // pause while backgrounded
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    if (document.visibilityState === "visible") tick();      // start now if foreground
+    return () => {
+      alive = false;
+      clear();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 }
 

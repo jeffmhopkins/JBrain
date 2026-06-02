@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import { guidedStart, guidedSubmit, guidedTurn } from "../api";
 import { Icon } from "./Icon";
 
-type Phase = "consent" | "asking" | "review" | "sent" | "error";
+type Phase = "consent" | "asking" | "review" | "sent" | "closed" | "error";
 interface Msg { role: "ai" | "me"; text: string; }
 
 // The recipient's view of a guided AI intake link — styled to match the brain's
@@ -59,6 +59,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
   function applyTurn(r: any) {
     setThinking(false);
     if (r.phase === "error") { setErr(r.message || "Something went wrong."); return; }
+    if (r.phase === "ended") { if (r.message) reveal(r.message); setPhase("closed"); return; }
     if (r.phase === "review") { setDoc(r.document || ""); setPhase("review"); }
     else setPhase("asking");
     if (r.message) reveal(r.message);
@@ -160,7 +161,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
             <button className="ghost" disabled={busy} onClick={() => setPhase("asking")}>Add more</button>
           </div>
         </div>
-      ) : phase === "sent" ? null : (
+      ) : phase === "sent" || phase === "closed" ? null : (
         <div className="composer-box">
           <textarea ref={taRef} rows={1} placeholder="Type your answer…" value={input}
                     onChange={(e) => setInput(e.target.value)} onKeyDown={onKey} />

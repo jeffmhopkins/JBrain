@@ -283,6 +283,8 @@ CREATE TABLE IF NOT EXISTS guided_sessions (
   transcript_json TEXT NOT NULL DEFAULT '[]',
   document_md     TEXT,                               -- the AI-synthesized document (for owner review)
   turn_count      INTEGER NOT NULL DEFAULT 0,
+  strike_count    INTEGER NOT NULL DEFAULT 0,         -- abuse de-escalation ladder (redirect/warn/end)
+  end_reason      TEXT,                               -- 'abuse:<reason>' | 'distress' when auto-ended
   review_item_id  INTEGER REFERENCES review_items(id) ON DELETE SET NULL,
   client_ip       TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),

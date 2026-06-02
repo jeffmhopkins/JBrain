@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, guidedAccept, guidedActivate, guidedOptions, guidedReject, guidedResetBind, post } from "../api";
+import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, post } from "../api";
 import { useAuth } from "../App";
 import { fmtTs } from "../time";
 
@@ -10,6 +10,7 @@ interface Proposal { id: number; note_title: string; note_slug: string; proposed
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
 interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; }
 interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
+interface GuidedEnded { id: number; name: string | null; end_reason: string; goal: string; note_title: string; note_slug: string; link_id: number; link_status: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
 const STATUS_CLR: Record<string, string> = { accepted: "#4ade80", rejected: "var(--danger)", superseded: "var(--text-dim)" };
@@ -29,6 +30,7 @@ export default function SharesPage() {
   const [history, setHistory] = useState<HistItem[]>([]);
   const [guidedLinks, setGuidedLinks] = useState<GuidedLink[]>([]);
   const [guidedPending, setGuidedPending] = useState<GuidedPending[]>([]);
+  const [guidedEnded, setGuidedEnded] = useState<GuidedEnded[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [openDiff, setOpenDiff] = useState<number | null>(null);
@@ -41,6 +43,7 @@ export default function SharesPage() {
       const r = await get<any>("/api/shares");
       setLinks(r.links); setProposals(r.proposals); setHistory(r.history || []);
       setGuidedLinks(r.guided_links || []); setGuidedPending(r.guided_pending || []);
+      setGuidedEnded(r.guided_ended || []);
     } catch { /* ignore */ }
     setLoading(false);
   }
@@ -91,6 +94,18 @@ export default function SharesPage() {
     setGuidedPending((g) => g.filter((x) => x.id !== gp.id));
     try { await guidedReject(gp.id); load(); } catch { load(); }
   }
+  async function reopenEnded(ge: GuidedEnded) {
+    if (!confirm("Re-open this link so it works again? Use this if the chat was ended by mistake.")) return;
+    setGuidedEnded((g) => g.filter((x) => x.id !== ge.id));
+    try { await guidedReopen(ge.id); load(); } catch { load(); }
+  }
+  async function ackEnded(ge: GuidedEnded) {
+    setGuidedEnded((g) => g.filter((x) => x.id !== ge.id));
+    try { await guidedAcknowledge(ge.id); load(); } catch { load(); }
+  }
+  const reasonLabel = (r: string) =>
+    r === "distress" ? "may need support"
+      : "ended for " + (r.split(":")[1] || "abuse").replace("jailbreak", "bypass attempts").replace("offtopic", "going off-topic");
 
   return (
     <div className="content">
@@ -169,6 +184,53 @@ export default function SharesPage() {
               </div>
             </div>
           ))}
+        </>
+      )}
+
+      {guidedEnded.length > 0 && (
+        <>
+          <div className="adv-section" style={{ marginTop: 0 }}>Auto-ended chats</div>
+          {guidedEnded.map((ge) => {
+            const distress = ge.end_reason === "distress";
+            return (
+              <div className="card" key={"ge" + ge.id}>
+                <div className="row">
+                  <strong>{ge.goal || leaf(ge.note_title)}</strong>
+                  <span className={"badge " + (distress ? "" : "tag-delete")}>{ge.name ? `${ge.name} · ` : ""}{reasonLabel(ge.end_reason)}</span>
+                  <span className="spacer" />
+                  {ge.completed_at && <span className="muted" style={{ fontSize: 12 }}>{fmtTs(ge.completed_at, appTz)}</span>}
+                </div>
+                <div className="muted" style={{ fontSize: 13, margin: "4px 0" }}>
+                  {distress
+                    ? "Closed gently — they may have shared something difficult. Consider reaching out. The link was NOT locked."
+                    : "The chat was ended automatically and the link was locked. Review it, then re-open the link if this was a mistake."}
+                </div>
+                {ge.transcript.length > 0 && (
+                  <>
+                    <button className="ghost" style={{ fontSize: 12 }} onClick={() => setOpenConvo(openConvo === -ge.id ? null : -ge.id)}>
+                      {openConvo === -ge.id ? "Hide" : "View"} conversation ({ge.transcript.length})
+                    </button>
+                    {openConvo === -ge.id && (
+                      <div className="guided-convo">
+                        <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Your eyes only — removed when you dismiss or re-open.</div>
+                        {ge.transcript.map((t, i) => (
+                          <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
+                            <span className="convo-who">{t.role === "assistant" ? "AI" : (ge.name || "Them")}</span>{t.content}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                <div className="row" style={{ marginTop: 8, gap: 8 }}>
+                  {!distress && ge.link_status === "revoked" && (
+                    <button className="primary" onClick={() => reopenEnded(ge)}>Re-open link</button>
+                  )}
+                  <button className="ghost" onClick={() => ackEnded(ge)}>Dismiss</button>
+                </div>
+              </div>
+            );
+          })}
         </>
       )}
 

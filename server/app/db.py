@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 def init_db() -> None:
@@ -242,6 +242,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # Per-link options: lock to the first device, and run once to completion.
         _add_column(conn, "guided_specs", "bind", "INTEGER NOT NULL DEFAULT 0")
         _add_column(conn, "guided_specs", "single_use", "INTEGER NOT NULL DEFAULT 0")
+
+    if current < 20:
+        # Abuse/distress safeguard: a per-session strike counter and the terminal
+        # reason (status stays 'abandoned'; end_reason distinguishes 'abuse:*'/'distress').
+        _add_column(conn, "guided_sessions", "strike_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "guided_sessions", "end_reason", "TEXT")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

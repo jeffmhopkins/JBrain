@@ -100,6 +100,12 @@ def revoke_link(conn, link_id: int) -> None:
     _clear_pending(conn, link_id)
 
 
+def reactivate_link(conn, link_id: int) -> None:
+    """Un-revoke a link (e.g. recover from a false-positive abuse lock on a guided link)."""
+    conn.execute("UPDATE share_links SET status='active', revoked_at=NULL "
+                 "WHERE id=? AND status='revoked'", (link_id,))
+
+
 def _clear_pending(conn, link_id: int) -> None:
     """Supersede any pending proposal for a link and dismiss its alert."""
     conn.execute(

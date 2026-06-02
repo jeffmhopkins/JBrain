@@ -81,6 +81,15 @@ def list_shares():
         "JOIN review_items ri ON ri.id=s.review_item_id "
         "WHERE s.status='submitted' AND ri.status='pending' ORDER BY s.completed_at DESC"
     ).fetchall()
+    # Sessions auto-ended for abuse or distress, awaiting the owner's acknowledgement.
+    guided_ended = conn.execute(
+        "SELECT s.id, s.name, s.end_reason, s.transcript_json, s.completed_at, gs.goal, "
+        "       sl.id AS link_id, sl.status AS link_status, n.title AS note_title, n.slug AS note_slug "
+        "FROM guided_sessions s JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
+        "JOIN share_links sl ON sl.id=s.share_link_id JOIN notes n ON n.id=sl.note_id "
+        "JOIN review_items ri ON ri.id=s.review_item_id "
+        "WHERE s.end_reason IS NOT NULL AND ri.status='pending' ORDER BY s.completed_at DESC"
+    ).fetchall()
     def _gp(r):
         d = dict(r)
         # The raw chat is for OWNER REVIEW ONLY — surfaced here, never written to a
@@ -95,7 +104,39 @@ def list_shares():
         "history": [dict(r) for r in history],
         "guided_links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in guided_links],
         "guided_pending": [_gp(r) for r in guided_pending],
+        "guided_ended": [_gp(r) for r in guided_ended],
     }
+
+
+@router.post("/guided/sessions/{sid}/reopen")
+def guided_reopen(sid: int):
+    """Recover from an abuse lock: un-revoke the link and clear the ended session."""
+    conn = get_conn()
+    s = conn.execute("SELECT share_link_id, review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    share_svc.reactivate_link(conn, s["share_link_id"])
+    if s["review_item_id"]:
+        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                     (s["review_item_id"],))
+    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/guided/sessions/{sid}/acknowledge")
+def guided_acknowledge(sid: int):
+    """Dismiss an auto-ended (abuse/distress) session without re-opening the link."""
+    conn = get_conn()
+    s = conn.execute("SELECT review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if s["review_item_id"]:
+        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                     (s["review_item_id"],))
+    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    conn.commit()
+    return {"ok": True}
 
 
 class GuidedOptionsIn(BaseModel):

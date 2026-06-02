@@ -122,29 +122,6 @@ function ReviewBell() {
   );
 }
 
-function UpdateBanner() {
-  const [info, setInfo] = useState<any>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
-  async function doUpdate() {
-    setMsg("Requesting update…");
-    const r = await post("/api/system/update");
-    setMsg(r.message || (r.started ? "Updating…" : "Update requested."));
-  }
-  if (!info?.update_available) return null;
-  return (
-    <div className="update-banner">
-      {msg ? <span>{msg}</span> : (
-        <>
-          <span>Update available: {info.current} → {info.latest}</span>
-          {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
-          <button className="primary" style={{ padding: "4px 12px" }} onClick={doUpdate}>Update</button>
-        </>
-      )}
-    </div>
-  );
-}
-
 // Titles shown in the top bar when a tool is open full-screen (the tool itself
 // no longer renders a big heading — the title lives here instead).
 const TOOL_TITLES: Record<string, string> = {
@@ -239,9 +216,8 @@ export default function Shell({ children }: { children: ReactNode }) {
         )}
       </div>
 
-      <UpdateBanner />
       {versionMismatch && (
-        <div className="version-banner">App v{pwaVersion} vs server v{serverVersion} — versions differ; update so they match.</div>
+        <div className="version-banner">App v{pwaVersion} vs server v{serverVersion} — versions differ; update from System.</div>
       )}
       {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
 

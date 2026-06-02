@@ -24,9 +24,10 @@ import kotlinx.coroutines.launch
 /**
  * Foreground service that streams location to JBrain in the background — it keeps
  * running when the app is closed (the only way a watch/phone can do this; a PWA
- * cannot). FusedLocationProvider emits a fix at most hourly OR as soon as we move
- * 100 m; the SERVER then applies the same rule authoritatively, so this just sends
- * whatever the OS hands us. A persistent low-priority notification is mandatory for
+ * cannot). FusedLocationProvider emits a fix once we move 100 m (as fast as every
+ * 15 s while moving, else ~hourly when still); the SERVER then applies the same rule
+ * authoritatively, so this just sends whatever the OS hands us. A persistent
+ * low-priority notification is mandatory for
  * a location foreground service on modern Android.
  */
 class LocationService : Service() {
@@ -58,8 +59,8 @@ class LocationService : Service() {
 
     private fun requestUpdates() {
         val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 60 * 60 * 1000L)
-            .setMinUpdateIntervalMillis(5 * 60 * 1000L)   // never faster than every 5 min
-            .setMinUpdateDistanceMeters(100f)             // …but do emit once we've moved 100 m
+            .setMinUpdateIntervalMillis(15 * 1000L)       // as fast as every 15 s while moving…
+            .setMinUpdateDistanceMeters(100f)             // …but only emit once we've moved 100 m
             .build()
         try {
             fused.requestLocationUpdates(req, callback, Looper.getMainLooper())

@@ -56,36 +56,51 @@ function _haversineM(aLat: number, aLon: number, bLat: number, bLon: number): nu
 }
 
 /** Foreground location trail: while the app is open AND location is enabled, post a
- * fix to /api/locations when >=100 m moved OR >=60 min elapsed. Mounted ONCE (in
- * Shell). A PWA can only do this while open; background tracking is the watch app. */
+ * fix to /api/locations on the 100 m / 60 min rule. Polls ADAPTIVELY — every 15 s
+ * while you're moving (covering ground), backing off to every 5 min when idle — so
+ * a trip is captured densely without draining battery sitting still. Mounted ONCE
+ * (in Shell). A PWA can only do this while open; background is the watch app. */
 export function useLocationTrail(): void {
   useEffect(() => {
     if (localStorage.getItem("jbrain_geo") !== "1" || !("geolocation" in navigator)) return;
+    const FAST = 15 * 1000, IDLE = 5 * 60 * 1000, GRACE = 2 * 60 * 1000;
     let alive = true;
-    let last: { lat: number; lon: number; t: number } | null = null;
+    let timer: number | undefined;
+    let lastPosted: { lat: number; lon: number; t: number } | null = null;   // mirrors the server dedup
+    let lastSample: { lat: number; lon: number } | null = null;              // for motion detection
 
-    async function tick() {
+    const schedule = (delay: number) => { if (alive) timer = window.setTimeout(tick, delay); };
+
+    function tick() {
       navigator.geolocation.getCurrentPosition(
         (p) => {
           if (!alive) return;
           const lat = +p.coords.latitude.toFixed(6);
           const lon = +p.coords.longitude.toFixed(6);
           const now = Date.now();
-          if (last && _haversineM(last.lat, last.lon, lat, lon) < 100 && (now - last.t) / 60000 < 60) return;
-          import("./api").then(({ postLocation }) =>
-            postLocation(lat, lon, p.coords.accuracy)
-              .then(() => { if (alive) last = { lat, lon, t: now }; })   // only advance on success → failed posts retry
-              .catch(() => {}),
-          );
+          // "Moving" = jumped >=100 m since the last sample, OR we stored a point very
+          // recently (still on a journey, crossing 100 m markers). Either → poll fast.
+          const moving =
+            (!!lastSample && _haversineM(lastSample.lat, lastSample.lon, lat, lon) >= 100) ||
+            (!!lastPosted && now - lastPosted.t < GRACE);
+          lastSample = { lat, lon };
+          // Post on the same 100 m / 60 min rule the server enforces.
+          if (!lastPosted || _haversineM(lastPosted.lat, lastPosted.lon, lat, lon) >= 100 || (now - lastPosted.t) / 60000 >= 60) {
+            import("./api").then(({ postLocation }) =>
+              postLocation(lat, lon, p.coords.accuracy)
+                .then(() => { if (alive) lastPosted = { lat, lon, t: now }; })   // only advance on success → failed posts retry
+                .catch(() => {}),
+            );
+          }
+          schedule(moving ? FAST : IDLE);
         },
-        () => {},
-        { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 },
+        () => schedule(IDLE),   // on error, back off
+        { enableHighAccuracy: false, maximumAge: 15000, timeout: 15000 },
       );
     }
 
     tick();                                       // once on open
-    const id = window.setInterval(tick, 5 * 60 * 1000);   // re-check every 5 min while open
-    return () => { alive = false; window.clearInterval(id); };
+    return () => { alive = false; if (timer) window.clearTimeout(timer); };
   }, []);
 }
 

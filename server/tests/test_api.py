@@ -2287,3 +2287,26 @@ def test_guided_links_separate_from_active_links_and_show_in_history(client, mon
     client.post(f"/api/shares/guided/sessions/{sid}/acknowledge")
     hist = client.get("/api/shares").json()["guided_history"]
     assert len(hist) == 1 and hist[0]["disposition"] == "ended" and hist[0]["name"] == "Dad"
+
+
+def test_restore_rebuilds_links_no_graph_orphan(client):
+    # Deleting a note nulls inbound links + drops outgoing; restoring must rebuild
+    # both so the note isn't a graph orphan (the kb-deleted-to-kb case).
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    from app.routers.graph import graph as graph_route
+    conn = get_conn()
+    k2 = notes_svc.upsert_note(conn, "kb/K2", "# K2 cites [[kb/K1]]", source="user", fire_events=False)
+    k1 = notes_svc.upsert_note(conn, "kb/K1", "# K1 cites [[kb/K2]]", source="user", fire_events=False)
+    conn.commit()
+    notes_svc.soft_delete(conn, k2); conn.commit()
+    # inbound K1->K2 is nulled, outgoing K2->K1 is gone
+    assert conn.execute("SELECT target_note_id FROM links WHERE source_note_id=?", (k1,)).fetchone()["target_note_id"] is None
+    assert conn.execute("SELECT COUNT(*) c FROM links WHERE source_note_id=?", (k2,)).fetchone()["c"] == 0
+    notes_svc.restore(conn, k2); conn.commit()
+    # both directions rebuilt
+    assert conn.execute("SELECT target_note_id FROM links WHERE source_note_id=?", (k1,)).fetchone()["target_note_id"] == k2
+    assert conn.execute("SELECT target_note_id FROM links WHERE source_note_id=?", (k2,)).fetchone()["target_note_id"] == k1
+    # and the graph shows the edges (no orphan)
+    edges = graph_route()["links"]
+    assert {"source": k1, "target": k2} in edges and {"source": k2, "target": k1} in edges

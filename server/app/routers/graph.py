@@ -13,13 +13,19 @@ def graph():
     nodes = conn.execute(
         """
         SELECT n.id, n.title, n.slug, n.kind,
-               (SELECT COUNT(*) FROM links l WHERE l.target_note_id = n.id) AS in_degree
+               (SELECT COUNT(*) FROM links l JOIN notes s ON s.id = l.source_note_id
+                WHERE l.target_note_id = n.id AND s.deleted_at IS NULL) AS in_degree
         FROM notes n WHERE n.deleted_at IS NULL
         """
     ).fetchall()
+    # Only edges between two LIVE notes — never a dangling edge to a deleted note
+    # (which would otherwise materialize a phantom node in the force graph).
     edges = conn.execute(
-        "SELECT DISTINCT source_note_id AS source, target_note_id AS target "
-        "FROM links WHERE target_note_id IS NOT NULL"
+        "SELECT DISTINCT l.source_note_id AS source, l.target_note_id AS target "
+        "FROM links l "
+        "JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL "
+        "JOIN notes t ON t.id = l.target_note_id AND t.deleted_at IS NULL "
+        "WHERE l.source_note_id != l.target_note_id"
     ).fetchall()
     return {
         "nodes": [

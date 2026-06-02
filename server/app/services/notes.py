@@ -325,6 +325,25 @@ def soft_delete(conn, note_id: int) -> None:
     conn.execute("DELETE FROM attachments_fts WHERE note_id = ?", (note_id,))
 
 
+def restore(conn, note_id: int) -> None:
+    """Resurrect a soft-deleted note AND rebuild everything soft_delete tore down:
+    the keyword index, its OUTGOING links (from its content's [[wiki-links]]), the
+    INBOUND links other notes had to it (nulled on delete), and its embedding.
+    Without this a restored/undeleted note comes back as a graph orphan and is
+    missing from search."""
+    row = conn.execute("SELECT title, content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row is None:
+        return
+    conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (note_id,))
+    _sync_fts(conn, note_id, row["title"], row["content_md"])
+    wikilinks.reconcile_links(conn, note_id, row["content_md"])      # outgoing
+    wikilinks.resolve_dangling_links(conn, note_id, row["title"])    # inbound (others that cited it)
+    try:
+        embeddings.upsert_note_embedding(conn, note_id, row["title"], row["content_md"])
+    except Exception:
+        pass
+
+
 def backlinks(conn, note_id: int) -> list[dict]:
     rows = conn.execute(
         """

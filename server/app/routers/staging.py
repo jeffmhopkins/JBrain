@@ -261,10 +261,7 @@ def undo_action(action_id: int):
             if note:
                 conn.execute("UPDATE share_links SET status='active', revoked_at=NULL WHERE note_id=?", (note["id"],))
     elif op == "restore_note":
-        conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (undo["note_id"],))
-        r = conn.execute("SELECT title, content_md FROM notes WHERE id = ?", (undo["note_id"],)).fetchone()
-        if r:
-            notes_svc._sync_fts(conn, undo["note_id"], r["title"], r["content_md"])  # re-index keyword search
+        notes_svc.restore(conn, undo["note_id"])   # un-delete + rebuild links/index/embedding
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

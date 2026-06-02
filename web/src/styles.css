@@ -289,6 +289,12 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .applied-chip .ghost { margin-left: auto; }
 .list-item { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--bg-elev); }
 .list-item:hover { border-color: var(--accent); text-decoration: none; }
+/* Semantic-search relevance weight badge (shown only in semantic mode). */
+.search-weight {
+  flex-shrink: 0; margin-left: auto; font-size: 11px; font-weight: 600;
+  color: var(--accent); background: var(--accent-soft);
+  border-radius: 999px; padding: 1px 8px;
+}
 
 /* ---- Wiki tree ---------------------------------------------------------- */
 .tree-row { display: flex; align-items: center; gap: 4px; padding: 5px 6px; border-radius: 6px; }

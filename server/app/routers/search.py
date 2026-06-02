@@ -61,12 +61,14 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
         for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
             bump(f"note:{r['id']}", {
                 "kind": "note", "id": r["id"], "title": r["title"], "slug": r["slug"],
+                "distance": r["distance"],
             }, i)
         for i, r in enumerate(embeddings.semantic_search_attachments(conn, q, limit)):
             bump(f"att:{r['attachment_id']}", {
                 "kind": "attachment", "attachment_id": r["attachment_id"],
                 "note_id": r["note_id"], "filename": r["filename"],
                 "title": r["title"], "slug": r["slug"], "snippet": r["snippet"],
+                "distance": r["distance"],
             }, i)
 
     ranked = sorted(results.values(), key=lambda x: x["score"], reverse=True)

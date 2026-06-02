@@ -1088,6 +1088,43 @@ def test_fixes_chronological(client):
         "2026-06-01 09:00:00", "2026-06-01 10:00:00", "2026-06-01 11:00:00"]
 
 
+def test_tool_bounds_use_app_tz(client):
+    """A NAIVE time bound from the agent is read as the owner's local (app_tz) time,
+    so the model doesn't have to do UTC math. Fix at 16:00 UTC == 12:00 EDT."""
+    from app.db import get_conn, set_meta
+    from app.services import architect, clock
+    conn = get_conn()
+    set_meta(conn, "app_tz", "America/New_York")
+    assert clock.app_tz_name() == "America/New_York"
+    conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (40,-74,'2026-06-01 16:00:00','t')")
+    conn.commit()
+    # 12:00 local EDT → 16:00 UTC → exact match (no "approximate" hedge).
+    msg, _ = architect._run_tool(conn, None, "where_was_i", {"when": "2026-06-01T12:00:00"})
+    assert "16:00:00" in msg and "approximate" not in msg
+
+
+def test_fixes_tolerates_swapped_bounds(client):
+    from app.db import get_conn
+    from app.services import geotrail
+    conn = get_conn()
+    conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (40,-74,'2026-06-01 12:00:00','t')")
+    conn.commit()
+    assert len(geotrail.fixes(conn, since="2026-06-02T00:00:00Z", until="2026-06-01T00:00:00Z")) == 1
+
+
+def test_unlabeled_stays_numbered(client):
+    """Distinct unlabeled stays are numbered so they're distinguishable (no coords)."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    for ts, lat in [("2026-06-01 12:00:00", 40.0), ("2026-06-01 12:20:00", 40.0), ("2026-06-01 12:40:00", 40.0),
+                    ("2026-06-01 18:00:00", 41.0), ("2026-06-01 18:20:00", 41.0), ("2026-06-01 18:40:00", 41.0)]:
+        conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (?,-74,?,'t')", (lat, ts))
+    conn.commit()
+    msg, _ = architect._run_tool(conn, None, "places_visited", {"min_minutes": 20})
+    assert "an unlabeled spot (#1)" in msg and "an unlabeled spot (#2)" in msg
+
+
 def test_where_was_i_far_gap_refuses(client):
     """where_was_i won't label a fix that's hours from the asked time."""
     from app.db import get_conn

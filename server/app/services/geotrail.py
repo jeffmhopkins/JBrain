@@ -38,6 +38,8 @@ def fixes(conn, since: str | None = None, until: str | None = None) -> list[dict
     sql = "SELECT lat, lon, accuracy_m, recorded_at FROM locations WHERE 1=1"
     params: list = []
     s, u = _utc(since), _utc(until)
+    if s and u and s > u:
+        s, u = u, s        # tolerate swapped bounds rather than returning nothing
     if s:
         sql += " AND recorded_at >= ?"; params.append(s)
     if u:
@@ -85,11 +87,12 @@ def nearest_fix(conn, when: str) -> tuple[dict | None, float]:
     return dict(row), _mins(row["recorded_at"], target)
 
 
-def dwell_minutes(conn, lat: float, lon: float, radius_m: float, since=None, until=None) -> float:
+def dwell_minutes(conn, lat: float, lon: float, radius_m: float, since=None, until=None, pts=None) -> float:
     """Minutes spent within radius_m of (lat,lon). Each inter-fix gap is split half to
     each endpoint and capped, so a sparse single-fix visit is counted from the
-    surrounding gaps rather than 0-or-everything."""
-    pts = fixes(conn, since, until)
+    surrounding gaps rather than 0-or-everything. (A lone fix with no neighbour in the
+    window carries no duration → 0, which is correct: one instant says nothing.)"""
+    pts = pts if pts is not None else fixes(conn, since, until)
     inside = [geo.haversine_km(lat, lon, p["lat"], p["lon"]) * 1000.0 <= radius_m for p in pts]
     total = 0.0
     for i in range(len(pts) - 1):
@@ -101,8 +104,8 @@ def dwell_minutes(conn, lat: float, lon: float, radius_m: float, since=None, unt
     return round(total, 1)
 
 
-def distance_km(conn, since=None, until=None) -> float:
-    pts = fixes(conn, since, until)
+def distance_km(conn, since=None, until=None, pts=None) -> float:
+    pts = pts if pts is not None else fixes(conn, since, until)
     total = 0.0
     for i in range(len(pts) - 1):
         seg_m = geo.haversine_km(pts[i]["lat"], pts[i]["lon"], pts[i + 1]["lat"], pts[i + 1]["lon"]) * 1000.0
@@ -143,10 +146,10 @@ def update_location_state(conn, lat: float, lon: float, fix_time: str) -> None:
             )
 
 
-def stay_points(conn, since=None, until=None, radius_m: float = 150.0, min_min: float = 20.0) -> list[dict]:
+def stay_points(conn, since=None, until=None, radius_m: float = 150.0, min_min: float = 20.0, pts=None) -> list[dict]:
     """Greedy clusters of consecutive fixes within radius held for >= min_min. Each is
     labeled via label_point (place/note/None)."""
-    pts = fixes(conn, since, until)
+    pts = pts if pts is not None else fixes(conn, since, until)
     out: list[dict] = []
     i = 0
     while i < len(pts):

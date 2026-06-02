@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import secrets
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from ..config import get_settings
@@ -67,29 +68,29 @@ _TOOL_SCHEMAS = {
         "radius_km": {"type": "number", "default": 25},
         "limit": {"type": "integer", "default": 10}}},
     "where_was_i": {"type": "object", "properties": {
-        "when": {"type": "string", "description": "The moment to look up, as a UTC ISO timestamp you compute from the owner's local-time phrasing."}},
+        "when": {"type": "string", "description": "The moment to look up, in the owner's local time (an explicit offset/Z is honored)."}},
         "required": ["when"]},
     "time_at_place": {"type": "object", "properties": {
         "place": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'."},
         "radius_m": {"type": "integer", "default": 150, "description": "Match radius (ignored for saved places, which carry their own)."},
-        "since": {"type": "string", "description": "UTC ISO lower bound (optional)."},
-        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."}},
+        "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}},
         "required": ["place"]},
     "places_visited": {"type": "object", "properties": {
-        "since": {"type": "string", "description": "UTC ISO lower bound (optional)."},
-        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."},
+        "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
         "min_minutes": {"type": "integer", "default": 20, "description": "Ignore stays shorter than this."}}},
     "distance_traveled": {"type": "object", "properties": {
-        "since": {"type": "string", "description": "UTC ISO lower bound (optional)."},
-        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."}}},
+        "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}}},
     "trail_summary": {"type": "object", "properties": {
-        "since": {"type": "string", "description": "UTC ISO lower bound (optional)."},
-        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."}}},
+        "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}}},
     "entries_at_place": {"type": "object", "properties": {
         "place": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'."},
         "radius_m": {"type": "integer", "default": 150, "description": "Match radius (ignored for saved places, which carry their own)."},
-        "since": {"type": "string", "description": "UTC ISO lower bound on when the note was captured (optional)."},
-        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."},
+        "since": {"type": "string", "description": "Lower bound on when the note was captured — owner's local time (offset/Z honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
         "kind": {"type": "string", "enum": ["entry", "kb"], "description": "Optional: restrict to raw entries or synthesized KB."}},
         "required": ["place"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
@@ -398,8 +399,23 @@ def _resolve_place(conn, ref: str, radius_m: float = 150.0):
 _WHERE_WAS_I_MAX_GAP_MIN = 360.0   # > 6 h from the asked time = no real fix; don't pretend
 
 
+def _utc_bound(ts):
+    """Normalise an agent-supplied time bound to UTC for geotrail. A NAIVE value is
+    read as the owner's LOCAL (app_tz) time — so the model can pass "2pm last Tuesday"
+    without doing timezone math — while an explicit offset/Z is always honored."""
+    if not ts:
+        return ts
+    try:
+        d = datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ts   # let geotrail._utc best-effort an odd string
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=clock.app_tz())
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _tool_where_was_i(conn, when: str) -> str:
-    fix, gap = geotrail.nearest_fix(conn, when)
+    fix, gap = geotrail.nearest_fix(conn, _utc_bound(when))
     if not fix:
         return "No location fixes have been recorded yet."
     if gap > _WHERE_WAS_I_MAX_GAP_MIN:
@@ -417,7 +433,7 @@ def _tool_time_at_place(conn, place: str, radius_m=150, since=None, until=None) 
     if isinstance(pt, str):
         return pt
     lat, lon, r, label = pt
-    mins = geotrail.dwell_minutes(conn, lat, lon, r, since, until)
+    mins = geotrail.dwell_minutes(conn, lat, lon, r, _utc_bound(since), _utc_bound(until))
     if mins <= 0:
         return _untrusted("location", f"No recorded time within {r:.0f} m of {label} in that window.")
     return _untrusted("location", f"~{mins:.0f} min ({mins / 60.0:.1f} h) within {r:.0f} m of {label}.")
@@ -428,33 +444,42 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20) -> str:
         mm = float(min_minutes or 20)
     except (TypeError, ValueError):
         mm = 20.0
-    stays = geotrail.stay_points(conn, since, until, min_min=mm)
+    stays = geotrail.stay_points(conn, _utc_bound(since), _utc_bound(until), min_min=mm)
     if not stays:
         return "No stays found in that window."
-    lines = []
+    lines, unlabeled = [], 0
     for s in stays:
-        where = s["label"] or "an unlabeled spot"   # never leak raw coords through a tool
+        if s["label"]:
+            where = s["label"]
+        else:                                   # number unknown spots so they're distinguishable (still no coords)
+            unlabeled += 1
+            where = f"an unlabeled spot (#{unlabeled})"
         lines.append(f"- {where}: {s['minutes']:.0f} min ({s['arrived']} → {s['left']} UTC)")
     return _untrusted("stays", "\n".join(lines))
 
 
 def _tool_distance_traveled(conn, since=None, until=None) -> str:
-    km = geotrail.distance_km(conn, since, until)
+    km = geotrail.distance_km(conn, _utc_bound(since), _utc_bound(until))
     return _untrusted("location", f"~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) of travel in that window.")
 
 
 def _tool_trail_summary(conn, since=None, until=None) -> str:
-    pts = geotrail.fixes(conn, since, until)
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until))   # load once, reuse for both
     if not pts:
         return "No location data in that window."
-    km = geotrail.distance_km(conn, since, until)
-    stays = geotrail.stay_points(conn, since, until)
+    km = geotrail.distance_km(conn, pts=pts)
+    stays = geotrail.stay_points(conn, pts=pts)
     lines = [f"{len(pts)} fixes, ~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) traveled.",
              f"From {pts[0]['recorded_at']} to {pts[-1]['recorded_at']} UTC."]
     if stays:
         lines.append("Notable stays:")
+        unlabeled = 0
         for s in stays:
-            where = s["label"] or "an unlabeled spot"   # never leak raw coords through a tool
+            if s["label"]:
+                where = s["label"]
+            else:
+                unlabeled += 1
+                where = f"an unlabeled spot (#{unlabeled})"
             lines.append(f"- {where}: {s['minutes']:.0f} min")
     return _untrusted("trail", "\n".join(lines))
 
@@ -472,7 +497,7 @@ def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=Non
     params: list = []
     if kind in ("entry", "kb"):
         sql += " AND kind = ?"; params.append(kind)
-    s, u = geotrail._utc(since), geotrail._utc(until)
+    s, u = geotrail._utc(_utc_bound(since)), geotrail._utc(_utc_bound(until))
     if s:
         sql += " AND created_at >= ?"; params.append(s)
     if u:

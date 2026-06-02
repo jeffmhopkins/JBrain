@@ -726,6 +726,15 @@ def _p_stage_moves(ctx, moves):
     return {"staged": staged}
 
 
+def _p_notify(ctx, title, body="", url="/"):
+    """Fire a Web Push to every subscribed device (custom title/body/deep-link).
+    Fire-and-forget on its own connection, so it never blocks or fails the pipeline
+    transaction. Lets a trigger's action actually reach the owner (e.g. location)."""
+    from . import push
+    push.notify(str(title)[:120], str(body or "")[:400], str(url or "/"))
+    return {"queued": True}
+
+
 def _p_research_nudges(ctx):
     """Post review-inbox nudges for active research links that have new candidate
     notes the owner hasn't reviewed yet (the approve-to-add tray)."""
@@ -764,6 +773,7 @@ _PRIMITIVES = {
     "plan_moves": _p_plan_moves,
     "stage_moves": _p_stage_moves,
     "research_nudges": _p_research_nudges,
+    "notify": _p_notify,
 }
 
 
@@ -800,6 +810,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                     "inputs": [{"name": "moves", "type": "list", "required": True}], "output": "object"},
     "research_nudges": {"summary": "Nudge the owner about new candidate notes for active research links.",
                         "inputs": [], "output": "object"},
+    "notify": {"summary": "Send a Web Push to all devices (custom title/body/deep-link).",
+               "inputs": [{"name": "title", "type": "str", "required": True}, {"name": "body", "type": "str"},
+                          {"name": "url", "type": "str"}], "output": "object"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

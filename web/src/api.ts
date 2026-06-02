@@ -281,6 +281,13 @@ export interface ChatEvent {
 
 // Stream the architect's reply over SSE (POST + ReadableStream, so we can send
 // a body and rely on the session cookie).
+// Named geofences ("places") — drive the location tools + triggers.
+export interface Place { id: number; name: string; lat: number; lon: number; radius_m: number; note_slug: string | null; }
+export const getPlaces = () => get<Place[]>("/api/places");
+export const addPlace = (p: { name: string; lat: number; lon: number; radius_m?: number }) =>
+  post<{ id: number; name: string }>("/api/places", p);
+export const deletePlace = (id: number) => del(`/api/places/${id}`);
+
 export interface LocPoint { id: number; lat: number; lon: number; accuracy_m: number | null; recorded_at: string; }
 export const getLocations = (since?: string, until?: string) => {
   const p = new URLSearchParams();

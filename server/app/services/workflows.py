@@ -16,7 +16,7 @@ import json
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -483,4 +483,112 @@ def run_due_scheduled(conn) -> int:
         if schedule_due(wf["last_run_at"], json.loads(wf["trigger_config"] or "{}")):
             run_workflow(conn, wf)
             ran += 1
+    return ran
+
+
+# --- Location triggers ------------------------------------------------------
+# Evaluated by the SCHEDULER (not at ingest): ingest only refreshes location_state
+# (geotrail.update_location_state). Here we read that state and decide which
+# location:* event workflows should fire, dedup via location_fired, and run each
+# matched workflow DIRECTLY (run_workflow) — never fire_event, which would broadcast
+# to every workflow sharing the event name regardless of which place it watches.
+
+def _loc_place_decision(conn, kind: str, tc: dict, now: datetime):
+    """For a place-bound location trigger, return (marker, context) when it should
+    fire now, else (None, None). `marker` makes the firing idempotent per visit/
+    departure (location_fired stores the last marker per workflow+kind)."""
+    name = (tc.get("place") or "").strip()
+    if not name:
+        return None, None
+    p = conn.execute(
+        "SELECT id, name, lat, lon, radius_m FROM places WHERE name = ? COLLATE NOCASE LIMIT 1", (name,)
+    ).fetchone()
+    if not p:
+        return None, None
+    st = conn.execute(
+        "SELECT inside, since, last_inside_at FROM location_state WHERE place_id = ?", (p["id"],)
+    ).fetchone()
+    if not st:
+        return None, None
+    threshold = float(tc.get("minutes", 60) or 60)
+    ctx = {"place": p["name"], "lat": p["lat"], "lon": p["lon"], "kind": kind, "minutes": threshold}
+
+    if kind == "arrived":
+        if st["inside"] and st["since"]:
+            ctx["since"] = st["since"]
+            return st["since"], ctx
+    elif kind == "left":
+        if not st["inside"] and st["since"] and st["last_inside_at"]:
+            ctx["left_at"] = st["since"]
+            return st["since"], ctx
+    elif kind == "dwell":
+        start = _parse_utc(st["since"])
+        if st["inside"] and start:
+            elapsed = (now - start).total_seconds() / 60.0
+            if elapsed >= threshold:
+                ctx["minutes"] = round(elapsed, 1)
+                return st["since"], ctx
+    elif kind == "away":
+        last = _parse_utc(st["last_inside_at"])
+        if not st["inside"] and last:
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed >= threshold:
+                ctx["minutes"] = round(elapsed, 1)
+                return st["last_inside_at"], ctx
+    return None, None
+
+
+def _loc_new_place(conn, tc: dict, now: datetime):
+    """An unlabeled stay (not near any saved place / coord-note) held long enough,
+    in the last ~2 days. Marker = coarse coords so each distinct spot fires once."""
+    from . import geotrail
+    min_min = float(tc.get("minutes", 30) or 30)
+    since = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    unlabeled = [s for s in geotrail.stay_points(conn, since=since, min_min=min_min) if not s["label"]]
+    if not unlabeled:
+        return None, None
+    s = unlabeled[-1]   # most recent
+    ctx = {"place": "an unlabeled spot", "lat": s["lat"], "lon": s["lon"],
+           "kind": "new_place", "minutes": s["minutes"]}
+    return f"{round(s['lat'], 3)},{round(s['lon'], 3)}", ctx
+
+
+def evaluate_location_triggers(conn) -> int:
+    """Fire due location:* event workflows. Called from the scheduler loop on its
+    own connection (LLM-capable actions run here, where latency is fine)."""
+    rows = conn.execute(
+        "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'event'"
+    ).fetchall()
+    loc = []
+    for wf in rows:
+        tc = json.loads(wf["trigger_config"] or "{}")
+        ev = tc.get("event") or ""
+        if ev.startswith("location:"):
+            loc.append((wf, tc, ev.split(":", 1)[1]))
+    if not loc:
+        return 0
+    now = datetime.now(timezone.utc)
+    ran = 0
+    for wf, tc, kind in loc:
+        try:
+            marker, ctx = (_loc_new_place(conn, tc, now) if kind == "new_place"
+                           else _loc_place_decision(conn, kind, tc, now))
+        except Exception:  # noqa: BLE001 — a bad trigger config must not wedge the loop
+            marker, ctx = None, None
+        if not marker:
+            continue
+        prev = conn.execute(
+            "SELECT marker FROM location_fired WHERE workflow_id = ? AND kind = ?", (wf["id"], kind)
+        ).fetchone()
+        if prev and prev["marker"] == marker:
+            continue   # already fired for this visit/departure/spot
+        run_workflow(conn, wf, ctx, commit=False)
+        conn.execute(
+            "INSERT INTO location_fired (workflow_id, kind, marker) VALUES (?, ?, ?) "
+            "ON CONFLICT(workflow_id, kind) DO UPDATE SET marker = excluded.marker, "
+            "fired_at = datetime('now')",
+            (wf["id"], kind, marker),
+        )
+        conn.commit()
+        ran += 1
     return ran

@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 
 def init_db() -> None:
@@ -287,6 +287,23 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               source TEXT NOT NULL DEFAULT 'wear',
               created_at TEXT NOT NULL DEFAULT (datetime('now')));
             CREATE INDEX IF NOT EXISTS idx_locations_recorded ON locations(recorded_at);
+        """)
+
+    if current < 23:
+        # Places (geofences) + per-place state + per-workflow trigger dedup.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS places (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+              lat REAL NOT NULL, lon REAL NOT NULL, radius_m INTEGER NOT NULL DEFAULT 150,
+              note_slug TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE IF NOT EXISTS location_state (
+              place_id INTEGER PRIMARY KEY REFERENCES places(id) ON DELETE CASCADE,
+              inside INTEGER NOT NULL DEFAULT 0, since TEXT,
+              last_inside_at TEXT, last_fix_at TEXT);
+            CREATE TABLE IF NOT EXISTS location_fired (
+              workflow_id INTEGER NOT NULL, kind TEXT NOT NULL, marker TEXT,
+              fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (workflow_id, kind));
         """)
 
 

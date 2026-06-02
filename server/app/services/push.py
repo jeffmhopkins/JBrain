@@ -114,7 +114,18 @@ def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> Non
     threading.Thread(target=lambda: _send_all(get_conn(), title, body), daemon=True).start()
 
 
-def _send_all(conn, title: str, body: str) -> dict:
+def notify(title: str, body: str, url: str = "/") -> None:
+    """Fire-and-forget push to all devices with a custom title/body/deep-link.
+    Runs on its own connection in a daemon thread, so it's safe to call from a
+    request handler or the scheduler thread; it never raises and never touches the
+    caller's transaction. Backs the `notify` pipeline primitive (location triggers)."""
+    threading.Thread(
+        target=lambda: _send_all(get_conn(), title, body, url=url or "/", tag="jbrain-notify"),
+        daemon=True,
+    ).start()
+
+
+def _send_all(conn, title: str, body: str, url: str = "/shares", tag: str = "jbrain-reviews") -> dict:
     """Send a push to every subscription. Returns {sent, failed, errors}. Logs each
     attempt to stdout (visible in `docker compose logs api`) and prunes dead
     endpoints. Never raises."""
@@ -128,7 +139,7 @@ def _send_all(conn, title: str, body: str) -> dict:
             return {"sent": 0, "failed": 0, "errors": []}
         count = reviews_svc.pending_count(conn)
         payload = json.dumps({"title": title, "body": body, "count": count,
-                              "url": "/shares", "tag": "jbrain-reviews"})
+                              "url": url, "tag": tag})
         try:
             from pywebpush import webpush, WebPushException
         except Exception as exc:

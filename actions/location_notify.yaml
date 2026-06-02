@@ -1,0 +1,22 @@
+# Declarative action: push a notification when a location trigger fires. The
+# evaluator (workflows.evaluate_location_triggers) supplies the trigger context
+# ({place, kind, minutes, lat, lon}); this turns it into a one-line Web Push and,
+# optionally, a log line. Pair it with a location:* event workflow.
+#
+# config keys:
+#   url   — deep-link the push opens (defaults to the Map tool)
+type: location_notify
+category: Notify
+config:
+  - { key: url, label: Open on tap, type: text, help: "Path the push opens (default /map)" }
+steps:
+  - do: notify
+    with:
+      title: "{{ trigger.place | default('Location') }}"
+      body: >-
+        {%- if trigger.kind == 'arrived' -%}Arrived at {{ trigger.place }}.
+        {%- elif trigger.kind == 'left' -%}Left {{ trigger.place }}.
+        {%- elif trigger.kind == 'dwell' -%}At {{ trigger.place }} for {{ trigger.minutes | round | int }} min.
+        {%- elif trigger.kind == 'away' -%}Away from {{ trigger.place }} for {{ trigger.minutes | round | int }} min.
+        {%- else -%}New place — {{ trigger.minutes | round | int }} min stay.{%- endif -%}
+      url: "{{ config.url | default('/map') }}"

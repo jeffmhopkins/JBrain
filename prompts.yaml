@@ -18,7 +18,9 @@ modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
-            read_attachment, query_sql, current_location, geo_distance, nearby_notes, add_list_item, read_list,
+            read_attachment, query_sql, current_location, geo_distance, nearby_notes,
+            where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
+            add_list_item, read_list,
             set_item_checked, set_item_priority, add_sublist, log_entry, capture_inbox,
             mark_inbox_processed, set_tags, create_share_link, create_guided_share,
             create_research_share, list_share_links, revoke_share_link, kb_coverage_check,
@@ -88,7 +90,8 @@ modes:
   # "Research" — read-only Q&A over the brain. No write tools are exposed.
   research:
     tools: [search_notes, read_note, list_recent_notes, search_attachments,
-            read_attachment, query_sql, current_location, geo_distance, nearby_notes]
+            read_attachment, query_sql, current_location, geo_distance, nearby_notes,
+            where_was_i, time_at_place, places_visited, distance_traveled, trail_summary]
     system: |
       You are the Researcher for "{brain_name}", a personal knowledge base. Answer
       the user's questions from their own notes and entries. You are STRICTLY
@@ -118,6 +121,11 @@ tools:
   current_location: "When the user asks where they are now (or to use 'my/current location'): report the device GPS stamped on this conversation's latest message (lat/lon + label). Read-only; says so when no location has been shared."
   geo_distance: "When the user asks how far apart two places/notes are: great-circle distance (km + miles) + bearing between two points. Each point is a note title or 'lat,lon'; omit 'to' to measure from the user's current location. Read-only — never invent coordinates."
   nearby_notes: "When the user asks what notes are near a place ('what did I note near here / near [[X]]'): notes with coordinates within radius_km, nearest first. Omit center to use the current location. Read-only."
+  where_was_i: "When the user asks where they WERE at a past moment ('where was I last Tuesday afternoon'): the nearest recorded location fix to that instant, labelled by saved place / coord-note when known. Compute `when` as a UTC timestamp from their local-time phrasing. Read-only."
+  time_at_place: "When the user asks how long they spent somewhere ('how much time at the gym this week'): minutes within range of a place over an optional UTC window. `place` is a saved place name, note title, or 'lat,lon'. Read-only."
+  places_visited: "When the user asks where they went ('where did I go yesterday', 'what places this week'): the labelled stays (≥ min_minutes) over an optional UTC window, with arrival/departure. Read-only."
+  distance_traveled: "When the user asks how far they travelled ('how far did I go today'): total trail distance (km + miles, GPS-jitter filtered) over an optional UTC window. Read-only."
+  trail_summary: "When the user wants an overview of their movements for a period ('summarise my day/week'): fix count, distance, time span, and notable stays over an optional UTC window. Read-only."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
   read_inbox: "When folding captures into the wiki: read unprocessed quick-capture inbox items (e.g. dictations)."
   add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Optional priority (1=highest). Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."

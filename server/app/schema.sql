@@ -359,3 +359,33 @@ CREATE TABLE IF NOT EXISTS locations (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))     -- when the server received it
 );
 CREATE INDEX IF NOT EXISTS idx_locations_recorded ON locations(recorded_at);
+
+-- Named geofences for location tools + triggers (notes have lat/lon but no radius).
+CREATE TABLE IF NOT EXISTS places (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  lat        REAL NOT NULL,
+  lon        REAL NOT NULL,
+  radius_m   INTEGER NOT NULL DEFAULT 150,
+  note_slug  TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
+-- scheduler (never the ingest path) reads this to fire location triggers.
+CREATE TABLE IF NOT EXISTS location_state (
+  place_id       INTEGER PRIMARY KEY REFERENCES places(id) ON DELETE CASCADE,
+  inside         INTEGER NOT NULL DEFAULT 0,
+  since          TEXT,                 -- when the current inside/outside state began
+  last_inside_at TEXT,                 -- last fix inside this place (for 'away')
+  last_fix_at    TEXT
+);
+
+-- Per-workflow dedup so a trigger fires once per episode (marker = the state's `since`).
+CREATE TABLE IF NOT EXISTS location_fired (
+  workflow_id INTEGER NOT NULL,
+  kind        TEXT NOT NULL,           -- 'dwell' | 'away' | 'arrived' | 'left' | 'new_place'
+  marker      TEXT,
+  fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (workflow_id, kind)
+);

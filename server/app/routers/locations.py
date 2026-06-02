@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import geo
+from ..services import geotrail
 
 router = APIRouter(prefix="/api/locations", tags=["locations"], dependencies=[CurrentUser])
 
@@ -62,6 +63,12 @@ def add_location(body: LocationIn):
         "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
         (body.lat, body.lon, body.accuracy_m, rec_str, (body.source or "wear")[:32]),
     )
+    # Refresh per-place geofence state (cheap, no actions) so the scheduler's
+    # trigger evaluator has fresh truth. Never let it break ingest.
+    try:
+        geotrail.update_location_state(conn, body.lat, body.lon, rec_str)
+    except Exception:  # noqa: BLE001
+        pass
     conn.commit()
     return {"stored": True, "id": cur.lastrowid}
 

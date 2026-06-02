@@ -814,6 +814,106 @@ def test_semantic_search_orders_by_similarity(client, monkeypatch):
     assert [r["title"] for r in res] == ["notes/B", "notes/C", "notes/A"]
 
 
+def test_geotrail_math(client):
+    """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
+    from app.db import get_conn
+    from app.services import geotrail
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Gym', 40.0, -74.0, 150)")
+    fixes = [
+        ("2026-06-02 17:30:00", 40.010, -74.0),   # en route (outside)
+        ("2026-06-02 18:00:00", 40.000, -74.0),   # at gym
+        ("2026-06-02 18:20:00", 40.0005, -74.0),  # ~55 m (inside)
+        ("2026-06-02 18:40:00", 40.000, -74.0),   # at gym
+        ("2026-06-02 19:10:00", 40.010, -74.0),   # leaving (outside)
+    ]
+    for ts, lat, lon in fixes:
+        conn.execute("INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?,?,?,'test')", (lat, lon, ts))
+    conn.commit()
+
+    dwell = geotrail.dwell_minutes(conn, 40.0, -74.0, 150)
+    assert 50 <= dwell <= 80, dwell                       # ~40-min stay + split travel halves
+    assert geotrail.distance_km(conn) > 1.5               # two ~1.1 km legs
+    assert geotrail.label_point(conn, 40.0, -74.0) == "Gym"
+    assert geotrail.label_point(conn, 41.0, -75.0) is None   # far from any place/note
+    stays = geotrail.stay_points(conn, radius_m=150, min_min=20)
+    assert any(s["label"] == "Gym" and s["minutes"] >= 20 for s in stays)
+    fix, gap = geotrail.nearest_fix(conn, "2026-06-02T18:05:00Z")
+    assert fix and gap <= 6
+
+
+def test_location_tools(client):
+    """The 5 assisted/research location tools resolve a saved place, time at it,
+    distance, stays, and a past-moment lookup over the trail."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Gym', 40.0, -74.0, 150)")
+    for ts, lat, lon in [
+        ("2026-06-02 17:30:00", 40.010, -74.0),
+        ("2026-06-02 18:00:00", 40.000, -74.0),
+        ("2026-06-02 18:40:00", 40.000, -74.0),
+        ("2026-06-02 19:10:00", 40.010, -74.0),
+    ]:
+        conn.execute("INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?,?,?,'test')", (lat, lon, ts))
+    conn.commit()
+
+    msg, _ = architect._run_tool(conn, None, "time_at_place", {"place": "gym"})  # case-insensitive
+    assert "Gym" in msg and "min" in msg
+    msg, _ = architect._run_tool(conn, None, "where_was_i", {"when": "2026-06-02T18:05:00Z"})
+    assert "Gym" in msg
+    msg, _ = architect._run_tool(conn, None, "distance_traveled", {})
+    assert "km" in msg
+    msg, _ = architect._run_tool(conn, None, "places_visited", {"min_minutes": 20})
+    assert "Gym" in msg
+    msg, _ = architect._run_tool(conn, None, "trail_summary", {})
+    assert "fixes" in msg and "Gym" in msg
+
+
+def test_location_dwell_trigger_fires_once(client, monkeypatch):
+    """A location:dwell workflow fires when the geofence dwell threshold is crossed,
+    pushes once, and dedups on re-evaluation (location_fired)."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from app.db import get_conn
+    from app.services import push, workflows as wf_svc
+
+    pushes = []
+    monkeypatch.setattr(push, "notify", lambda title, body, url="/": pushes.append((title, body, url)))
+
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Gym', 40.0, -74.0, 150)")
+    conn.execute(
+        "INSERT INTO workflows (key, name, trigger_type, trigger_config, action_type, action_config, enabled, source) "
+        "VALUES ('t-dwell', 'Dwell', 'event', ?, 'location_notify', '{}', 1, 'user')",
+        (json.dumps({"event": "location:dwell", "place": "Gym", "minutes": 30}),),
+    )
+    conn.commit()
+
+    # A fix inside the gym, 40 min ago → location_state.since is 40 min back.
+    ago = (datetime.now(timezone.utc) - timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    r = client.post("/api/locations", json={"lat": 40.0, "lon": -74.0, "recorded_at": ago}).json()
+    assert r["stored"] is True
+    st = conn.execute("SELECT inside FROM location_state WHERE place_id=(SELECT id FROM places WHERE name='Gym')").fetchone()
+    assert st["inside"] == 1                              # ingest refreshed geofence state
+
+    assert wf_svc.evaluate_location_triggers(conn) == 1  # crossed 30-min dwell → fires
+    assert len(pushes) == 1 and "Gym" in pushes[0][1]
+    assert wf_svc.evaluate_location_triggers(conn) == 0  # same visit → deduped
+    assert len(pushes) == 1
+
+
+def test_places_crud(client):
+    """Places CRUD: add (radius clamped), list, delete (cascades location_state)."""
+    r = client.post("/api/places", json={"name": "Home", "lat": 40.0, "lon": -74.0, "radius_m": 5})
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    rows = client.get("/api/places").json()
+    assert any(p["name"] == "Home" and p["radius_m"] == 20 for p in rows)   # clamped up to 20
+    assert client.delete(f"/api/places/{pid}").json()["ok"] is True
+    assert client.get("/api/places").json() == []
+
+
 def test_attachment_download_roundtrip_is_byte_exact(client):
     """The download endpoint must return the uploaded bytes verbatim (image preview +
     Download both depend on this). Guards against any server-side corruption."""

@@ -19,6 +19,7 @@ from .routers import (
     capture,
     lists,
     locations,
+    places,
     tiles,
     share,
     share_admin,
@@ -49,6 +50,13 @@ async def _scheduler_loop():
         try:
             await asyncio.to_thread(lambda: wf_svc.run_due_scheduled(get_conn()))
         except Exception:  # noqa: BLE001 — never let the loop die
+            pass
+        try:
+            # Location triggers are evaluated here (NOT at ingest): ingest only
+            # refreshes geofence state; the firing decision + (LLM-capable) action
+            # run on this worker thread where latency is fine.
+            await asyncio.to_thread(lambda: wf_svc.evaluate_location_triggers(get_conn()))
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -135,7 +143,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, tiles):
+for r in (auth_router, notes, chat, search, graph, staging, sql_console, capture, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, tiles):
     app.include_router(r.router)
 
 

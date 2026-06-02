@@ -2434,3 +2434,19 @@ def test_kb_coverage_stops_clean_with_no_candidates(client, monkeypatch):
     # Fresh DB: no uncited entries → recipe stops before wiki_plan, no LLM call, no error.
     detail = pipeline.run_pipeline(get_conn(), pipeline.get_action_def("kb_coverage_check"), {}, None, None)
     assert "no uncited" in detail
+
+
+def test_staging_list_includes_current_content_for_diff(client):
+    from app.db import get_conn
+    from app.services import notes as notes_svc
+    import json as _json
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "kb/Jeff", "old content line", kind="kb", source="user", fire_events=False)
+    h = __import__("hashlib").sha256(b"old content line").hexdigest()
+    payload = {"type": "UPDATE", "title": "kb/Jeff", "content": "new content line", "kind": "kb",
+               "_basis": {"note_id": nid, "content_hash": h}}
+    conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('UPDATE', ?)", (_json.dumps(payload),))
+    conn.commit()
+    items = client.get("/api/staging").json()
+    item = [i for i in items if i["payload"].get("title") == "kb/Jeff"][0]
+    assert item["current_content"] == "old content line"        # frontend diffs this vs payload.content

@@ -18,13 +18,33 @@ router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[Curren
 
 @router.get("")
 def list_pending():
-    rows = get_conn().execute(
+    conn = get_conn()
+    rows = conn.execute(
         "SELECT id, conversation_id, type, payload_json, status, created_at "
         "FROM staging_actions WHERE status = 'pending' ORDER BY id"
     ).fetchall()
-    return [
-        {**dict(r), "payload": json.loads(r["payload_json"])} for r in rows
-    ]
+    def _current(payload):
+        # The note's CURRENT content (for a diff preview), by basis id then title.
+        basis = payload.get("_basis") or {}
+        if basis.get("note_id"):
+            r = conn.execute("SELECT content_md FROM notes WHERE id=? AND deleted_at IS NULL",
+                             (basis["note_id"],)).fetchone()
+            if r:
+                return r["content_md"]
+        title = (payload.get("title") or "").strip()
+        if title:
+            n = notes_svc.get_by_title(conn, title)
+            if n:
+                return n["content_md"]
+        return None
+    out = []
+    for r in rows:
+        payload = json.loads(r["payload_json"])
+        item = {**dict(r), "payload": payload}
+        if r["type"] in ("CREATE", "UPDATE"):
+            item["current_content"] = _current(payload)
+        out.append(item)
+    return out
 
 
 def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None,

@@ -10,8 +10,8 @@ that answers only from a fenced slice of the brain (e.g. "medical history only")
 
 | Area | Decision |
 |------|----------|
-| Scope | Filter by **folder-prefix** (+ optional kind). **[REVIEW]** drop free tag-based scope as a *primary* selector (tags are mass-applied by automations → silent exposure). Owner confirms the matched-note list at mint. |
-| Scope growth | **Live + auto-pause (D2).** The set is re-evaluated each query, but the link **auto-pauses and re-prompts the owner** when its matched count grows by > N since last confirmation. |
+| Scope | The exposed boundary is an **explicit approved note-id allowlist**. A folder-prefix (+ optional kind) filter only *surfaces candidates* — the link exposes only notes the owner has ticked. (Tags dropped as a primary selector.) |
+| Scope growth | **Approve-to-add (D3).** New filter matches land as **pending candidates** with a review-inbox nudge; **nothing new is exposed until the owner approves it**. The approved set is **editable** — remove a note from a live link without killing it. No silent drift, no auto-pause, no recipient disruption. |
 | Retrieval | **Scoped semantic + scoped FTS (D1).** Semantic ranking is done **exactly, in-process** over the in-scope embeddings (not sqlite-vec KNN — see F1 resolution), giving 100% in-scope recall; FTS covers keyword hits. |
 | Persona | Neutral default; optional override constrained to a **voice variable** interpolated into a fixed template — never raw appended instructions. **[REVIEW]** |
 | Boundaries | Airtight: no `query_sql`, no geo; out-of-scope `[[links]]` inert; no citations/titles (a *cosmetic* opacity, not a containment control — see F5). |
@@ -54,7 +54,9 @@ each research link to a dedicated owner-side **placeholder/audit note** (exactly
   link but **never returns note content**.
 
 **`research_specs`** (mirror `guided_specs`): `share_link_id`, `status` draft/active,
-`scope_json` `{ prefixes:[], kinds:[] }`, `last_confirmed_count` (for F9 auto-pause),
+`scope_json` `{ prefixes:[], kinds:[] }` (the candidate **filter** only),
+`approved_note_ids` (the exposed **allowlist** — the actual boundary),
+`dismissed_note_ids` (candidates the owner rejected, so they don't re-nag),
 `persona_voice` (nullable → default), `intro`, `bind`, `single_use`, `max_turns`,
 `max_total_replies`, `token_budget`, expiry.
 
@@ -64,19 +66,27 @@ each research link to a dedicated owner-side **placeholder/audit note** (exactly
 
 ## Scope resolution — the security core (built & tested FIRST)
 
-`scope.py` (new), pure + unit-tested:
+**The boundary is the approved allowlist** (explicit, owner-confirmed ids) — the live filter
+only *finds candidates*; it never gates retrieval. `scope.py` (new), pure + unit-tested:
 ```
-def scoped_ids_subquery(scope) -> (sql, params)   # "(SELECT id FROM notes WHERE ...)"
-def scoped_note_ids(conn, scope) -> set[int]
-def matched_count(conn, scope) -> int             # for the F9 growth guard
+def approved_ids(spec) -> set[int]            # the exposed allowlist — the ONLY boundary
+def candidate_ids(conn, spec) -> set[int]     # filter matches − approved − dismissed (for the nudge)
+def filter_predicate(scope) -> (sql, params)  # candidate filter only; never gates retrieval
 ```
-Predicate: `deleted_at IS NULL AND kind IN (...) AND (title LIKE 'prefix/%' OR title = 'prefix' for each prefix)`. Excludes system/secret notes. **Reject empty/`/`/root prefixes (F10).**
+Filter predicate: `deleted_at IS NULL AND kind IN (...) AND (title LIKE 'prefix/%' OR title = 'prefix')`. **Reject empty/`/`/root prefixes (F10).** Every retrieval tool constrains to
+`n.id IN (approved allowlist)` — an explicit id set, re-verified after lookup.
 
-- **FTS (works, ships v1):** `... WHERE notes_fts MATCH ? AND n.id IN <scoped subquery> ORDER BY rank LIMIT ?` — the scope filter composes **before** LIMIT (`search.py:33-40`), so it's sound.
-- **Semantic (D1 — exact, in-process):** do NOT use vec0 KNN (it's global; `vec_notes`/`vec_chunks` have no partition key, `db.py:84-90`, so an outer `id IN (scope)` only deletes rows → a small scope yields zero results, F1). Instead: scoped `SELECT note_id, embedding FROM vec_notes WHERE note_id IN <scoped subquery>`, deserialize the stored float32 vectors (numpy), and compute cosine vs. the query embedding in-process; top-k. Exact (100% in-scope recall), read-only-safe, no schema change. **Cap scope size** (e.g. ≤ a few thousand vectors) and cache the scoped matrix per session keyed by a scope+watermark hash so it isn't refetched each turn; invalidate on the F9 growth tripwire.
-- **`read_note` (scoped):** resolve title → id, then assert id ∈ `scoped_note_ids`; else deny + bump `denied_count`. Never auto-expand `[[links]]`.
-- **Attachments (scoped):** only attachments whose `note_id ∈ scope`.
-- **Preview endpoint:** returns matched titles + count for the owner to confirm at mint and any time after.
+- **FTS:** `... WHERE notes_fts MATCH ? AND n.id IN <approved ids> ORDER BY rank LIMIT ?` — composes **before** LIMIT (`search.py:33-40`), sound.
+- **Semantic (D1 — exact, in-process):** do NOT use vec0 KNN (global; no partition key, `db.py:84-90` → an outer filter only deletes rows → small set yields zero, F1). Instead: `SELECT note_id, embedding FROM vec_notes WHERE note_id IN <approved ids>`, deserialize the float32 vectors (numpy), cosine vs. the query in-process, top-k. Exact (100% recall over the approved set), read-only-safe, no schema change. **Cap the approved-set size** (≤ a few thousand vectors) and cache the matrix per session (keyed by approved-set hash); invalidate when the owner edits the set.
+- **`read_note` (scoped):** resolve title → id, assert id ∈ `approved_ids`; else deny + `denied_count`++. Never auto-expand `[[links]]`.
+- **Attachments (scoped):** only attachments whose `note_id ∈ approved_ids`.
+
+**Candidate detection + approve-to-add (D3):** a daily workflow (reuse the reviews/workflows
+system) computes `candidate_ids`; if non-empty it posts a **review-inbox nudge** ("N notes now
+match your 'Medical' research link — review to include"). Also computed on demand in the share
+settings UI. **Approve** → ids move into `approved_note_ids` (and the semantic cache invalidates);
+**dismiss** → into `dismissed_note_ids`; **remove** → out of `approved_note_ids`, instantly out of
+scope. Mint-time preview is just the first pass of this same approve flow.
 
 ## Scoped runner — `shared_research.py` (new, NOT under guided isolation)
 
@@ -99,8 +109,9 @@ Predicate: `deleted_at IS NULL AND kind IN (...) AND (title LIKE 'prefix/%' OR t
 mirroring `create_guided_share` — **draft + explicit activate**, and the tool **may not set
 a root/over-broad scope (F10)**; preview scans matched **note bodies** for sensitive content,
 not just the goal text):
-mint (draft) · preview scope (titles + count) · set persona/intro/options · activate ·
-list research links + sessions · view session (transcript + retrieved + denied) · revoke.
+mint (draft) · **review candidates / approve / dismiss / remove from allowlist** ·
+set persona/intro/options · activate · list research links + sessions ·
+view session (transcript + retrieved + denied) · revoke.
 
 **Public** (`routers/share.py`, mirroring the guided block ~147-217):
 - `GET /share/{token}` → research landing (consent only; never content).
@@ -127,11 +138,15 @@ list research links + sessions · view session (transcript + retrieved + denied)
 3. Owner endpoints + mint/preview/activate + `SharesPage` UI (folder-prefix scope picker,
    matched-note preview, default/voice persona).
 4. Public endpoints + `ResearchChat` recipient UI (clone `GuidedChat`, reuse `.chat-status`).
-5. Audit (session view, retrieved + denied) + revoke + global-cap meter + F9 auto-pause.
+5. Audit (session view, retrieved + denied) + revoke + global-cap meter + the daily
+   candidate-nudge workflow + approve/dismiss/remove allowlist management.
 6. Docs.
 
 ## Adversarial test matrix (gate for steps 1–2)
 
+- A note matching the filter but **not yet approved** → **not reachable** (only
+  `approved_note_ids` gates retrieval; the filter never does); removing an approved id →
+  instantly unreachable, even mid-session (cache invalidated).
 - Out-of-scope `read_note`/attachment by exact id/title → **denied**, `denied_count`++.
 - Scoped FTS can **never** return an out-of-scope note even as best match (before LIMIT).
 - Scoped semantic: with a tiny in-scope set inside a large brain, the nearest in-scope note
@@ -148,9 +163,11 @@ list research links + sessions · view session (transcript + retrieved + denied)
 - **D1 — semantic retrieval:** scoped **in-process exact cosine** over the in-scope
   embeddings (see Scope resolution). Closes F1 with exact recall; scope-size cap + per-session
   cache for cost.
-- **D2 — scope growth:** **live + auto-pause.** Re-evaluate each query; store
-  `last_confirmed_count`; when `matched_count` grows by > N, auto-pause the link and notify the
-  owner to re-confirm. Folder-prefix scope (tags dropped as a primary selector).
+- **D3 — scope growth:** **approve-to-add.** The exposed boundary is an explicit
+  `approved_note_ids` allowlist. The folder-prefix filter only surfaces candidates; a daily
+  workflow posts a review-inbox nudge for new matches; nothing is exposed until the owner
+  approves, and the approved set is editable (remove a note from a live link instantly). No
+  drift, no auto-pause. Tags dropped as a primary selector.
 
 ## Deferred
 

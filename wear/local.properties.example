@@ -1,0 +1,11 @@
+# Copy this file to `local.properties` (which is gitignored) and fill in your values.
+# Android Studio also writes `sdk.dir` here automatically — leave that line in place.
+
+# Path to your Android SDK (Android Studio sets this for you on first sync):
+# sdk.dir=/Users/you/Library/Android/sdk
+
+# Your JBrain server (public HTTPS, no trailing slash):
+JBRAIN_DOMAIN=https://your-brain.example.com
+
+# Your JBrain access key (the same key the PWA uses, sent as a Bearer token):
+JBRAIN_KEY=paste-your-access-key-here

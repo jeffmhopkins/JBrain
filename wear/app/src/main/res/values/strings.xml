@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JBrain</string>
+    <string name="tile_label">JBrain Note</string>
+    <string name="tile_button">＋ Note</string>
+    <string name="speak_prompt">Speak your note</string>
+    <string name="status_idle">Tap to speak</string>
+    <string name="status_saving">Saving…</string>
+    <string name="status_saved">Saved ✓</string>
+    <string name="status_offline">Saved offline ✓</string>
+    <string name="status_error">No voice input</string>
+</resources>

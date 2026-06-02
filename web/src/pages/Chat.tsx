@@ -18,7 +18,7 @@ const MODES: { key: Mode; label: string; icon: string }[] = [
   { key: "research", label: "Research", icon: "search" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
-  entry: "Write an entry… (logged by date — no title needed)",
+  entry: "Write an entry…",
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };

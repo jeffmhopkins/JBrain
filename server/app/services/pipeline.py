@@ -278,6 +278,77 @@ def _p_kb_uncited_pending(ctx, limit=25, since_floor="", reconsider=False):
     return {"entries": capped, "count": len(out), "ids": [e["id"] for e in capped]}
 
 
+def _p_chatter_pending(ctx, limit=500):
+    """The 'dropped chatter' pool for recurrence detection: live daily-rollups +
+    free-titled entries that NO kb article cites and that haven't been promoted as a
+    pattern yet. Same candidate predicate as the coverage check (raw dated captures
+    excluded). No store — this is just a query over existing notes."""
+    rows = ctx.conn.execute(
+        "SELECT n.id, n.title, n.slug, n.content_md, n.created_at "
+        "FROM notes n WHERE n.deleted_at IS NULL "
+        "  AND (n.kind='daily' OR (n.kind='entry' AND n.title NOT LIKE 'notes/daily/%')) "
+        "  AND NOT EXISTS (SELECT 1 FROM links l JOIN notes kb ON kb.id=l.source_note_id "
+        "       AND kb.kind='kb' AND kb.deleted_at IS NULL "
+        "       WHERE l.target_note_id=n.id OR lower(l.target_title)=lower(n.title)) "
+        "ORDER BY n.id"
+    ).fetchall()
+    out = [dict(r) for r in rows if get_meta(f"chatter_promoted:{r['id']}") is None]
+    return {"entries": out[: max(1, min(int(limit), 2000))], "count": len(out)}
+
+
+def _p_cluster_chatter(ctx, entries, tau=0.35, min_days=3, neighbours=16, promote_limit=5):
+    """Cluster the chatter pool by embedding similarity (greedy union-find over
+    semantic_search — reuses the vectors every note already has, no LLM, nothing
+    written). A cluster spanning >= min_days DISTINCT calendar days is a recurring
+    PATTERN worth promoting. Returns the promotable clusters, largest first."""
+    items = [e for e in (entries or []) if e.get("id") is not None]
+    by_id = {e["id"]: e for e in items}
+    parent = {i: i for i in by_id}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+
+    for e in items:
+        q = ((e.get("title") or "") + "\n" + (e.get("content_md") or ""))[:400].strip()
+        if not q:
+            continue
+        try:
+            hits = embeddings.semantic_search(ctx.conn, q, limit=int(neighbours))
+        except Exception:
+            hits = []
+        for h in hits:
+            hid = h.get("id")
+            if hid == e["id"] or hid not in by_id:
+                continue
+            if float(h.get("distance", 1.0)) <= float(tau):
+                ra, rb = find(e["id"]), find(hid)
+                if ra != rb:
+                    parent[ra] = rb
+
+    groups: dict = {}
+    for i in by_id:
+        groups.setdefault(find(i), []).append(i)
+    promotable = []
+    for ids in groups.values():
+        days = {(by_id[i].get("created_at") or "")[:10] for i in ids}
+        days.discard("")
+        if len(days) >= int(min_days):
+            promotable.append({"member_ids": ids, "entries": [by_id[i] for i in ids],
+                               "distinct_days": len(days), "size": len(ids)})
+    promotable.sort(key=lambda c: (-c["distinct_days"], -c["size"]))
+    return {"promotable": promotable[: max(1, int(promote_limit))], "count": len(promotable)}
+
+
+def _p_mark_promoted(ctx, ids, key=""):
+    """Mark chatter entries consumed by a pattern promotion so they're never
+    re-clustered (mirrors mark_evaluated)."""
+    for nid in (ids or []):
+        set_meta(ctx.conn, f"chatter_promoted:{int(nid)}", str(key or "1"))
+    return {"marked": len(ids or [])}
+
+
 def _p_mark_evaluated(ctx, ids, at=None):
     """Record that synthesis CONSIDERED these entries (whether or not a fact resulted),
     so the coverage check never re-feeds an intentionally-skipped entry. Idempotent."""
@@ -554,6 +625,9 @@ _PRIMITIVES = {
     "recite_articles": _p_recite_articles,
     "kb_uncited_pending": _p_kb_uncited_pending,
     "mark_evaluated": _p_mark_evaluated,
+    "chatter_pending": _p_chatter_pending,
+    "cluster_chatter": _p_cluster_chatter,
+    "mark_promoted": _p_mark_promoted,
     "stage_kb_proposals": _p_stage_kb_proposals,
     "daylog_pending": _p_daylog_pending,
     "daily_pending": _p_daily_pending,
@@ -625,6 +699,16 @@ _PRIMITIVE_META: dict[str, dict] = {
     "mark_evaluated": {"summary": "Mark entries as considered by synthesis (per-entry watermark).",
                        "inputs": [{"name": "ids", "type": "list", "required": True}, {"name": "at", "type": "str"}],
                        "output": "object"},
+    "chatter_pending": {"summary": "Uncited 'dropped chatter' entries for recurrence detection.",
+                        "inputs": [{"name": "limit", "type": "int"}], "output": "object"},
+    "cluster_chatter": {"summary": "Cluster chatter by similarity; clusters spanning >= min_days are patterns.",
+                        "inputs": [{"name": "entries", "type": "list", "required": True},
+                                   {"name": "tau", "type": "float"}, {"name": "min_days", "type": "int"},
+                                   {"name": "neighbours", "type": "int"}, {"name": "promote_limit", "type": "int"}],
+                        "output": "object"},
+    "mark_promoted": {"summary": "Mark chatter entries consumed by a pattern promotion.",
+                      "inputs": [{"name": "ids", "type": "list", "required": True}, {"name": "key", "type": "str"}],
+                      "output": "object"},
     "stage_kb_proposals": {"summary": "Stage synthesized KB articles as pending actions for owner review.",
                            "inputs": [{"name": "articles", "type": "list", "required": True},
                                       {"name": "conversation_id", "type": "int"}], "output": "object"},

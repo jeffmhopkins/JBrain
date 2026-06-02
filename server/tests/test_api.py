@@ -2502,3 +2502,50 @@ def test_recite_kb_auto_apply_writes_directly(client, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM staging_actions WHERE status='pending'").fetchone()["c"] == 0
     body = conn.execute("SELECT content_md FROM notes WHERE title='kb/Old'").fetchone()["content_md"]
     assert "[^s1]" in body and "## References" in body and "## Sources" not in body
+
+
+# --- Chatter recurrence promotion -------------------------------------------
+
+def test_chatter_pending_excludes_cited_and_promoted(client):
+    from app.db import get_conn, set_meta
+    from app.services import notes as notes_svc, pipeline
+    conn = get_conn()
+    a = notes_svc.upsert_note(conn, "notes/Headache 1", "headache again", source="user", fire_events=False)
+    b = notes_svc.upsert_note(conn, "notes/Cited", "fact", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "kb/Topic", "x.[^s1]\n\n[^s1]: [[notes/Cited]] — 1", kind="kb", source="user", fire_events=False)
+    promoted = notes_svc.upsert_note(conn, "notes/Done", "old pattern", source="user", fire_events=False)
+    set_meta(conn, f"chatter_promoted:{promoted}", "kb/Patterns/X")
+    conn.commit()
+    class C: pass
+    c = C(); c.conn = conn
+    titles = {e["title"] for e in pipeline._p_chatter_pending(c)["entries"]}
+    assert "notes/Headache 1" in titles        # uncited chatter → in pool
+    assert "notes/Cited" not in titles         # cited by kb → out
+    assert "notes/Done" not in titles          # already promoted → out
+
+
+def test_cluster_chatter_promotes_only_multi_day_patterns(client, monkeypatch):
+    from app.services import pipeline
+    from app.services import embeddings
+    # 3 "headache" entries on 3 distinct days = a pattern; 2 "tax" entries on 1 day = not.
+    ents = [
+        {"id": 1, "title": "h1", "content_md": "headache", "created_at": "2026-05-01 08:00:00"},
+        {"id": 2, "title": "h2", "content_md": "headache", "created_at": "2026-05-03 08:00:00"},
+        {"id": 3, "title": "h3", "content_md": "headache", "created_at": "2026-05-09 08:00:00"},
+        {"id": 4, "title": "t1", "content_md": "taxes", "created_at": "2026-05-04 08:00:00"},
+        {"id": 5, "title": "t2", "content_md": "taxes", "created_at": "2026-05-04 09:00:00"},  # same day
+    ]
+    sims = {1: [2, 3], 2: [1, 3], 3: [1, 2], 4: [5], 5: [4]}
+    def fake_search(conn, q, limit=16):
+        # the query starts with the entry's title; map it back to neighbours
+        eid = next(e["id"] for e in ents if q.startswith(e["title"]))
+        return [{"id": n, "distance": 0.1} for n in sims[eid]]
+    monkeypatch.setattr(embeddings, "semantic_search", fake_search)
+    class C: pass
+    c = C(); c.conn = None
+    out = pipeline._p_cluster_chatter(c, ents, min_days=3)
+    assert out["count"] == 1                                  # only the headache cluster
+    p = out["promotable"][0]
+    assert set(p["member_ids"]) == {1, 2, 3} and p["distinct_days"] == 3
+    # the taxes pair (2 entries, same day) is NOT a multi-day pattern
+    assert all(set(c2["member_ids"]) != {4, 5} for c2 in out["promotable"])

@@ -1,0 +1,18 @@
+# Manual "recurring patterns" check. Finds durable patterns hiding in repeated
+# chatter (things logged across many days that synthesis dropped as transient) and
+# STAGES a kb/Patterns article for each, for you to approve in Assisted chat. Run it
+# from Advanced → Workflows → Run now; re-run to drain more. It never fires on its own.
+#
+# interval_seconds: 0 makes schedule_due() return False, so it is manual-only.
+key: promote-recurrences
+name: Recurring patterns (chatter)
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 0
+
+action:
+  type: promote_recurrences
+  config:
+    min_days: 3

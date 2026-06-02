@@ -1,0 +1,78 @@
+# Declarative action: surface RECURRING PATTERNS hiding in dropped chatter.
+# Synthesis deliberately drops transient chatter (moods/logistics/one-offs), but a
+# thing logged across many days ("headache again", "skipped the gym again") is a
+# durable pattern. This clusters the uncited "chatter" entries by similarity (no
+# store, no LLM in the detect phase, nothing new written) and, when a cluster spans
+# >= min_days DISTINCT days, synthesises a kb/Patterns article from it and STAGES it
+# for review. Guarded by validate_citations; promoted entries are marked so they're
+# never re-clustered.
+#
+# config keys:
+#   batch_limit   — max chatter entries scanned per run (default 500)
+#   min_days      — distinct days a pattern must recur to qualify (default 3)
+#   tau           — similarity threshold, cosine distance (default 0.35; lower = stricter)
+#   promote_limit — max patterns promoted per run (default 5)
+#   auto_apply    — write KB directly instead of staging (default false)
+type: promote_recurrences
+config:
+  - { key: batch_limit, label: Max chatter entries scanned, type: number }
+  - { key: min_days, label: Distinct days to count as a pattern, type: number }
+  - { key: tau, label: Similarity threshold (cosine distance), type: number }
+  - { key: promote_limit, label: Max patterns per run, type: number }
+  - { key: auto_apply, label: Write KB directly (skip review), type: boolean, default: false }
+steps:
+  - id: pool
+    do: chatter_pending
+    with: { limit: "{{ config.batch_limit | default(500) }}" }
+
+  - stop_when: "{{ not pool.entries }}"
+    stop_message: "no uncited chatter to scan"
+
+  - id: clustered
+    do: cluster_chatter
+    with:
+      entries: "{{ pool.entries }}"
+      tau: "{{ config.tau | default(0.35) }}"
+      min_days: "{{ config.min_days | default(3) }}"
+      promote_limit: "{{ config.promote_limit | default(5) }}"
+
+  - stop_when: "{{ not clustered.promotable }}"
+    stop_message: "no recurring pattern reached the threshold"
+
+  - id: kb
+    do: query_notes
+    with: { kind: kb, limit: 50 }
+
+  - for_each: "{{ clustered.promotable }}"
+    steps:
+      - id: plan
+        do: wiki_plan
+        with:
+          entries: "{{ item.entries }}"
+          existing_kb: "{{ kb }}"
+          instructions: "These entries are RECURRENCES of one pattern the owner logged across {{ item.distinct_days }} different days. Write or UPDATE a single evergreen kb/Patterns/<Topic> article documenting the recurring pattern — its nature, frequency, the dates, and any noted context — citing each occurrence as a footnote. Find-or-create: if an article on this pattern already exists, UPDATE it rather than forking a duplicate."
+      - id: checked
+        do: validate_citations
+        with: { articles: "{{ plan }}" }
+
+      - do: stage_kb_proposals
+        when: "{{ not config.auto_apply and checked.valid }}"
+        with: { articles: "{{ checked.valid }}" }
+
+      - for_each: "{{ checked.valid if config.auto_apply else [] }}"
+        steps:
+          - do: write_note
+            with: { title: "{{ item.title }}", content_md: "{{ item.content_md }}", kind: kb, version_note: "recurring pattern" }
+
+      # Mark the cluster's entries consumed (whether staged or written) so they're
+      # never re-clustered. (Rejecting a staged pattern is your call, not a loss —
+      # the pattern WAS surfaced.)
+      - do: mark_promoted
+        when: "{{ checked.valid }}"
+        with: { ids: "{{ item.member_ids }}" }
+
+  - do: create_review
+    when: "{{ clustered.promotable }}"
+    with:
+      title: "Recurring patterns surfaced"
+      message: "Found recurring pattern(s) in your chatter and {{ 'applied them directly.' if config.auto_apply else 'staged them for review — approve the kb/Patterns articles in Assisted chat.' }}"

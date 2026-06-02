@@ -41,7 +41,7 @@ _DEFAULT_MODE_TOOLS = {
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
-                 "kb_citation_cleanup", "propose_actions"],
+                 "kb_citation_cleanup", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes"],
 }
@@ -140,6 +140,9 @@ _TOOL_SCHEMAS = {
     "kb_citation_cleanup": {"type": "object", "properties": {
         "batch_limit": {"type": "integer", "default": 10, "description": "Max KB articles to reformat this run."},
         "auto_apply": {"type": "boolean", "default": False, "description": "Apply rewrites directly (versioned) instead of staging them for review."}}},
+    "kb_promote_recurrences": {"type": "object", "properties": {
+        "min_days": {"type": "integer", "default": 3, "description": "Distinct days a thing must recur to count as a pattern."},
+        "auto_apply": {"type": "boolean", "default": False, "description": "Write pattern articles directly instead of staging for review."}}},
 }
 
 
@@ -444,6 +447,25 @@ def _tool_kb_citation_cleanup(conn, conversation_id, batch_limit=10, auto_apply=
     return f"Citation cleanup ({detail}). Proposed rewrites are staged below — review the diffs and approve.", {"type": "staging"}
 
 
+def _tool_kb_promote_recurrences(conn, conversation_id, min_days=3, auto_apply=False):
+    """Surface durable patterns hiding in repeated chatter and stage a kb/Patterns
+    article for each (auto_apply writes directly). Assisted-mode only (mutates KB)."""
+    from . import pipeline
+    if not llm.has_credentials():
+        return "I can't check for recurring patterns without an LLM key configured.", None
+    recipe = pipeline.get_action_def("promote_recurrences")
+    if recipe is None:
+        return "The promote_recurrences action isn't installed.", None
+    try:
+        detail = pipeline.run_pipeline(
+            conn, recipe, {"min_days": int(min_days), "auto_apply": bool(auto_apply)}, None, None)
+    except Exception as e:
+        return f"Pattern check failed: {e}", None
+    if auto_apply:
+        return f"Recurring-pattern check ({detail}). Pattern articles were applied directly (versioned/undoable).", None
+    return f"Recurring-pattern check ({detail}). Any pattern articles are staged below — review the diffs and approve.", {"type": "staging"}
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -693,6 +715,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_coverage_check(conn, conversation_id, args.get("batch_limit", 25), args.get("reconsider", False))
     if name == "kb_citation_cleanup":
         return _tool_kb_citation_cleanup(conn, conversation_id, args.get("batch_limit", 10), args.get("auto_apply", False))
+    if name == "kb_promote_recurrences":
+        return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
     return f"Unknown tool: {name}", None
 
 

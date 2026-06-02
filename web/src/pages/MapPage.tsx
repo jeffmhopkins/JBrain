@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
-import { getLocations, getLocatedNotes, getPlaces, addPlace, deletePlace, LocPoint, LocatedNote, Place } from "../api";
+import { getLocations, getLocatedNotes, getPlaces, addPlace, renamePlace, deletePlace, LocPoint, LocatedNote, Place } from "../api";
 
 type Mode = "trail" | "heat";
 const RANGES = [
@@ -260,6 +260,10 @@ export default function MapPage() {
                 <li key={p.id}>
                   <button className="place-go" onClick={() => map.current?.setView([p.lat, p.lon], 16)}>{p.name}</button>
                   <span className="place-r">{p.radius_m} m</span>
+                  <button className="place-del" title="Rename" onClick={() => {
+                    const name = window.prompt("Rename place:", p.name)?.trim();
+                    if (name && name !== p.name) renamePlace(p.id, name).then(loadPlaces);
+                  }}>✎</button>
                   <button className="place-del" title="Delete" onClick={() => deletePlace(p.id).then(loadPlaces)}>✕</button>
                 </li>
               ))}

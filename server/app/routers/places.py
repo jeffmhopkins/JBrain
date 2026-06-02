@@ -36,6 +36,21 @@ def add_place(body: PlaceIn):
     return {"id": cur.lastrowid, "name": name}
 
 
+class PlacePatch(BaseModel):
+    name: str
+
+
+@router.patch("/{place_id}")
+def rename_place(place_id: int, body: PlacePatch):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name required")
+    conn = get_conn()
+    conn.execute("UPDATE places SET name = ? WHERE id = ?", (name[:80], place_id))
+    conn.commit()
+    return {"ok": True, "name": name}
+
+
 @router.delete("/{place_id}")
 def delete_place(place_id: int):
     conn = get_conn()

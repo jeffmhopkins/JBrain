@@ -1,0 +1,36 @@
+# Declarative action: surface unlabeled spots the location trail shows you
+# returning to across several days, and stage each as an ADD_PLACE suggestion for
+# one-tap approval. Pure geo-math — no LLM, no geocoder, nothing auto-written. The
+# placeholder name is coordinate-based; rename it from the Map's Places panel after
+# approving. Complements the consolidation suggester (which names places from entry
+# text) by catching the spots you visit but don't write about.
+#
+# config keys:
+#   min_days     — distinct days a spot must recur to be suggested (default 3)
+#   days_back    — how far back to look (default 21)
+#   min_minutes  — minimum dwell to count as a stay (default 30)
+type: discover_places
+category: Daily
+config:
+  - { key: min_days, label: Min distinct days, type: number }
+  - { key: days_back, label: Days to look back, type: number }
+  - { key: min_minutes, label: Min stay minutes, type: number }
+steps:
+  - id: found
+    do: discover_stays
+    with:
+      min_days: "{{ config.min_days | default(3) }}"
+      days_back: "{{ config.days_back | default(21) }}"
+      min_minutes: "{{ config.min_minutes | default(30) }}"
+
+  - stop_when: "{{ not found.candidates }}"
+    stop_message: "no recurring unlabeled spots"
+
+  - do: stage_places
+    with:
+      candidates: "{{ found.candidates }}"
+
+  - do: create_review
+    with:
+      title: "New place suggestions"
+      message: "Found {{ found.candidates | length }} spot(s) you visit often — review and name them under Proposals."

@@ -830,6 +830,39 @@ def _p_stage_places(ctx, candidates):
     return {"staged": staged}
 
 
+def _p_discover_stays(ctx, min_days=3, days_back=21, min_minutes=30):
+    """Find UNLABELED spots the trail shows you returning to across several distinct
+    days — a place worth naming. Pure geo-math (no LLM). Groups recurring stays by
+    proximity; emits a candidate (coordinate-named placeholder for the owner to
+    rename) when one recurs on >= min_days days and isn't already a saved place."""
+    from datetime import datetime, timedelta, timezone
+    from . import geotrail
+    since = (datetime.now(timezone.utc) - timedelta(days=int(days_back or 21))).strftime("%Y-%m-%d %H:%M:%S")
+    stays = [s for s in geotrail.stay_points(ctx.conn, since=since, min_min=float(min_minutes or 30))
+             if not s.get("label")]
+    groups: list[dict] = []
+    for s in stays:
+        g = next((g for g in groups
+                  if geo.haversine_km(g["lat"], g["lon"], s["lat"], s["lon"]) * 1000.0 <= 120), None)
+        if g is None:
+            groups.append({"lat": s["lat"], "lon": s["lon"], "n": 1, "days": {s["arrived"][:10]}})
+        else:
+            g["lat"] = (g["lat"] * g["n"] + s["lat"]) / (g["n"] + 1)   # rolling centroid
+            g["lon"] = (g["lon"] * g["n"] + s["lon"]) / (g["n"] + 1)
+            g["n"] += 1
+            g["days"].add(s["arrived"][:10])
+    out = []
+    for g in groups:
+        if len(g["days"]) < int(min_days or 3):
+            continue
+        if _existing_place(ctx.conn, "", g["lat"], g["lon"], 150):   # already covered by a saved place
+            continue
+        out.append({"name": f"Frequent spot ({g['lat']:.3f}, {g['lon']:.3f})",
+                    "lat": round(g["lat"], 6), "lon": round(g["lon"], 6),
+                    "radius_m": 150, "source_title": None})
+    return {"candidates": out}
+
+
 def _p_research_nudges(ctx):
     """Post review-inbox nudges for active research links that have new candidate
     notes the owner hasn't reviewed yet (the approve-to-add tray)."""
@@ -871,6 +904,7 @@ _PRIMITIVES = {
     "notify": _p_notify,
     "suggest_places": _p_suggest_places,
     "stage_places": _p_stage_places,
+    "discover_stays": _p_discover_stays,
 }
 
 
@@ -914,6 +948,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                        "inputs": [{"name": "entries", "type": "list", "required": True}], "output": "object"},
     "stage_places": {"summary": "Stage place candidates as pending ADD_PLACE actions for owner approval.",
                      "inputs": [{"name": "candidates", "type": "list", "required": True}], "output": "object"},
+    "discover_stays": {"summary": "Find unlabeled spots the trail shows you revisiting across several days (place candidates).",
+                       "inputs": [{"name": "min_days", "type": "int"}, {"name": "days_back", "type": "int"},
+                                  {"name": "min_minutes", "type": "int"}], "output": "object"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

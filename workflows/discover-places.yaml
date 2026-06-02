@@ -1,0 +1,14 @@
+# Weekly trail-driven place discovery: if the location trail shows you returning to
+# an unlabeled spot across several days, stage it as an ADD_PLACE suggestion you can
+# approve and name. Pure geo-math (no LLM), and nothing is saved without approval, so
+# it ships enabled. Complements the daily consolidation suggester (entry-text based).
+key: discover-places
+name: Discover frequent places
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 8 * * 1"   # Mondays 08:00 (server TZ)
+
+action:
+  type: discover_places

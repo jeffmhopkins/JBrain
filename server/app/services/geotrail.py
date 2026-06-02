@@ -147,8 +147,12 @@ def stay_points(conn, since=None, until=None, radius_m: float = 150.0, min_min: 
     i = 0
     while i < len(pts):
         j = i
-        while j + 1 < len(pts) and geo.haversine_km(
-            pts[i]["lat"], pts[i]["lon"], pts[j + 1]["lat"], pts[j + 1]["lon"]) * 1000.0 <= radius_m:
+        # Extend while the next fix is in-radius AND close in time — a gap beyond the
+        # cap means we lost the trail (or it's a later day), so end the stay there
+        # rather than fusing two separate visits into one.
+        while (j + 1 < len(pts)
+               and geo.haversine_km(pts[i]["lat"], pts[i]["lon"], pts[j + 1]["lat"], pts[j + 1]["lon"]) * 1000.0 <= radius_m
+               and _mins(pts[j]["recorded_at"], pts[j + 1]["recorded_at"]) <= _GAP_CAP_MIN):
             j += 1
         dur = _mins(pts[i]["recorded_at"], pts[j]["recorded_at"]) if j > i else 0.0
         if dur >= min_min:

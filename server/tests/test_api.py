@@ -956,6 +956,35 @@ def test_entries_at_place_and_located_endpoint(client):
     assert client.get("/api/notes/located").status_code == 200
 
 
+def test_discover_stays_recurring_spot(client):
+    """A spot the trail revisits across >= min_days distinct days (and not already a
+    saved place) becomes a place candidate; once saved, it's no longer suggested."""
+    from app.db import get_conn
+    from app.services import pipeline
+    conn = get_conn()
+    # Three distinct days, each a ~40-min dwell at the same unlabeled spot.
+    for day in ("2026-05-20", "2026-05-22", "2026-05-25"):
+        for hh, mm in (("12:00", 40.0), ("12:20", 40.0001), ("12:40", 40.0)):
+            conn.execute("INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?,?,?,'test')",
+                         (mm, -74.0, f"{day} {hh}:00"))
+    conn.commit()
+
+    ctx = pipeline._Ctx(conn, None, None)
+    cands = pipeline._PRIMITIVES["discover_stays"](ctx, min_days=3, days_back=3650, min_minutes=20)["candidates"]
+    assert len(cands) == 1 and abs(cands[0]["lat"] - 40.0) < 0.01
+
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Saved', 40.0, -74.0, 150)")
+    conn.commit()
+    assert pipeline._PRIMITIVES["discover_stays"](ctx, min_days=3, days_back=3650, min_minutes=20)["candidates"] == []
+
+
+def test_place_rename(client):
+    r = client.post("/api/places", json={"name": "Old", "lat": 40.0, "lon": -74.0})
+    pid = r.json()["id"]
+    assert client.patch(f"/api/places/{pid}", json={"name": "New"}).json()["name"] == "New"
+    assert any(p["name"] == "New" for p in client.get("/api/places").json())
+
+
 def test_places_crud(client):
     """Places CRUD: add (radius clamped), list, delete (cascades location_state)."""
     r = client.post("/api/places", json={"name": "Home", "lat": 40.0, "lon": -74.0, "radius_m": 5})

@@ -1,0 +1,40 @@
+# Declarative action: find LOOSE, unfiled notes — a bare title with no folder, or
+# a single segment directly under notes/ (e.g. notes/SomeThought) — and use the
+# LLM to file each one into the EXISTING folder structure, inventing a new folder
+# only when nothing fits. Dated daily captures (notes/daily/…) are never touched.
+#
+# Nothing moves automatically: each proposal is staged as a RENAME in the staging
+# area, where you approve or reject it. Applying a RENAME reslugs the note and
+# rewrites inbound [[links]], so links stay intact.
+#
+# config keys:
+#   limit         — max loose notes to consider per run (default 100)
+#   instructions  — extra guidance appended to the filing prompt
+#   review        — set to false to suppress the summary review card (default on)
+type: sort_unfiled
+category: Notes
+config:
+  - { key: limit, label: Max notes per run, type: number, default: 100 }
+  - { key: instructions, label: Extra guidance, type: textarea, help: "e.g. 'group work notes under notes/Projects'" }
+  - { key: review, label: Post a review card, type: review, default: true }
+steps:
+  - id: candidates
+    do: find_unfiled
+    with: { limit: "{{ config.limit | default(100) }}" }
+    stop_when_empty: "no loose notes to sort"
+
+  - id: plan
+    do: plan_moves
+    with:
+      candidates: "{{ candidates }}"
+      instructions: "{{ config.instructions | default(none) }}"
+
+  - id: result
+    do: stage_moves
+    with: { moves: "{{ plan.moves }}" }
+
+  - do: create_review
+    when: "{{ config.review != false and result.staged }}"
+    with:
+      title: "{{ result.staged }} note move(s) proposed — review to apply"
+      message: "Open the staging area to approve or reject the proposed folder moves. Nothing has moved yet."

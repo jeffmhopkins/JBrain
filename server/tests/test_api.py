@@ -1715,6 +1715,40 @@ def test_action_defs_api(client):
     assert client.delete("/api/action-defs/my_custom").status_code == 200
 
 
+def test_sort_unfiled_stages_renames(client, monkeypatch):
+    """The sort_unfiled action proposes folder moves as pending RENAMEs (review
+    first); it never moves a note itself, and ignores already-filed/daily notes."""
+    client.post("/api/action-defs/sync")  # seed sort_unfiled from repo
+
+    # Recipe lints clean.
+    got = client.get("/api/action-defs/sort_unfiled").json()
+    assert got["recipe"]["type"] == "sort_unfiled" and got["warnings"] == []
+
+    # A loose note (one level under notes/) plus an already-filed one to ignore.
+    client.post("/api/notes", json={"title": "notes/Sleep tips", "content_md": "melatonin, dark room"})
+    client.post("/api/notes", json={"title": "notes/Health/Filed", "content_md": "already filed"})
+
+    # Stub the provider: file the loose note under the existing Health folder.
+    monkeypatch.setattr("app.services.llm.has_credentials", lambda: True)
+    monkeypatch.setattr(
+        "app.services.llm.complete",
+        lambda msgs, **k: '[{"from":"notes/Sleep tips","to":"notes/Health/Sleep tips"}]',
+    )
+
+    wf = client.post("/api/workflows", json={
+        "name": "Sort", "trigger_type": "event", "trigger_config": {"event": "noop"},
+        "action_type": "sort_unfiled", "action_config": {"review": False}, "enabled": True,
+    }).json()
+    assert run_and_wait(client, wf["id"])["status"] == "ok"
+
+    # Exactly one pending RENAME staged for the loose note → its proposed folder.
+    renames = [p for p in client.get("/api/staging").json() if p["type"] == "RENAME"]
+    assert any(p["payload"]["title"] == "notes/Sleep tips"
+               and p["payload"]["new_title"] == "notes/Health/Sleep tips" for p in renames)
+    # Nothing moved yet — the note is still at its old title.
+    assert client.get("/api/search", params={"q": "Sleep tips", "mode": "keyword"}).status_code == 200
+
+
 def test_call_action_chaining_cycle_and_returns(client):
     import yaml
     import pytest as _pytest

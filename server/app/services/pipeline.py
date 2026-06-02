@@ -606,6 +606,126 @@ def _p_call_action(ctx, action, config=None, trigger=None):
     return {"type": target, "steps": len(trace), "stopped": stopped, "return": ret}
 
 
+# --- Re-filing loose notes ("sort unfiled") --------------------------------
+# A title IS its path ('/' separates folders; the root is notes/). "Loose" = a
+# bare title with no folder at all, or a single segment directly under notes/
+# (e.g. notes/SomeThought). Dated daily captures/rollups (notes/daily/…) are
+# never touched — they stay as the chronological log.
+def _is_loose_title(title: str) -> bool:
+    t = (title or "").strip()
+    if not t or t == "notes/daily" or t.startswith("notes/daily/"):
+        return False
+    segs = t.split("/")
+    return len(segs) == 1 or (len(segs) == 2 and segs[0] == "notes")
+
+
+def _p_find_unfiled(ctx, limit=200):
+    """Loose, unfiled notes to re-file. Returns a list (so stop_when_empty
+    short-circuits when there's nothing to sort)."""
+    rows = ctx.conn.execute(
+        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL ORDER BY id"
+    ).fetchall()
+    out = [
+        {"id": r["id"], "title": r["title"], "snippet": (r["content_md"] or "").strip()[:280]}
+        for r in rows if _is_loose_title(r["title"])
+    ]
+    return out[: max(1, int(limit))]
+
+
+def _existing_folders(conn) -> list[str]:
+    """Folder paths already in use (every ancestor prefix of a note title), minus
+    the dated daily tree — the taxonomy to re-file INTO."""
+    folders: set[str] = set()
+    for r in conn.execute("SELECT title FROM notes WHERE deleted_at IS NULL").fetchall():
+        parts = (r["title"] or "").split("/")
+        for i in range(1, len(parts)):
+            f = "/".join(parts[:i])
+            if not f.startswith("notes/daily"):
+                folders.add(f)
+    return sorted(folders)
+
+
+def _parse_moves(raw: str, valid_from: set[str]) -> list[dict]:
+    """Pull a JSON array of {from,to} out of an LLM reply, keeping only moves whose
+    source is a real candidate and whose target is a different, foldered path under
+    the notes/ root."""
+    m = re.search(r"\[.*\]", raw or "", re.DOTALL)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return []
+    moves, seen = [], set()
+    for d in data if isinstance(data, list) else []:
+        if not isinstance(d, dict):
+            continue
+        frm = (d.get("from") or d.get("from_title") or "").strip()
+        to = (d.get("to") or d.get("to_title") or "").strip().strip("/")
+        if frm not in valid_from or not to or to == frm or to in seen:
+            continue
+        if not to.startswith("notes/"):     # keep every move under the notes/ root
+            to = "notes/" + to
+        if "/" not in to[len("notes/"):]:   # must land in an actual sub-folder
+            continue
+        seen.add(to)
+        moves.append({"from": frm, "to": to})
+    return moves
+
+
+def _p_plan_moves(ctx, candidates, instructions=None):
+    """Ask the LLM to file each loose note into the EXISTING folder structure,
+    inventing a new folder only when nothing fits. Returns {moves, count}."""
+    items = candidates if isinstance(candidates, list) else []
+    if not items:
+        return {"moves": [], "count": 0}
+    if not llm.has_credentials():
+        return {"moves": [], "count": 0, "error": "no LLM API key configured"}
+    folder_block = "\n".join(f"- {f}" for f in _existing_folders(ctx.conn)) or "(no folders yet)"
+    notes_block = "\n".join(
+        f'{i + 1}. "{n["title"]}" — {n.get("snippet", "")[:200]}' for i, n in enumerate(items)
+    )
+    extra = f"\n\nAdditional guidance: {instructions}" if instructions else ""
+    prompt = (
+        "You organise a personal knowledge wiki. Each note's title IS its path, with "
+        "'/' as the folder separator and 'notes/' as the root.\n\n"
+        "EXISTING FOLDERS:\n" + folder_block + "\n\n"
+        "LOOSE NOTES TO FILE (current title — content snippet):\n" + notes_block + "\n\n"
+        "For each loose note, choose the best destination path. PREFER an existing "
+        "folder; invent a new folder ONLY when none fits. Keep the note's own name as "
+        "the final path segment and just prepend the right folder(s), all under 'notes/'. "
+        "Skip a note that's already well placed.\n\n"
+        'Reply with ONLY a JSON array, e.g. [{"from":"notes/Sleep tips","to":"notes/Health/Sleep tips"}]. '
+        'Use the EXACT current title as "from".' + extra
+    )
+    raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=2000)
+    moves = _parse_moves(raw, {n["title"] for n in items})
+    return {"moves": moves, "count": len(moves)}
+
+
+def _p_stage_moves(ctx, moves):
+    """Stage each proposed move as a pending (conversation-less) RENAME action for
+    the owner to approve in the staging area — nothing moves until then. Skips
+    no-ops, missing sources, and targets that already exist / collide in the batch."""
+    staged, seen = 0, set()
+    for m in (moves or []):
+        if not isinstance(m, dict):
+            continue
+        cur = (m.get("from") or m.get("from_title") or "").strip()
+        new = (m.get("to") or m.get("to_title") or "").strip()
+        if not cur or not new or cur == new or new in seen:
+            continue
+        if not notes_svc.get_by_title(ctx.conn, cur) or notes_svc.get_by_title(ctx.conn, new):
+            continue
+        seen.add(new)
+        ctx.conn.execute(
+            "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (NULL, ?, ?)",
+            ("RENAME", json.dumps({"type": "RENAME", "title": cur, "new_title": new})),
+        )
+        staged += 1
+    return {"staged": staged}
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -633,6 +753,9 @@ _PRIMITIVES = {
     "daily_pending": _p_daily_pending,
     "gather_context": _p_gather_context,
     "llm": _p_llm,
+    "find_unfiled": _p_find_unfiled,
+    "plan_moves": _p_plan_moves,
+    "stage_moves": _p_stage_moves,
 }
 
 
@@ -660,6 +783,13 @@ _PRIMITIVE_META: dict[str, dict] = {
     "semantic_search": {"summary": "Vector search over notes.",
                         "inputs": [{"name": "query", "type": "str", "required": True},
                                    {"name": "limit", "type": "int"}], "output": "list"},
+    "find_unfiled": {"summary": "List loose notes (no folder, or one level under notes/) to re-file.",
+                     "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
+    "plan_moves": {"summary": "LLM-propose a destination folder for each loose note (reusing existing folders).",
+                   "inputs": [{"name": "candidates", "type": "list", "required": True},
+                              {"name": "instructions", "type": "str"}], "output": "object"},
+    "stage_moves": {"summary": "Stage proposed note moves as pending RENAME actions for approval.",
+                    "inputs": [{"name": "moves", "type": "list", "required": True}], "output": "object"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

@@ -2483,3 +2483,22 @@ def test_recite_articles_rejects_dropped_citation(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "A.[^s1]\n\n## References\n[^s1]: [[notes/A]] — 1")
     out = pipeline._p_recite_articles(None, [art])
     assert out["bad"] == 1 and any("drop" in i for i in out["quarantined"][0]["issues"])
+
+
+def test_recite_kb_auto_apply_writes_directly(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import notes as notes_svc, pipeline, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "A durable fact.[^s1]\n\n## References\n[^s1]: [[notes/Src]] — 2026-01-01")
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "notes/Src", "source", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "kb/Old", "Fact [[notes/Src]].\n\n## Sources\n- [[notes/Src]] — 2026-01-01",
+                          kind="kb", source="user", fire_events=False)
+    conn.commit()
+    # auto_apply=True writes directly (no staging), and the article becomes footnoted.
+    pipeline.run_pipeline(conn, pipeline.get_action_def("recite_kb"), {"auto_apply": True}, None, None)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) c FROM staging_actions WHERE status='pending'").fetchone()["c"] == 0
+    body = conn.execute("SELECT content_md FROM notes WHERE title='kb/Old'").fetchone()["content_md"]
+    assert "[^s1]" in body and "## References" in body and "## Sources" not in body

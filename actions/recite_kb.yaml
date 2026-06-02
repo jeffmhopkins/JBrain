@@ -10,6 +10,7 @@
 type: recite_kb
 config:
   - { key: batch_limit, label: Max articles per run, type: number }
+  - { key: auto_apply, label: Apply without review, type: boolean, default: false }
 steps:
   - id: pending
     do: kb_old_citation_pending
@@ -22,15 +23,27 @@ steps:
     do: recite_articles
     with: { articles: "{{ pending.articles }}" }
 
+  # auto_apply: write the reformatted articles directly (versioned/undoable).
+  - when: "{{ config.auto_apply and recited.valid }}"
+    for_each: "{{ recited.valid }}"
+    steps:
+      - do: write_note
+        with:
+          title: "{{ item.title }}"
+          content_md: "{{ item.content_md }}"
+          kind: kb
+          version_note: "citation cleanup"
+
+  # default: stage the rewrites for review (uses the staging diff preview).
   - do: stage_kb_proposals
-    when: "{{ recited.valid }}"
+    when: "{{ not config.auto_apply and recited.valid }}"
     with: { articles: "{{ recited.valid }}" }
 
   - do: create_review
     when: "{{ recited.valid }}"
     with:
-      title: "Citation cleanup — {{ recited.ok }} article(s) to review"
-      message: "Reformatted citations on: {{ recited.valid | map(attribute='title') | join(', ') }}. Review the diffs and approve in Assisted chat."
+      title: "Citation cleanup — {{ recited.ok }} article(s)"
+      message: "Reformatted citations on: {{ recited.valid | map(attribute='title') | join(', ') }}.{{ ' Applied directly (versioned/undoable).' if config.auto_apply else ' Review the diffs and approve in Assisted chat.' }}"
 
   - do: create_review
     when: "{{ recited.quarantined }}"

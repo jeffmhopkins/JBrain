@@ -27,9 +27,12 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ name: string; pct: number; processing: boolean } | null>(null);
   const [viewing, setViewing] = useState<Viewing>(null);
+  const [thumbs, setThumbs] = useState<Record<number, string>>({});   // attachment id -> object URL for inline image previews
   const inputRef = useRef<HTMLInputElement>(null);
   const polling = useRef<Set<number>>(new Set());
   const alive = useRef(true);
+  const thumbsRef = useRef(thumbs);
+  thumbsRef.current = thumbs;
 
   async function load() {
     try {
@@ -42,6 +45,25 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   }
   useEffect(() => { load(); }, [slug]);
   useEffect(() => () => { alive.current = false; }, []);
+
+  // Inline image previews: fetch each image's bytes once (authed) into an object
+  // URL. Kept until unmount, then revoked. Big images are reined in by CSS, not by
+  // downloading less — attachments are capped at 10 MB, so this stays cheap.
+  useEffect(() => () => { Object.values(thumbsRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const a of items) {
+        if (!isImage(a.mime) || thumbsRef.current[a.id]) continue;
+        try {
+          const url = await attachmentObjectUrl(a.id);
+          if (cancelled) { URL.revokeObjectURL(url); return; }
+          setThumbs((t) => ({ ...t, [a.id]: url }));
+        } catch { /* no preview — the View button still works */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [items]);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
 
   // Poll a single attachment until analysis settles, then refresh the list and
@@ -142,6 +164,10 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             <span className="spacer" />
             <span className="muted" style={{ fontSize: 11 }}>{humanSize(a.byte_size)}</span>
           </div>
+          {isImage(a.mime) && thumbs[a.id] && (
+            <img src={thumbs[a.id]} alt={a.filename} className="att-thumb" loading="lazy"
+                 title="Click to view full size" onClick={() => view(a)} />
+          )}
           {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
               {a.analysis_status === "pending" && <span className="muted">⏳ Analyzing image…</span>}

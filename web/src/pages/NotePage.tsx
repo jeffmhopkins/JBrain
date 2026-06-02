@@ -21,12 +21,23 @@ interface Note {
   tags: string[];
 }
 
-// Long path titles (e.g. notes/daily/2026/06/01/3) wrap cleanly at the slashes
-// instead of breaking mid-number; <wbr> adds a break opportunity, copies as "/".
-function breakableTitle(title: string) {
-  return title.split("/").map((seg, i) => (
-    <span key={i}>{i > 0 && <>/<wbr /></>}{seg}</span>
-  ));
+// Render a "/"-path title as a clickable directory breadcrumb: each ancestor
+// segment links to the Wiki focused on that folder; the note's own name (the last
+// segment) stays plain. Long titles still wrap cleanly at the slashes (<wbr>).
+function titleCrumbs(title: string) {
+  const segs = title.split("/");
+  return segs.map((seg, i) => {
+    const isLast = i === segs.length - 1;
+    const path = segs.slice(0, i + 1).join("/");
+    return (
+      <span key={i}>
+        {i > 0 && <span className="crumb-sep">/<wbr /></span>}
+        {isLast ? seg : (
+          <Link to={`/wiki?q=${encodeURIComponent(path)}&kind=`} className="crumb-link">{seg}</Link>
+        )}
+      </span>
+    );
+  });
 }
 
 export default function NotePage() {
@@ -140,7 +151,7 @@ export default function NotePage() {
   const article = (
     <div className="content">
       <h1 className="note-title">
-        {breakableTitle(note.title)}
+        {titleCrumbs(note.title)}
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
       </h1>
       {editing === null && (

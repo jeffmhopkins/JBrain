@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { get } from "../api";
 import { Icon } from "../components/Icon";
 
@@ -31,9 +31,15 @@ function buildTree(notes: NoteRow[]): TNode {
 }
 
 export default function Wiki() {
+  // Seed the filter from the URL (?q=…&kind=…) so a directory breadcrumb elsewhere
+  // can deep-link into a folder. An explicit empty kind ("?kind=") means "All".
+  const [params] = useSearchParams();
   const [notes, setNotes] = useState<NoteRow[]>([]);
-  const [q, setQ] = useState("");
-  const [kind, setKind] = useState<Filter>("kb");   // default to the knowledge base
+  const [q, setQ] = useState(() => params.get("q") || "");
+  const [kind, setKind] = useState<Filter>(() => {
+    const k = params.get("kind");
+    return (k === null ? "kb" : k) as Filter;   // absent → knowledge base (default)
+  });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   useEffect(() => {

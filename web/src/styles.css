@@ -312,6 +312,10 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .tree-seg { color: var(--text-dim); cursor: pointer; }
 .tree-seg-link { color: var(--text); }
 .tree-seg-link:hover { text-decoration: none; color: var(--accent); }
+/* Clickable path breadcrumb in a note's title header. */
+.crumb-link { color: var(--text-dim); font-weight: 400; }
+.crumb-link:hover { color: var(--accent); text-decoration: none; }
+.crumb-sep { color: var(--text-dim); opacity: 0.5; font-weight: 400; }
 
 /* ---- Chat --------------------------------------------------------------- */
 .chat-wrap {

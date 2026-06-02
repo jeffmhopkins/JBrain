@@ -141,7 +141,10 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
           <div className="msg assistant"><div className="md msg-md"><ReactMarkdown>{typing.slice(0, shown)}</ReactMarkdown></div></div>
         )}
         {thinking && (
-          <div className="msg assistant"><span className="typing-dots"><span /><span /><span /></span></div>
+          <div className="chat-status" aria-live="polite">
+            <span className="typing-dots"><span /><span /><span /></span>
+            <span className="chat-status-text">Thinking…</span>
+          </div>
         )}
         {phase === "review" && (
           <div className="msg assistant guided-doc-bubble"><div className="md msg-md"><ReactMarkdown>{doc}</ReactMarkdown></div></div>

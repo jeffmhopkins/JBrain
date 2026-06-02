@@ -2105,3 +2105,31 @@ def test_guided_spend_cap_is_atomic(client, monkeypatch):
     assert out["phase"] == "review"
     assert conn.execute("SELECT reply_count, max_total_replies FROM guided_specs WHERE share_link_id=?",
                         (link_id,)).fetchone()["reply_count"] <= 2
+
+
+def test_guided_single_use_and_bind(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import share as share_svc, guided as guided_svc, llm
+    from app.services import notes as notes_svc
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete",
+                        lambda *a, **k: "## Doc" if "writing a clean" in (k.get("system") or "") else "Thanks. <<DONE>>")
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "notes/Once", "# x", source="user", fire_events=False)
+    token, link_id = share_svc.create_guided_link(conn, nid)
+    guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p",
+                           bind=True, single_use=True)
+    conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id=?", (link_id,))
+    conn.commit()
+    from fastapi.testclient import TestClient
+    from app.main import app
+    dad = TestClient(app)
+    dad.post(f"/api/share/{token}/guided/start", json={"name": "Dad"})
+    dad.post(f"/api/share/{token}/guided/turn", json={"message": "done"})   # -> DONE -> review
+    assert dad.post(f"/api/share/{token}/guided/submit").json()["ok"] is True
+    # A DIFFERENT device is refused: locked (bind) AND already completed (single_use).
+    r = TestClient(app).post(f"/api/share/{token}/guided/start", json={"name": "Stranger"})
+    assert r.status_code in (403, 409)
+    # Owner clears the options -> a fresh device may begin again.
+    client.post(f"/api/shares/guided/{link_id}/options", json={"bind": False, "single_use": False})
+    assert TestClient(app).post(f"/api/share/{token}/guided/start", json={"name": "New"}).json()["phase"] in ("asking", "review")

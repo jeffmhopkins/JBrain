@@ -103,6 +103,9 @@ export const guidedSubmit = <T = any>(token: string) =>
 export const guidedActivate = (linkId: number) => post(`/api/shares/guided/${linkId}/activate`);
 export const guidedAccept = (sid: number) => post(`/api/shares/guided/sessions/${sid}/accept`);
 export const guidedReject = (sid: number) => post(`/api/shares/guided/sessions/${sid}/reject`);
+export const guidedOptions = (linkId: number, bind: boolean, single_use: boolean) =>
+  post(`/api/shares/guided/${linkId}/options`, { bind, single_use });
+export const guidedResetBind = (linkId: number) => post(`/api/shares/guided/${linkId}/reset-bind`);
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.

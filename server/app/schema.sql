@@ -262,6 +262,8 @@ CREATE TABLE IF NOT EXISTS guided_specs (
   intro           TEXT NOT NULL DEFAULT '',           -- what the recipient sees on the consent landing
   sub_prompt      TEXT NOT NULL,                      -- generated instructions for the interview AI
   status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+  bind            INTEGER NOT NULL DEFAULT 0,         -- lock to the first device that begins it
+  single_use      INTEGER NOT NULL DEFAULT 0,         -- close after one completed response
   max_turns       INTEGER NOT NULL DEFAULT 40,        -- per-session recipient-AI replies
   max_total_replies INTEGER NOT NULL DEFAULT 80,      -- cumulative across the link (hard cost cap)
   reply_count     INTEGER NOT NULL DEFAULT 0,         -- billed AI replies so far (atomic counter)

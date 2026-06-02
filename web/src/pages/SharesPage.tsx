@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, guidedAccept, guidedActivate, guidedReject, post } from "../api";
+import { get, guidedAccept, guidedActivate, guidedOptions, guidedReject, guidedResetBind, post } from "../api";
 import { useAuth } from "../App";
 import { fmtTs } from "../time";
 
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
-interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; note_title: string; note_slug: string; submitted: number; }
+interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; }
 interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; }
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
@@ -68,6 +68,15 @@ export default function SharesPage() {
   }
   async function activateGuided(g: GuidedLink) {
     try { await guidedActivate(g.id); load(); } catch (e: any) { alert(e?.message || "Couldn't activate."); }
+  }
+  async function toggleGuidedOpt(g: GuidedLink, key: "bind" | "single_use") {
+    const next = { bind: !!g.bind, single_use: !!g.single_use, [key]: !g[key] };
+    setGuidedLinks((ls) => ls.map((x) => x.id === g.id ? { ...x, bind: next.bind ? 1 : 0, single_use: next.single_use ? 1 : 0 } : x));
+    try { await guidedOptions(g.id, next.bind, next.single_use); } catch { load(); }
+  }
+  async function resetGuidedBind(g: GuidedLink) {
+    if (!confirm("Forget the device this link locked to, so it can be opened fresh?")) return;
+    try { await guidedResetBind(g.id); load(); } catch { load(); }
   }
   async function copyText(text: string, id: number) {
     try { await navigator.clipboard.writeText(text); setCopied(id); setTimeout(() => setCopied(null), 1500); }
@@ -160,6 +169,17 @@ export default function SharesPage() {
                 {openPrompt === g.id ? "Hide" : "Review"} the AI’s instructions
               </button>
               {openPrompt === g.id && <pre className="share-diff" style={{ marginTop: 6 }}>{g.sub_prompt}</pre>}
+              <div className="row" style={{ marginTop: 8, gap: 18, flexWrap: "wrap", alignItems: "center" }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                  <input className="share-check" type="checkbox" checked={!!g.bind} onChange={() => toggleGuidedOpt(g, "bind")} /> Lock to first device
+                </label>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                  <input className="share-check" type="checkbox" checked={!!g.single_use} onChange={() => toggleGuidedOpt(g, "single_use")} /> Single use (run once)
+                </label>
+                {!!g.bind && g.started > 0 && (
+                  <button className="ghost" style={{ fontSize: 12 }} onClick={() => resetGuidedBind(g)}>Reset lock</button>
+                )}
+              </div>
               {g.spec_status === "active" && (
                 <div className="row" style={{ marginTop: 6, gap: 6 }}>
                   <input readOnly value={g.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />

@@ -86,14 +86,27 @@ def _fence(text: str, nonce: str) -> str:
 # --- spec lifecycle (owner side calls these; no note access here) ------------
 
 def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str,
+                bind: bool = False, single_use: bool = False,
                 max_turns: int = 40, max_total_replies: int = 80) -> int:
     cur = conn.execute(
         "INSERT INTO guided_specs (share_link_id, goal, intro, sub_prompt, status, "
-        "max_turns, max_total_replies) VALUES (?, ?, ?, ?, 'draft', ?, ?)",
-        (link_id, goal or "", intro or "", sub_prompt, max(1, int(max_turns)),
-         max(1, int(max_total_replies))),
+        "bind, single_use, max_turns, max_total_replies) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
+        (link_id, goal or "", intro or "", sub_prompt, 1 if bind else 0, 1 if single_use else 0,
+         max(1, int(max_turns)), max(1, int(max_total_replies))),
     )
     return cur.lastrowid
+
+
+def set_options(conn, link_id: int, *, bind: bool, single_use: bool) -> None:
+    conn.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
+                 (1 if bind else 0, 1 if single_use else 0, link_id))
+
+
+def reset_bind(conn, link_id: int) -> None:
+    """Forget the device that claimed a locked link so it can be started fresh
+    (abandons any in-progress session, mirroring share-link reset-bind)."""
+    conn.execute("UPDATE guided_sessions SET status='abandoned' "
+                 "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
 
 
 def get_spec(conn, link_id: int):
@@ -106,7 +119,22 @@ def activate_spec(conn, link_id: int) -> None:
 
 # --- recipient sessions -----------------------------------------------------
 
-def start_session(conn, link, name: str | None, client_ip: str | None) -> tuple[int, str]:
+def start_session(conn, link, spec, name: str | None, client_ip: str | None,
+                  my_secret: str | None = None) -> tuple[int, str]:
+    """Create a recipient session, honoring the link's bind / single_use options.
+    Reached only when the caller's cookie doesn't already match a live session."""
+    from fastapi import HTTPException
+    if spec["single_use"] and conn.execute(
+        "SELECT 1 FROM guided_sessions WHERE share_link_id=? AND status='submitted' LIMIT 1",
+        (link["id"],)).fetchone():
+        raise HTTPException(status_code=409, detail="This link has already been completed.")
+    if spec["bind"]:
+        other = conn.execute(
+            "SELECT secret FROM guided_sessions WHERE share_link_id=? "
+            "AND status IN ('active','drafting','submitted') LIMIT 1", (link["id"],)).fetchone()
+        if other and other["secret"] != my_secret:
+            raise HTTPException(status_code=403,
+                                detail="This link is locked to the device that started it.")
     secret = secrets.token_urlsafe(24)
     cur = conn.execute(
         "INSERT INTO guided_sessions (share_link_id, secret, name, client_ip) VALUES (?, ?, ?, ?)",

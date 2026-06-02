@@ -66,8 +66,9 @@ def list_shares():
     # Guided AI intake links (draft + active) and the responses awaiting approval #2.
     guided_links = conn.execute(
         "SELECT sl.id, sl.token, sl.created_at, sl.expires_at, gs.goal, gs.intro, gs.sub_prompt, "
-        "       gs.status AS spec_status, n.title AS note_title, n.slug AS note_slug, "
-        "       (SELECT COUNT(*) FROM guided_sessions s WHERE s.share_link_id=sl.id AND s.status='submitted') AS submitted "
+        "       gs.status AS spec_status, gs.bind, gs.single_use, n.title AS note_title, n.slug AS note_slug, "
+        "       (SELECT COUNT(*) FROM guided_sessions s WHERE s.share_link_id=sl.id AND s.status='submitted') AS submitted, "
+        "       (SELECT COUNT(*) FROM guided_sessions s WHERE s.share_link_id=sl.id AND s.status IN ('active','drafting','submitted')) AS started "
         "FROM share_links sl JOIN guided_specs gs ON gs.share_link_id=sl.id JOIN notes n ON n.id=sl.note_id "
         "WHERE sl.kind='guided' AND sl.status='active' ORDER BY sl.created_at DESC"
     ).fetchall()
@@ -88,6 +89,31 @@ def list_shares():
         "guided_links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in guided_links],
         "guided_pending": [dict(r) for r in guided_pending],
     }
+
+
+class GuidedOptionsIn(BaseModel):
+    bind: bool = False
+    single_use: bool = False
+
+
+@router.post("/guided/{link_id}/options")
+def guided_options(link_id: int, body: GuidedOptionsIn):
+    """Toggle the lock-to-device / run-once options for a guided link."""
+    conn = get_conn()
+    from ..services import guided as guided_svc
+    guided_svc.set_options(conn, link_id, bind=body.bind, single_use=body.single_use)
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/guided/{link_id}/reset-bind")
+def guided_reset_bind(link_id: int):
+    """Forget the device a locked guided link bound to, so it can start fresh."""
+    conn = get_conn()
+    from ..services import guided as guided_svc
+    guided_svc.reset_bind(conn, link_id)
+    conn.commit()
+    return {"ok": True}
 
 
 @router.post("/guided/{link_id}/activate")

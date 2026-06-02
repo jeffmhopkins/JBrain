@@ -209,7 +209,8 @@ def guided_start(token: str, body: GuidedStartIn, request: Request, response: Re
         return {"resumed": True, "name": existing["name"], "transcript": transcript,
                 "document": existing["document_md"],
                 "phase": "review" if existing["status"] == "drafting" else "asking"}
-    sid, secret = guided_svc.start_session(conn, link, body.name, _client_ip(request))
+    sid, secret = guided_svc.start_session(conn, link, spec, body.name, _client_ip(request),
+                                           request.cookies.get(f"jb_guided_{link['id']}"))
     conn.commit()
     session = conn.execute("SELECT * FROM guided_sessions WHERE id = ?", (sid,)).fetchone()
     out = guided_svc.first_message(conn, link, spec, session)

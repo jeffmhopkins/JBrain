@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 def init_db() -> None:
@@ -237,6 +237,11 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               client_ip TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT);
             CREATE INDEX IF NOT EXISTS idx_guided_sessions_link ON guided_sessions(share_link_id);
         """)
+
+    if current < 19:
+        # Per-link options: lock to the first device, and run once to completion.
+        _add_column(conn, "guided_specs", "bind", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "guided_specs", "single_use", "INTEGER NOT NULL DEFAULT 0")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

@@ -96,7 +96,9 @@ _TOOL_SCHEMAS = {
         "sub_prompt": {"type": "string", "description": "The instructions the interview AI will follow: what to cover, the order, tone, and what 'done' looks like. You author this from the owner's answers."},
         "intro": {"type": "string", "description": "Warm 1-2 sentence intro the recipient sees before starting."},
         "dest_title": {"type": "string", "description": "Note the approved result lands in (created if absent)."},
-        "ttl_days": {"type": "integer", "default": 14}},
+        "ttl_days": {"type": "integer", "default": 14},
+        "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that begins it (one recipient)."},
+        "single_use": {"type": "boolean", "default": False, "description": "Close the link after one completed response."}},
         "required": ["goal", "sub_prompt"]},
     "list_share_links": {"type": "object", "properties": {}},
     "revoke_share_link": {"type": "object", "properties": {
@@ -523,7 +525,7 @@ def _tool_create_share_link(conn, conversation_id, title, scope="view"):
 
 
 def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
-                              dest_title=None, ttl_days=14):
+                              dest_title=None, ttl_days=14, bind=False, single_use=False):
     """Mint a DRAFT guided AI intake link. The owner reviews/activates it (approval
     #1) before recipients can use it. The interview AI (guided_svc) has no brain
     access. `sub_prompt` = the goal-specific instructions you authored from the
@@ -543,7 +545,8 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
         conn, title, f"# {title.split('/')[-1]}\n\n_Awaiting a guided response…_\n",
         source="user", version_note="guided intake note", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, note_id, label=goal[:80], ttl_days=ttl_days)
-    guided_svc.create_spec(conn, link_id, goal=goal, intro=intro, sub_prompt=sub_prompt)
+    guided_svc.create_spec(conn, link_id, goal=goal, intro=intro, sub_prompt=sub_prompt,
+                           bind=bool(bind), single_use=bool(single_use))
     url = share_svc.share_url(token)
     display = (f"Created a DRAFT guided intake link for [[{title}]] → {url}\n"
               f"It's not live yet — review the interview and ACTIVATE it under Advanced → Shares "
@@ -626,7 +629,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_create_share_link(conn, conversation_id, args["title"], args.get("scope", "view"))
     if name == "create_guided_share":
         return _tool_create_guided_share(conn, conversation_id, args["goal"], args["sub_prompt"],
-                                         args.get("intro", ""), args.get("dest_title"), args.get("ttl_days", 14))
+                                         args.get("intro", ""), args.get("dest_title"), args.get("ttl_days", 14),
+                                         args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None
     if name == "revoke_share_link":

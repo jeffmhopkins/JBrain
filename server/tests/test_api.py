@@ -2450,3 +2450,36 @@ def test_staging_list_includes_current_content_for_diff(client):
     items = client.get("/api/staging").json()
     item = [i for i in items if i["payload"].get("title") == "kb/Jeff"][0]
     assert item["current_content"] == "old content line"        # frontend diffs this vs payload.content
+
+
+# --- KB citation cleanup (recite) -------------------------------------------
+
+def test_kb_old_citation_pending_targets_old_style_only(client):
+    from app.db import get_conn
+    from app.services import notes as notes_svc, pipeline
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "kb/Old", "Fact [[notes/Src]].\n\n## Sources\n- [[notes/Src]] — 2026-01-01",
+                          kind="kb", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "kb/New", "Fact.[^s1]\n\n## References\n[^s1]: [[notes/Src]] — 2026-01-01",
+                          kind="kb", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "kb/NoCites", "Just prose, no citations.", kind="kb", source="user", fire_events=False)
+    conn.commit()
+    class C: pass
+    c = C(); c.conn = conn
+    titles = {a["title"] for a in pipeline._p_kb_old_citation_pending(c)["articles"]}
+    assert titles == {"kb/Old"}                         # only the un-footnoted, cited article
+
+
+def test_recite_articles_rejects_dropped_citation(client, monkeypatch):
+    from app.services import pipeline, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    art = {"title": "kb/Old", "content_md": "A [[notes/A]] and B [[notes/B]].\n\n## Sources\n- [[notes/A]] — 1\n- [[notes/B]] — 2"}
+    # Good rewrite: keeps both sources as footnotes.
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "A.[^s1] B.[^s2]\n\n## References\n[^s1]: [[notes/A]] — 1\n[^s2]: [[notes/B]] — 2")
+    out = pipeline._p_recite_articles(None, [art])
+    assert out["ok"] == 1 and out["valid"][0]["title"] == "kb/Old"
+    # Bad rewrite: drops [[notes/B]] entirely → quarantined (link-graph guard).
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "A.[^s1]\n\n## References\n[^s1]: [[notes/A]] — 1")
+    out = pipeline._p_recite_articles(None, [art])
+    assert out["bad"] == 1 and any("drop" in i for i in out["quarantined"][0]["issues"])

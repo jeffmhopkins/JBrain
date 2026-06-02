@@ -326,6 +326,85 @@ def _p_validate_citations(ctx, articles):
             "ok": len(valid), "bad": len(quarantined)}
 
 
+def _cited_titles(md: str) -> set:
+    """Lower-cased set of every [[wiki-link]] target in the text (link-graph members)."""
+    return {m.group(1).strip().lower()
+            for m in re.finditer(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]", md or "") if m.group(1).strip()}
+
+
+def _strip_code_fence(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s)
+    return s.strip()
+
+
+_RECITE_DEFAULT = (
+    "You are reformatting ONE knowledge-base article's CITATIONS to the house style. "
+    "Do NOT change, add, or drop any FACT — only restyle citations and lightly tidy prose. "
+    "Output ONLY the rewritten Markdown article, nothing else.\n"
+    "Rules:\n"
+    "- Keep every fact and EVERY [[wiki-link]] the article already has — never drop a cited "
+    "source or a cross-link.\n"
+    "- NATURAL INLINE: where a [[title]] reads naturally in the sentence, keep it inline "
+    "(use [[title|display]] if the bare title is clunky), exact title preserved.\n"
+    "- ATTRIBUTION FOOTNOTE: where a [[source]] is just tacked on as attribution, replace it "
+    "with a footnote marker [^sN] and define it in a \"## References\" block: "
+    "[^s1]: [[Source Title]] — DATE (reuse the date from the old \"## Sources\" list if present, "
+    "else omit \"— DATE\").\n"
+    "- Replace any old \"## Sources\" bullet list with the \"## References\" footnote block.\n"
+    "- Every [^sN] used has exactly one definition; every definition contains the source's [[…]]; "
+    "never reuse an id for two different sources.\n"
+    "- If the article has no citations to restyle, return it unchanged.\n\n"
+    "ARTICLE:\n{article}"
+)
+
+
+def _p_kb_old_citation_pending(ctx, limit=10):
+    """KB articles still in the OLD citation style (a '## Sources' list and/or inline
+    [[notes/…]] cites) and NOT yet converted to footnotes ([^…]). Idempotent: once an
+    article gains a [^ footnote it drops out of the candidate set."""
+    rows = ctx.conn.execute(
+        "SELECT id, title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "  AND content_md NOT LIKE '%[^%' "
+        "  AND (content_md LIKE '%## Sources%' OR content_md LIKE '%[[notes/%') "
+        "ORDER BY id"
+    ).fetchall()
+    capped = [dict(r) for r in rows][: max(1, min(int(limit), 100))]
+    return {"articles": capped, "count": len(rows), "ids": [a["id"] for a in capped]}
+
+
+def _p_recite_articles(ctx, articles):
+    """Rewrite each article's citations into the footnote style via the LLM, then GUARD:
+    reject a rewrite whose footnotes are malformed (citation_issues) OR that DROPS any
+    [[…]] the original had (would break the link graph). Returns valid vs quarantined."""
+    from . import prompts
+    valid, quarantined = [], []
+    tmpl = prompts.get("actions.recite", _RECITE_DEFAULT)
+    for a in (articles or []):
+        title, original = a.get("title"), (a.get("content_md") or "")
+        if not title or not original.strip():
+            continue
+        try:
+            out = llm.complete([{"role": "user", "content": tmpl.replace("{article}", original)}],
+                               max_tokens=4096)
+        except Exception as e:
+            quarantined.append({"title": title, "issues": [f"LLM error: {e}"]}); continue
+        out = _strip_code_fence(out)
+        issues = citation_issues(out)
+        dropped = _cited_titles(original) - _cited_titles(out)
+        if not out.strip():
+            issues.append("empty rewrite")
+        if dropped:
+            issues.append("would drop citations: " + ", ".join(sorted(dropped))[:160])
+        if issues:
+            quarantined.append({"title": title, "issues": issues})
+        else:
+            valid.append({"op": "update", "title": title, "content_md": out})
+    return {"valid": valid, "quarantined": quarantined, "ok": len(valid), "bad": len(quarantined)}
+
+
 def _p_gather_context(ctx, source_title=None, context_query=None):
     """Build context text from a named note or a semantic search (synthesize).
     @t[...] live values are expanded so the model reads the value, not the token."""
@@ -471,6 +550,8 @@ _PRIMITIVES = {
     "summarise_entries": _p_summarise_entries,
     "wiki_plan": _p_wiki_plan,
     "validate_citations": _p_validate_citations,
+    "kb_old_citation_pending": _p_kb_old_citation_pending,
+    "recite_articles": _p_recite_articles,
     "kb_uncited_pending": _p_kb_uncited_pending,
     "mark_evaluated": _p_mark_evaluated,
     "stage_kb_proposals": _p_stage_kb_proposals,
@@ -534,6 +615,10 @@ _PRIMITIVE_META: dict[str, dict] = {
     "validate_citations": {"summary": "Split a wiki_plan into citation-valid vs quarantined (malformed footnotes).",
                            "inputs": [{"name": "articles", "type": "list", "required": True}],
                            "output": "object"},
+    "kb_old_citation_pending": {"summary": "KB articles still in the old citation style (not yet footnoted).",
+                                "inputs": [{"name": "limit", "type": "int"}], "output": "object"},
+    "recite_articles": {"summary": "LLM-reformat articles to footnote citations; reject ones that drop a link.",
+                        "inputs": [{"name": "articles", "type": "list", "required": True}], "output": "object"},
     "kb_uncited_pending": {"summary": "Entries no kb article cites and synthesis hasn't evaluated.",
                            "inputs": [{"name": "limit", "type": "int"}, {"name": "since_floor", "type": "str"},
                                       {"name": "reconsider", "type": "bool"}], "output": "object"},

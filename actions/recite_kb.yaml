@@ -1,0 +1,39 @@
+# Declarative action: CITATION CLEANUP. Find KB articles still in the old citation
+# style (inline [[…]] on every claim + a "## Sources" list) and reformat them to the
+# house footnote style ([^sN] markers + a "## References" block), then STAGE the
+# rewrites for review. Guarded: a rewrite that would drop a cited [[link]] or has
+# malformed footnotes is skipped (never staged), so the knowledge graph can't break.
+# Idempotent — once an article is footnoted it drops out of the candidate set.
+#
+# config keys:
+#   batch_limit — max articles per run (default 10; LLM call per article)
+type: recite_kb
+config:
+  - { key: batch_limit, label: Max articles per run, type: number }
+steps:
+  - id: pending
+    do: kb_old_citation_pending
+    with: { limit: "{{ config.batch_limit | default(10) }}" }
+
+  - stop_when: "{{ not pending.articles }}"
+    stop_message: "no old-style KB articles to reformat — citations look up to date"
+
+  - id: recited
+    do: recite_articles
+    with: { articles: "{{ pending.articles }}" }
+
+  - do: stage_kb_proposals
+    when: "{{ recited.valid }}"
+    with: { articles: "{{ recited.valid }}" }
+
+  - do: create_review
+    when: "{{ recited.valid }}"
+    with:
+      title: "Citation cleanup — {{ recited.ok }} article(s) to review"
+      message: "Reformatted citations on: {{ recited.valid | map(attribute='title') | join(', ') }}. Review the diffs and approve in Assisted chat."
+
+  - do: create_review
+    when: "{{ recited.quarantined }}"
+    with:
+      title: "Citation cleanup skipped some"
+      message: "{{ recited.bad }} article(s) weren't reformatted (would drop a citation or had malformed footnotes): {{ recited.quarantined | map(attribute='title') | join(', ') }}."

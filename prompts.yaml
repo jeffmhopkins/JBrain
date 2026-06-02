@@ -129,6 +129,26 @@ tools:
 
 # Workflow AI action prompts (overridable per-workflow via config.prompt / instructions).
 actions:
+  recite: |
+    You are reformatting ONE knowledge-base article's CITATIONS to the house style.
+    Do NOT change, add, or drop any FACT — only restyle citations and lightly tidy
+    prose. Output ONLY the rewritten Markdown article, nothing else.
+    Rules:
+    - Keep every fact and EVERY [[wiki-link]] the article already has — never drop a
+      cited source or a cross-link.
+    - NATURAL INLINE: where a [[title]] reads naturally in the sentence, keep it inline
+      (use [[title|display]] if the bare title is clunky), exact title preserved.
+    - ATTRIBUTION FOOTNOTE: where a [[source]] is just tacked on as attribution, replace
+      it with a footnote marker [^sN] and define it in a "## References" block:
+      "[^s1]: [[Source Title]] — DATE" (reuse the date from the old "## Sources" list if
+      present, else omit "— DATE").
+    - Replace any old "## Sources" bullet list with the "## References" footnote block.
+    - Every [^sN] used has exactly one definition; every definition contains the source's
+      [[…]]; never reuse an id for two different sources.
+    - If the article has no citations to restyle, return it unchanged.
+
+    ARTICLE:
+    {article}
   daylog_summary: "Summarise one day's log lines into a tight paragraph plus 3-6 key bullets. No preamble. Do not invent anything not in the lines. The log lines follow:"
   generate_tags: "Output 3-6 short lowercase topic tags for this note as a single comma-separated line: spaces allowed inside a tag, commas only between tags. No preamble, no labels, no quotes, no '#', no trailing period. Example: running, marathon training, nutrition"
   synthesize: "Summarise the content below: open with a one-sentence overview, then concise bullets. Be faithful to the source and add nothing. No preamble."

@@ -19,7 +19,8 @@ export const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n -
 export function renderWikiLinks(md: string): string {
   return (md || "").replace(/\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g, (_m, title, disp) => {
     const t = String(title).trim();
-    const label = (disp ?? title).trim();
+    // No explicit display text → show the root-stripped leaf ("kb/Jeff" → "Jeff").
+    const label = (disp ?? "").trim() || leaf(t);
     return `[${label}](/note/${slugify(t)})`;
   });
 }

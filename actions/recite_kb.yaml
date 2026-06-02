@@ -10,7 +10,7 @@
 type: recite_kb
 category: Knowledge base
 config:
-  - { key: batch_limit, label: Max articles per run, type: number }
+  - { key: batch_limit, label: Max articles per run, type: number, default: 10 }
   - { key: auto_apply, label: Apply without review, type: boolean, default: false }
 steps:
   - id: pending

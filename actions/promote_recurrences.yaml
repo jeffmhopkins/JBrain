@@ -16,10 +16,10 @@
 type: promote_recurrences
 category: Knowledge base
 config:
-  - { key: batch_limit, label: Max chatter entries scanned, type: number }
-  - { key: min_days, label: Distinct days to count as a pattern, type: number }
-  - { key: tau, label: Similarity threshold (cosine distance), type: number }
-  - { key: promote_limit, label: Max patterns per run, type: number }
+  - { key: batch_limit, label: Max chatter entries scanned, type: number, default: 500 }
+  - { key: min_days, label: Distinct days to count as a pattern, type: number, default: 3 }
+  - { key: tau, label: Similarity threshold (cosine distance), type: number, default: 0.35 }
+  - { key: promote_limit, label: Max patterns per run, type: number, default: 5 }
   - { key: auto_apply, label: Write KB directly (skip review), type: boolean, default: false }
 steps:
   - id: pool

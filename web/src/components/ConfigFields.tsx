@@ -10,7 +10,7 @@ export interface FieldSpec {
   required?: boolean;
   help?: string;
   options?: string[];
-  default?: boolean; // review: post a review by default · boolean: the default value
+  default?: boolean | number | string; // boolean/review: default value · number/text: shown as ghost text
 }
 
 function Help({ t }: { t?: string }) {
@@ -69,6 +69,9 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
       {f.label}{f.required && " *"}
     </label>
   );
+  // When the field is blank it falls back to the action's default — show that
+  // default value as ghost text (e.g. "500 (default)") rather than hiding it.
+  const ph = f.default != null && f.default !== "" ? `${f.default} (default)` : "default";
 
   if (f.type === "textarea") {
     return <div>{label}
@@ -78,7 +81,7 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
   }
   if (f.type === "number") {
     return <div>{label}
-      <input type="number" value={value ?? ""} placeholder="default"
+      <input type="number" value={value ?? ""} placeholder={ph}
              onChange={(e) => set(f.key, e.target.value === "" ? undefined : Number(e.target.value))} />
       <Help t={f.help} />
     </div>;
@@ -93,7 +96,7 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
     </div>;
   }
   return <div>{label}
-    <input value={value ?? ""} placeholder="default" onChange={(e) => set(f.key, e.target.value || undefined)} />
+    <input value={value ?? ""} placeholder={ph} onChange={(e) => set(f.key, e.target.value || undefined)} />
     <Help t={f.help} />
   </div>;
 }

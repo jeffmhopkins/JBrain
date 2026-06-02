@@ -11,7 +11,7 @@
 type: kb_coverage_check
 category: Knowledge base
 config:
-  - { key: batch_limit, label: Max uncited entries per run, type: number }
+  - { key: batch_limit, label: Max uncited entries per run, type: number, default: 25 }
   - { key: reconsider, label: Re-feed already-evaluated entries, type: boolean, default: false }
   - { key: since_floor, label: Skip entries created on/before (ISO date), type: text }
   - { key: instructions, label: Extra guidance, type: textarea }

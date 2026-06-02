@@ -15,7 +15,7 @@
 type: synthesize_wiki
 category: Knowledge base
 config:
-  - { key: batch_limit, label: Max entries per run, type: number, help: "Default 20 (smaller = more thorough per run)" }
+  - { key: batch_limit, label: Max entries per run, type: number, default: 20 }
   - { key: instructions, label: Extra guidance, type: textarea }
   - { key: review, label: Post a review card, type: review, default: true }
 steps:

@@ -309,7 +309,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 }
 /* Sliding mode-name flash shown briefly when switching modes (swipe or menu). */
 .mode-flash {
-  position: absolute; top: 12px; left: 50%; z-index: 6; pointer-events: none;
+  position: absolute; top: 50%; left: 50%; z-index: 6; pointer-events: none;
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
   border-radius: 999px; background: var(--bg-elev-2); border: 1px solid var(--border);
   color: var(--text); font-size: 13px; font-weight: 600;
@@ -317,10 +317,10 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 }
 .mode-flash .icon { color: var(--accent); }
 @keyframes modeFlash {
-  0%   { opacity: 0; transform: translate(calc(-50% + var(--from, 16px)), 0); }
-  18%  { opacity: 1; transform: translate(-50%, 0); }
-  72%  { opacity: 1; transform: translate(-50%, 0); }
-  100% { opacity: 0; transform: translate(-50%, -6px); }
+  0%   { opacity: 0; transform: translate(calc(-50% + var(--from, 16px)), -50%); }
+  18%  { opacity: 1; transform: translate(-50%, -50%); }
+  72%  { opacity: 1; transform: translate(-50%, -50%); }
+  100% { opacity: 0; transform: translate(-50%, calc(-50% - 6px)); }
 }
 .messages {
   flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;

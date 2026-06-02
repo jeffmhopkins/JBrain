@@ -195,8 +195,14 @@ export default function Shell({ children }: { children: ReactNode }) {
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
     const sc = scrollParent(e.target as HTMLElement);
-    const atTop = !sc || sc.scrollTop <= 2;
-    const atBottom = !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 2;
+    // Slop so "essentially at the edge" counts as the edge. A 2px gate only ever
+    // matched the non-scrolling composer (its scroll parent is null → always an
+    // edge), so the swipe felt like it worked only from the text field; sub-pixel
+    // scroll offsets left the message body just shy of the bottom. 48px matches the
+    // chat's own near-bottom threshold so the gesture works from the body too.
+    const EDGE = 48;
+    const atTop = !sc || sc.scrollTop <= EDGE;
+    const atBottom = !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight <= EDGE;
     swipe.current = { y: t.clientY, x: t.clientX, atTop, atBottom };
   }
   function onTouchEnd(e: TouchEvent) {

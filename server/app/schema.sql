@@ -345,3 +345,17 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Device location trail (opt-in background tracking from a native client). The
+-- server enforces the "store a point only if >=100 m moved OR >=60 min elapsed"
+-- rule authoritatively, so clients/retries/offline-flushes can't create dupes.
+CREATE TABLE IF NOT EXISTS locations (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  lat         REAL NOT NULL,
+  lon         REAL NOT NULL,
+  accuracy_m  REAL,
+  recorded_at TEXT NOT NULL DEFAULT (datetime('now')),   -- when the fix was taken (UTC)
+  source      TEXT NOT NULL DEFAULT 'wear',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))     -- when the server received it
+);
+CREATE INDEX IF NOT EXISTS idx_locations_recorded ON locations(recorded_at);

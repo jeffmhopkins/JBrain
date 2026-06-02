@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 def init_db() -> None:
@@ -275,6 +275,18 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               denied_count INTEGER NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0,
               client_ip TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_at TEXT);
             CREATE INDEX IF NOT EXISTS idx_research_sessions_link ON research_sessions(share_link_id);
+        """)
+
+    if current < 22:
+        # Device location trail (opt-in background tracking from a native client).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS locations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              lat REAL NOT NULL, lon REAL NOT NULL, accuracy_m REAL,
+              recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+              source TEXT NOT NULL DEFAULT 'wear',
+              created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_locations_recorded ON locations(recorded_at);
         """)
 
 

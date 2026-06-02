@@ -830,6 +830,24 @@ def test_attachment_download_roundtrip_is_byte_exact(client):
     assert len(r.content) == len(raw)
 
 
+def test_location_trail_dedup_rule(client):
+    """The server keeps a point only if >=100 m moved OR >=60 min elapsed since the
+    last one — duplicate/over-eager sends are dropped, real moves/intervals kept."""
+    def post(lat, lon, ts):
+        return client.post("/api/locations", json={"lat": lat, "lon": lon, "recorded_at": ts}).json()
+
+    assert post(40.0000, -74.0000, "2026-06-02T10:00:00Z")["stored"] is True   # first point
+    # ~30 m away, 1 min later → within both thresholds → dropped.
+    assert post(40.0002, -74.0000, "2026-06-02T10:01:00Z")["stored"] is False
+    # ~220 m away (>100 m), same minute → kept (distance rule).
+    assert post(40.0020, -74.0000, "2026-06-02T10:01:30Z")["stored"] is True
+    # Same spot, 61 min later (>=60 min) → kept (time rule).
+    assert post(40.0020, -74.0000, "2026-06-02T11:03:00Z")["stored"] is True
+
+    pts = client.get("/api/locations").json()
+    assert len(pts) == 3 and pts[0]["recorded_at"] >= pts[-1]["recorded_at"]   # newest first
+
+
 def test_research_scope_boundary(client, monkeypatch):
     """The research-link scope boundary: scoped_search output is always a subset of
     the approved allowlist, even when the best semantic/keyword match is out of scope."""

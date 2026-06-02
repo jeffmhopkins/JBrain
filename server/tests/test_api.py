@@ -814,6 +814,22 @@ def test_semantic_search_orders_by_similarity(client, monkeypatch):
     assert [r["title"] for r in res] == ["notes/B", "notes/C", "notes/A"]
 
 
+def test_attachment_download_roundtrip_is_byte_exact(client):
+    """The download endpoint must return the uploaded bytes verbatim (image preview +
+    Download both depend on this). Guards against any server-side corruption."""
+    client.post("/api/notes", json={"title": "notes/Pic", "content_md": "x"})
+    raw = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 64   # ~16 KB of binary, PNG-ish header
+    up = client.post("/api/notes/notes-pic/attachments",
+                     files={"file": ("shot.png", raw, "image/png")}, data={"analyze": "false"})
+    assert up.status_code == 200, up.text
+    aid = up.json()["id"]
+    r = client.get(f"/api/attachments/{aid}/download")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/"), r.headers["content-type"]
+    assert r.content == raw                      # byte-for-byte, no corruption/truncation
+    assert len(r.content) == len(raw)
+
+
 def test_research_scope_boundary(client, monkeypatch):
     """The research-link scope boundary: scoped_search output is always a subset of
     the approved allowlist, even when the best semantic/keyword match is out of scope."""

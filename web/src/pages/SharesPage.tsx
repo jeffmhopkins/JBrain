@@ -11,9 +11,13 @@ interface HistItem { id: number; proposer_name: string | null; status: string; c
 interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; }
 interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
 interface GuidedEnded { id: number; name: string | null; end_reason: string; goal: string; note_title: string; note_slug: string; link_id: number; link_status: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
+interface GuidedHist { id: number; name: string | null; goal: string; disposition: string; note_title: string; note_slug: string; completed_at: string | null; }
 
 const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
-const STATUS_CLR: Record<string, string> = { accepted: "#4ade80", rejected: "var(--danger)", superseded: "var(--text-dim)" };
+const STATUS_CLR: Record<string, string> = {
+  accepted: "#4ade80", approved: "#4ade80", rejected: "var(--danger)", ended: "var(--danger)",
+  superseded: "var(--text-dim)", discarded: "var(--text-dim)", distress: "#fbbf24",
+};
 
 // Cheap line-level diff (set difference of non-empty trimmed lines) so the owner
 // can see what an editor added/removed — the guard against a list-wipe proposal.
@@ -31,6 +35,7 @@ export default function SharesPage() {
   const [guidedLinks, setGuidedLinks] = useState<GuidedLink[]>([]);
   const [guidedPending, setGuidedPending] = useState<GuidedPending[]>([]);
   const [guidedEnded, setGuidedEnded] = useState<GuidedEnded[]>([]);
+  const [guidedHistory, setGuidedHistory] = useState<GuidedHist[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [openDiff, setOpenDiff] = useState<number | null>(null);
@@ -43,7 +48,7 @@ export default function SharesPage() {
       const r = await get<any>("/api/shares");
       setLinks(r.links); setProposals(r.proposals); setHistory(r.history || []);
       setGuidedLinks(r.guided_links || []); setGuidedPending(r.guided_pending || []);
-      setGuidedEnded(r.guided_ended || []);
+      setGuidedEnded(r.guided_ended || []); setGuidedHistory(r.guided_history || []);
     } catch { /* ignore */ }
     setLoading(false);
   }
@@ -306,10 +311,19 @@ export default function SharesPage() {
         </div>
       ))}
 
-      {history.length > 0 && (
+      {(history.length > 0 || guidedHistory.length > 0) && (
         <>
           <div className="adv-section">History</div>
           <div className="card">
+            {guidedHistory.map((h) => (
+              <div key={"gh" + h.id} className="row" style={{ padding: "5px 0", fontSize: 13, gap: 8 }}>
+                <span style={{ color: STATUS_CLR[h.disposition] || "var(--text-dim)", textTransform: "capitalize", minWidth: 80 }}>{h.disposition}</span>
+                <Link to={`/note/${h.note_slug}`} className="wikilink">{leaf(h.goal || h.note_title)}</Link>
+                <span className="muted">guided · {h.name || "someone"}</span>
+                <span className="spacer" />
+                <span className="muted" style={{ fontSize: 12 }}>{h.completed_at ? fmtTs(h.completed_at, appTz) : ""}</span>
+              </div>
+            ))}
             {history.map((h) => (
               <div key={h.id} className="row" style={{ padding: "5px 0", fontSize: 13, gap: 8 }}>
                 <span style={{ color: STATUS_CLR[h.status] || "var(--text-dim)", textTransform: "capitalize", minWidth: 80 }}>{h.status}</span>

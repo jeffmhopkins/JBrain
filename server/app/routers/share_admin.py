@@ -49,7 +49,7 @@ def list_shares():
         "       n.title AS note_title, n.slug AS note_slug, "
         "       (SELECT COUNT(*) FROM share_proposals p WHERE p.share_link_id = sl.id AND p.status='pending') AS pending "
         "FROM share_links sl JOIN notes n ON n.id = sl.note_id "
-        "WHERE sl.status='active' ORDER BY sl.created_at DESC"
+        "WHERE sl.status='active' AND sl.kind='note' ORDER BY sl.created_at DESC"
     ).fetchall()
     proposals = conn.execute(
         "SELECT p.id, p.proposed_content, p.proposer_name, p.proposer_note, p.created_at, p.basis_hash, "
@@ -96,12 +96,31 @@ def list_shares():
         # note or embedded, so it stays out of brain search. Deleted on accept/reject.
         d["transcript"] = json.loads(d.pop("transcript_json") or "[]")
         return d
+    # Resolved guided sessions (approved / discarded / ended) — the history record.
+    # Excludes anything still pending above (those have a pending review item).
+    guided_history = conn.execute(
+        "SELECT s.id, s.name, s.status, s.end_reason, s.completed_at, gs.goal, "
+        "       n.title AS note_title, n.slug AS note_slug "
+        "FROM guided_sessions s JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
+        "JOIN share_links sl ON sl.id=s.share_link_id JOIN notes n ON n.id=sl.note_id "
+        "LEFT JOIN review_items ri ON ri.id=s.review_item_id "
+        "WHERE s.completed_at IS NOT NULL AND (ri.id IS NULL OR ri.status != 'pending') "
+        "ORDER BY s.completed_at DESC LIMIT 50"
+    ).fetchall()
+    def _disp(r):
+        er = r["end_reason"] or ""
+        disp = ("ended" if er.startswith("abuse") else "distress" if er == "distress"
+                else "approved" if r["status"] == "submitted"
+                else "discarded" if r["status"] == "abandoned" else r["status"])
+        return {"id": r["id"], "name": r["name"], "goal": r["goal"], "disposition": disp,
+                "note_title": r["note_title"], "note_slug": r["note_slug"], "completed_at": r["completed_at"]}
     return {
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),
                        "stale": hashlib.sha256((r["current_content"] or "").encode()).hexdigest() != r["basis_hash"]}
                       for r in proposals],
         "history": [dict(r) for r in history],
+        "guided_history": [_disp(r) for r in guided_history],
         "guided_links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in guided_links],
         "guided_pending": [_gp(r) for r in guided_pending],
         "guided_ended": [_gp(r) for r in guided_ended],

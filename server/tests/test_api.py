@@ -2264,3 +2264,26 @@ def test_guided_reopen_recovers_a_false_positive(client, monkeypatch):
     # Link active again; transcript purged; no longer listed.
     assert conn.execute("SELECT status FROM share_links WHERE id=?", (link_id,)).fetchone()["status"] == "active"
     assert client.get("/api/shares").json()["guided_ended"] == []
+
+
+def test_guided_links_separate_from_active_links_and_show_in_history(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", _guided_stub("That's not okay. <<END:hate>>"))
+    conn = get_conn()
+    token, link_id = _guided_link(conn, title="notes/Sep")
+    # A guided link must NOT appear in the regular "Active links" list.
+    shares = client.get("/api/shares").json()
+    assert all(l["id"] != link_id for l in shares["links"])               # no doubling
+    assert any(g["id"] == link_id for g in shares["guided_links"])
+    # Drive it to a terminal state, acknowledge it, and confirm it lands in history.
+    from fastapi.testclient import TestClient
+    from app.main import app
+    anon = TestClient(app)
+    anon.post(f"/api/share/{token}/guided/start", json={"name": "Dad"})
+    anon.post(f"/api/share/{token}/guided/turn", json={"message": "slur"})
+    sid = client.get("/api/shares").json()["guided_ended"][0]["id"]
+    client.post(f"/api/shares/guided/sessions/{sid}/acknowledge")
+    hist = client.get("/api/shares").json()["guided_history"]
+    assert len(hist) == 1 and hist[0]["disposition"] == "ended" and hist[0]["name"] == "Dad"

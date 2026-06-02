@@ -24,12 +24,16 @@ export default function GraphPage() {
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
   const [kind, setKind] = useState<Kind>("all");
   const [focusId, setFocusId] = useState<number | null>(null);
-  const [depth, setDepth] = useState(2);
+  const [depth, setDepth] = useState(1);
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const [size, setSize] = useState({ w: 600, h: 600 });
 
   useEffect(() => { get<GraphData>("/api/graph").then(setData).catch(() => {}); }, []);
+
+  // Standard hop budget per layer: KB reads best at 2 hops (its articles connect via
+  // shared entries) while the others want 1. Resets on a layer switch, still adjustable.
+  useEffect(() => { setDepth(kind === "kb" ? 2 : 1); }, [kind]);
 
   useEffect(() => {
     const measure = () => {
@@ -66,18 +70,25 @@ export default function GraphPage() {
       }
       const seen = new Set<string>();
       links = [];
+      // Connect two kept nodes when a path runs between them through hidden
+      // (other-kind) nodes within `depth` hops — so KB articles linked only via a
+      // shared entry still join up, but only inside the chosen hop budget.
       for (const start of ids) {
-        const visited = new Set<number>([start]);
-        const stack = [...(adj.get(start) ?? [])];
-        while (stack.length) {
-          const v = stack.pop()!;
-          if (visited.has(v)) continue;
-          visited.add(v);
-          if (ids.has(v)) {                                  // reached another kept node → link
-            const key = start < v ? `${start}-${v}` : `${v}-${start}`;
-            if (start !== v && !seen.has(key)) { seen.add(key); links.push({ source: start, target: v }); }
-          } else {                                            // hidden node → keep walking through it
-            for (const w of adj.get(v) ?? []) if (!visited.has(w)) stack.push(w);
+        const dist = new Map<number, number>([[start, 0]]);
+        const queue: number[] = [start];
+        while (queue.length) {
+          const u = queue.shift()!;
+          const d = dist.get(u)!;
+          if (d >= depth) continue;                          // don't expand past the hop budget
+          for (const v of adj.get(u) ?? []) {
+            if (dist.has(v)) continue;
+            dist.set(v, d + 1);
+            if (ids.has(v)) {                                // a kept node within depth hops → link
+              const key = start < v ? `${start}-${v}` : `${v}-${start}`;
+              if (start !== v && !seen.has(key)) { seen.add(key); links.push({ source: start, target: v }); }
+            } else {                                          // hidden node → keep walking through it
+              queue.push(v);
+            }
           }
         }
       }
@@ -138,8 +149,8 @@ export default function GraphPage() {
         </span>
 
         <label className="graph-depth">
-          Depth
-          <select className="graph-select" value={depth} onChange={(e) => setDepth(Number(e.target.value))} disabled={focusId == null}>
+          Hops
+          <select className="graph-select" value={depth} onChange={(e) => setDepth(Number(e.target.value))}>
             <option value={1}>1 hop</option>
             <option value={2}>2 hops</option>
             <option value={3}>3 hops</option>

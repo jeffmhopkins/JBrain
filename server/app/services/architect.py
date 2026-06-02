@@ -40,6 +40,7 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
+                 "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
@@ -101,6 +102,16 @@ _TOOL_SCHEMAS = {
         "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that begins it (one recipient)."},
         "single_use": {"type": "boolean", "default": False, "description": "Close the link after one completed response."}},
         "required": ["goal", "sub_prompt"]},
+    "create_research_share": {"type": "object", "properties": {
+        "label": {"type": "string", "description": "Short label, e.g. 'Medical history'."},
+        "prefixes": {"type": "array", "items": {"type": "string"},
+                     "description": "Folder path(s) to draw candidate notes from, e.g. ['notes/Medical']. NEVER root/whole-brain."},
+        "intro": {"type": "string", "description": "Optional 1-2 sentence greeting the recipient sees."},
+        "persona_voice": {"type": "string", "description": "Optional tone/role for the answering AI (cannot change its rules)."},
+        "ttl_days": {"type": "integer", "default": 0},
+        "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that opens it."},
+        "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}},
+        "required": ["prefixes"]},
     "list_share_links": {"type": "object", "properties": {}},
     "revoke_share_link": {"type": "object", "properties": {
         "token": {"type": "string"},
@@ -624,6 +635,39 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
     return f"applied: {display}", _record_applied(conn, conversation_id, "GUIDED_SHARE", display, undo)
 
 
+def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, intro="",
+                                persona_voice="", ttl_days=0, bind=False, single_use=False):
+    """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
+    (it ANSWERS from the owner's notes instead of collecting). The `prefixes` only
+    FIND candidate notes; the owner approves exactly which are exposed and activates
+    the link in Shares. Never expose a root/whole-brain scope."""
+    from . import share as share_svc
+    from . import research as research_svc
+    from . import research_scope as rscope
+    pre = [p.strip().strip("/") for p in (prefixes or []) if p and p.strip().strip("/")]
+    if not pre:
+        return ("I need at least one folder to scope this to (e.g. notes/Medical) — a whole-brain "
+                "research link isn't allowed.", None)
+    scope = {"prefixes": pre, "kinds": []}
+    candidates = rscope.filter_match_ids(conn, scope)   # blast-radius preview for the owner
+    label = (label or pre[0]).strip()[:80]
+    title = notes_svc.root_title(f"Research — {label}", "notes")
+    note_id = notes_svc.upsert_note(
+        conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
+        source="user", version_note="research link anchor", fire_events=False)
+    token, link_id = share_svc.create_research_link(conn, note_id, label=label,
+                                                    ttl_days=ttl_days or None, bind=bool(bind))
+    research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=persona_voice,
+                             intro=intro, bind=bool(bind), single_use=bool(single_use))
+    url = share_svc.share_url(token)
+    display = (f"Created a DRAFT research link “{label}” → {url}\n"
+               f"It matches {len(candidates)} note(s) under {', '.join(pre)}, but NOTHING is exposed yet. "
+               f"Go to Advanced → Shares, APPROVE exactly which of those notes it may read, then ACTIVATE it. "
+               f"It's read-only — recipients can only ask questions, never change anything.")
+    undo = {"op": "revoke_share", "token": token}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "RESEARCH_SHARE", display, undo)
+
+
 def _tool_list_share_links(conn):
     from . import share as share_svc
     rows = conn.execute(
@@ -699,6 +743,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_create_guided_share(conn, conversation_id, args["goal"], args["sub_prompt"],
                                          args.get("intro", ""), args.get("dest_title"), args.get("ttl_days", 14),
                                          args.get("bind", False), args.get("single_use", False))
+    if name == "create_research_share":
+        return _tool_create_research_share(conn, conversation_id, args.get("label"), args.get("prefixes"),
+                                           args.get("intro", ""), args.get("persona_voice", ""),
+                                           args.get("ttl_days", 0), args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None
     if name == "revoke_share_link":

@@ -957,6 +957,29 @@ def test_research_link_endpoints(client, monkeypatch):
     assert detail["sessions"][0]["turn_count"] == 1 and detail["sessions"][0]["retrieved"] == 1
 
 
+def test_create_research_share_tool(client):
+    """The assisted-chat tool mints a DRAFT research link (nothing approved/active),
+    previews the candidate count, and refuses a root/whole-brain scope."""
+    from app.db import get_conn
+    from app.services import architect, research
+
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "x"})
+    conn = get_conn()
+    msg, ev = architect._tool_create_research_share(conn, None, label="Med", prefixes=["notes/Medical"])
+    conn.commit()
+    assert "DRAFT research link" in msg and ev is not None
+
+    link = conn.execute("SELECT * FROM share_links WHERE kind='research'").fetchone()
+    assert link and link["scope"] == "view"
+    spec = research.get_spec(conn, link["id"])
+    assert spec["status"] == "draft" and research.scope.approved_ids(spec) == set()   # inert until approved+activated
+    assert any(c["title"] == "notes/Medical/Allergies" for c in research.list_candidates(conn, link["id"]))
+
+    # A root/whole-brain scope is refused (no link created, no applied record).
+    msg2, ev2 = architect._tool_create_research_share(conn, None, prefixes=["/", ""])
+    assert ev2 is None and "isn't allowed" in msg2
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

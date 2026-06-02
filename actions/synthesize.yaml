@@ -10,6 +10,7 @@
 #   mode                       — replace (default) | append
 #   review                     — {title?, message?} to post a review card
 type: synthesize
+category: Knowledge base
 aliases: [claude_synthesize]
 config:
   - { key: target_title, label: Target note title, type: text, required: true }

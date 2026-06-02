@@ -76,6 +76,7 @@ def list_defs():
         seq = _flatten(recipe.get("steps"))
         out.append({
             "type": r["type"], "source": r["source"], "locked": bool(r["locked"]),
+            "category": recipe.get("category") or "Other",
             "num_steps": len(seq), "summary": " → ".join(seq),
         })
     return out

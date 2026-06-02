@@ -13,6 +13,7 @@
 #   instructions  — extra guidance appended to the synthesis prompt
 #   review        — set to false to suppress the review card (default on)
 type: synthesize_wiki
+category: Knowledge base
 config:
   - { key: batch_limit, label: Max entries per run, type: number, help: "Default 20 (smaller = more thorough per run)" }
   - { key: instructions, label: Extra guidance, type: textarea }

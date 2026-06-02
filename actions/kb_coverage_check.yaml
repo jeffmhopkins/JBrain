@@ -9,6 +9,7 @@
 #   reconsider   — true to ignore the evaluated-marker AND the created-floor (expensive)
 #   instructions — extra guidance appended to the synthesis prompt
 type: kb_coverage_check
+category: Knowledge base
 config:
   - { key: batch_limit, label: Max uncited entries per run, type: number }
   - { key: reconsider, label: Re-feed already-evaluated entries, type: boolean, default: false }

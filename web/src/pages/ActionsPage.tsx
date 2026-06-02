@@ -3,7 +3,19 @@ import { del, get, post, put } from "../api";
 import Modal from "../components/Modal";
 import PipelineView from "../components/PipelineView";
 
-interface ActionDef { type: string; source: string; locked: boolean; num_steps: number; summary: string; }
+interface ActionDef { type: string; source: string; locked: boolean; category: string; num_steps: number; summary: string; }
+
+const CAT_ORDER = ["Knowledge base", "Daily", "Notes", "Utility", "Other"];
+function byCategory<T extends { category?: string }>(list: T[]): [string, T[]][] {
+  const map = new Map<string, T[]>();
+  for (const d of list) {
+    const c = d.category || "Other";
+    (map.get(c) ?? map.set(c, []).get(c)!).push(d);
+  }
+  const rank = (c: string) => { const i = CAT_ORDER.indexOf(c); return i === -1 ? 99 : i; };
+  return [...map.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map((c) => [c, map.get(c)!] as [string, T[]]);
+}
 interface Editing {
   type: string; source: string; recipe_yaml: string; recipe: any;
   warnings: string[]; isNew: boolean; readOnly: boolean; error: string;
@@ -70,29 +82,21 @@ export default function ActionsPage() {
     catch (e: any) { alert(e.message); }
   }
 
-  const shipped = items.filter((d) => d.source === "repo");
-  const custom = items.filter((d) => d.source === "user");
-
-  const group = (label: string, list: ActionDef[]) => (
-    <div>
-      <div className="adv-section">{label}</div>
-      {list.length === 0 && <p className="muted" style={{ fontSize: 13 }}>None.</p>}
-      {list.map((d) => (
-        <div className="card" key={d.type}>
-          <div className="row">
-            <strong>{d.type}</strong>
-            {d.locked && <span className="badge">edited</span>}
-            <span className="spacer" />
-            <span className="badge">{d.num_steps} steps</span>
-          </div>
-          <div className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{d.summary}</div>
-          <div className="wf-actions">
-            <button className="ghost" onClick={() => open(d.type)}>{d.source === "repo" ? "View" : "Edit"}</button>
-            <button className="ghost" onClick={() => open(d.type, { duplicate: true })}>Duplicate</button>
-            {d.source === "user" && <button className="ghost" onClick={() => remove(d)}>Delete</button>}
-          </div>
-        </div>
-      ))}
+  const card = (d: ActionDef) => (
+    <div className="card" key={d.type}>
+      <div className="row">
+        <strong>{d.type}</strong>
+        {d.source === "user" && <span className="badge badge-architect">custom</span>}
+        {d.locked && <span className="badge">edited</span>}
+        <span className="spacer" />
+        <span className="badge">{d.num_steps} steps</span>
+      </div>
+      <div className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{d.summary}</div>
+      <div className="wf-actions">
+        <button className="ghost" onClick={() => open(d.type)}>{d.source === "repo" ? "View" : "Edit"}</button>
+        <button className="ghost" onClick={() => open(d.type, { duplicate: true })}>Duplicate</button>
+        {d.source === "user" && <button className="ghost" onClick={() => remove(d)}>Delete</button>}
+      </div>
     </div>
   );
 
@@ -109,8 +113,13 @@ export default function ActionsPage() {
         <em> Actions</em> = the recipe · <em>Triggers</em> = when it runs.
       </p>
 
-      {group("Shipped", shipped)}
-      {group("Custom", custom)}
+      {items.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No actions.</p>}
+      {byCategory(items).map(([cat, list]) => (
+        <div key={cat}>
+          <div className="adv-section">{cat}</div>
+          {list.map(card)}
+        </div>
+      ))}
 
       {editing && (
         <Modal

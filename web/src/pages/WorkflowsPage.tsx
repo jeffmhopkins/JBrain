@@ -29,7 +29,19 @@ const BLANK = {
   enabled: true,
 };
 
-interface ActionType { type: string; config: any[]; }
+interface ActionType { type: string; config: any[]; category?: string; }
+
+const CAT_ORDER = ["Knowledge base", "Daily", "Notes", "Utility", "Other"];
+function byCategory<T>(list: T[], catOf: (x: T) => string): [string, T[]][] {
+  const map = new Map<string, T[]>();
+  for (const x of list) {
+    const c = catOf(x) || "Other";
+    (map.get(c) ?? map.set(c, []).get(c)!).push(x);
+  }
+  const rank = (c: string) => { const i = CAT_ORDER.indexOf(c); return i === -1 ? 99 : i; };
+  return [...map.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map((c) => [c, map.get(c)!] as [string, T[]]);
+}
 
 export default function WorkflowsPage() {
   const { appTz } = useAuth();
@@ -161,7 +173,10 @@ export default function WorkflowsPage() {
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
       {items.length === 0 && <p className="muted">No workflows yet.</p>}
-      {items.map((w) => (
+      {byCategory(items, (w) => actionTypes.find((a) => a.type === w.action_type)?.category || "Other").map(([cat, group]) => (
+        <div key={cat}>
+          <div className="adv-section">{cat}</div>
+          {group.map((w) => (
         <div className="card" key={w.id}>
           <div className="row">
             <strong>{w.name}</strong>
@@ -202,6 +217,8 @@ export default function WorkflowsPage() {
               ))}
             </div>
           )}
+        </div>
+          ))}
         </div>
       ))}
 

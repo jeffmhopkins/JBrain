@@ -8,6 +8,7 @@
 # config keys:
 #   batch_limit — max articles per run (default 10; LLM call per article)
 type: recite_kb
+category: Knowledge base
 config:
   - { key: batch_limit, label: Max articles per run, type: number }
   - { key: auto_apply, label: Apply without review, type: boolean, default: false }

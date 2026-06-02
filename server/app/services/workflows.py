@@ -315,13 +315,13 @@ def action_catalog() -> list[dict]:
     picker). YAML definitions plus any Python-only actions in _PY_ACTION_SCHEMAS."""
     from . import pipeline
 
-    schemas: dict[str, list] = {}
+    meta: dict[str, dict] = {}
     for t in pipeline.action_types():
         recipe = pipeline.get_action_def(t) or {}
-        schemas[t] = recipe.get("config", [])
+        meta[t] = {"config": recipe.get("config", []), "category": recipe.get("category") or "Other"}
     for t, schema in _PY_ACTION_SCHEMAS.items():
-        schemas.setdefault(t, schema)
-    return [{"type": t, "config": schemas[t]} for t in sorted(schemas)]
+        meta.setdefault(t, {"config": schema, "category": "Other"})
+    return [{"type": t, "config": meta[t]["config"], "category": meta[t]["category"]} for t in sorted(meta)]
 
 
 # --- Execution --------------------------------------------------------------

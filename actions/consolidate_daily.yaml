@@ -13,6 +13,7 @@
 #   prompt   — optional override for the consolidation prompt
 #   review   — set to false to suppress the review card (default on)
 type: consolidate_daily
+category: Daily
 config:
   - { key: prompt, label: Consolidation prompt (optional), type: textarea }
   - { key: review, label: Post a review card, type: review, default: true }

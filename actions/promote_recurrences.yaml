@@ -14,6 +14,7 @@
 #   promote_limit — max patterns promoted per run (default 5)
 #   auto_apply    — write KB directly instead of staging (default false)
 type: promote_recurrences
+category: Knowledge base
 config:
   - { key: batch_limit, label: Max chatter entries scanned, type: number }
   - { key: min_days, label: Distinct days to count as a pattern, type: number }

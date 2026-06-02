@@ -40,7 +40,7 @@ _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "add_list_item", "read_list",
+                 "entries_at_place", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -48,7 +48,8 @@ _DEFAULT_MODE_TOOLS = {
                  "kb_citation_cleanup", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes",
-                 "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary"],
+                 "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
+                 "entries_at_place"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -84,6 +85,13 @@ _TOOL_SCHEMAS = {
     "trail_summary": {"type": "object", "properties": {
         "since": {"type": "string", "description": "UTC ISO lower bound (optional)."},
         "until": {"type": "string", "description": "UTC ISO upper bound (optional)."}}},
+    "entries_at_place": {"type": "object", "properties": {
+        "place": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'."},
+        "radius_m": {"type": "integer", "default": 150, "description": "Match radius (ignored for saved places, which carry their own)."},
+        "since": {"type": "string", "description": "UTC ISO lower bound on when the note was captured (optional)."},
+        "until": {"type": "string", "description": "UTC ISO upper bound (optional)."},
+        "kind": {"type": "string", "enum": ["entry", "kb"], "description": "Optional: restrict to raw entries or synthesized KB."}},
+        "required": ["place"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     "read_inbox": {"type": "object", "properties": {}},
     "add_list_item": {"type": "object", "properties": {
@@ -442,6 +450,36 @@ def _tool_trail_summary(conn, since=None, until=None) -> str:
             where = s["label"] or f"{s['lat']:.4f}, {s['lon']:.4f}"
             lines.append(f"- {where}: {s['minutes']:.0f} min")
     return _untrusted("trail", "\n".join(lines))
+
+
+def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=None, kind=None) -> str:
+    """Notes whose CAPTURE coordinate falls within range of a place (optionally in a
+    time window / of a kind). Place-and-time is the combination query_sql/nearby_notes
+    can't do directly — a saved geofence ∩ created_at window."""
+    pt = _resolve_place(conn, place, radius_m)
+    if isinstance(pt, str):
+        return pt
+    lat, lon, r, label = pt
+    sql = ("SELECT title, lat, lon, created_at FROM notes "
+           "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
+    params: list = []
+    if kind in ("entry", "kb"):
+        sql += " AND kind = ?"; params.append(kind)
+    s, u = geotrail._utc(since), geotrail._utc(until)
+    if s:
+        sql += " AND created_at >= ?"; params.append(s)
+    if u:
+        sql += " AND created_at <= ?"; params.append(u)
+    near = []
+    for row in conn.execute(sql, params).fetchall():
+        d = geo.haversine_km(lat, lon, row["lat"], row["lon"]) * 1000.0
+        if d <= r:
+            near.append((d, row))
+    if not near:
+        return f"No entries captured within {r:.0f} m of {label} in that window."
+    near.sort(key=lambda x: x[0])
+    lines = [f"- {row['title']} ({row['created_at'][:10]}, {d:.0f} m)" for d, row in near[:30]]
+    return _untrusted("entries-at-place", f"At {label}:\n" + "\n".join(lines))
 
 
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
@@ -826,6 +864,9 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_distance_traveled(conn, args.get("since"), args.get("until")), None
     if name == "trail_summary":
         return _tool_trail_summary(conn, args.get("since"), args.get("until")), None
+    if name == "entries_at_place":
+        return _tool_entries_at_place(conn, args["place"], args.get("radius_m", 150),
+                                      args.get("since"), args.get("until"), args.get("kind")), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
     if name == "read_inbox":

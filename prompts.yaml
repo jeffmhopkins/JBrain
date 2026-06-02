@@ -20,7 +20,7 @@ modes:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
             read_attachment, query_sql, current_location, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
-            add_list_item, read_list,
+            entries_at_place, add_list_item, read_list,
             set_item_checked, set_item_priority, add_sublist, log_entry, capture_inbox,
             mark_inbox_processed, set_tags, create_share_link, create_guided_share,
             create_research_share, list_share_links, revoke_share_link, kb_coverage_check,
@@ -91,7 +91,8 @@ modes:
   research:
     tools: [search_notes, read_note, list_recent_notes, search_attachments,
             read_attachment, query_sql, current_location, geo_distance, nearby_notes,
-            where_was_i, time_at_place, places_visited, distance_traveled, trail_summary]
+            where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
+            entries_at_place]
     system: |
       You are the Researcher for "{brain_name}", a personal knowledge base. Answer
       the user's questions from their own notes and entries. You are STRICTLY
@@ -126,6 +127,7 @@ tools:
   places_visited: "When the user asks where they went ('where did I go yesterday', 'what places this week'): the labelled stays (≥ min_minutes) over an optional UTC window, with arrival/departure. Read-only."
   distance_traveled: "When the user asks how far they travelled ('how far did I go today'): total trail distance (km + miles, GPS-jitter filtered) over an optional UTC window. Read-only."
   trail_summary: "When the user wants an overview of their movements for a period ('summarise my day/week'): fix count, distance, time span, and notable stays over an optional UTC window. Read-only."
+  entries_at_place: "When the user asks what they noted AT a place ('what have I jotted at the gym', 'notes from the office last month'): entries whose capture coordinate is within range of a saved place / note / 'lat,lon', optionally filtered by capture time and kind. Read-only — this is place∩time, which nearby_notes (radius only) and a plain query can't combine."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
   read_inbox: "When folding captures into the wiki: read unprocessed quick-capture inbox items (e.g. dictations)."
   add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Optional priority (1=highest). Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."

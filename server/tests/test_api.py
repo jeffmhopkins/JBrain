@@ -931,6 +931,31 @@ def test_consolidation_place_suggestion(client, monkeypatch):
     assert pipeline._PRIMITIVES["suggest_places"](ctx, entries=entries)["candidates"] == []
 
 
+def test_entries_at_place_and_located_endpoint(client):
+    """entries_at_place returns notes within a place's radius (place∩kind), and the
+    /api/notes/located endpoint surfaces coord-stamped notes for the Map pins."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Gym', 40.0, -74.0, 200)")
+    # One note at the gym, one far away.
+    conn.execute("INSERT INTO notes (title, slug, content_md, kind, lat, lon) VALUES "
+                 "('notes/Leg day', 'leg-day', 'x', 'entry', 40.0009, -74.0)")
+    conn.execute("INSERT INTO notes (title, slug, content_md, kind, lat, lon) VALUES "
+                 "('notes/Far', 'far', 'x', 'entry', 41.0, -75.0)")
+    conn.commit()
+
+    msg, _ = architect._run_tool(conn, None, "entries_at_place", {"place": "Gym"})
+    assert "Leg day" in msg and "Far" not in msg
+
+    located = client.get("/api/notes/located").json()
+    slugs = {n["slug"] for n in located}
+    assert {"leg-day", "far"} <= slugs                       # both have coords
+    assert all("created_at" in n and "lat" in n for n in located)
+    # 'located' must not be swallowed as a slug by GET /api/notes/{slug}.
+    assert client.get("/api/notes/located").status_code == 200
+
+
 def test_places_crud(client):
     """Places CRUD: add (radius clamped), list, delete (cascades location_state)."""
     r = client.post("/api/places", json={"name": "Home", "lat": 40.0, "lon": -74.0, "radius_m": 5})

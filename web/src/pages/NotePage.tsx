@@ -229,10 +229,9 @@ export default function NotePage() {
       <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
         <span>🕐 {fmtTs(note.created_at, appTz)}{fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz) ? ` · updated ${fmtTs(note.updated_at, appTz)}` : ""}</span>
         {note.lat != null && note.lon != null && (
-          <a href={`https://www.openstreetmap.org/?mlat=${note.lat}&mlon=${note.lon}#map=15/${note.lat}/${note.lon}`}
-             target="_blank" rel="noreferrer">
+          <Link to={`/map?focus=${note.slug}`} title="View on map">
             <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
-          </a>
+          </Link>
         )}
       </div>
       {note.tags.length > 0 && (

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
-import { getLocations, getPlaces, addPlace, deletePlace, LocPoint, Place } from "../api";
+import { getLocations, getLocatedNotes, getPlaces, addPlace, deletePlace, LocPoint, LocatedNote, Place } from "../api";
 
 type Mode = "trail" | "heat";
 const RANGES = [
@@ -10,84 +11,178 @@ const RANGES = [
   { k: "30d", label: "30 days", days: 30 },
   { k: "all", label: "All", days: 0 },
 ];
+const NOTES_HERE_M = 200;   // tap-the-map radius for "what notes are here"
 
 const parseTs = (s: string) => new Date(s.replace(" ", "T") + "Z").getTime();
 const fmt = (ms: number) =>
   new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const haversineM = (la1: number, lo1: number, la2: number, lo2: number) => {
+  const R = 6371000, r = Math.PI / 180;
+  const dLa = (la2 - la1) * r, dLo = (lo2 - lo1) * r;
+  const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+const noteIcon = L.divIcon({ className: "note-pin", html: "📍", iconSize: [22, 22], iconAnchor: [11, 22], popupAnchor: [0, -20] });
 
 // Location trail over a server-proxied map (browser only talks to /api/tiles, so the
 // trail's coordinates never leak to a third-party tile host). Trail / dwell-heatmap
-// toggle, date-range presets, and a scrub-and-play timeline.
+// toggle, date-range presets, a scrub-and-play timeline, note pins, and saved places.
 export default function MapPage() {
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const focus = params.get("focus");   // a note slug to center + open
+
   const mapEl = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const overlay = useRef<L.Layer | null>(null);
   const head = useRef<L.CircleMarker | null>(null);
   const placeLayer = useRef<L.LayerGroup | null>(null);
+  const noteLayer = useRef<L.LayerGroup | null>(null);
+  const noteMarkers = useRef<Record<string, L.Marker>>({});
+  const notesRef = useRef<LocatedNote[]>([]);
   const addingRef = useRef(false);
 
   const [mode, setMode] = useState<Mode>("trail");
   const [rangeDays, setRangeDays] = useState(7);
   const [points, setPoints] = useState<LocPoint[]>([]);
+  const [notes, setNotes] = useState<LocatedNote[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [places, setPlaces] = useState<Place[]>([]);
   const [showPlaces, setShowPlaces] = useState(false);
+  const [showNotes, setShowNotes] = useState(true);
   const [adding, setAdding] = useState(false);
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
+  const savePlaceAt = (lat: number, lon: number, suggested: string) => {
+    const name = window.prompt("Place name:", suggested)?.trim();
+    if (name) addPlace({ name, lat, lon, radius_m: 150 }).then(loadPlaces).catch(() => {});
+  };
+
   useEffect(() => { loadPlaces(); }, []);
   useEffect(() => { addingRef.current = adding; }, [adding]);
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+
+  // A popup for a note pin: open it, or save its spot as a place. Built as a DOM
+  // node so the link can use client-side routing instead of a full reload.
+  const notePopup = (n: LocatedNote) => {
+    const div = document.createElement("div");
+    div.className = "note-pop";
+    const a = document.createElement("a");
+    a.textContent = n.title; a.href = `/note/${n.slug}`;
+    a.onclick = (e) => { e.preventDefault(); navigate(`/note/${n.slug}`); };
+    const meta = document.createElement("div");
+    meta.className = "muted";
+    meta.textContent = n.created_at.slice(0, 10) + (n.location_label ? ` · ${n.location_label}` : "");
+    const save = document.createElement("button");
+    save.textContent = "Save as place";
+    save.onclick = () => savePlaceAt(n.lat, n.lon, n.title.split("/").pop() || n.title);
+    div.append(a, meta, save);
+    return div;
+  };
 
   useEffect(() => {
     if (!mapEl.current || map.current) return;
     const m = L.map(mapEl.current).setView([20, 0], 2);
     L.tileLayer("/api/tiles/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
-    // Tap-to-drop a place when in "add" mode (one tap = one place, then exit add).
     m.on("click", (e: L.LeafletMouseEvent) => {
-      if (!addingRef.current) return;
-      const name = window.prompt("Name this place (e.g. Home, Gym):")?.trim();
-      setAdding(false);
-      if (!name) return;
-      addPlace({ name, lat: e.latlng.lat, lon: e.latlng.lng, radius_m: 150 })
-        .then(loadPlaces).catch(() => {});
+      // In "add place" mode a tap drops a place; otherwise a tap on empty map shows
+      // the notes captured near that spot ("notes here").
+      if (addingRef.current) {
+        setAdding(false);
+        savePlaceAt(e.latlng.lat, e.latlng.lng, "");
+        return;
+      }
+      const here = notesRef.current
+        .map((n) => [haversineM(e.latlng.lat, e.latlng.lng, n.lat, n.lon), n] as [number, LocatedNote])
+        .filter(([d]) => d <= NOTES_HERE_M)
+        .sort((a, b) => a[0] - b[0]);
+      if (!here.length) return;
+      const div = document.createElement("div");
+      div.className = "note-pop";
+      const h = document.createElement("strong");
+      h.textContent = `${here.length} note${here.length > 1 ? "s" : ""} here`;
+      div.append(h);
+      here.slice(0, 12).forEach(([, n]) => {
+        const a = document.createElement("a");
+        a.textContent = n.title; a.href = `/note/${n.slug}`;
+        a.onclick = (ev) => { ev.preventDefault(); navigate(`/note/${n.slug}`); };
+        div.append(a);
+      });
+      L.popup().setLatLng(e.latlng).setContent(div).openOn(m);
     });
     map.current = m;
     setTimeout(() => m.invalidateSize(), 200);
     return () => { m.remove(); map.current = null; };
   }, []);
 
+  // Load both the trail and the located notes for the chosen range.
+  useEffect(() => {
+    setLoading(true);
+    const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
+    Promise.all([getLocations(since).catch(() => []), getLocatedNotes(since).catch(() => [])])
+      .then(([pts, ns]) => { setPoints(pts); setNotes(ns); setPlaying(false); })
+      .finally(() => setLoading(false));
+  }, [rangeDays]);
+
+  // The scrubber walks the UNION of fix-times and note-times, so notes still appear
+  // (and play back) even on days the background trail wasn't running.
+  const timeline = useMemo(() => {
+    const ts = new Set<number>();
+    points.forEach((p) => ts.add(parseTs(p.recorded_at)));
+    notes.forEach((n) => ts.add(parseTs(n.created_at)));
+    return [...ts].sort((a, b) => a - b);
+  }, [points, notes]);
+  useEffect(() => { setIdx(Math.max(0, timeline.length - 1)); }, [timeline.length]);
+
+  const curTs = timeline[idx] ?? 0;
+
+  // Fit to everything we have (trail + notes) on load.
+  useEffect(() => {
+    const m = map.current; if (!m) return;
+    const coords = [
+      ...points.map((p) => [p.lat, p.lon] as [number, number]),
+      ...notes.map((n) => [n.lat, n.lon] as [number, number]),
+    ];
+    if (coords.length) m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 });
+  }, [points, notes]);
+
+  // ?focus=<slug>: center on that note and open its pin, regardless of scrub.
+  useEffect(() => {
+    if (!focus || !notes.length) return;
+    const n = notes.find((x) => x.slug === focus);
+    if (!n) return;
+    map.current?.setView([n.lat, n.lon], 16);
+    const t = window.setTimeout(() => noteMarkers.current[focus]?.openPopup(), 350);
+    return () => clearTimeout(t);
+  }, [focus, notes]);
+
   // Draw each saved geofence as a labeled circle so the radius is visible.
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
+    const m = map.current; if (!m) return;
     if (placeLayer.current) { m.removeLayer(placeLayer.current); placeLayer.current = null; }
     if (!places.length) return;
-    const g = L.layerGroup(
+    placeLayer.current = L.layerGroup(
       places.map((p) =>
         L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 1.5, fillOpacity: 0.08 })
           .bindTooltip(p.name, { permanent: true, direction: "center", className: "place-label" })),
     ).addTo(m);
-    placeLayer.current = g;
   }, [places]);
 
+  // Note pins for everything captured up to the current scrub time.
   useEffect(() => {
-    setLoading(true);
-    const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
-    getLocations(since)
-      .then((pts) => {
-        setPoints(pts);
-        setIdx(pts.length ? pts.length - 1 : 0);
-        setPlaying(false);
-        if (map.current && pts.length) {
-          map.current.fitBounds(L.latLngBounds(pts.map((p) => [p.lat, p.lon] as [number, number])),
-            { padding: [30, 30], maxZoom: 16 });
-        }
-      })
-      .catch(() => setPoints([]))
-      .finally(() => setLoading(false));
-  }, [rangeDays]);
+    const m = map.current; if (!m) return;
+    if (noteLayer.current) { m.removeLayer(noteLayer.current); noteLayer.current = null; }
+    noteMarkers.current = {};
+    if (!showNotes || !notes.length) return;
+    const upto = notes.filter((n) => parseTs(n.created_at) <= curTs);
+    noteLayer.current = L.layerGroup(upto.map((n) => {
+      const mk = L.marker([n.lat, n.lon], { icon: noteIcon }).bindPopup(() => notePopup(n));
+      noteMarkers.current[n.slug] = mk;
+      return mk;
+    })).addTo(m);
+  }, [notes, curTs, showNotes]);
 
   // Dwell weight: time gap to the NEXT fix (capped) → places you lingered glow hotter.
   const heat = useMemo(
@@ -99,42 +194,36 @@ export default function MapPage() {
     [points],
   );
 
+  // Trail / heat overlay up to the current scrub time.
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
+    const m = map.current; if (!m) return;
     if (overlay.current) { m.removeLayer(overlay.current); overlay.current = null; }
     if (head.current) { m.removeLayer(head.current); head.current = null; }
-    if (!points.length) return;
-    const upto = points.slice(0, idx + 1);
+    const upto = points.filter((p) => parseTs(p.recorded_at) <= curTs);
+    if (!upto.length) return;
     if (mode === "trail") {
-      const line = L.polyline(upto.map((p) => [p.lat, p.lon] as [number, number]),
+      overlay.current = L.polyline(upto.map((p) => [p.lat, p.lon] as [number, number]),
         { color: "#4ea1ff", weight: 3, opacity: 0.85 }).addTo(m);
-      overlay.current = line;
       const last = upto[upto.length - 1];
-      if (last) {
-        head.current = L.circleMarker([last.lat, last.lon],
-          { radius: 6, color: "#fff", weight: 2, fillColor: "#4ea1ff", fillOpacity: 1 }).addTo(m);
-      }
+      head.current = L.circleMarker([last.lat, last.lon],
+        { radius: 6, color: "#fff", weight: 2, fillColor: "#4ea1ff", fillOpacity: 1 }).addTo(m);
     } else if ((L as any).heatLayer) {
-      overlay.current = (L as any).heatLayer(heat.slice(0, idx + 1), { radius: 22, blur: 18, maxZoom: 17 }).addTo(m);
+      const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs);
+      overlay.current = (L as any).heatLayer(hUpto, { radius: 22, blur: 18, maxZoom: 17 }).addTo(m);
     } else {
-      // Fallback if the heat plugin didn't load: translucent dwell-sized dots.
-      const g = L.layerGroup(
+      overlay.current = L.layerGroup(
         upto.map((p, i) => L.circleMarker([p.lat, p.lon],
           { radius: 4 + 10 * heat[i][2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
       ).addTo(m);
-      overlay.current = g;
     }
-  }, [points, mode, idx, heat]);
+  }, [points, mode, curTs, heat]);
 
   useEffect(() => {
-    if (!playing || points.length < 2) return;
-    if (idx >= points.length - 1) { setPlaying(false); return; }
-    const id = window.setTimeout(() => setIdx((i) => Math.min(points.length - 1, i + 1)), 120);
+    if (!playing || timeline.length < 2) return;
+    if (idx >= timeline.length - 1) { setPlaying(false); return; }
+    const id = window.setTimeout(() => setIdx((i) => Math.min(timeline.length - 1, i + 1)), 120);
     return () => clearTimeout(id);
-  }, [playing, idx, points.length]);
-
-  const curTs = points[idx] ? parseTs(points[idx].recorded_at) : 0;
+  }, [playing, idx, timeline.length]);
 
   return (
     <div className="map-tool">
@@ -150,6 +239,7 @@ export default function MapPage() {
           ))}
         </div>
         <div className="seg">
+          <button className={showNotes ? "on" : ""} onClick={() => setShowNotes((s) => !s)}>Notes</button>
           <button className={showPlaces ? "on" : ""} onClick={() => setShowPlaces((s) => !s)}>Places</button>
         </div>
       </div>
@@ -178,15 +268,15 @@ export default function MapPage() {
         </div>
       )}
       <div className="map-play">
-        <button className="icon-btn" disabled={points.length < 2}
-                onClick={() => { if (idx >= points.length - 1) setIdx(0); setPlaying((p) => !p); }}>
+        <button className="icon-btn" disabled={timeline.length < 2}
+                onClick={() => { if (idx >= timeline.length - 1) setIdx(0); setPlaying((p) => !p); }}>
           {playing ? "❚❚" : "▶"}
         </button>
-        <input type="range" min={0} max={Math.max(0, points.length - 1)} value={idx}
-               disabled={points.length < 2}
+        <input type="range" min={0} max={Math.max(0, timeline.length - 1)} value={idx}
+               disabled={timeline.length < 2}
                onChange={(e) => { setPlaying(false); setIdx(+e.target.value); }} />
         <span className="map-time">
-          {loading ? "Loading…" : points.length ? `${fmt(curTs)}  ·  ${idx + 1}/${points.length}` : "No location points yet"}
+          {loading ? "Loading…" : timeline.length ? `${fmt(curTs)}  ·  ${idx + 1}/${timeline.length}` : "No location data yet"}
         </span>
       </div>
     </div>

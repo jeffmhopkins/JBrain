@@ -288,6 +288,16 @@ export const addPlace = (p: { name: string; lat: number; lon: number; radius_m?:
   post<{ id: number; name: string }>("/api/places", p);
 export const deletePlace = (id: number) => del(`/api/places/${id}`);
 
+// Notes that carry a capture coordinate — the Map's note pins.
+export interface LocatedNote { slug: string; title: string; lat: number; lon: number; location_label: string | null; kind: string; created_at: string; }
+export const getLocatedNotes = (since?: string, until?: string) => {
+  const p = new URLSearchParams();
+  if (since) p.set("since", since);
+  if (until) p.set("until", until);
+  const qs = p.toString();
+  return get<LocatedNote[]>(`/api/notes/located${qs ? `?${qs}` : ""}`);
+};
+
 export interface LocPoint { id: number; lat: number; lon: number; accuracy_m: number | null; recorded_at: string; }
 export const getLocations = (since?: string, until?: string) => {
   const p = new URLSearchParams();

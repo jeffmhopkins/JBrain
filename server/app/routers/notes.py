@@ -61,6 +61,25 @@ def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200):
     return [dict(r) for r in rows]
 
 
+@router.get("/located")
+def located_notes(since: str | None = None, until: str | None = None, limit: int = 2000):
+    """Notes that carry a capture coordinate — drives the Map's note pins. Declared
+    BEFORE /{slug} so 'located' isn't swallowed as a slug. Owner-only (bearer)."""
+    conn = get_conn()
+    sql = ("SELECT slug, title, lat, lon, location_label, kind, created_at FROM notes "
+           "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
+    params: list = []
+    s = since.strip().replace("T", " ").replace("Z", "") if since else None
+    u = until.strip().replace("T", " ").replace("Z", "") if until else None
+    if s:
+        sql += " AND created_at >= ?"; params.append(s)
+    if u:
+        sql += " AND created_at <= ?"; params.append(u)
+    sql += " ORDER BY created_at ASC LIMIT ?"
+    params.append(max(1, min(int(limit), 5000)))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
 @router.get("/{slug}")
 def get_note(slug: str):
     conn = get_conn()

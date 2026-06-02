@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, post } from "../api";
 import ResearchLinks from "../components/ResearchLinks";
 import { useAuth } from "../App";
-import { fmtTs } from "../time";
+import { fmtTs, fmtTsShort } from "../time";
 
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
@@ -329,29 +329,40 @@ export default function SharesPage() {
       {(history.length > 0 || guidedHistory.length > 0) && (
         <>
           <div className="adv-section">History</div>
-          <div className="card">
+          <div className="card share-hist">
             {guidedHistory.map((h) => (
-              <div key={"gh" + h.id} className="row" style={{ padding: "5px 0", fontSize: 13, gap: 8 }}>
-                <span style={{ color: STATUS_CLR[h.disposition] || "var(--text-dim)", textTransform: "capitalize", minWidth: 80 }}>{h.disposition}</span>
-                <Link to={`/note/${h.note_slug}`} className="wikilink">{leaf(h.goal || h.note_title)}</Link>
-                <span className="muted">guided · {h.name || "someone"}</span>
-                <span className="spacer" />
-                <span className="muted" style={{ fontSize: 12 }}>{h.completed_at ? fmtTs(h.completed_at, appTz) : ""}</span>
-              </div>
+              <HistRow key={"gh" + h.id} status={h.disposition} slug={h.note_slug}
+                       title={leaf(h.goal || h.note_title)} meta={`guided · ${h.name || "someone"}`}
+                       when={h.completed_at} appTz={appTz} />
             ))}
             {history.map((h) => (
-              <div key={h.id} className="row" style={{ padding: "5px 0", fontSize: 13, gap: 8 }}>
-                <span style={{ color: STATUS_CLR[h.status] || "var(--text-dim)", textTransform: "capitalize", minWidth: 80 }}>{h.status}</span>
-                <Link to={`/note/${h.note_slug}`} className="wikilink">{leaf(h.note_title)}</Link>
-                <span className="muted">{h.proposer_name || "someone"}</span>
-                <span className="spacer" />
-                <span className="muted" style={{ fontSize: 12 }}>{fmtTs(h.resolved_at || h.created_at, appTz)}</span>
-              </div>
+              <HistRow key={h.id} status={h.status} slug={h.note_slug}
+                       title={leaf(h.note_title)} meta={`edit · ${h.proposer_name || "someone"}`}
+                       when={h.resolved_at || h.created_at} appTz={appTz} />
             ))}
           </div>
         </>
       )}
 
+    </div>
+  );
+}
+
+// One compact history entry: a colored status pill, the linked title, and a muted
+// "<source> · <who> · <when>" line. Replaces the old single-row layout whose long
+// timestamp wrapped onto three lines on a phone.
+function HistRow({ status, slug, title, meta, when, appTz }: {
+  status: string; slug: string; title: string; meta: string; when?: string | null; appTz?: string;
+}) {
+  return (
+    <div className="share-hist-item">
+      <span className="badge" style={{ color: STATUS_CLR[status] || "var(--text-dim)", textTransform: "capitalize" }}>
+        {status}
+      </span>
+      <div className="share-hist-body">
+        <Link to={`/note/${slug}`} className="share-hist-title">{title}</Link>
+        <div className="share-hist-meta">{meta}{when ? ` · ${fmtTsShort(when, appTz)}` : ""}</div>
+      </div>
     </div>
   );
 }

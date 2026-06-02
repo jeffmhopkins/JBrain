@@ -21,6 +21,21 @@ export function fmtTs(raw: string, appTz?: string): string {
   });
 }
 
+// Compact variant for dense lists (history rows): no timezone label, and the year
+// is dropped when it's the current year, e.g. "Jun 1, 9:41 PM".
+export function fmtTsShort(raw: string, appTz?: string): string {
+  if (!raw) return "";
+  const hasZone = /[zZ]|[+-]\d\d:?\d\d$/.test(raw);
+  const d = new Date(raw.replace(" ", "T") + (hasZone ? "" : "Z"));
+  if (isNaN(d.getTime())) return raw;
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric",
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+    hour: "numeric", minute: "2-digit",
+    ...(appTz ? { timeZone: appTz } : {}),
+  });
+}
+
 const TOKEN_RE = /@t\[(age|until|since):([^\]]+)\]/g;
 const UNITS: [string, number][] = [
   ["year", 31536000], ["month", 2592000], ["week", 604800],

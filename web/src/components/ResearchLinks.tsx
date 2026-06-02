@@ -33,9 +33,8 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
     <div style={{ marginTop: 24 }}>
       <div className="adv-section">Research links</div>
       <p className="muted" style={{ fontSize: 13 }}>
-        Scoped, read-only Q&amp;A links — a recipient asks an AI that can only read the notes you approve.
-        Create one by asking the assistant (e.g. “create a research link of my medical history”), then
-        approve &amp; activate it here.
+        Scoped, read-only Q&amp;A links — create one by asking the assistant (e.g. “create a research
+        link of my medical history”), then approve &amp; activate it here.
       </p>
       {links.length === 0 && <p className="muted" style={{ fontSize: 13 }}>None yet — ask the assistant to create one.</p>}
       {links.map((l) => {

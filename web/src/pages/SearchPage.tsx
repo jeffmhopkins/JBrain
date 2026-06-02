@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { get } from "../api";
 import { Icon } from "../components/Icon";
 
@@ -22,12 +22,27 @@ function weightPct(distance: number): number {
   return Math.round(Math.max(0, Math.min(1, sim)) * 100);
 }
 
+const MODES: Mode[] = ["hybrid", "keyword", "semantic"];
+
 export default function SearchPage() {
-  const [q, setQ] = useState("");
-  const [mode, setMode] = useState<Mode>("hybrid");
+  // Seed from the URL so the search survives navigating into a note and back
+  // (the page unmounts on navigation; the URL is what restores it).
+  const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState(() => params.get("q") || "");
+  const [mode, setMode] = useState<Mode>(() =>
+    MODES.includes(params.get("mode") as Mode) ? (params.get("mode") as Mode) : "hybrid");
   const [results, setResults] = useState<Result[]>([]);
   const [searched, setSearched] = useState(false);
   const reqId = useRef(0);
+
+  // Mirror the query into the URL (replace, so typing doesn't spam history) so
+  // Back from a note returns to a populated search.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (mode !== "hybrid") next.set("mode", mode);
+    setParams(next, { replace: true });
+  }, [q, mode]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // A 0–100% relevance badge per result. Semantic = true cosine similarity from
   // the vector distance. Hybrid blends keyword + semantic via a rank-fusion score

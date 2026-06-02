@@ -40,7 +40,7 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
-                 "list_share_links", "revoke_share_link", "propose_actions"],
+                 "list_share_links", "revoke_share_link", "kb_coverage_check", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes"],
 }
@@ -133,6 +133,9 @@ _TOOL_SCHEMAS = {
             "summary": {"type": "string", "description": "Short human-readable description"},
         },
         "required": ["type", "summary"]}}}, "required": ["actions"]},
+    "kb_coverage_check": {"type": "object", "properties": {
+        "batch_limit": {"type": "integer", "default": 25, "description": "Max uncited entries to integrate this run (capped 200)."},
+        "reconsider": {"type": "boolean", "default": False, "description": "Re-feed entries synthesis already evaluated and skipped (expensive)."}}},
 }
 
 
@@ -398,6 +401,25 @@ def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]
     )
 
 
+def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=False):
+    """Find entries no KB article cites (and synthesis never evaluated) and
+    re-synthesise them, STAGING the proposed KB changes for review. Mutates the KB
+    only via approval, so it's Assisted-mode only (never Research)."""
+    from . import pipeline
+    if not llm.has_credentials():
+        return "I can't run a KB coverage check without an LLM key configured.", None
+    recipe = pipeline.get_action_def("kb_coverage_check")
+    if recipe is None:
+        return "The kb_coverage_check action isn't installed.", None
+    try:
+        detail = pipeline.run_pipeline(
+            conn, recipe, {"batch_limit": int(batch_limit), "reconsider": bool(reconsider)}, None, None)
+    except Exception as e:
+        return f"Coverage check failed: {e}", None
+    return (f"Ran a KB coverage check ({detail}). Any proposed KB additions are staged below — "
+            f"review and approve them."), {"type": "staging"}
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -643,6 +665,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_mark_inbox_processed(conn, conversation_id, args["ids"])
     if name == "propose_actions":
         return _tool_propose_actions(conn, conversation_id, args["actions"])
+    if name == "kb_coverage_check":
+        return _tool_kb_coverage_check(conn, conversation_id, args.get("batch_limit", 25), args.get("reconsider", False))
     return f"Unknown tool: {name}", None
 
 

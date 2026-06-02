@@ -1,0 +1,18 @@
+# Manual KB coverage check. Finds entries the nightly synthesis never integrated
+# into the knowledge base (no kb article cites them) and re-synthesises them,
+# STAGING the proposed KB changes for you to approve in Assisted chat. Run it from
+# Advanced → Workflows → Run now; it never fires on its own.
+#
+# interval_seconds: 0 makes schedule_due() return False, so it is manual-only.
+key: kb-coverage-check
+name: KB coverage check
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 0
+
+action:
+  type: kb_coverage_check
+  config:
+    batch_limit: 25

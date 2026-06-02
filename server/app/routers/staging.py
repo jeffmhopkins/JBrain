@@ -56,12 +56,16 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
                 if live_hash != basis["content_hash"]:
                     raise HTTPException(status_code=409, detail="The note changed since this edit was proposed — re-open it and re-propose.")
             # Update the EXISTING note by id (keeps its title; no notes/ re-root).
-            notes_svc.upsert_note(conn, title, payload.get("content") or "", note_id=basis["note_id"], **kw)
+            notes_svc.upsert_note(conn, title, payload.get("content") or "", note_id=basis["note_id"],
+                                  kind=payload.get("kind"), **kw)
         else:
             # CREATE, or an UPDATE whose title didn't exist at propose time, makes a
-            # NEW note under the notes/ root (create-only so it can't clobber).
-            title = notes_svc.root_title(title, "notes")
-            notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True, **kw)
+            # NEW note (create-only so it can't clobber). A kb proposal lands under
+            # kb/ with kind='kb'; everything else under notes/.
+            root = "kb" if payload.get("kind") == "kb" else "notes"
+            title = notes_svc.root_title(title, root)
+            notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True,
+                                  kind=payload.get("kind"), **kw)
     elif action_type == "LINK":
         source_title = (payload.get("source_title") or "").strip()
         target_title = (payload.get("target_title") or "").strip()

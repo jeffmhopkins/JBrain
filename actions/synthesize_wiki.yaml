@@ -47,6 +47,11 @@ steps:
     do: validate_citations
     with: { articles: "{{ plan }}" }
 
+  # Record that synthesis CONSIDERED these entries (per-entry watermark), so the KB
+  # coverage check won't later re-feed ones it intentionally produced no fact for.
+  - do: mark_evaluated
+    with: { ids: "{{ entries | map(attribute='id') | list }}" }
+
   - id: write
     for_each: "{{ checked.valid }}"
     steps:

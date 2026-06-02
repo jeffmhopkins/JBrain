@@ -2360,3 +2360,57 @@ def test_footnote_wikilink_records_a_links_row(client):
     row = conn.execute("SELECT target_note_id FROM links WHERE source_note_id=? AND target_title=?",
                        (art, "notes/Source")).fetchone()
     assert row is not None and row["target_note_id"] == src     # footnote cite → resolvable link
+
+
+# --- KB coverage check ------------------------------------------------------
+
+def test_kb_uncited_pending_candidate_set(client):
+    from app.db import get_conn
+    from app.services import notes as notes_svc, pipeline, wikilinks
+    conn = get_conn()
+    idea = notes_svc.upsert_note(conn, "notes/Idea", "an uncited idea", source="user", fire_events=False)
+    cited = notes_svc.upsert_note(conn, "notes/Cited", "cited fact", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "notes/daily/2026/05/30/1", "raw capture", source="user", fire_events=False)
+    notes_svc.upsert_note(conn, "lists/Groceries", "- milk", kind="list", source="user", fire_events=False)
+    kb = notes_svc.upsert_note(conn, "kb/Topic", "Fact.[^s1]\n\n[^s1]: [[notes/Cited]] — 1", kind="kb", source="user", fire_events=False)
+    conn.commit()
+    class C: pass
+    c = C(); c.conn = conn
+    out = pipeline._p_kb_uncited_pending(c)
+    titles = {e["title"] for e in out["entries"]}
+    assert "notes/Idea" in titles                      # uncited free-titled entry → candidate
+    assert "notes/Cited" not in titles                 # cited by a kb article → excluded
+    assert "notes/daily/2026/05/30/1" not in titles    # raw capture → excluded
+    assert "lists/Groceries" not in titles             # list → excluded
+    assert "kb/Topic" not in titles                    # kb article itself → excluded
+    # Marking it evaluated removes it from the candidate set.
+    pipeline._p_mark_evaluated(c, [idea])
+    assert "notes/Idea" not in {e["title"] for e in pipeline._p_kb_uncited_pending(c)["entries"]}
+
+
+def test_kb_coverage_check_stages_then_applies(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import notes as notes_svc, pipeline
+    from app.services import workflows as wf
+    conn = get_conn()
+    idea = notes_svc.upsert_note(conn, "notes/Idea", "a durable uncited idea", source="user", fire_events=False)
+    conn.commit()
+    # Stub the LLM synthesizer to fold the uncited entry into a footnote-cited article.
+    monkeypatch.setattr(wf, "_synthesize_actions", lambda entries, kb, instr, conn=None: [
+        {"op": "create", "title": "kb/Ideas",
+         "content_md": "Ideas overview.\n\nA durable idea exists.[^s1]\n\n## References\n[^s1]: [[notes/Idea]] — 2026-01-01"}])
+    detail = pipeline.run_pipeline(conn, pipeline.get_action_def("kb_coverage_check"), {}, None, None)
+    conn.commit()
+    # A pending kb CREATE is staged (not written yet), and the entry is marked evaluated.
+    st = conn.execute("SELECT type, payload_json FROM staging_actions WHERE status='pending'").fetchone()
+    assert st is not None and st["type"] == "CREATE"
+    import json as _json
+    assert _json.loads(st["payload_json"])["kind"] == "kb"
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/Ideas'").fetchone() is None   # not written yet
+    from app.db import get_meta
+    assert get_meta(f"wiki_synth:evaluated:{idea}") is not None
+    # Owner approves the staged proposal → it lands under kb/ with kind='kb'.
+    aid = conn.execute("SELECT id FROM staging_actions WHERE status='pending'").fetchone()["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    row = conn.execute("SELECT kind FROM notes WHERE title='kb/Ideas' AND deleted_at IS NULL").fetchone()
+    assert row is not None and row["kind"] == "kb"      # kind-aware apply

@@ -1,0 +1,64 @@
+# Declarative action: MANUAL KB coverage check. Find entries the wiki synthesis was
+# supposed to integrate but that NO kb article cites AND that synthesis has never
+# evaluated, then re-synthesise them and STAGE the proposed KB changes for the owner
+# to review/approve (not auto-applied). Marks each fed entry 'evaluated' so a
+# correctly-skipped transient entry is never reprocessed. Requires an LLM key.
+#
+# config keys:
+#   batch_limit  — max uncited entries per run (default 25, capped 200)
+#   reconsider   — true to ignore the evaluated-marker AND the created-floor (expensive)
+#   instructions — extra guidance appended to the synthesis prompt
+type: kb_coverage_check
+config:
+  - { key: batch_limit, label: Max uncited entries per run, type: number }
+  - { key: reconsider, label: Re-feed already-evaluated entries, type: boolean, default: false }
+  - { key: instructions, label: Extra guidance, type: textarea }
+steps:
+  - id: floor
+    do: get_meta
+    with: { key: "wiki_synth:since", default: "" }
+
+  - id: pending
+    do: kb_uncited_pending
+    with:
+      limit: "{{ config.batch_limit | default(25) }}"
+      since_floor: "{{ floor }}"
+      reconsider: "{{ config.reconsider | default(false) }}"
+    stop_when_empty: "no uncited, unevaluated entries — KB coverage looks complete"
+
+  - id: kb
+    do: query_notes
+    with: { kind: kb, limit: 50 }      # cold-start fallback; wiki_plan retrieves the relevant ones
+
+  - id: plan
+    do: wiki_plan
+    with:
+      entries: "{{ pending.entries }}"
+      existing_kb: "{{ kb }}"
+      instructions: "{{ config.instructions | default(none) }}"
+
+  - id: checked
+    do: validate_citations
+    with: { articles: "{{ plan }}" }
+
+  # Mark EVERY fed entry evaluated — even ones the model dropped — so the next run
+  # won't re-feed an intentional skip. (Editing an entry re-opens it elsewhere.)
+  - do: mark_evaluated
+    with: { ids: "{{ pending.ids }}" }
+
+  # Review-first: stage the proposed KB changes instead of writing them.
+  - do: stage_kb_proposals
+    when: "{{ checked.valid }}"
+    with: { articles: "{{ checked.valid }}" }
+
+  - do: create_review
+    when: "{{ checked.valid }}"
+    with:
+      title: "KB coverage — {{ checked.ok }} proposal(s) to review"
+      message: "Re-synthesised {{ pending.count }} uncited entr(y/ies). Open Assisted chat and approve the staged KB changes: {{ checked.valid | map(attribute='title') | join(', ') }}"
+
+  - do: create_review
+    when: "{{ checked.quarantined }}"
+    with:
+      title: "Citations need a look"
+      message: "{{ checked.bad }} coverage article(s) had malformed citations and were not staged: {{ checked.quarantined | map(attribute='title') | join(', ') }}."

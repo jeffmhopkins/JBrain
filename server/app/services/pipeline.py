@@ -250,6 +250,68 @@ def citation_issues(content_md: str) -> list[str]:
     return issues
 
 
+def _p_kb_uncited_pending(ctx, limit=25, since_floor="", reconsider=False):
+    """Live daily-rollups + legacy free-titled entries that NO kb article cites AND
+    that synthesis has not already EVALUATED (per-entry marker). Mirrors the
+    query_entry_changes candidate set exactly (raw dated captures reach the KB only
+    via their rollup, so they're excluded). `since_floor`: entries created on/before
+    it are treated as already-evaluated (bootstrap — skip the historical corpus).
+    `reconsider`: ignore both the marker and the floor (expensive)."""
+    rows = ctx.conn.execute(
+        "SELECT n.id, n.title, n.slug, n.content_md, n.created_at, n.updated_at "
+        "FROM notes n WHERE n.deleted_at IS NULL "
+        "  AND (n.kind='daily' OR (n.kind='entry' AND n.title NOT LIKE 'notes/daily/%')) "
+        "  AND NOT EXISTS (SELECT 1 FROM links l JOIN notes kb ON kb.id=l.source_note_id "
+        "       AND kb.kind='kb' AND kb.deleted_at IS NULL "
+        "       WHERE l.target_note_id=n.id OR lower(l.target_title)=lower(n.title)) "
+        "ORDER BY n.id"
+    ).fetchall()
+    out = []
+    for r in rows:
+        if not reconsider:
+            if since_floor and (r["created_at"] or "") <= since_floor:
+                continue                                  # pre-floor → implicitly evaluated
+            if get_meta(f"wiki_synth:evaluated:{r['id']}") is not None:
+                continue                                  # already considered, intentionally skipped
+        out.append(dict(r))
+    capped = out[: max(1, min(int(limit), 200))]
+    return {"entries": capped, "count": len(out), "ids": [e["id"] for e in capped]}
+
+
+def _p_mark_evaluated(ctx, ids, at=None):
+    """Record that synthesis CONSIDERED these entries (whether or not a fact resulted),
+    so the coverage check never re-feeds an intentionally-skipped entry. Idempotent."""
+    from datetime import datetime, timezone
+    ts = at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for nid in (ids or []):
+        set_meta(ctx.conn, f"wiki_synth:evaluated:{int(nid)}", str(ts))
+    return {"marked": len(ids or [])}
+
+
+def _p_stage_kb_proposals(ctx, articles, conversation_id=None):
+    """Stage synthesized KB articles as pending staging_actions (CREATE/UPDATE,
+    kind=kb) for the owner to approve — the 'review first' path for coverage. An
+    UPDATE carries a content-hash basis so a stale apply is refused, mirroring the
+    architect's propose_actions."""
+    staged = 0
+    for a in (articles or []):
+        title = (a.get("title") or "").strip()
+        if not title:
+            continue
+        note = notes_svc.get_by_title(ctx.conn, title)
+        if note:
+            h = hashlib.sha256((note["content_md"] or "").encode("utf-8")).hexdigest()
+            payload = {"type": "UPDATE", "title": title, "content": a.get("content_md") or "",
+                       "kind": "kb", "_basis": {"note_id": note["id"], "content_hash": h}}
+        else:
+            payload = {"type": "CREATE", "title": title, "content": a.get("content_md") or "", "kind": "kb"}
+        ctx.conn.execute(
+            "INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (?, ?, ?)",
+            (conversation_id, payload["type"], json.dumps(payload)))
+        staged += 1
+    return {"staged": staged}
+
+
 def _p_validate_citations(ctx, articles):
     """Split a wiki_plan into citation-VALID articles (safe to write) and
     QUARANTINED ones (malformed footnotes → would break the link graph)."""
@@ -409,6 +471,9 @@ _PRIMITIVES = {
     "summarise_entries": _p_summarise_entries,
     "wiki_plan": _p_wiki_plan,
     "validate_citations": _p_validate_citations,
+    "kb_uncited_pending": _p_kb_uncited_pending,
+    "mark_evaluated": _p_mark_evaluated,
+    "stage_kb_proposals": _p_stage_kb_proposals,
     "daylog_pending": _p_daylog_pending,
     "daily_pending": _p_daily_pending,
     "gather_context": _p_gather_context,
@@ -469,6 +534,15 @@ _PRIMITIVE_META: dict[str, dict] = {
     "validate_citations": {"summary": "Split a wiki_plan into citation-valid vs quarantined (malformed footnotes).",
                            "inputs": [{"name": "articles", "type": "list", "required": True}],
                            "output": "object"},
+    "kb_uncited_pending": {"summary": "Entries no kb article cites and synthesis hasn't evaluated.",
+                           "inputs": [{"name": "limit", "type": "int"}, {"name": "since_floor", "type": "str"},
+                                      {"name": "reconsider", "type": "bool"}], "output": "object"},
+    "mark_evaluated": {"summary": "Mark entries as considered by synthesis (per-entry watermark).",
+                       "inputs": [{"name": "ids", "type": "list", "required": True}, {"name": "at", "type": "str"}],
+                       "output": "object"},
+    "stage_kb_proposals": {"summary": "Stage synthesized KB articles as pending actions for owner review.",
+                           "inputs": [{"name": "articles", "type": "list", "required": True},
+                                      {"name": "conversation_id", "type": "int"}], "output": "object"},
     "daylog_pending": {"summary": "Days of a log still to summarise (+ watermark).",
                        "inputs": [{"name": "log_title", "type": "str", "required": True}], "output": "object"},
     "daily_pending": {"summary": "Completed days with dated entries but no daily summary yet.",

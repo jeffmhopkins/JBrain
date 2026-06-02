@@ -400,7 +400,7 @@ def _tool_where_was_i(conn, when: str) -> str:
     if not fix:
         return "No location fixes have been recorded yet."
     label = geotrail.label_point(conn, fix["lat"], fix["lon"])
-    where = label or f"{fix['lat']:.5f}, {fix['lon']:.5f}"
+    where = label or "an unlabeled spot"   # never leak raw coords through a tool
     near = "" if gap <= 30 else f" — but the nearest fix is {gap:.0f} min off, so this is approximate"
     return _untrusted("location", f"At {fix['recorded_at']} UTC: {where}{near}.")
 
@@ -426,7 +426,7 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20) -> str:
         return "No stays found in that window."
     lines = []
     for s in stays:
-        where = s["label"] or f"{s['lat']:.4f}, {s['lon']:.4f}"
+        where = s["label"] or "an unlabeled spot"   # never leak raw coords through a tool
         lines.append(f"- {where}: {s['minutes']:.0f} min ({s['arrived']} → {s['left']} UTC)")
     return _untrusted("stays", "\n".join(lines))
 
@@ -447,7 +447,7 @@ def _tool_trail_summary(conn, since=None, until=None) -> str:
     if stays:
         lines.append("Notable stays:")
         for s in stays:
-            where = s["label"] or f"{s['lat']:.4f}, {s['lon']:.4f}"
+            where = s["label"] or "an unlabeled spot"   # never leak raw coords through a tool
             lines.append(f"- {where}: {s['minutes']:.0f} min")
     return _untrusted("trail", "\n".join(lines))
 

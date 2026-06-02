@@ -815,7 +815,7 @@ def _p_stage_places(ctx, candidates):
             continue
         dup = ctx.conn.execute(
             "SELECT 1 FROM staging_actions WHERE type='ADD_PLACE' AND status='pending' "
-            "AND json_extract(payload_json, '$.name') = ? LIMIT 1", (name,)
+            "AND json_extract(payload_json, '$.name') = ? COLLATE NOCASE LIMIT 1", (name,)
         ).fetchone()
         if dup:
             continue

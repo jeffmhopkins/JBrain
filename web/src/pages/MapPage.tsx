@@ -39,6 +39,7 @@ export default function MapPage() {
   const placeLayer = useRef<L.LayerGroup | null>(null);
   const noteLayer = useRef<L.LayerGroup | null>(null);
   const noteMarkers = useRef<Record<string, L.Marker>>({});
+  const shownSlugs = useRef<Set<string>>(new Set());
   const notesRef = useRef<LocatedNote[]>([]);
   const addingRef = useRef(false);
 
@@ -170,18 +171,35 @@ export default function MapPage() {
     ).addTo(m);
   }, [places]);
 
-  // Note pins for everything captured up to the current scrub time.
+  // Build the note markers ONCE per note-set change (not per scrub tick) and keep an
+  // empty layer group on the map; scrubbing only reconciles which markers are in it.
   useEffect(() => {
     const m = map.current; if (!m) return;
-    if (noteLayer.current) { m.removeLayer(noteLayer.current); noteLayer.current = null; }
+    if (noteLayer.current) { m.removeLayer(noteLayer.current); }
     noteMarkers.current = {};
-    if (!showNotes || !notes.length) return;
-    const upto = notes.filter((n) => parseTs(n.created_at) <= curTs);
-    noteLayer.current = L.layerGroup(upto.map((n) => {
-      const mk = L.marker([n.lat, n.lon], { icon: noteIcon }).bindPopup(() => notePopup(n));
-      noteMarkers.current[n.slug] = mk;
-      return mk;
-    })).addTo(m);
+    shownSlugs.current = new Set();
+    const g = L.layerGroup();
+    if (showNotes) {
+      notes.forEach((n) => {
+        noteMarkers.current[n.slug] = L.marker([n.lat, n.lon], { icon: noteIcon }).bindPopup(() => notePopup(n));
+      });
+    }
+    g.addTo(m);
+    noteLayer.current = g;
+  }, [notes, showNotes]);
+
+  // Reconcile membership against the scrub time — add/remove only the delta, so a
+  // marker (and any open popup) is never needlessly recreated during playback.
+  useEffect(() => {
+    const g = noteLayer.current; if (!g) return;
+    for (const n of notes) {
+      const want = parseTs(n.created_at) <= curTs;
+      const mk = noteMarkers.current[n.slug];
+      if (!mk) continue;
+      const has = shownSlugs.current.has(n.slug);
+      if (want && !has) { g.addLayer(mk); shownSlugs.current.add(n.slug); }
+      else if (!want && has) { g.removeLayer(mk); shownSlugs.current.delete(n.slug); }
+    }
   }, [notes, curTs, showNotes]);
 
   // Dwell weight: time gap to the NEXT fix (capped) → places you lingered glow hotter.

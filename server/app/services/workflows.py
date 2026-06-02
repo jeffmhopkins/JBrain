@@ -582,13 +582,16 @@ def evaluate_location_triggers(conn) -> int:
         ).fetchone()
         if prev and prev["marker"] == marker:
             continue   # already fired for this visit/departure/spot
-        run_workflow(conn, wf, ctx, commit=False)
-        conn.execute(
-            "INSERT INTO location_fired (workflow_id, kind, marker) VALUES (?, ?, ?) "
-            "ON CONFLICT(workflow_id, kind) DO UPDATE SET marker = excluded.marker, "
-            "fired_at = datetime('now')",
-            (wf["id"], kind, marker),
-        )
+        status, _ = run_workflow(conn, wf, ctx, commit=False)
+        # Only record the firing if the action succeeded — a transient failure
+        # (e.g. push offline) should be retried next tick, not silently swallowed.
+        if status == "ok":
+            conn.execute(
+                "INSERT INTO location_fired (workflow_id, kind, marker) VALUES (?, ?, ?) "
+                "ON CONFLICT(workflow_id, kind) DO UPDATE SET marker = excluded.marker, "
+                "fired_at = datetime('now')",
+                (wf["id"], kind, marker),
+            )
+            ran += 1
         conn.commit()
-        ran += 1
     return ran

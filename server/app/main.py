@@ -119,8 +119,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JBrain", lifespan=lifespan)
 
-# Allow a separately-hosted PWA (e.g. GitHub Pages) to call the API. Safe with
-# "*" because auth is a bearer token (no cookies). Tighten via JBRAIN_CORS_ORIGINS.
+# Allow a separately-hosted PWA (e.g. GitHub Pages) to call the API with a bearer
+# token. allow_credentials is left OFF, so with "*" browsers will NOT attach cookies
+# to cross-origin XHR/fetch — the authed API stays bearer-only. The public /share/*
+# routes DO use httponly cookies, but those are protected separately: same-origin
+# only (samesite=strict/lax) plus explicit sec-fetch-site cross-site rejection on the
+# state-changing/billing endpoints. Tighten via JBRAIN_CORS_ORIGINS.
 _origins = [o.strip() for o in settings.jbrain_cors_origins.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,

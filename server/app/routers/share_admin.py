@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import notes as notes_svc
+from ..services import research as research_svc
 from ..services import share as share_svc
 from .staging import _apply_action
 
@@ -114,7 +115,23 @@ def list_shares():
                 else "discarded" if r["status"] == "abandoned" else r["status"])
         return {"id": r["id"], "name": r["name"], "goal": r["goal"], "disposition": disp,
                 "note_title": r["note_title"], "note_slug": r["note_slug"], "completed_at": r["completed_at"]}
+    # Research Q&A links (draft + active) with their exposure + usage counters.
+    research_links = conn.execute(
+        "SELECT sl.id, sl.token, sl.label, sl.created_at, sl.expires_at, rs.status AS spec_status, "
+        "       rs.bind, rs.single_use, rs.approved_ids_json, rs.reply_count, rs.max_total_replies, "
+        "       (SELECT COUNT(*) FROM research_sessions s WHERE s.share_link_id=sl.id) AS sessions "
+        "FROM share_links sl JOIN research_specs rs ON rs.share_link_id=sl.id "
+        "WHERE sl.kind='research' AND sl.status='active' ORDER BY sl.created_at DESC"
+    ).fetchall()
+
+    def _rl(r):
+        d = dict(r)
+        d["approved_count"] = len(json.loads(d.pop("approved_ids_json") or "[]"))
+        d["url"] = share_svc.share_url(d["token"])
+        return d
+
     return {
+        "research_links": [_rl(r) for r in research_links],
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),
                        "stale": hashlib.sha256((r["current_content"] or "").encode()).hexdigest() != r["basis_hash"]}
@@ -228,6 +245,143 @@ def guided_reject(sid: int):
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
+    conn.commit()
+    return {"ok": True}
+
+
+# --- Research links -----------------------------------------------------------
+
+class MintResearchIn(BaseModel):
+    label: str | None = None
+    prefixes: list[str] = []
+    kinds: list[str] = []
+    ttl_days: int | None = None
+    bind: bool = False
+    single_use: bool = False
+    persona_voice: str = ""
+    intro: str = ""
+    max_turns: int = 30
+    max_total_replies: int = 200
+
+
+def _clean_scope(prefixes, kinds) -> dict:
+    return {"prefixes": [p.strip().strip("/") for p in (prefixes or []) if p and p.strip().strip("/")],
+            "kinds": [k for k in (kinds or []) if k]}
+
+
+@router.post("/research/mint")
+def research_mint(body: MintResearchIn):
+    """Mint a DRAFT research link: an anchor/audit note + the scope spec. Nothing is
+    exposed yet — the owner approves candidate notes, then activates."""
+    conn = get_conn()
+    scope = _clean_scope(body.prefixes, body.kinds)
+    if not scope["prefixes"]:
+        raise HTTPException(status_code=400, detail="Pick at least one folder to scope the link.")
+    label = (body.label or scope["prefixes"][0]).strip()[:80]
+    title = notes_svc.root_title(f"Research — {label}", "notes")
+    note_id = notes_svc.upsert_note(
+        conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
+        source="user", version_note="research link anchor", fire_events=False)
+    token, link_id = share_svc.create_research_link(conn, note_id, label=label, ttl_days=body.ttl_days, bind=body.bind)
+    research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=body.persona_voice,
+                             intro=body.intro, bind=body.bind, single_use=body.single_use,
+                             max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+    conn.commit()
+    return {"link_id": link_id, "token": token, "url": share_svc.share_url(token),
+            "candidates": research_svc.list_candidates(conn, link_id)}
+
+
+@router.get("/research/{link_id}")
+def research_detail(link_id: int):
+    conn = get_conn()
+    spec = research_svc.get_spec(conn, link_id)
+    if not spec:
+        raise HTTPException(status_code=404, detail="Not found.")
+    sessions = conn.execute(
+        "SELECT id, name, turn_count, denied_count, retrieved_ids_json, created_at, last_at, status "
+        "FROM research_sessions WHERE share_link_id=? ORDER BY created_at DESC LIMIT 50", (link_id,)).fetchall()
+    return {
+        "spec": {k: spec[k] for k in ("status", "persona_voice", "intro", "bind", "single_use",
+                                       "max_turns", "max_total_replies", "reply_count")},
+        "scope": json.loads(spec["scope_json"] or "{}"),
+        "candidates": research_svc.list_candidates(conn, link_id),
+        "approved": research_svc.list_approved(conn, link_id),
+        "sessions": [{**dict(s), "retrieved": len(json.loads(s["retrieved_ids_json"] or "[]"))} for s in sessions],
+    }
+
+
+class ResearchScopeIn(BaseModel):
+    prefixes: list[str] = []
+    kinds: list[str] = []
+
+
+@router.post("/research/{link_id}/scope")
+def research_set_scope(link_id: int, body: ResearchScopeIn):
+    conn = get_conn()
+    research_svc.set_scope(conn, link_id, _clean_scope(body.prefixes, body.kinds))
+    conn.commit()
+    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id)}
+
+
+class ResearchDetailsIn(BaseModel):
+    persona_voice: str = ""
+    intro: str = ""
+    bind: bool = False
+    single_use: bool = False
+    max_turns: int = 30
+    max_total_replies: int = 200
+
+
+@router.post("/research/{link_id}/details")
+def research_set_details(link_id: int, body: ResearchDetailsIn):
+    conn = get_conn()
+    research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, intro=body.intro,
+                             bind=body.bind, single_use=body.single_use, max_turns=body.max_turns,
+                             max_total_replies=body.max_total_replies)
+    conn.commit()
+    return {"ok": True}
+
+
+class IdsIn(BaseModel):
+    ids: list[int] = []
+
+
+@router.post("/research/{link_id}/approve")
+def research_approve(link_id: int, body: IdsIn):
+    conn = get_conn()
+    research_svc.approve(conn, link_id, body.ids)
+    conn.commit()
+    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id),
+            "approved": research_svc.list_approved(conn, link_id)}
+
+
+@router.post("/research/{link_id}/dismiss")
+def research_dismiss(link_id: int, body: IdsIn):
+    conn = get_conn()
+    research_svc.dismiss(conn, link_id, body.ids)
+    conn.commit()
+    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id)}
+
+
+@router.post("/research/{link_id}/remove")
+def research_remove(link_id: int, body: IdsIn):
+    conn = get_conn()
+    research_svc.remove_approved(conn, link_id, body.ids)
+    conn.commit()
+    return {"ok": True, "approved": research_svc.list_approved(conn, link_id)}
+
+
+@router.post("/research/{link_id}/activate")
+def research_activate(link_id: int):
+    """Make a draft research link live. Refuses if nothing has been approved yet
+    (an active link with an empty allowlist would expose nothing but still bill)."""
+    conn = get_conn()
+    spec = research_svc.get_spec(conn, link_id)
+    if not spec:
+        raise HTTPException(status_code=404, detail="Not found.")
+    if not research_svc.scope.approved_ids(spec):
+        raise HTTPException(status_code=400, detail="Approve at least one note before activating.")
+    research_svc.activate_spec(conn, link_id)
     conn.commit()
     return {"ok": True}
 

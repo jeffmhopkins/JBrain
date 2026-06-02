@@ -15,6 +15,7 @@ from ..config import get_settings
 from ..db import get_conn
 from ..services import attachments as att_svc
 from ..services import guided as guided_svc
+from ..services import research as research_svc
 from ..services import share as share_svc
 
 router = APIRouter(prefix="/api/share", tags=["share"])   # NO dependencies=[CurrentUser]
@@ -107,6 +108,8 @@ def share_read(token: str, request: Request):
     link = _resolve_or_404(conn, request, token)
     if link["kind"] == "guided":
         return _guided_landing(conn, link)   # NEVER returns note content
+    if link["kind"] == "research":
+        return _research_landing(conn, link)   # NEVER returns note content
     st = _bind_status(link, request)
     if st == "locked":
         raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
@@ -220,6 +223,10 @@ def guided_start(token: str, body: GuidedStartIn, request: Request, response: Re
 
 @router.post("/{token}/guided/turn")
 def guided_turn(token: str, body: GuidedTurnIn, request: Request):
+    # The turn endpoint reads the session cookie and bills an LLM call — reject
+    # cross-site forged POSTs (drive-by session abuse), like start/claim do.
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
     conn = get_conn()
     link, spec = _resolve_guided(conn, request, token)
     session = guided_svc.find_session(conn, link["id"], request.cookies.get(f"jb_guided_{link['id']}"))
@@ -236,6 +243,81 @@ def guided_submit(token: str, request: Request):
     if session is None:
         raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
     return guided_svc.submit(conn, link, spec, session)
+
+
+# --- Research links (kind='research') ---------------------------------------
+# A recipient asks questions answered by a scope-bounded AI (research_svc). The AI
+# reads ONLY the spec's approved note allowlist; it never returns note content here.
+
+def _research_landing(conn, link) -> dict:
+    spec = research_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return {
+        "kind": "research",
+        "brain_name": get_settings().brain_name,
+        "owner": get_settings().brain_name,
+        "intro": spec["intro"],
+        "consent": (f"You’re chatting with an AI assistant set up by {get_settings().brain_name} that "
+                    "can answer questions from a specific set of records they’ve shared. It only "
+                    "reads what they approved, and conversations are logged for them. Not professional advice."),
+    }
+
+
+def _research_cookie(response: Response, token: str, link_id: int, secret: str) -> None:
+    domain = (get_settings().jbrain_domain or "").lower()
+    secure = not (domain == "" or domain.startswith("localhost") or domain.startswith("127."))
+    # samesite='strict': the cookie never rides a cross-site navigation (tighter than guided's 'lax').
+    response.set_cookie(f"jb_research_{link_id}", secret, max_age=7 * 24 * 3600, httponly=True,
+                        samesite="strict", secure=secure, path=f"/api/share/{token}")
+
+
+def _resolve_research(conn, request, token):
+    link = _resolve_or_404(conn, request, token)
+    if link["kind"] != "research":
+        raise HTTPException(status_code=404, detail="Not found.")
+    spec = research_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active" or not llm_ready():
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return link, spec
+
+
+class ResearchStartIn(BaseModel):
+    name: str | None = None
+
+
+class ResearchTurnIn(BaseModel):
+    message: str = Field("", max_length=8000)
+
+
+@router.post("/{token}/research/start")
+def research_start(token: str, body: ResearchStartIn, request: Request, response: Response):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, spec = _resolve_research(conn, request, token)
+    existing = research_svc.find_session(conn, link["id"], request.cookies.get(f"jb_research_{link['id']}"))
+    if existing and existing["status"] == "active":
+        import json as _json
+        return {"resumed": True, "name": existing["name"],
+                "transcript": _json.loads(existing["transcript_json"] or "[]")}
+    sid, secret = research_svc.start_session(conn, link, spec, body.name, _client_ip(request),
+                                             request.cookies.get(f"jb_research_{link['id']}"))
+    conn.commit()
+    _research_cookie(response, token, link["id"], secret)
+    return {"name": (body.name or "").strip()[:80] or None, "transcript": []}
+
+
+@router.post("/{token}/research/turn")
+def research_turn(token: str, body: ResearchTurnIn, request: Request):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, spec = _resolve_research(conn, request, token)
+    session = research_svc.find_session(conn, link["id"], request.cookies.get(f"jb_research_{link['id']}"))
+    if session is None or session["status"] != "active":
+        raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
+    return research_svc.answer(conn, link, spec, session, body.message)
 
 
 # Only these render inline on the public page; everything else (esp. SVG/HTML,

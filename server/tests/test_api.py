@@ -43,6 +43,11 @@ def client(monkeypatch):
     from app import auth
     auth.ensure_access_key()  # seed the key hash from the env
 
+    # The public-share rate limiter is a process-global dict; reset it so a test's
+    # public requests don't accumulate into the next test's bucket (cross-test 429s).
+    from app.services import share as _share_svc
+    _share_svc._HITS.clear()
+
     from fastapi.testclient import TestClient
     from app.main import app
 
@@ -909,6 +914,47 @@ def test_research_runner_rag_caps_and_injection(client, monkeypatch):
     conn.commit()
     s3 = conn.execute("SELECT * FROM research_sessions WHERE id=?", (sid,)).fetchone()
     assert research.answer(conn, link, research.get_spec(conn, lid), s3, "hello?")["phase"] == "ended"
+
+
+def test_research_link_endpoints(client, monkeypatch):
+    """Owner mint→approve→activate and the public landing→start→turn flow, end to end."""
+    import sqlite_vec
+    from app.db import get_conn
+    from app.services import embeddings, llm
+
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "penicillin allergy"})
+    client.post("/api/notes", json={"title": "notes/Finance/Taxes", "content_md": "secret tax"})
+    conn = get_conn()
+    allergies = conn.execute("SELECT id FROM notes WHERE title='notes/Medical/Allergies'").fetchone()["id"]
+    conn.execute("INSERT INTO vec_notes (note_id, embedding) VALUES (?, ?)",
+                 (allergies, sqlite_vec.serialize_float32([1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1))))
+    conn.commit()
+    monkeypatch.setattr(embeddings, "embed", lambda q: [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1))
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete",
+                        lambda msgs, system="", **k: "Per the records, penicillin." if "penicillin allergy" in system else "No data.")
+
+    r = client.post("/api/shares/research/mint", json={"label": "Med", "prefixes": ["notes/Medical"]}).json()
+    lid, token = r["link_id"], r["token"]
+    assert any(c["title"] == "notes/Medical/Allergies" for c in r["candidates"])
+
+    assert client.post(f"/api/shares/research/{lid}/activate").status_code == 400   # nothing approved yet
+    ap = client.post(f"/api/shares/research/{lid}/approve", json={"ids": [allergies]}).json()
+    assert any(a["id"] == allergies for a in ap["approved"]) and ap["candidates"] == []
+    assert client.post(f"/api/shares/research/{lid}/activate").json()["ok"]
+
+    land = client.get(f"/api/share/{token}").json()
+    assert land["kind"] == "research" and "content" not in land and "content_md" not in land
+
+    client.post(f"/api/share/{token}/research/start", json={"name": "Q"})
+    ans = client.post(f"/api/share/{token}/research/turn", json={"message": "what am I allergic to?"}).json()
+    assert ans["phase"] == "answer" and "penicillin" in ans["message"]
+
+    # The owner sees it in the listing + can audit the session.
+    shares = client.get("/api/shares").json()
+    assert any(rl["id"] == lid and rl["approved_count"] == 1 for rl in shares["research_links"])
+    detail = client.get(f"/api/shares/research/{lid}").json()
+    assert detail["sessions"][0]["turn_count"] == 1 and detail["sessions"][0]["retrieved"] == 1
 
 
 def test_quicktask_add_list_item_and_undo(client):

@@ -88,6 +88,22 @@ def create_guided_link(conn, note_id: int, label: str | None = None,
     return token, cur.lastrowid
 
 
+def create_research_link(conn, note_id: int, label: str | None = None,
+                         ttl_days: int | None = None, bind: bool = False) -> tuple[str, int]:
+    """Mint a research Q&A link (scope='view', kind='research'). Returns (token, link_id).
+    Anchored to a placeholder/audit note (note_id) so it stays visible/revocable in the
+    owner's listings; the scope spec is attached separately via research.create_spec, and
+    the link is inert until the owner activates it."""
+    token = mint_token()
+    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+    cur = conn.execute(
+        "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
+        "VALUES (?, ?, 'view', 'research', ?, ?, " + ("datetime('now', ?))" if exp else "NULL)"),
+        (token, note_id, label, 1 if bind else 0) + ((exp,) if exp else ()),
+    )
+    return token, cur.lastrowid
+
+
 def reset_bind(conn, link_id: int) -> None:
     """Forget the bound browser (secret + claimer name) so the link can be accepted
     fresh (e.g. it locked to the wrong in-app browser)."""

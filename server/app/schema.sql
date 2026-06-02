@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS share_links (
   token        TEXT UNIQUE NOT NULL,                -- 256-bit URL-safe; the capability itself
   note_id      INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   scope        TEXT NOT NULL CHECK (scope IN ('view','edit')),
+  kind         TEXT NOT NULL DEFAULT 'note',          -- 'note' (view/edit a note) | 'guided' (AI intake)
   status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
   label        TEXT,
   expires_at   TEXT,
@@ -249,6 +250,43 @@ CREATE TABLE IF NOT EXISTS share_proposals (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_prop_one_pending
   ON share_proposals(share_link_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_share_prop_status ON share_proposals(status);
+
+-- Guided AI intake: the owner-approved interview spec for a 'guided' share link.
+-- sub_prompt is the goal-specific instructions for the recipient-facing interview
+-- AI (wrapped at runtime by a fixed safety preamble). status draft->active is the
+-- owner's FIRST approval gate (the link is inert until 'active').
+CREATE TABLE IF NOT EXISTS guided_specs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id   INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  goal            TEXT NOT NULL DEFAULT '',           -- owner's stated goal (audit/UI)
+  intro           TEXT NOT NULL DEFAULT '',           -- what the recipient sees on the consent landing
+  sub_prompt      TEXT NOT NULL,                      -- generated instructions for the interview AI
+  status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+  max_turns       INTEGER NOT NULL DEFAULT 40,        -- per-session recipient-AI replies
+  max_total_replies INTEGER NOT NULL DEFAULT 80,      -- cumulative across the link (hard cost cap)
+  reply_count     INTEGER NOT NULL DEFAULT 0,         -- billed AI replies so far (atomic counter)
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guided_specs_link ON guided_specs(share_link_id);
+
+-- One recipient's run through a guided link: the transcript and the AI-drafted
+-- document awaiting the owner's SECOND approval.
+CREATE TABLE IF NOT EXISTS guided_sessions (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id   INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  secret          TEXT NOT NULL,                      -- httponly cookie tying this browser to the session
+  name            TEXT,
+  status          TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active','drafting','submitted','abandoned')),
+  transcript_json TEXT NOT NULL DEFAULT '[]',
+  document_md     TEXT,                               -- the AI-synthesized document (for owner review)
+  turn_count      INTEGER NOT NULL DEFAULT 0,
+  review_item_id  INTEGER REFERENCES review_items(id) ON DELETE SET NULL,
+  client_ip       TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guided_sessions_link ON guided_sessions(share_link_id);
 
 -- Web Push subscriptions (one row per browser/device that opted in). The endpoint
 -- is a push-service capability URL; p256dh/auth are the client's encryption keys.

@@ -63,13 +63,77 @@ def list_shares():
         "FROM share_proposals p JOIN notes n ON n.id = p.note_id "
         "WHERE p.status != 'pending' ORDER BY COALESCE(p.resolved_at, p.created_at) DESC LIMIT 50"
     ).fetchall()
+    # Guided AI intake links (draft + active) and the responses awaiting approval #2.
+    guided_links = conn.execute(
+        "SELECT sl.id, sl.token, sl.created_at, sl.expires_at, gs.goal, gs.intro, gs.sub_prompt, "
+        "       gs.status AS spec_status, n.title AS note_title, n.slug AS note_slug, "
+        "       (SELECT COUNT(*) FROM guided_sessions s WHERE s.share_link_id=sl.id AND s.status='submitted') AS submitted "
+        "FROM share_links sl JOIN guided_specs gs ON gs.share_link_id=sl.id JOIN notes n ON n.id=sl.note_id "
+        "WHERE sl.kind='guided' AND sl.status='active' ORDER BY sl.created_at DESC"
+    ).fetchall()
+    guided_pending = conn.execute(
+        "SELECT s.id, s.name, s.document_md, s.created_at, s.completed_at, gs.goal, "
+        "       n.title AS note_title, n.slug AS note_slug "
+        "FROM guided_sessions s JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
+        "JOIN share_links sl ON sl.id=s.share_link_id JOIN notes n ON n.id=sl.note_id "
+        "JOIN review_items ri ON ri.id=s.review_item_id "
+        "WHERE s.status='submitted' AND ri.status='pending' ORDER BY s.completed_at DESC"
+    ).fetchall()
     return {
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),
                        "stale": hashlib.sha256((r["current_content"] or "").encode()).hexdigest() != r["basis_hash"]}
                       for r in proposals],
         "history": [dict(r) for r in history],
+        "guided_links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in guided_links],
+        "guided_pending": [dict(r) for r in guided_pending],
     }
+
+
+@router.post("/guided/{link_id}/activate")
+def guided_activate(link_id: int):
+    """Approval #1: make a draft guided link live for recipients."""
+    conn = get_conn()
+    from ..services import guided as guided_svc
+    guided_svc.activate_spec(conn, link_id)
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/guided/sessions/{sid}/accept")
+def guided_accept(sid: int):
+    """Approval #2: write the AI-drafted document into the destination note."""
+    conn = get_conn()
+    s = conn.execute(
+        "SELECT s.*, sl.note_id FROM guided_sessions s JOIN share_links sl ON sl.id=s.share_link_id "
+        "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
+    if not s:
+        raise HTTPException(status_code=404, detail="No submitted guided response found.")
+    note = conn.execute("SELECT title, slug FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
+    if note is None:
+        raise HTTPException(status_code=409, detail="The destination note no longer exists.")
+    notes_svc.upsert_note(conn, note["title"], s["document_md"] or "", note_id=s["note_id"],
+                          source="shared", version_note=f"guided intake from {s['name'] or 'a recipient'}")
+    if s["review_item_id"]:
+        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                     (s["review_item_id"],))
+    conn.commit()
+    return {"ok": True, "note_slug": note["slug"]}
+
+
+@router.post("/guided/sessions/{sid}/reject")
+def guided_reject(sid: int):
+    """Discard a guided response (nothing is written)."""
+    conn = get_conn()
+    s = conn.execute("SELECT review_item_id FROM guided_sessions s WHERE id=? AND status='submitted'", (sid,)).fetchone()
+    if not s:
+        raise HTTPException(status_code=404, detail="No submitted guided response found.")
+    conn.execute("UPDATE guided_sessions SET status='abandoned' WHERE id=?", (sid,))
+    if s["review_item_id"]:
+        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                     (s["review_item_id"],))
+    conn.commit()
+    return {"ok": True}
 
 
 @router.post("/{link_id}/revoke")

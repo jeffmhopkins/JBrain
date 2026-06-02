@@ -2015,3 +2015,93 @@ def test_undo_noop_does_not_mark_undone(client):
     # Still 'applied' (truthful), not falsely 'undone'.
     row = conn.execute("SELECT status FROM staging_actions WHERE id = ?", (cur.lastrowid,)).fetchone()
     assert row["status"] == "applied"
+
+
+# --- Guided AI intake links -------------------------------------------------
+
+def test_guided_module_has_no_brain_access():
+    # ISOLATION INVARIANT: the interview AI service must not import the notes layer.
+    import inspect
+    from app.services import guided
+    src = inspect.getsource(guided)
+    assert "notes as notes_svc" not in src
+    assert "import embeddings" not in src
+    assert "from . import notes" not in src
+
+
+def test_guided_refuses_sensitive_solicitation():
+    from app.services import guided
+    assert guided.sensitive_reason("collect his SSN and bank login")
+    assert guided.sensitive_reason("ask for the credit card number")
+    assert guided.sensitive_reason("medical history and allergies") is None
+
+
+def test_guided_intake_full_flow(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import share as share_svc, guided as guided_svc, llm
+    from app.services import notes as notes_svc
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    n = {"i": 0}
+    def fake_complete(messages, *, system=None, max_tokens=1024, **k):
+        if system and "writing a clean" in system:          # the synthesis call
+            return "## Medical history\n- Condition: diabetes\n- Meds: metformin"
+        n["i"] += 1
+        return "Thanks, that's everything. <<DONE>>" if n["i"] >= 2 else "Hi! What conditions do you have?"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "notes/Dad — Medical History", "# placeholder\n",
+                                source="user", fire_events=False)
+    token, link_id = share_svc.create_guided_link(conn, nid, label="med hx", ttl_days=14)
+    guided_svc.create_spec(conn, link_id, goal="medical history", intro="Hi from your son",
+                           sub_prompt="Gather conditions, medications, allergies.")
+    conn.commit()
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    anon = TestClient(app)                                    # no access key
+
+    # Draft → recipient blocked until owner activates (approval #1).
+    assert anon.get(f"/api/share/{token}").status_code == 404
+    assert client.post(f"/api/shares/guided/{link_id}/activate").status_code == 200
+
+    landing = anon.get(f"/api/share/{token}").json()
+    assert landing["kind"] == "guided" and "content_md" not in landing   # never leaks the note
+
+    start = anon.post(f"/api/share/{token}/guided/start", json={"name": "Dad"}).json()
+    assert start["phase"] == "asking"
+    anon.post(f"/api/share/{token}/guided/turn", json={"message": "I have diabetes"})
+    rev = anon.post(f"/api/share/{token}/guided/turn", json={"message": "metformin"}).json()
+    assert rev["phase"] == "review" and "Medical history" in rev["document"]
+    assert anon.post(f"/api/share/{token}/guided/submit").json()["ok"] is True
+
+    shares = client.get("/api/shares").json()
+    assert len(shares["guided_pending"]) == 1
+    sid = shares["guided_pending"][0]["id"]
+    assert client.post(f"/api/shares/guided/sessions/{sid}/accept").status_code == 200
+    body = client.get("/api/notes/notes-dad-medical-history").json()["content_md"]
+    assert "diabetes" in body and "metformin" in body               # approved doc written
+
+
+def test_guided_spend_cap_is_atomic(client, monkeypatch):
+    from app.db import get_conn
+    from app.services import share as share_svc, guided as guided_svc, llm
+    from app.services import notes as notes_svc
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "ok")
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "notes/Capped", "# x", source="user", fire_events=False)
+    token, link_id = share_svc.create_guided_link(conn, nid)
+    guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p")
+    conn.execute("UPDATE guided_specs SET max_total_replies=2, status='active' WHERE share_link_id=?", (link_id,))
+    conn.commit()
+    from fastapi.testclient import TestClient
+    from app.main import app
+    anon = TestClient(app)
+    anon.post(f"/api/share/{token}/guided/start", json={"name": "X"})   # reply #1
+    anon.post(f"/api/share/{token}/guided/turn", json={"message": "a"})  # reply #2
+    # Budget now exhausted → next turn must wrap up to review, not call the model again.
+    out = anon.post(f"/api/share/{token}/guided/turn", json={"message": "b"}).json()
+    assert out["phase"] == "review"
+    assert conn.execute("SELECT reply_count, max_total_replies FROM guided_specs WHERE share_link_id=?",
+                        (link_id,)).fetchone()["reply_count"] <= 2

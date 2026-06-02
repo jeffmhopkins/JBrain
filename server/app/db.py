@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 def init_db() -> None:
@@ -207,6 +207,35 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               p256dh TEXT NOT NULL, auth TEXT NOT NULL, ua TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
               last_seen_at TEXT NOT NULL DEFAULT (datetime('now')));
+        """)
+
+    if current < 18:
+        # Guided AI intake links: a 'kind' marker on share_links, the owner-approved
+        # interview spec, and per-recipient sessions (transcript + the AI-drafted doc).
+        _add_column(conn, "share_links", "kind", "TEXT NOT NULL DEFAULT 'note'")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS guided_specs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+              goal TEXT NOT NULL DEFAULT '', intro TEXT NOT NULL DEFAULT '',
+              sub_prompt TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+              max_turns INTEGER NOT NULL DEFAULT 40,
+              max_total_replies INTEGER NOT NULL DEFAULT 80,
+              reply_count INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_guided_specs_link ON guided_specs(share_link_id);
+            CREATE TABLE IF NOT EXISTS guided_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+              secret TEXT NOT NULL, name TEXT,
+              status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active','drafting','submitted','abandoned')),
+              transcript_json TEXT NOT NULL DEFAULT '[]',
+              document_md TEXT, turn_count INTEGER NOT NULL DEFAULT 0,
+              review_item_id INTEGER REFERENCES review_items(id) ON DELETE SET NULL,
+              client_ip TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT);
+            CREATE INDEX IF NOT EXISTS idx_guided_sessions_link ON guided_sessions(share_link_id);
         """)
 
 

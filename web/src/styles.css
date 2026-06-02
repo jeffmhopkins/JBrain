@@ -485,6 +485,10 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .share-head { display: flex; align-items: center; gap: 10px; }
 .share-banner { border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: var(--radius); padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
 .share-sent { text-align: center; padding: 24px 0; }
+.guided-chat { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; padding: 4px 0; }
+.guided-chat .msg.user { align-self: flex-end; }
+.guided-chat .msg.assistant { align-self: flex-start; }
+.guided-doc { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; max-height: 40vh; overflow: auto; background: var(--bg-elev-2); margin-top: 8px; }
 .share-diff { white-space: pre-wrap; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; margin: 8px 0; }
 .wikilink-flat { color: var(--text-dim); }
 

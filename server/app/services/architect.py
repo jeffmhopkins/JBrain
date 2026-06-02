@@ -39,8 +39,8 @@ _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
-                 "mark_inbox_processed", "set_tags", "create_share_link", "list_share_links",
-                 "revoke_share_link", "propose_actions"],
+                 "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
+                 "list_share_links", "revoke_share_link", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes"],
 }
@@ -91,6 +91,13 @@ _TOOL_SCHEMAS = {
         "title": {"type": "string", "description": "Exact note title to share."},
         "scope": {"type": "string", "enum": ["view", "edit"], "default": "view"}},
         "required": ["title"]},
+    "create_guided_share": {"type": "object", "properties": {
+        "goal": {"type": "string", "description": "One-line goal, e.g. 'collect my dad's medical history'."},
+        "sub_prompt": {"type": "string", "description": "The instructions the interview AI will follow: what to cover, the order, tone, and what 'done' looks like. You author this from the owner's answers."},
+        "intro": {"type": "string", "description": "Warm 1-2 sentence intro the recipient sees before starting."},
+        "dest_title": {"type": "string", "description": "Note the approved result lands in (created if absent)."},
+        "ttl_days": {"type": "integer", "default": 14}},
+        "required": ["goal", "sub_prompt"]},
     "list_share_links": {"type": "object", "properties": {}},
     "revoke_share_link": {"type": "object", "properties": {
         "token": {"type": "string"},
@@ -515,6 +522,37 @@ def _tool_create_share_link(conn, conversation_id, title, scope="view"):
     return f"applied: {display}", _record_applied(conn, conversation_id, "SHARE_LINK", display, undo)
 
 
+def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
+                              dest_title=None, ttl_days=14):
+    """Mint a DRAFT guided AI intake link. The owner reviews/activates it (approval
+    #1) before recipients can use it. The interview AI (guided_svc) has no brain
+    access. `sub_prompt` = the goal-specific instructions you authored from the
+    owner's answers; it is wrapped at runtime by a fixed safety preamble."""
+    from . import share as share_svc
+    from . import guided as guided_svc
+    bad = guided_svc.sensitive_reason(f"{goal}\n{intro}\n{sub_prompt}")
+    if bad:
+        return (f"I can't create an intake that asks for sensitive credentials/IDs "
+                f"(matched “{bad}”). Reword the goal to avoid passwords, PINs, "
+                f"government IDs, or financial account numbers.", None)
+    if not (sub_prompt or "").strip():
+        return "I need the interview instructions (sub_prompt) before creating the link.", None
+    # Owner-side: create the destination note (placeholder until a response is approved).
+    title = notes_svc.root_title(dest_title or f"Intake — {goal}", "notes")
+    note_id = notes_svc.upsert_note(
+        conn, title, f"# {title.split('/')[-1]}\n\n_Awaiting a guided response…_\n",
+        source="user", version_note="guided intake note", fire_events=False)
+    token, link_id = share_svc.create_guided_link(conn, note_id, label=goal[:80], ttl_days=ttl_days)
+    guided_svc.create_spec(conn, link_id, goal=goal, intro=intro, sub_prompt=sub_prompt)
+    url = share_svc.share_url(token)
+    display = (f"Created a DRAFT guided intake link for [[{title}]] → {url}\n"
+              f"It's not live yet — review the interview and ACTIVATE it under Advanced → Shares "
+              f"(approval #1). When someone completes it, you'll approve the AI's document before "
+              f"it's saved (approval #2).")
+    undo = {"op": "revoke_share", "token": token}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "GUIDED_SHARE", display, undo)
+
+
 def _tool_list_share_links(conn):
     from . import share as share_svc
     rows = conn.execute(
@@ -586,6 +624,9 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_set_tags(conn, conversation_id, args["title"], args["tags"], args.get("mode", "add"))
     if name == "create_share_link":
         return _tool_create_share_link(conn, conversation_id, args["title"], args.get("scope", "view"))
+    if name == "create_guided_share":
+        return _tool_create_guided_share(conn, conversation_id, args["goal"], args["sub_prompt"],
+                                         args.get("intro", ""), args.get("dest_title"), args.get("ttl_days", 14))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None
     if name == "revoke_share_link":

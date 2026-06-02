@@ -92,6 +92,18 @@ export const proposeShareEdit = (token: string, content_md: string, name?: strin
 export const shareAttachmentUrl = (token: string, id: number) =>
   u(`/api/share/${encodeURIComponent(token)}/attachments/${id}`);
 
+// Guided AI intake — recipient side (public; the session rides on a same-origin cookie).
+export const guidedStart = <T = any>(token: string, name?: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/guided/start`, { method: "POST", body: JSON.stringify({ name }) });
+export const guidedTurn = <T = any>(token: string, message: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/guided/turn`, { method: "POST", body: JSON.stringify({ message }) });
+export const guidedSubmit = <T = any>(token: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/guided/submit`, { method: "POST" });
+// Guided — owner side (authenticated approvals).
+export const guidedActivate = (linkId: number) => post(`/api/shares/guided/${linkId}/activate`);
+export const guidedAccept = (sid: number) => post(`/api/shares/guided/sessions/${sid}/accept`);
+export const guidedReject = (sid: number) => post(`/api/shares/guided/sessions/${sid}/reject`);
+
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;

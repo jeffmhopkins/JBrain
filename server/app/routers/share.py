@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..db import get_conn
 from ..services import attachments as att_svc
+from ..services import guided as guided_svc
 from ..services import share as share_svc
 
 router = APIRouter(prefix="/api/share", tags=["share"])   # NO dependencies=[CurrentUser]
@@ -104,6 +105,8 @@ def share_read(token: str, request: Request):
     Withholds backlinks, tags, geolocation, slug, and id."""
     conn = get_conn()
     link = _resolve_or_404(conn, request, token)
+    if link["kind"] == "guided":
+        return _guided_landing(conn, link)   # NEVER returns note content
     st = _bind_status(link, request)
     if st == "locked":
         raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
@@ -139,6 +142,99 @@ def share_claim(token: str, body: ClaimIn, request: Request, response: Response)
         link = share_svc.resolve_active_link(conn, token)   # re-read so bound_name is included
     share_svc.touch(conn, link["id"]); conn.commit()
     return _note_payload(conn, link)
+
+
+# --- Guided AI intake (kind='guided') ---------------------------------------
+# A recipient is interviewed by an isolated AI (guided_svc) that has NO brain
+# access. The owner-injected consent + disclaimer are non-editable.
+
+def _guided_landing(conn, link) -> dict:
+    spec = guided_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return {
+        "kind": "guided",
+        "brain_name": get_settings().brain_name,
+        "owner": get_settings().brain_name,
+        "intro": spec["intro"],
+        "goal": spec["goal"],
+        # Server-injected, non-editable consent + disclaimer:
+        "consent": (f"You’re chatting with an AI assistant set up by {get_settings().brain_name} "
+                    "to gather some information. Your conversation is shared with them and "
+                    "reviewed before anything is saved. This is not professional advice."),
+    }
+
+
+def _guided_cookie(response: Response, token: str, link_id: int, secret: str) -> None:
+    domain = (get_settings().jbrain_domain or "").lower()
+    secure = not (domain == "" or domain.startswith("localhost") or domain.startswith("127."))
+    response.set_cookie(f"jb_guided_{link_id}", secret, max_age=7 * 24 * 3600, httponly=True,
+                        samesite="lax", secure=secure, path=f"/api/share/{token}")
+
+
+def _resolve_guided(conn, request, token):
+    link = _resolve_or_404(conn, request, token)
+    if link["kind"] != "guided":
+        raise HTTPException(status_code=404, detail="Not found.")
+    spec = guided_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active" or not llm_ready():
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return link, spec
+
+
+def llm_ready() -> bool:
+    from ..services import llm
+    return llm.has_credentials()
+
+
+class GuidedStartIn(BaseModel):
+    name: str | None = None
+
+
+class GuidedTurnIn(BaseModel):
+    message: str = Field("", max_length=8000)
+
+
+@router.post("/{token}/guided/start")
+def guided_start(token: str, body: GuidedStartIn, request: Request, response: Response):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, spec = _resolve_guided(conn, request, token)
+    # Resume an existing session for this browser if present.
+    existing = guided_svc.find_session(conn, link["id"], request.cookies.get(f"jb_guided_{link['id']}"))
+    if existing and existing["status"] in ("active", "drafting"):
+        import json as _json
+        transcript = _json.loads(existing["transcript_json"] or "[]")
+        return {"resumed": True, "name": existing["name"], "transcript": transcript,
+                "document": existing["document_md"],
+                "phase": "review" if existing["status"] == "drafting" else "asking"}
+    sid, secret = guided_svc.start_session(conn, link, body.name, _client_ip(request))
+    conn.commit()
+    session = conn.execute("SELECT * FROM guided_sessions WHERE id = ?", (sid,)).fetchone()
+    out = guided_svc.first_message(conn, link, spec, session)
+    _guided_cookie(response, token, link["id"], secret)
+    return out
+
+
+@router.post("/{token}/guided/turn")
+def guided_turn(token: str, body: GuidedTurnIn, request: Request):
+    conn = get_conn()
+    link, spec = _resolve_guided(conn, request, token)
+    session = guided_svc.find_session(conn, link["id"], request.cookies.get(f"jb_guided_{link['id']}"))
+    if session is None or session["status"] not in ("active", "drafting"):
+        raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
+    return guided_svc.advance(conn, link, spec, session, body.message)
+
+
+@router.post("/{token}/guided/submit")
+def guided_submit(token: str, request: Request):
+    conn = get_conn()
+    link, spec = _resolve_guided(conn, request, token)
+    session = guided_svc.find_session(conn, link["id"], request.cookies.get(f"jb_guided_{link['id']}"))
+    if session is None:
+        raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
+    return guided_svc.submit(conn, link, spec, session)
 
 
 # Only these render inline on the public page; everything else (esp. SVG/HTML,

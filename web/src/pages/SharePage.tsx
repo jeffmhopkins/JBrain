@@ -5,12 +5,14 @@ import remarkGfm from "remark-gfm";
 import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
 import { renderWikiLinks, stripSummarySentinels } from "../util";
 import { fmtTs, expandTimeTokens } from "../time";
+import GuidedChat from "../components/GuidedChat";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
   requires_claim?: boolean;
+  kind?: string; intro?: string; consent?: string; goal?: string;
   scope: "view" | "edit"; can_edit: boolean; brain_name: string; app_tz?: string; bound_name?: string | null;
   note?: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
 }
@@ -50,6 +52,12 @@ export default function SharePage() {
     </div></div>
   );
   if (!data) return <div className="share-page"><div className="muted">Loading…</div></div>;
+
+  // --- Guided AI intake: a separate, self-contained recipient experience ---
+  if (data.kind === "guided") {
+    return <GuidedChat token={token} brainName={data.brain_name}
+                       intro={data.intro} consent={data.consent} goal={data.goal} />;
+  }
 
   // --- Consent landing for a not-yet-accepted bind link --------------------
   async function accept() {

@@ -212,7 +212,19 @@ export async function attachmentImageUrl(id: number, expectedBytes?: number): Pr
   if (expectedBytes && expectedBytes > 4096 && blob.size < expectedBytes * 0.5) {
     throw new Error(`server sent ${blob.size} of ~${expectedBytes} bytes — the image data looks truncated/missing on the server`);
   }
-  return URL.createObjectURL(blob);
+  // Return a data: URL, not a blob: URL: the app's CSP allows `img-src data:` but
+  // not `blob:`, so a blob URL would be silently blocked by the browser. data:
+  // also needs no revoke (GC'd normally).
+  return await blobToDataUrl(blob);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result as string);
+    fr.onerror = () => reject(new Error("couldn't read the image data"));
+    fr.readAsDataURL(blob);
+  });
 }
 
 export async function downloadAttachment(id: number, filename: string): Promise<void> {

@@ -21,8 +21,14 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
     navigator.clipboard?.writeText(l.url).then(() => { setCopied(l.id); setTimeout(() => setCopied(null), 1200); });
   }
   async function revoke(l: RLink) {
-    if (!confirm(`Revoke “${l.label || "research link"}”? It stops answering immediately.`)) return;
+    const draft = l.spec_status !== "active";
+    const verb = draft ? "Delete this draft" : "Revoke";
+    if (!confirm(`${verb} “${l.label || "research link"}”? It stops answering immediately.`)) return;
     try { await post(`/api/shares/${l.id}/revoke`); } finally { reload(); }
+  }
+  async function activate(l: RLink) {
+    try { await researchActivate(l.id); } catch (e: any) { alert(e?.message || "Couldn't activate."); }
+    reload();
   }
 
   return (
@@ -36,26 +42,40 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
         Scoped, read-only Q&amp;A links — a recipient asks an AI that can only read the notes you approve.
       </p>
       {links.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No research links.</p>}
-      {links.map((l) => (
-        <div className="card" key={l.id}>
-          <div className="row">
-            <strong>{l.label || "Research link"}</strong>
-            <span className={"badge badge-" + (l.spec_status === "active" ? "architect" : "import")}>{l.spec_status}</span>
-            <span className="spacer" />
-            <span className="badge">{l.approved_count} notes</span>
-            <span className="badge">{l.sessions} chats</span>
+      {links.map((l) => {
+        const draft = l.spec_status !== "active";
+        return (
+          <div className="card" key={l.id}>
+            <div className="row">
+              <strong>{l.label || "Research link"}</strong>
+              {draft ? <span className="badge tag-delete">draft — not live</span> : <span className="badge prio">live</span>}
+              <span className="badge">{l.approved_count} note{l.approved_count === 1 ? "" : "s"}</span>
+              {l.sessions > 0 && <span className="badge">{l.sessions} chat{l.sessions === 1 ? "" : "s"}</span>}
+              <span className="spacer" />
+              <span className="muted" style={{ fontSize: 12 }}>{l.reply_count}/{l.max_total_replies} answers used</span>
+            </div>
+            {!draft && (
+              <div className="row" style={{ marginTop: 6, gap: 6 }}>
+                <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
+                <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied" : "Copy"}</button>
+                <button className="ghost" onClick={() => setManage(l.id)}>Manage</button>
+                <button className="ghost danger-hover" onClick={() => revoke(l)}>Revoke</button>
+              </div>
+            )}
+            {draft && (
+              <div className="row" style={{ marginTop: 8, gap: 8 }}>
+                <button className="primary" disabled={l.approved_count === 0}
+                        title={l.approved_count === 0 ? "Approve at least one note first (Manage)" : ""}
+                        onClick={() => activate(l)}>Activate link</button>
+                <button className="ghost" onClick={() => setManage(l.id)}>
+                  Manage{l.approved_count === 0 ? " — approve notes" : ""}
+                </button>
+                <button className="ghost danger-hover" onClick={() => revoke(l)}>Delete</button>
+              </div>
+            )}
           </div>
-          <div className="muted" style={{ fontSize: 12, margin: "4px 0" }}>
-            {l.reply_count}/{l.max_total_replies} answers used
-            {l.spec_status === "draft" && " · not live yet — approve notes & activate"}
-          </div>
-          <div className="wf-actions">
-            <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied!" : "Copy link"}</button>
-            <button className="ghost" onClick={() => setManage(l.id)}>Manage</button>
-            <button className="ghost danger-hover" onClick={() => revoke(l)}>Revoke</button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
       {minting && <MintModal onClose={() => setMinting(false)}
                              onMinted={(id) => { setMinting(false); setManage(id); reload(); }} />}
       {manage != null && <ManageModal linkId={manage} onClose={() => { setManage(null); reload(); }} />}

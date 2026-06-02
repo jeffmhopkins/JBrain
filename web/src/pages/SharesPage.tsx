@@ -259,7 +259,7 @@ export default function SharesPage() {
             <div className="card" key={"gl" + g.id}>
               <div className="row">
                 <strong>{g.goal || leaf(g.note_title)}</strong>
-                <span className={"badge " + (g.spec_status === "active" ? "" : "tag-delete")}>
+                <span className={"badge " + (g.spec_status === "active" ? "prio" : "tag-delete")}>
                   {g.spec_status === "active" ? "live" : "draft — not live"}
                 </span>
                 {g.submitted > 0 && <span className="badge">{g.submitted} response{g.submitted === 1 ? "" : "s"}</span>}
@@ -307,7 +307,7 @@ export default function SharesPage() {
         <div className="card" key={l.id}>
           <div className="row">
             <strong>{leaf(l.note_title)}</strong>
-            <span className={"badge " + (l.scope === "edit" ? "badge-architect" : "")}>{l.scope}</span>
+            <span className={"badge " + (l.scope === "edit" ? "prio" : "")}>{l.scope}</span>
             {l.label && <span className="badge">{l.label}</span>}
             {l.expires_at && <span className="badge" title="Link expiry">expires {l.expires_at.slice(0, 10)}</span>}
             {l.bind ? <span className="badge" title="Locked to first device">{l.bound_at ? "locked" : "lock pending"}</span> : null}
@@ -319,10 +319,12 @@ export default function SharesPage() {
             <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
             <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied" : "Copy"}</button>
             {l.bind ? <button className="ghost" onClick={() => resetBind(l)} title="Forget the locked browser so the link can be opened fresh">Reset lock</button> : null}
-            <button className="ghost" onClick={() => revoke(l)}>Revoke</button>
+            <button className="ghost danger-hover" onClick={() => revoke(l)}>Revoke</button>
           </div>
         </div>
       ))}
+
+      <ResearchLinks links={researchLinks} reload={load} />
 
       {(history.length > 0 || guidedHistory.length > 0) && (
         <>
@@ -350,7 +352,6 @@ export default function SharesPage() {
         </>
       )}
 
-      <ResearchLinks links={researchLinks} reload={load} />
     </div>
   );
 }

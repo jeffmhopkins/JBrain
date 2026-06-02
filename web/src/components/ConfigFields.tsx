@@ -89,6 +89,7 @@ function Field({ f, value, set }: { f: FieldSpec; value: any; set: (k: string, v
         <option value="">(default)</option>
         {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
+      <Help t={f.help} />
     </div>;
   }
   return <div>{label}

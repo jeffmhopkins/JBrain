@@ -1154,6 +1154,19 @@ def test_system_stats_and_token_meter(client):
     assert r["daily_warn_usd"] > 0
 
 
+def test_search_note_hit_reports_attachments(client):
+    """A note hit carries an attachment count even when the query matched the NOTE
+    body (not the attachment text) — so the card can always show the clip."""
+    client.post("/api/notes", json={"title": "notes/Kayak", "content_md": "kayak trip down the river"})
+    up = client.post("/api/notes/notes-kayak/attachments",
+                     files={"file": ("map.png", b"\x89PNG\r\n\x1a\n" + b"x" * 64, "image/png")},
+                     data={"analyze": "false"})
+    assert up.status_code == 200, up.text
+    rows = client.get("/api/search", params={"q": "kayak", "mode": "keyword"}).json()
+    note = next(r for r in rows if r["kind"] == "note" and r["slug"] == "notes-kayak")
+    assert note["attachments"] == 1            # surfaced via the note hit, not an attachment-text hit
+
+
 def test_attachment_download_roundtrip_is_byte_exact(client):
     """The download endpoint must return the uploaded bytes verbatim (image preview +
     Download both depend on this). Guards against any server-side corruption."""

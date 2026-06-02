@@ -12,6 +12,7 @@ interface Result {
   distance?: number;   // vector distance, present on semantic hits
   filename?: string;
   snippet?: string;
+  attachments?: number;   // count of files on a note hit (deterministic clip badge)
 }
 
 // Embeddings are unit-normalised, so the vec0 L2 distance maps to cosine
@@ -72,12 +73,17 @@ export default function SearchPage() {
       </form>
       <div style={{ marginTop: 18 }}>
         {searched && results.length === 0 && <p className="muted">No results.</p>}
-        {results.map((r, i) => {
+        {results.map((r) => {
           const w = weightOf(r);
           return (
-            <Link key={i} to={`/note/${r.slug}`} className="list-item">
+            <Link key={`${r.kind}:${r.slug}:${r.filename ?? ""}`} to={`/note/${r.slug}`} className="list-item">
               <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
                 <div style={{ fontWeight: 600 }}>{r.title}</div>
+                {r.kind === "note" && !!r.attachments && (
+                  <span className="muted" style={{ fontSize: 12 }} title={`${r.attachments} attachment${r.attachments === 1 ? "" : "s"}`}>
+                    <Icon name="clip" size={12} />{r.attachments > 1 ? ` ${r.attachments}` : ""}
+                  </span>
+                )}
                 {w != null && <span className="search-weight">{w}%</span>}
               </div>
               {r.kind === "attachment" && (

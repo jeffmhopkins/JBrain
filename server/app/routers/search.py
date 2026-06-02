@@ -71,6 +71,19 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
                 "distance": r["distance"],
             }, i)
 
+    # Mark note hits that CARRY attachments, so the card shows a clip deterministically
+    # — not only when the attachment's own text happened to match (one batched query).
+    note_ids = [v["id"] for v in results.values() if v["kind"] == "note"]
+    if note_ids:
+        qmarks = ",".join("?" * len(note_ids))
+        counts = {r["note_id"]: r["c"] for r in conn.execute(
+            f"SELECT note_id, COUNT(*) c FROM attachments WHERE note_id IN ({qmarks}) GROUP BY note_id",
+            note_ids,
+        ).fetchall()}
+        for v in results.values():
+            if v["kind"] == "note":
+                v["attachments"] = counts.get(v["id"], 0)
+
     if mode == "semantic":
         # Pure semantic search: order by true vector similarity (smaller distance =
         # more similar) so the order matches the relevance weight shown in the UI.

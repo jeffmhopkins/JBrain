@@ -28,6 +28,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [progress, setProgress] = useState<{ name: string; pct: number; processing: boolean } | null>(null);
   const [viewing, setViewing] = useState<Viewing>(null);
   const [thumbs, setThumbs] = useState<Record<number, string>>({});   // attachment id -> object URL for inline image previews
+  const [thumbErr, setThumbErr] = useState<Record<number, string>>({});   // why a preview failed (surfaced inline)
   const inputRef = useRef<HTMLInputElement>(null);
   const polling = useRef<Set<number>>(new Set());
   const alive = useRef(true);
@@ -59,7 +60,9 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
           const url = await attachmentObjectUrl(a.id);
           if (cancelled) { URL.revokeObjectURL(url); return; }
           setThumbs((t) => ({ ...t, [a.id]: url }));
-        } catch { /* no preview — the View button still works */ }
+        } catch (e: any) {
+          setThumbErr((m) => ({ ...m, [a.id]: e?.status ? `HTTP ${e.status}` : (e?.message || "error") }));
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -116,15 +119,26 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
     } finally { setProgress(null); setBusy(false); }
   }
 
+  function attErr(e: any): string {
+    return e?.status ? `HTTP ${e.status}` : (e?.message || "error");
+  }
+
   async function view(a: Attachment) {
-    if (a.mime.startsWith("image/")) {
-      setViewing({ kind: "image", filename: a.filename, url: await attachmentObjectUrl(a.id) });
-    } else if (a.mime.includes("markdown") || a.mime.startsWith("text/")) {
-      const full = await get(`/api/attachments/${a.id}`);
-      setViewing({ kind: a.mime.includes("markdown") ? "md" : "text", filename: a.filename, text: full.content_text || "(empty)" });
-    } else {
-      downloadAttachment(a.id, a.filename);  // no inline preview — just download
-    }
+    try {
+      if (a.mime.startsWith("image/")) {
+        setViewing({ kind: "image", filename: a.filename, url: await attachmentObjectUrl(a.id) });
+      } else if (a.mime.includes("markdown") || a.mime.startsWith("text/")) {
+        const full = await get(`/api/attachments/${a.id}`);
+        setViewing({ kind: a.mime.includes("markdown") ? "md" : "text", filename: a.filename, text: full.content_text || "(empty)" });
+      } else {
+        await downloadAttachment(a.id, a.filename);  // no inline preview — just download
+      }
+    } catch (e: any) { setError(`Couldn’t open “${a.filename}” — ${attErr(e)}`); }
+  }
+
+  async function dl(a: Attachment) {
+    try { await downloadAttachment(a.id, a.filename); }
+    catch (e: any) { setError(`Download failed for “${a.filename}” — ${attErr(e)}`); }
   }
 
   async function remove(a: Attachment) {
@@ -169,7 +183,12 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             // below the fold — lazy + off-screen blob images render broken on mobile.
             <img src={thumbs[a.id]} alt={a.filename} className="att-thumb"
                  title="Click to view full size" onClick={() => view(a)}
-                 onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                 onError={() => setThumbErr((m) => ({ ...m, [a.id]: "decode failed (not image data?)" }))} />
+          )}
+          {isImage(a.mime) && !thumbs[a.id] && thumbErr[a.id] && (
+            <div className="muted" style={{ fontSize: 11, color: "var(--danger)", margin: "6px 0 2px" }}>
+              Couldn’t load preview — {thumbErr[a.id]}
+            </div>
           )}
           {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
@@ -180,7 +199,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
           )}
           <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>
-            <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => downloadAttachment(a.id, a.filename)}>Download</button>
+            <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => dl(a)}>Download</button>
             {hasLlm && isImage(a.mime) && a.analysis_status !== "pending" && (
               <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => reanalyze(a)}>
                 {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-analyze" : "Analyze with AI"}

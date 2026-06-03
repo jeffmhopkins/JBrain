@@ -25,6 +25,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -70,6 +72,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun TrackerScreen(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var serverUrl by remember { mutableStateOf(Settings.serverUrl(ctx)) }
     var name by remember { mutableStateOf(Settings.name(ctx)) }
     var tracking by remember { mutableStateOf(Settings.enabled(ctx)) }
@@ -81,6 +84,18 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     var notif by remember { mutableStateOf(hasNotif()) }
+
+    // Parse + apply a setup code (fills Name + Server + key). Returns false if it's
+    // not a jbt1 code. Shared by the Paste button and typing/IME-paste in the field.
+    fun applyCode(raw: String): Boolean {
+        val p = SetupCode.parse(raw) ?: return false
+        if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
+        if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
+        Settings.setKey(ctx, p.key)
+        codeInput = ""   // don't leave the secret sitting in the box
+        status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
+        return true
+    }
 
     // Keep the queued-fixes count live so you can watch the buffer drain after a sync.
     LaunchedEffect(Unit) {
@@ -174,23 +189,27 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             label = { Text("Server (from setup code)") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        // The ONLY editable field: paste the setup code from JBrain → People (it fills
-        // Name + Server + the location key). Locked while tracking; turn it off to change.
+        // The only editable field, but the real action is the Paste button (the code is a
+        // long base64 string — you wouldn't type it). The button reads the clipboard
+        // directly, so it works regardless of keyboard quirks; the field accepts input
+        // too and auto-applies once a full jbt1 code lands. Locked while tracking.
         OutlinedTextField(
             value = codeInput,
-            onValueChange = { v ->
-                val p = SetupCode.parse(v)
-                if (p != null) {
-                    if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
-                    if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
-                    Settings.setKey(ctx, p.key)
-                    codeInput = ""   // don't leave the secret sitting in the box
-                    status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
-                } else {
-                    codeInput = v
-                }
-            },
+            onValueChange = { v -> codeInput = v; applyCode(v) },
             label = { Text("Paste setup code") }, singleLine = true, enabled = !tracking,
+            trailingIcon = {
+                TextButton(
+                    enabled = !tracking,
+                    onClick = {
+                        val t = clipboard.getText()?.text?.trim().orEmpty()
+                        when {
+                            t.isBlank() -> status = "Clipboard is empty — copy the setup code from JBrain → People first."
+                            applyCode(t) -> {}
+                            else -> status = "That's not a setup code (it should start with “jbt1.”)."
+                        }
+                    },
+                ) { Text("Paste") }
+            },
             modifier = Modifier.fillMaxWidth(),
         )
 

@@ -34,8 +34,24 @@ def _mins(a: str, b: str) -> float:
         return 0.0
 
 
-def fixes(conn, since: str | None = None, until: str | None = None) -> list[dict]:
-    sql = "SELECT lat, lon, accuracy_m, recorded_at FROM locations WHERE 1=1"
+def _attribute(conn):
+    """Return a fn mapping a fix's `source` → person_id (the default person catches any
+    unmatched source), memoised so a 20k-row scan resolves each distinct source once."""
+    from . import people as people_svc
+    cache: dict[str, int | None] = {}
+
+    def pid(source: str | None) -> int | None:
+        key = (source or "").strip().lower()
+        if key not in cache:
+            p = people_svc.resolve(conn, source or "")
+            cache[key] = p["id"] if p else None
+        return cache[key]
+
+    return pid
+
+
+def fixes(conn, since: str | None = None, until: str | None = None, person_id: int | None = None) -> list[dict]:
+    sql = "SELECT lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []
     s, u = _utc(since), _utc(until)
     if s and u and s > u:
@@ -49,7 +65,28 @@ def fixes(conn, since: str | None = None, until: str | None = None) -> list[dict
     sql += " ORDER BY recorded_at DESC LIMIT 20000"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     rows.reverse()
+    if person_id is not None:                 # keep only this person's fixes
+        pid = _attribute(conn)
+        rows = [r for r in rows if pid(r["source"]) == person_id]
     return rows
+
+
+def latest_fix(conn, person_id: int | None = None) -> dict | None:
+    """The most recent fix overall, or for one person (default catches unmatched)."""
+    if person_id is None:
+        row = conn.execute(
+            "SELECT lat, lon, accuracy_m, recorded_at, source FROM locations "
+            "ORDER BY recorded_at DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+    pid = _attribute(conn)
+    for r in conn.execute(
+        "SELECT lat, lon, accuracy_m, recorded_at, source FROM locations "
+        "ORDER BY recorded_at DESC LIMIT 5000"
+    ).fetchall():
+        if pid(r["source"]) == person_id:
+            return dict(r)
+    return None
 
 
 def label_point(conn, lat: float, lon: float) -> str | None:
@@ -72,19 +109,27 @@ def label_point(conn, lat: float, lon: float) -> str | None:
     return note[0] if note else None
 
 
-def nearest_fix(conn, when: str) -> tuple[dict | None, float]:
-    """Closest fix to `when` (UTC ISO). Returns (fix, gap_minutes)."""
+def nearest_fix(conn, when: str, person_id: int | None = None) -> tuple[dict | None, float]:
+    """Closest fix to `when` (UTC ISO), optionally for one person. Returns (fix, gap_minutes)."""
     target = _utc(when)
     if not target:
         return None, 0.0
-    row = conn.execute(
-        "SELECT lat, lon, recorded_at FROM locations "
-        "ORDER BY ABS(strftime('%s', recorded_at) - strftime('%s', ?)) ASC LIMIT 1",
+    if person_id is None:
+        row = conn.execute(
+            "SELECT lat, lon, recorded_at FROM locations "
+            "ORDER BY ABS(strftime('%s', recorded_at) - strftime('%s', ?)) ASC LIMIT 1",
+            (target,),
+        ).fetchone()
+        return (dict(row), _mins(row["recorded_at"], target)) if row else (None, 0.0)
+    pid = _attribute(conn)
+    for r in conn.execute(
+        "SELECT lat, lon, recorded_at, source FROM locations "
+        "ORDER BY ABS(strftime('%s', recorded_at) - strftime('%s', ?)) ASC LIMIT 2000",
         (target,),
-    ).fetchone()
-    if not row:
-        return None, 0.0
-    return dict(row), _mins(row["recorded_at"], target)
+    ).fetchall():
+        if pid(r["source"]) == person_id:
+            return dict(r), _mins(r["recorded_at"], target)
+    return None, 0.0
 
 
 def dwell_minutes(conn, lat: float, lon: float, radius_m: float, since=None, until=None, pts=None) -> float:

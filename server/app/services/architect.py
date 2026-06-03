@@ -39,7 +39,7 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
-                 "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes",
+                 "read_attachment", "query_sql", "current_location", "locate_person", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
@@ -48,7 +48,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
-                 "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes",
+                 "read_attachment", "query_sql", "current_location", "locate_person", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place"],
 }
@@ -59,6 +59,8 @@ _TOOL_SCHEMAS = {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
     "current_location": {"type": "object", "properties": {}},
+    "locate_person": {"type": "object", "properties": {
+        "person": {"type": "string", "description": "A registered person's name (or alias). Omit for the owner/default person."}}},
     "geo_distance": {"type": "object", "properties": {
         "from": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'."},
         "to": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'. Omit to measure from the current location."}},
@@ -68,24 +70,29 @@ _TOOL_SCHEMAS = {
         "radius_km": {"type": "number", "default": 25},
         "limit": {"type": "integer", "default": 10}}},
     "where_was_i": {"type": "object", "properties": {
-        "when": {"type": "string", "description": "The moment to look up, in the owner's local time (an explicit offset/Z is honored)."}},
+        "when": {"type": "string", "description": "The moment to look up, in the owner's local time (an explicit offset/Z is honored)."},
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."}},
         "required": ["when"]},
     "time_at_place": {"type": "object", "properties": {
         "place": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'."},
         "radius_m": {"type": "integer", "default": 150, "description": "Match radius (ignored for saved places, which carry their own)."},
         "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
-        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."}},
         "required": ["place"]},
     "places_visited": {"type": "object", "properties": {
         "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
         "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
-        "min_minutes": {"type": "integer", "default": 20, "description": "Ignore stays shorter than this."}}},
+        "min_minutes": {"type": "integer", "default": 20, "description": "Ignore stays shorter than this."},
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."}}},
     "distance_traveled": {"type": "object", "properties": {
         "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
-        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}}},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."}}},
     "trail_summary": {"type": "object", "properties": {
         "since": {"type": "string", "description": "Lower bound — the owner's local time (an explicit offset/Z is honored). Optional."},
-        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."}}},
+        "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."}}},
     "entries_at_place": {"type": "object", "properties": {
         "place": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'."},
         "radius_m": {"type": "integer", "default": 150, "description": "Match radius (ignored for saved places, which carry their own)."},
@@ -349,6 +356,54 @@ def _tool_current_location(conn, conversation_id):
     return _untrusted("location", s)
 
 
+def _resolve_person(conn, person):
+    """Map an optional person name/alias to (person_id, display_name, explicit, error).
+    No name → the DEFAULT person (so 'where was I' means the owner, not everyone).
+    Unknown name → an error string for the agent to relay. Empty registry → (None, …)
+    which leaves the trail tools unscoped (legacy single-user behaviour)."""
+    from . import people as people_svc
+    if person and person.strip():
+        p = people_svc.by_name(conn, person)
+        if not p:
+            return None, None, True, (f"No one named “{person.strip()}” is in the People "
+                                      "registry — add them in People (or check the spelling).")
+        return p["id"], p["name"], True, None
+    p = people_svc.resolve(conn, "")          # the default person
+    return (p["id"] if p else None), (p["name"] if p else "you"), False, None
+
+
+def _ago(recorded_at: str) -> str:
+    """Humanised age of a 'YYYY-MM-DD HH:MM:SS' UTC timestamp (for 'where is X now')."""
+    from datetime import datetime, timezone
+    try:
+        t = datetime.strptime(recorded_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        secs = (datetime.now(timezone.utc) - t).total_seconds()
+    except Exception:
+        return "time unknown"
+    if secs < 90:
+        return "just now"
+    if secs < 5400:
+        return f"{secs / 60:.0f} min ago"
+    if secs < 129600:           # < 36 h
+        return f"{secs / 3600:.0f} h ago"
+    return f"{secs / 86400:.0f} d ago"
+
+
+def _tool_locate_person(conn, person=None):
+    """Most recent known location for a registered person (or the owner if unnamed),
+    from the location trail — answers 'where is Allan right now / last seen'."""
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    fix = geotrail.latest_fix(conn, pid)
+    if not fix:
+        return _untrusted("location", f"No location fixes have been recorded for {who} yet.")
+    where = geotrail.label_point(conn, fix["lat"], fix["lon"]) or "an unlabeled spot"
+    return _untrusted("location",
+                      f"{who} was last at {where} ({_ago(fix['recorded_at'])}, "
+                      f"{fix['recorded_at']} UTC).")
+
+
 def _tool_geo_distance(conn, conversation_id, frm, to=None):
     a = _resolve_point(conn, frm)
     if isinstance(a, str):
@@ -439,10 +494,13 @@ def _utc_bound(ts):
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _tool_where_was_i(conn, when: str) -> str:
-    fix, gap = geotrail.nearest_fix(conn, _utc_bound(when))
+def _tool_where_was_i(conn, when: str, person=None) -> str:
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    fix, gap = geotrail.nearest_fix(conn, _utc_bound(when), pid)
     if not fix:
-        return "No location fixes have been recorded yet."
+        return f"No location fixes have been recorded for {who}."
     if gap > _WHERE_WAS_I_MAX_GAP_MIN:
         # The closest fix is hours away — labeling it would misrepresent where they
         # were. Say there's a gap rather than confidently naming a distant spot.
@@ -450,28 +508,38 @@ def _tool_where_was_i(conn, when: str) -> str:
     label = geotrail.label_point(conn, fix["lat"], fix["lon"])
     where = label or "an unlabeled spot"   # never leak raw coords through a tool
     near = "" if gap <= 30 else f" — but the nearest fix is {gap:.0f} min off, so this is approximate"
-    return _untrusted("location", f"At {fix['recorded_at']} UTC: {where}{near}.")
+    subj = f"{who} was at" if explicit else "At"
+    return _untrusted("location", f"{subj} {fix['recorded_at']} UTC: {where}{near}.")
 
 
-def _tool_time_at_place(conn, place: str, radius_m=150, since=None, until=None) -> str:
+def _tool_time_at_place(conn, place: str, radius_m=150, since=None, until=None, person=None) -> str:
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
     pt = _resolve_place(conn, place, radius_m)
     if isinstance(pt, str):
         return pt
     lat, lon, r, label = pt
-    mins = geotrail.dwell_minutes(conn, lat, lon, r, _utc_bound(since), _utc_bound(until))
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)
+    mins = geotrail.dwell_minutes(conn, lat, lon, r, pts=pts)
+    subj = f"{who}: " if explicit else ""
     if mins <= 0:
-        return _untrusted("location", f"No recorded time within {r:.0f} m of {label} in that window.")
-    return _untrusted("location", f"~{mins:.0f} min ({mins / 60.0:.1f} h) within {r:.0f} m of {label}.")
+        return _untrusted("location", f"{subj}No recorded time within {r:.0f} m of {label} in that window.")
+    return _untrusted("location", f"{subj}~{mins:.0f} min ({mins / 60.0:.1f} h) within {r:.0f} m of {label}.")
 
 
-def _tool_places_visited(conn, since=None, until=None, min_minutes=20) -> str:
+def _tool_places_visited(conn, since=None, until=None, min_minutes=20, person=None) -> str:
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
     try:
         mm = float(min_minutes or 20)
     except (TypeError, ValueError):
         mm = 20.0
-    stays = geotrail.stay_points(conn, _utc_bound(since), _utc_bound(until), min_min=mm)
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)
+    stays = geotrail.stay_points(conn, min_min=mm, pts=pts)
     if not stays:
-        return "No stays found in that window."
+        return f"No stays found for {who} in that window." if explicit else "No stays found in that window."
     lines, unlabeled = [], 0
     for s in stays:
         if s["label"]:
@@ -483,18 +551,27 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20) -> str:
     return _untrusted("stays", "\n".join(lines))
 
 
-def _tool_distance_traveled(conn, since=None, until=None) -> str:
-    km = geotrail.distance_km(conn, _utc_bound(since), _utc_bound(until))
-    return _untrusted("location", f"~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) of travel in that window.")
+def _tool_distance_traveled(conn, since=None, until=None, person=None) -> str:
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)
+    km = geotrail.distance_km(conn, pts=pts)
+    subj = f"{who}: " if explicit else ""
+    return _untrusted("location", f"{subj}~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) of travel in that window.")
 
 
-def _tool_trail_summary(conn, since=None, until=None) -> str:
-    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until))   # load once, reuse for both
+def _tool_trail_summary(conn, since=None, until=None, person=None) -> str:
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)   # load once, reuse for both
     if not pts:
-        return "No location data in that window."
+        return f"No location data for {who} in that window." if explicit else "No location data in that window."
     km = geotrail.distance_km(conn, pts=pts)
     stays = geotrail.stay_points(conn, pts=pts)
-    lines = [f"{len(pts)} fixes, ~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) traveled.",
+    header = f"{who}: {len(pts)} fixes" if explicit else f"{len(pts)} fixes"
+    lines = [f"{header}, ~{km:.1f} km ({geo.km_to_miles(km):.1f} mi) traveled.",
              f"From {pts[0]['recorded_at']} to {pts[-1]['recorded_at']} UTC."]
     if stays:
         lines.append("Notable stays:")
@@ -934,23 +1011,25 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_read_note(conn, args["title"]), None
     if name == "current_location":
         return _tool_current_location(conn, conversation_id), None
+    if name == "locate_person":
+        return _tool_locate_person(conn, args.get("person")), None
     if name == "geo_distance":
         return _tool_geo_distance(conn, conversation_id, args["from"], args.get("to")), None
     if name == "nearby_notes":
         return _tool_nearby_notes(conn, conversation_id, args.get("center"),
                                   args.get("radius_km", 25), args.get("limit", 10)), None
     if name == "where_was_i":
-        return _tool_where_was_i(conn, args["when"]), None
+        return _tool_where_was_i(conn, args["when"], args.get("person")), None
     if name == "time_at_place":
         return _tool_time_at_place(conn, args["place"], args.get("radius_m", 150),
-                                   args.get("since"), args.get("until")), None
+                                   args.get("since"), args.get("until"), args.get("person")), None
     if name == "places_visited":
         return _tool_places_visited(conn, args.get("since"), args.get("until"),
-                                    args.get("min_minutes", 20)), None
+                                    args.get("min_minutes", 20), args.get("person")), None
     if name == "distance_traveled":
-        return _tool_distance_traveled(conn, args.get("since"), args.get("until")), None
+        return _tool_distance_traveled(conn, args.get("since"), args.get("until"), args.get("person")), None
     if name == "trail_summary":
-        return _tool_trail_summary(conn, args.get("since"), args.get("until")), None
+        return _tool_trail_summary(conn, args.get("since"), args.get("until"), args.get("person")), None
     if name == "entries_at_place":
         return _tool_entries_at_place(conn, args["place"], args.get("radius_m", 150),
                                       args.get("since"), args.get("until"), args.get("kind")), None

@@ -7,6 +7,19 @@ def _aliases(row) -> set[str]:
     return {a.strip().lower() for a in (row["aliases"] or "").split(",") if a.strip()}
 
 
+def by_name(conn, name: str):
+    """Resolve an EXPLICIT person name or alias to a row (case-insensitive), with NO
+    default fallback — returns None if there's no such person. Used when the user names
+    someone ('where is Allan'); resolve() is for attributing an inbound fix's source."""
+    n = (name or "").strip().lower()
+    if not n:
+        return None
+    for p in conn.execute("SELECT * FROM people ORDER BY id").fetchall():
+        if n == p["name"].lower() or n in _aliases(p):
+            return p
+    return None
+
+
 def resolve(conn, source: str):
     """Map a fix's `source` to a person row (by name or alias, case-insensitive),
     else the default person. Returns None only if the registry is somehow empty."""

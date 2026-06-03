@@ -334,7 +334,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         if _column_is_not_null(conn, "share_links", "note_id"):
             conn.commit()                       # close the implicit txn so PRAGMA takes effect
             conn.execute("PRAGMA foreign_keys=OFF")
+            # ONE atomic transaction (BEGIN…COMMIT): a crash mid-rebuild rolls the whole
+            # swap back, leaving share_links intact — never a window where it's dropped
+            # but not renamed. DROP IF EXISTS clears a temp table from any prior attempt.
             conn.executescript("""
+                BEGIN;
+                DROP TABLE IF EXISTS share_links_new;
                 CREATE TABLE share_links_new (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   token TEXT UNIQUE NOT NULL,
@@ -353,8 +358,8 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
                 DROP TABLE share_links;
                 ALTER TABLE share_links_new RENAME TO share_links;
                 CREATE INDEX IF NOT EXISTS idx_share_links_note ON share_links(note_id);
+                COMMIT;
             """)
-            conn.commit()
             conn.execute("PRAGMA foreign_keys=ON")
 
 

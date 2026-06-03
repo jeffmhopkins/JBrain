@@ -857,11 +857,13 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
 def _tool_list_share_links(conn):
     from . import share as share_svc
     rows = conn.execute(
-        "SELECT sl.token, sl.scope, n.title FROM share_links sl JOIN notes n ON n.id=sl.note_id "
+        "SELECT sl.token, sl.scope, sl.kind, sl.label, n.title FROM share_links sl "
+        "LEFT JOIN notes n ON n.id=sl.note_id "          # guided/research back NO note
         "WHERE sl.status='active' ORDER BY sl.created_at DESC LIMIT 50").fetchall()
     if not rows:
         return "No active share links."
-    lines = [f"- {r['scope']}: {r['title']} -> {share_svc.share_url(r['token'])}" for r in rows]
+    lines = [f"- {r['kind']}/{r['scope']}: {r['title'] or r['label'] or '(link)'} -> {share_svc.share_url(r['token'])}"
+             for r in rows]
     return _untrusted("share-links", "\n".join(lines))
 
 

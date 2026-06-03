@@ -14,6 +14,7 @@ register it in _REGISTRY, and select it via the LLM_PROVIDER setting.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Protocol, runtime_checkable
 
@@ -158,6 +159,134 @@ class AnthropicProvider:
         })
 
 
+# --- xAI (Grok) adapter — OpenAI-compatible (api.x.ai/v1) -------------------
+
+class XAIProvider:
+    name = "xai"
+
+    def _key(self) -> str:
+        s = get_settings()
+        return s.xai_api_key or s.llm_api_key
+
+    def _client(self, async_: bool = False):
+        from openai import AsyncOpenAI, OpenAI
+        s = get_settings()
+        cls = AsyncOpenAI if async_ else OpenAI
+        return cls(api_key=self._key(), base_url=s.xai_base_url, timeout=_LLM_TIMEOUT)
+
+    def has_credentials(self) -> bool:
+        return bool(self._key())
+
+    def default_model(self) -> str:
+        m = get_settings().llm_model
+        return m if (m or "").lower().startswith("grok") else "grok-4.3"
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def _translate(self, m: Message) -> Message:
+        """Translate any Anthropic-style content blocks (e.g. vision images) in a
+        message to OpenAI/xAI shape. Plain string content passes through."""
+        content = m.get("content")
+        if not isinstance(content, list):
+            return m
+        out = []
+        for b in content:
+            t = b.get("type")
+            if t == "text":
+                out.append({"type": "text", "text": b.get("text", "")})
+            elif t == "image":
+                src = b.get("source", {})
+                out.append({"type": "image_url", "image_url": {
+                    "url": f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"}})
+            elif t == "tool_result":
+                out.append({"type": "text", "text": str(b.get("content", ""))})
+            else:
+                out.append(b)
+        return {**m, "content": out}
+
+    def _wire(self, messages: list[Message], system: str | None) -> list[dict]:
+        out: list[dict] = []
+        if system:
+            out.append({"role": "system", "content": system})
+        out.extend(self._translate(m) for m in messages)
+        return out
+
+    def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
+        client = self._client()
+        resp = client.chat.completions.create(
+            model=model or self.default_model(), max_tokens=max_tokens,
+            messages=self._wire(messages, system))
+        _record_openai_usage(model or self.default_model(), getattr(resp, "usage", None), "action")
+        return (resp.choices[0].message.content or "").strip()
+
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        client = self._client(async_=True)
+        wire_tools = [{"type": "function", "function": {
+            "name": t.name, "description": t.description, "parameters": t.json_schema}} for t in tools] or None
+        acc: dict[int, dict] = {}     # streamed tool-call fragments, by index
+        usage = None
+        text_parts: list[str] = []
+        stream = await client.chat.completions.create(
+            model=model or self.default_model(), max_tokens=max_tokens,
+            messages=self._wire(messages, system), tools=wire_tools, stream=True,
+            stream_options={"include_usage": True})
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            if getattr(delta, "content", None):
+                text_parts.append(delta.content)
+                yield TextDelta(delta.content)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                slot = acc.setdefault(tc.index, {"id": None, "name": "", "args": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                if tc.function and tc.function.name:
+                    slot["name"] = tc.function.name
+                if tc.function and tc.function.arguments:
+                    slot["args"] += tc.function.arguments
+        # Assemble tool calls + record the assistant turn (OpenAI shape) for the loop.
+        calls, oa_calls = [], []
+        for i in sorted(acc):
+            sl = acc[i]
+            try:
+                args = json.loads(sl["args"] or "{}")
+            except Exception:  # noqa: BLE001 — a malformed args blob → empty
+                args = {}
+            cid = sl["id"] or f"call_{i}"
+            calls.append(ToolCall(id=cid, name=sl["name"], args=args))
+            oa_calls.append({"id": cid, "type": "function",
+                             "function": {"name": sl["name"], "arguments": sl["args"] or "{}"}})
+        amsg: dict = {"role": "assistant", "content": "".join(text_parts) or None}
+        if oa_calls:
+            amsg["tool_calls"] = oa_calls
+        messages.append(amsg)
+        for c in calls:
+            yield ToolCallEvent(c)
+        _record_openai_usage(model or self.default_model(), usage, "agent")
+        uu = {"input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+              "output_tokens": getattr(usage, "completion_tokens", 0) or 0} if usage else None
+        yield TurnEnd(calls, usage=uu)
+
+    def append_tool_results(self, messages, results):
+        for r in results:
+            messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
+
+
+def _record_openai_usage(model: str, u, context: str | None = None) -> None:
+    if u is None:
+        return
+    try:
+        from . import usage as _usage
+        _usage.record(model, input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                      output_tokens=getattr(u, "completion_tokens", 0) or 0, context=context)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _record_usage(model: str, u, context: str | None = None) -> None:
     """Log a call's token usage to the meter (best-effort). Reads the standard +
     prompt-cache token fields the Anthropic SDK reports so the cost estimate is
@@ -182,14 +311,25 @@ def _record_usage(model: str, u, context: str | None = None) -> None:
 
 _REGISTRY: dict[str, type] = {
     "anthropic": AnthropicProvider,
-    # Add providers here: "openai": OpenAIProvider, "gemini": GeminiProvider, ...
+    "xai": XAIProvider,
+    "grok": XAIProvider,   # alias
 }
 
 
-def get_provider() -> LLMProvider:
-    """The configured provider (LLM_PROVIDER), defaulting to Anthropic. Cheap and
-    stateless — reads settings on each call — so it's constructed per use."""
-    name = (get_settings().llm_provider or "anthropic").lower()
+def _provider_for_model(model: str | None) -> str | None:
+    """Infer the provider from a model id so the picker is the only control needed."""
+    m = (model or "").lower()
+    if m.startswith("grok"):
+        return "xai"
+    if m.startswith("claude"):
+        return "anthropic"
+    return None
+
+
+def get_provider(model: str | None = None) -> LLMProvider:
+    """The provider for a given model id — inferred from the id (grok*/claude*), else
+    the configured LLM_PROVIDER default. Cheap + stateless, constructed per use."""
+    name = _provider_for_model(model) or (get_settings().llm_provider or "anthropic").lower()
     cls = _REGISTRY.get(name, AnthropicProvider)
     return cls()
 
@@ -212,4 +352,4 @@ def has_credentials() -> bool:
 
 def complete(messages: list[Message], *, system: str | None = None,
              model: str | None = None, max_tokens: int = 1024) -> str:
-    return get_provider().complete(messages, system=system, model=model, max_tokens=max_tokens)
+    return get_provider(model).complete(messages, system=system, model=model, max_tokens=max_tokens)

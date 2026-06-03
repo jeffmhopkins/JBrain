@@ -20,6 +20,8 @@ _PRICES = {
     "opus":   (15.0, 75.0, 1.50, 18.75),
     "sonnet": (3.0, 15.0, 0.30, 3.75),
     "haiku":  (1.0, 5.0, 0.10, 1.25),
+    # xAI Grok (approx; confirm against x.ai pricing). Cached-input only (no write cost).
+    "grok":   (3.0, 15.0, 0.75, 0.0),
 }
 _DEFAULT_PRICE = (3.0, 15.0, 0.30, 3.75)   # assume Sonnet-class if unknown
 

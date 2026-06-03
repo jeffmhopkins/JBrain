@@ -25,6 +25,10 @@ def verify():
     # has_llm gates LLM-only UI; app_tz lets the UI render UTC timestamps in the
     # owner's configured local zone (labeled).
     from ..services import clock, push
-    return {"ok": True, "brain_name": get_settings().brain_name, "version": APP_VERSION,
-            "has_llm": get_settings().has_llm, "app_tz": clock.app_tz_name(),
+    s = get_settings()
+    return {"ok": True, "brain_name": s.brain_name, "version": APP_VERSION,
+            "has_llm": s.has_llm, "app_tz": clock.app_tz_name(),
+            # Which provider keys are present, so the model picker can warn before you
+            # select a model whose key isn't configured.
+            "llm_keys": {"anthropic": s.has_anthropic, "xai": s.has_xai},
             "vapid_public_key": push.public_key()}

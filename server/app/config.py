@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     llm_provider: str = Field("anthropic", validation_alias=AliasChoices("LLM_PROVIDER", "llm_provider"))
     llm_api_key: str = Field("", validation_alias=AliasChoices("LLM_API_KEY", "ANTHROPIC_API_KEY", "llm_api_key"))
     llm_model: str = Field("claude-sonnet-4-6", validation_alias=AliasChoices("LLM_MODEL", "ANTHROPIC_MODEL", "llm_model"))
+    # xAI (Grok) — OpenAI-compatible. Set XAI_API_KEY to make grok-* models selectable
+    # alongside Claude; the provider is inferred from the chosen model id.
+    xai_api_key: str = Field("", validation_alias=AliasChoices("XAI_API_KEY", "xai_api_key"))
+    xai_base_url: str = Field("https://api.x.ai/v1", validation_alias=AliasChoices("XAI_BASE_URL", "xai_base_url"))
 
     # The pasteable access key (the "cert"). If set, it is authoritative and
     # seeded/rotated into the DB on boot. If empty, the server generates one on
@@ -40,8 +44,17 @@ class Settings(BaseSettings):
     jbrain_domain: str = "localhost"
 
     @property
-    def has_llm(self) -> bool:
+    def has_anthropic(self) -> bool:
         return bool(self.llm_api_key)
+
+    @property
+    def has_xai(self) -> bool:
+        # An explicit xAI key, or the legacy single-key path (LLM_PROVIDER=xai).
+        return bool(self.xai_api_key) or self.llm_provider.lower() in ("xai", "grok")
+
+    @property
+    def has_llm(self) -> bool:
+        return self.has_anthropic or self.has_xai
 
     # Backward-compatible aliases (read-only) for the old Anthropic-specific
     # names, so any not-yet-migrated reader keeps working.
@@ -52,10 +65,6 @@ class Settings(BaseSettings):
     @property
     def anthropic_model(self) -> str:
         return self.llm_model
-
-    @property
-    def has_anthropic(self) -> bool:
-        return self.has_llm
 
 
 @lru_cache

@@ -1222,7 +1222,10 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
               mode: str = "assisted") -> AsyncGenerator[dict, None]:
     """Stream the architect's reply. `mode` = 'assisted' | 'research'."""
     settings = get_settings()
-    provider = llm.get_provider()
+    # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
+    # claude* → Anthropic; blank → the LLM_PROVIDER default).
+    agent_model = (prompts.get("agent.model") or "").strip() or None
+    provider = llm.get_provider(agent_model)
     if not provider.has_credentials():
         yield {"type": "error", "message": "No LLM API key configured."}
         return
@@ -1249,7 +1252,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
-    model = prompts.get("agent.model") or provider.default_model()
+    model = agent_model or provider.default_model()
     max_tokens = prompts.get_int("agent.max_tokens", _DEFAULT_MAX_TOKENS)
     max_iterations = prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS)
     token_budget = prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS)

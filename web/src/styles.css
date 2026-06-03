@@ -792,3 +792,9 @@ pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--rad
 table.sql-result { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.sql-result th, table.sql-result td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 table.sql-result th { background: var(--bg-elev-2); }
+
+/* System → Model picker */
+.model-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.model-row .model-label { font-size: 13px; }
+.model-row select { min-width: 200px; }

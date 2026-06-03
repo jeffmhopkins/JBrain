@@ -2906,7 +2906,7 @@ def test_agent_loop_signals_when_it_stops_early(client, monkeypatch):
         def append_tool_results(self, messages, results):
             messages.append({"role": "user", "content": "tool results"})
 
-    monkeypatch.setattr(llm, "get_provider", lambda: _FakeProvider())
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _FakeProvider())
     conv_id = client.post("/api/chat/conversations").json()["id"]
 
     async def drain():

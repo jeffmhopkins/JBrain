@@ -358,9 +358,72 @@ CREATE TABLE IF NOT EXISTS locations (
   accuracy_m  REAL,
   recorded_at TEXT NOT NULL DEFAULT (datetime('now')),   -- when the fix was taken (UTC)
   source      TEXT NOT NULL DEFAULT 'wear',
+  -- Resolved person (cache of source->people.aliases) so trip detection can query a
+  -- person's stream in SQL; re-resolved when people/aliases change. NULL until resolved.
+  person_id   INTEGER,
+  -- Device-reported motion (GPS Doppler), all optional/nullable for back-compat:
+  speed_mps   REAL,                                       -- ground speed, m/s
+  bearing_deg REAL,                                       -- heading, degrees (0-360)
+  altitude_m  REAL,                                       -- metres above sea level
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))     -- when the server received it
 );
 CREATE INDEX IF NOT EXISTS idx_locations_recorded ON locations(recorded_at);
+-- NOTE: the idx_locations_person_time index (on the migration-added person_id column)
+-- is created in ensure_default_person(), AFTER migrations — never here, since this
+-- script runs BEFORE migrations and person_id won't exist yet on an upgraded DB.
+
+-- Detected TRIPS: the moving segment between two stays, per person. A derived cache
+-- recomputed idempotently from the raw fix stream; place fields are denormalised
+-- SNAPSHOTS (places are editable/deletable) so a past trip's "started at Home" is
+-- historical truth, not a live join.
+CREATE TABLE IF NOT EXISTS trips (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id       INTEGER REFERENCES people(id) ON DELETE SET NULL,
+  source          TEXT,                  -- the fix source this trip was segmented from
+  started_at      TEXT NOT NULL,         -- UTC, departure
+  ended_at        TEXT NOT NULL,         -- UTC, arrival (== last fix while status='open')
+  start_lat       REAL, start_lon REAL,
+  end_lat         REAL, end_lon REAL,
+  start_place_id  INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  start_place     TEXT,                  -- snapshot label (place/coord-note/NULL)
+  end_place_id    INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  end_place       TEXT,
+  distance_km     REAL NOT NULL DEFAULT 0,
+  displacement_km REAL NOT NULL DEFAULT 0,  -- straight-line start->end (for directness)
+  duration_s      INTEGER NOT NULL DEFAULT 0,
+  max_speed_kmh   REAL,
+  avg_speed_kmh   REAL,
+  fix_count       INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'closed' CHECK (status IN ('open','closed')),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_trips_person_time ON trips(person_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_trips_started ON trips(started_at);
+
+-- Geofences a trip PASSED THROUGH (excludes its start/end), with dwell. Place name +
+-- coords snapshotted at detection time.
+CREATE TABLE IF NOT EXISTS trip_places (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  trip_id    INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  place_id   INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  place_name TEXT,
+  lat        REAL, lon REAL,
+  entered_at TEXT, left_at TEXT,
+  dwell_s    INTEGER NOT NULL DEFAULT 0,
+  ordinal    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_trip_places_trip ON trip_places(trip_id);
+
+-- Per-person trip-detection progress: a UTC watermark (segmentation is re-run from
+-- here forward, deleting+recreating overlapping trips, so late/out-of-order fixes just
+-- move the watermark back) and how far back history has been backfilled.
+CREATE TABLE IF NOT EXISTS trip_cursor (
+  person_id      INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+  watermark      TEXT,                  -- recorded_at processed up to (closed trips only)
+  backfilled_to  TEXT,                  -- oldest recorded_at considered (backfill floor)
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Named geofences for location tools + triggers (notes have lat/lon but no radius).
 CREATE TABLE IF NOT EXISTS places (

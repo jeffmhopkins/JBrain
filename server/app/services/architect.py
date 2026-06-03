@@ -41,7 +41,7 @@ _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "add_list_item", "read_list",
+                 "entries_at_place", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -67,6 +67,13 @@ _TOOL_SCHEMAS = {
         "since": {"type": "string", "description": "Window start — owner's local time (offset/Z honored). Optional."},
         "until": {"type": "string", "description": "Window end — owner's local time (offset/Z honored). Optional."},
         "limit": {"type": "integer", "default": 20, "description": "Max fixes for a window (evenly sampled if more exist; hard cap 500)."}}},
+    "list_trips": {"type": "object", "properties": {
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."},
+        "since": {"type": "string", "description": "Lower bound — owner's local time (offset/Z honored). Optional."},
+        "until": {"type": "string", "description": "Upper bound — owner's local time (offset/Z honored). Optional."},
+        "limit": {"type": "integer", "default": 20, "description": "Max trips (newest first; capped 200)."}}},
+    "trip_detail": {"type": "object", "properties": {
+        "trip_id": {"type": "integer", "description": "The #id from list_trips."}}, "required": ["trip_id"]},
     "geo_distance": {"type": "object", "properties": {
         "from": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'."},
         "to": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'. Omit to measure from the current location."}},
@@ -457,6 +464,56 @@ def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, l
         acc = f"  ±{p['accuracy_m']:.0f}m" if p.get("accuracy_m") else ""
         lines.append(f"- {p['recorded_at']} UTC: {p['lat']:.6f}, {p['lon']:.6f}{acc}{lbl}")
     return _untrusted("location-fixes", head + "\n" + "\n".join(lines))
+
+
+def _dur(s: int | None) -> str:
+    s = int(s or 0)
+    if s < 3600:
+        return f"{s // 60}m"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _trip_line(t: dict) -> str:
+    a, b = t["start_place"] or "?", t["end_place"] or "?"
+    spd = f", max {t['max_speed_kmh']:.0f} km/h" if t.get("max_speed_kmh") else ""
+    live = " [in progress]" if t.get("status") == "open" else ""
+    return (f"#{t['id']} {t['started_at'][:16]} UTC: {a} → {b} · "
+            f"{t['distance_km']:.1f} km · {_dur(t['duration_s'])}{spd}{live}")
+
+
+def _tool_list_trips(conn, person=None, since=None, until=None, limit=20) -> str:
+    """Precomputed trips for the owner or a registered person — the server already
+    segmented and measured them, so this is cheap and exact."""
+    from . import trips as trips_svc
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    rows = trips_svc.query_trips(conn, pid, _utc_bound(since), _utc_bound(until), limit)
+    if not rows:
+        return f"No trips recorded for {who} in that window." if explicit else "No trips recorded in that window."
+    subj = f"{who} — " if explicit else ""
+    body = "\n".join("- " + _trip_line(t) for t in rows)
+    return _untrusted("trips", f"{subj}{len(rows)} trip(s) (newest first). Use trip_detail with the #id for stops/speed:\n" + body)
+
+
+def _tool_trip_detail(conn, trip_id: int) -> str:
+    from . import trips as trips_svc
+    got = trips_svc.trip_detail(conn, int(trip_id))
+    if got is None:
+        return f"No trip #{trip_id}."
+    t, places = got
+    lines = [
+        _trip_line(t),
+        f"  distance {t['distance_km']:.2f} km (straight-line {t['displacement_km']:.2f} km), duration {_dur(t['duration_s'])}, {t['fix_count']} fixes",
+    ]
+    if t.get("avg_speed_kmh") is not None:
+        lines.append(f"  avg moving {t['avg_speed_kmh']:.0f} km/h" + (f", max {t['max_speed_kmh']:.0f} km/h" if t.get("max_speed_kmh") else ""))
+    if places:
+        lines.append("  passed through:")
+        for c in places:
+            dw = f" ({_dur(c['dwell_s'])})" if c["dwell_s"] else ""
+            lines.append(f"   - {c['place_name'] or 'a place'}{dw} at {c['entered_at'][:16]} UTC")
+    return _untrusted("trip", "\n".join(lines))
 
 
 def _tool_geo_distance(conn, conversation_id, frm, to=None):
@@ -1071,6 +1128,11 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "location_fixes":
         return _tool_location_fixes(conn, args.get("person"), args.get("when"),
                                     args.get("since"), args.get("until"), args.get("limit", 20)), None
+    if name == "list_trips":
+        return _tool_list_trips(conn, args.get("person"), args.get("since"),
+                                args.get("until"), args.get("limit", 20)), None
+    if name == "trip_detail":
+        return _tool_trip_detail(conn, args["trip_id"]), None
     if name == "geo_distance":
         return _tool_geo_distance(conn, conversation_id, args["from"], args.get("to")), None
     if name == "nearby_notes":

@@ -35,6 +35,7 @@ from .routers import (
     system,
     workflows,
 )
+from .services import trips as trips_svc
 from .services import workflows as wf_svc
 
 settings = get_settings()
@@ -57,6 +58,11 @@ async def _scheduler_loop():
             # refreshes geofence state; the firing decision + (LLM-capable) action
             # run on this worker thread where latency is fine.
             await asyncio.to_thread(lambda: wf_svc.evaluate_location_triggers(get_conn()))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Detect/segment trips from new fixes (bounded per pass; commits per person).
+            await asyncio.to_thread(lambda: trips_svc.run_detection(get_conn()))
         except Exception:  # noqa: BLE001
             pass
 

@@ -47,12 +47,16 @@ object FixQueue {
         return remaining.length()
     }
 
-    fun enqueue(ctx: Context, lat: Double, lon: Double, accuracyM: Float?, recordedAt: String) {
+    fun enqueue(ctx: Context, lat: Double, lon: Double, accuracyM: Float?, recordedAt: String,
+                speedMps: Float? = null, bearingDeg: Float? = null, altitudeM: Double? = null) {
         append(ctx, JSONObject().apply {
             put("lat", lat)
             put("lon", lon)
             accuracyM?.let { put("accuracy_m", it.toDouble()) }
             put("recorded_at", recordedAt)
+            speedMps?.let { put("speed_mps", it.toDouble()) }
+            bearingDeg?.let { put("bearing_deg", it.toDouble()) }
+            altitudeM?.let { put("altitude_m", it) }
         })
     }
 

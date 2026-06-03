@@ -139,7 +139,13 @@ class LocationService : Service() {
 
     private fun record(loc: Location) {
         val acc = if (loc.hasAccuracy()) loc.accuracy else null
-        FixQueue.enqueue(applicationContext, loc.latitude, loc.longitude, acc, iso.format(Date(loc.time)))
+        // Device-reported motion (GPS) — the server uses these for accurate trip
+        // analytics (real speed beats deriving it from position deltas). All optional.
+        val speed = if (loc.hasSpeed()) loc.speed else null            // m/s
+        val bearing = if (loc.hasBearing()) loc.bearing else null      // degrees
+        val altitude = if (loc.hasAltitude()) loc.altitude else null   // metres
+        FixQueue.enqueue(applicationContext, loc.latitude, loc.longitude, acc,
+            iso.format(Date(loc.time)), speed, bearing, altitude)
         scope.launch { FixQueue.flush(applicationContext) }
     }
 

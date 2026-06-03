@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 def init_db() -> None:
@@ -383,6 +383,61 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # exists for sure — never in schema.sql (which runs before migrations).
         _add_column(conn, "people", "location_key", "TEXT")
 
+    if current < 29:
+        # Trips: server-side detection + analytics over the location trail. Adds
+        # resolved person_id + device motion (speed/heading/altitude) to fixes, and
+        # the trips / trip_places / trip_cursor tables. New self-contained tables, so
+        # their indexes are safe to create inline here (no late-column hazard).
+        _add_column(conn, "locations", "person_id", "INTEGER")
+        _add_column(conn, "locations", "speed_mps", "REAL")
+        _add_column(conn, "locations", "bearing_deg", "REAL")
+        _add_column(conn, "locations", "altitude_m", "REAL")
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_locations_person_time ON locations(person_id, recorded_at);
+            CREATE TABLE IF NOT EXISTS trips (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+              source TEXT,
+              started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+              start_lat REAL, start_lon REAL, end_lat REAL, end_lon REAL,
+              start_place_id INTEGER REFERENCES places(id) ON DELETE SET NULL, start_place TEXT,
+              end_place_id INTEGER REFERENCES places(id) ON DELETE SET NULL, end_place TEXT,
+              distance_km REAL NOT NULL DEFAULT 0, displacement_km REAL NOT NULL DEFAULT 0,
+              duration_s INTEGER NOT NULL DEFAULT 0,
+              max_speed_kmh REAL, avg_speed_kmh REAL,
+              fix_count INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'closed' CHECK (status IN ('open','closed')),
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_trips_person_time ON trips(person_id, started_at);
+            CREATE INDEX IF NOT EXISTS idx_trips_started ON trips(started_at);
+            CREATE TABLE IF NOT EXISTS trip_places (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+              place_id INTEGER REFERENCES places(id) ON DELETE SET NULL,
+              place_name TEXT, lat REAL, lon REAL,
+              entered_at TEXT, left_at TEXT,
+              dwell_s INTEGER NOT NULL DEFAULT 0, ordinal INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_trip_places_trip ON trip_places(trip_id);
+            CREATE TABLE IF NOT EXISTS trip_cursor (
+              person_id INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+              watermark TEXT, backfilled_to TEXT,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
+        # Backfill person_id on existing fixes from current attribution (one pass).
+        try:
+            from .services import people as _people_svc
+            srcs = [r["source"] for r in conn.execute("SELECT DISTINCT source FROM locations").fetchall()]
+            for s in srcs:
+                p = _people_svc.resolve(conn, s or "")
+                if p is not None:
+                    conn.execute("UPDATE locations SET person_id = ? WHERE source IS ?", (p["id"], s))
+        except Exception:  # noqa: BLE001 — best-effort; detection re-resolves anyway
+            pass
+
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:
     """Guarantee one default person ('Me') exists — the catch-all any unmatched
@@ -391,6 +446,9 @@ def ensure_default_person(conn: sqlite3.Connection) -> None:
     # Runs AFTER migrations, so location_key is guaranteed present (schema.sql on a
     # fresh DB, migration 28 on an upgrade) — safe to index here (NULLs stay distinct).
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
+    # Same rule for the trip-detection index on locations.person_id (added in migration
+    # 29): create it here, after the column is guaranteed, never in schema.sql.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_locations_person_time ON locations(person_id, recorded_at)")
     first = conn.execute("SELECT id FROM people ORDER BY id LIMIT 1").fetchone()
     if first is None:
         conn.execute(

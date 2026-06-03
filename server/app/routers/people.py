@@ -8,8 +8,19 @@ from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn, ensure_default_person
+from ..services import trips as trips_svc
 
 router = APIRouter(prefix="/api/people", tags=["people"], dependencies=[CurrentUser])
+
+
+def _reattribute(conn) -> None:
+    """A people/alias/name change can move fixes between people — re-resolve fix+trip
+    attribution and rewind detection so trips re-segment. People change rarely."""
+    try:
+        trips_svc.reattribute(conn)
+        conn.commit()
+    except Exception:  # noqa: BLE001 — never let it block the people edit
+        pass
 
 
 def _row(r) -> dict:
@@ -51,6 +62,7 @@ def add_person(body: PersonIn):
     except sqlite3.IntegrityError:
         conn.rollback()
         raise HTTPException(status_code=409, detail="That person already exists.")
+    _reattribute(conn)
     return {"id": cur.lastrowid, "name": name}
 
 
@@ -96,6 +108,7 @@ def update_person(person_id: int, body: PersonPatch):
     except sqlite3.IntegrityError:
         conn.rollback()
         raise HTTPException(status_code=409, detail="That name is taken.")
+    _reattribute(conn)
     return {"ok": True}
 
 
@@ -109,6 +122,7 @@ def delete_person(person_id: int):
         raise HTTPException(status_code=409, detail="Can't delete the default person — set another as default first.")
     conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
     conn.commit()
+    _reattribute(conn)
     return {"ok": True}
 
 
@@ -141,6 +155,7 @@ def person_from_note(body: TagNoteIn):
     except sqlite3.IntegrityError:
         conn.rollback()
         raise HTTPException(status_code=409, detail="Couldn't tag this note as a person.")
+    _reattribute(conn)
     return {"id": pid, "name": name}
 
 

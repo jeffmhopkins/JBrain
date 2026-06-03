@@ -53,6 +53,8 @@ class LocationService : Service() {
     private var updatesActive = false
     private var moving = true
     private var heartbeat: Job? = null
+    private var uploader: Job? = null         // periodic batch flush
+    private var flushNextFix = false          // upload the next fix promptly (start/stop)
 
     private val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
         .apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -66,6 +68,20 @@ class LocationService : Service() {
     override fun onCreate() {
         super.onCreate()
         fused = LocationServices.getFusedLocationProviderClient(this)
+        startUploader()
+    }
+
+    /** Batch the offline queue up to the server every UPLOAD_INTERVAL_MS — one bigger
+     *  request instead of one per fix. record() also flushes when the buffer fills or
+     *  right after a start/stop, so the live map isn't stale. */
+    private fun startUploader() {
+        uploader?.cancel()
+        uploader = scope.launch {
+            while (isActive) {
+                delay(UPLOAD_INTERVAL_MS)
+                FixQueue.flush(applicationContext)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -86,10 +102,12 @@ class LocationService : Service() {
         moving = m
         if (m) {
             heartbeat?.cancel(); heartbeat = null
+            flushNextFix = true        // upload promptly when a trip starts (live map)
             startUpdates()
         } else {
             stopUpdates()
-            grabSingleFix()            // mark where you stopped
+            grabSingleFix()            // mark where you stopped…
+            scope.launch { FixQueue.flush(applicationContext) }   // …and send the batched tail now
             startHeartbeat()           // …then just an occasional ping while parked
         }
         updateNotification()
@@ -97,9 +115,9 @@ class LocationService : Service() {
 
     private fun startUpdates() {
         if (updatesActive) return
-        val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30 * 1000L)
-            .setMinUpdateIntervalMillis(20 * 1000L)       // as fast as every 20 s while moving…
-            .setMinUpdateDistanceMeters(60f)              // …but only once we've moved ~60 m
+        val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 10 * 1000L)
+            .setMinUpdateIntervalMillis(5 * 1000L)        // as fast as every 5 s while moving…
+            .setMinUpdateDistanceMeters(20f)              // …once we've moved ~20 m (finer trail)
             .build()
         try {
             fused.requestLocationUpdates(req, callback, Looper.getMainLooper())
@@ -146,7 +164,12 @@ class LocationService : Service() {
         val altitude = if (loc.hasAltitude()) loc.altitude else null   // metres
         FixQueue.enqueue(applicationContext, loc.latitude, loc.longitude, acc,
             iso.format(Date(loc.time)), speed, bearing, altitude)
-        scope.launch { FixQueue.flush(applicationContext) }
+        // Batched upload: flush when the buffer fills or right after a start/stop;
+        // otherwise the periodic uploader sends it. Far fewer requests than one-per-fix.
+        if (flushNextFix || FixQueue.size(applicationContext) >= BATCH_POINTS) {
+            flushNextFix = false
+            scope.launch { FixQueue.flush(applicationContext) }
+        }
     }
 
     private fun registerActivityTransitions() {
@@ -217,6 +240,7 @@ class LocationService : Service() {
     override fun onDestroy() {
         stopUpdates()
         heartbeat?.cancel()
+        uploader?.cancel()
         if (hasActivityPermission()) {
             try { ActivityRecognition.getClient(this).removeActivityTransitionUpdates(activityPI()) } catch (e: SecurityException) { /* ignore */ }
         }
@@ -230,5 +254,7 @@ class LocationService : Service() {
         const val EXTRA_MOVING = "moving"
         private const val CHANNEL = "location"
         private const val NOTIF_ID = 42
+        private const val BATCH_POINTS = 25           // flush once the buffer reaches this…
+        private const val UPLOAD_INTERVAL_MS = 60_000L  // …or at least this often
     }
 }

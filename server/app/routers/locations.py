@@ -22,7 +22,7 @@ from ..services import trips as trips_svc
 # location key (require_location_writer); the READ endpoint stays full-key only.
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
-MIN_METERS = 100.0     # store if moved at least this far…
+MIN_METERS = 30.0      # store if moved at least this far (≈ GPS-jitter floor; finer trail)…
 MIN_MINUTES = 60.0     # …OR at least this long since the last stored point
 
 

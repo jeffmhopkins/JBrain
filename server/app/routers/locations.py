@@ -60,14 +60,16 @@ def add_location(body: LocationIn, writer=Depends(require_location_writer)):
     rec_dt = _parse(body.recorded_at) or now
     rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     # A per-person location key forces the fix's source to that person.
-    source = writer["name"] if writer is not None else (body.source or "wear")
+    source = (writer["name"] if writer is not None else (body.source or "wear"))[:32]
 
-    # Compare against the TEMPORAL predecessor (latest fix at or before this one), not
-    # the newest-INSERTED row — so an out-of-order/backfilled fix dedups against its
-    # real neighbour instead of a live fix from the future.
+    # Dedup against THIS SOURCE's temporal predecessor (latest fix at or before this one
+    # from the same device/person) — not the global last fix. Otherwise, with several
+    # people tracked, co-located family drop each other's fixes and a stationary person
+    # near a moving one logs spurious "moved" points.
     last = conn.execute(
-        "SELECT lat, lon, recorded_at FROM locations WHERE recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1",
-        (rec_str,),
+        "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
+        "ORDER BY recorded_at DESC LIMIT 1",
+        (source, rec_str),
     ).fetchone()
     if last is not None:
         moved_m = geo.haversine_km(last["lat"], last["lon"], body.lat, body.lon) * 1000.0
@@ -82,7 +84,7 @@ def add_location(body: LocationIn, writer=Depends(require_location_writer)):
     cur = conn.execute(
         "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
         "speed_mps, bearing_deg, altitude_m) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (body.lat, body.lon, body.accuracy_m, rec_str, source[:32], pid,
+        (body.lat, body.lon, body.accuracy_m, rec_str, source, pid,
          body.speed_mps, body.bearing_deg, body.altitude_m),
     )
     # Refresh per-place geofence state (cheap, no actions) so the scheduler's
@@ -110,34 +112,37 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
     conn = get_conn()
     now = datetime.now(timezone.utc)
     pts = sorted(body.points or [], key=lambda p: _parse(p.recorded_at) or now)[:5000]
-    # Seed from the TEMPORAL predecessor of the batch's earliest point (not the
-    # newest-inserted row), so a backfilled burst dedups against its real neighbour.
-    first_str = (_parse(pts[0].recorded_at) or now).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if pts else None
-    last = conn.execute(
-        "SELECT lat, lon, recorded_at FROM locations WHERE recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1",
-        (first_str,),
-    ).fetchone() if first_str else None
-    last_lat = last["lat"] if last else None
-    last_lon = last["lon"] if last else None
-    last_dt = _parse(last["recorded_at"]) if last else None
     _pid_cache: dict[str, int | None] = {}
     def _pid(src: str):
         if src not in _pid_cache:
             pr = people_svc.resolve(conn, src)
             _pid_cache[src] = pr["id"] if pr else None
         return _pid_cache[src]
+    # Dedup PER SOURCE: each device/person's stream is compared against its own last
+    # kept fix, seeded from that source's temporal predecessor in the DB. So one
+    # device's burst never dedups against another person's fixes.
+    last_by_src: dict[str, tuple] = {}    # source -> (lat, lon, datetime)
+    def _seed(src: str, rec_str: str):
+        if src in last_by_src:
+            return
+        r = conn.execute(
+            "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
+            "ORDER BY recorded_at DESC LIMIT 1", (src, rec_str)).fetchone()
+        last_by_src[src] = (r["lat"], r["lon"], _parse(r["recorded_at"])) if r else None
     stored = 0
     dirty: dict[int | None, str] = {}    # person_id -> earliest stored recorded_at
     for p in pts:
         rec_dt = _parse(p.recorded_at) or now
         rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        if last_lat is not None:
-            moved_m = geo.haversine_km(last_lat, last_lon, p.lat, p.lon) * 1000.0
-            elapsed_min = abs((rec_dt - (last_dt or rec_dt)).total_seconds()) / 60.0
-            if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
-                continue
         # A per-person location key forces every fix's source to that person.
         source = (writer["name"] if writer is not None else (p.source or "phone"))[:32]
+        _seed(source, rec_str)
+        prev = last_by_src.get(source)
+        if prev is not None:
+            moved_m = geo.haversine_km(prev[0], prev[1], p.lat, p.lon) * 1000.0
+            elapsed_min = abs((rec_dt - (prev[2] or rec_dt)).total_seconds()) / 60.0
+            if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
+                continue
         pid = _pid(source)
         conn.execute(
             "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
@@ -150,7 +155,7 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
             pass
         if pid not in dirty or rec_str < dirty[pid]:
             dirty[pid] = rec_str
-        last_lat, last_lon, last_dt = p.lat, p.lon, rec_dt
+        last_by_src[source] = (p.lat, p.lon, rec_dt)
         stored += 1
     for pid, earliest in dirty.items():
         try:
@@ -168,7 +173,7 @@ def _norm(ts: str | None) -> str | None:
 
 
 @router.get("", dependencies=[CurrentUser])
-def list_locations(since: str | None = None, until: str | None = None, limit: int = 5000):
+def list_locations(since: str | None = None, until: str | None = None, limit: int = 12000):
     sql = "SELECT id, lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []
     s, u = _norm(since), _norm(until)
@@ -178,7 +183,10 @@ def list_locations(since: str | None = None, until: str | None = None, limit: in
     if u:
         sql += " AND recorded_at <= ?"
         params.append(u)
-    # ASC: chronological order suits trail/playback; the trail viewer is the main reader.
-    sql += " ORDER BY recorded_at ASC LIMIT ?"
+    # Cap the scan but keep the MOST RECENT fixes when the window is huge (several people
+    # share this stream): DESC + LIMIT, then reverse to chronological for the trail viewer.
+    sql += " ORDER BY recorded_at DESC LIMIT ?"
     params.append(max(1, min(int(limit), 20000)))
-    return [dict(r) for r in get_conn().execute(sql, params).fetchall()]
+    rows = [dict(r) for r in get_conn().execute(sql, params).fetchall()]
+    rows.reverse()
+    return rows

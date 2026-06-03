@@ -85,10 +85,14 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
     try {
       const detail = await researchDetail(linkId);
       setD(detail);
+      // Load the CURRENT remaining days so saving other settings doesn't wipe the expiry.
+      const remaining = detail.expires_at
+        ? Math.max(0, Math.ceil((Date.parse(detail.expires_at.replace(" ", "T") + "Z") - Date.now()) / 86400000))
+        : 0;
       setS({
         persona_voice: detail.spec.persona_voice || "", topics: detail.spec.topics || "",
         intro: detail.spec.intro || "", bind: !!detail.spec.bind, single_use: !!detail.spec.single_use,
-        ttl_days: 0,
+        ttl_days: remaining,
       });
     } catch { /* ignore */ }
   }
@@ -96,10 +100,13 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
 
   async function act(fn: () => Promise<any>) { setBusy(true); try { await fn(); await refresh(); } finally { setBusy(false); } }
   async function saveSettings() {
-    if (!s) return;
+    if (!s || !d) return;
     setBusy(true);
-    try { await researchSetDetails(linkId, { ...s }); setSaved(true); setTimeout(() => setSaved(false), 1500); await refresh(); }
-    catch (e: any) { alert(e?.message || "Couldn't save."); }
+    try {
+      // Carry the caps so the details endpoint (which defaults them) doesn't reset them.
+      await researchSetDetails(linkId, { ...s, max_turns: d.spec.max_turns, max_total_replies: d.spec.max_total_replies });
+      setSaved(true); setTimeout(() => setSaved(false), 1500); await refresh();
+    } catch (e: any) { alert(e?.message || "Couldn't save."); }
     finally { setBusy(false); }
   }
   const set = (patch: Partial<Settings>) => setS((p) => p ? { ...p, ...patch } : p);
@@ -168,11 +175,11 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
       </div>
       <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>
         {d.expires_at ? `Currently expires ${d.expires_at} UTC.` : "Currently never expires."}
-        {d.bound_at ? " · Bound to a device." : ""}
+        {d.bound ? " · Locked to a device." : ""}
       </p>
       <div className="row" style={{ gap: 8, marginTop: 6 }}>
         <button className="primary" disabled={busy} onClick={saveSettings}>{saved ? "Saved ✓" : "Save settings"}</button>
-        {d.bound_at && <button className="ghost" disabled={busy} onClick={() => act(() => researchResetBind(linkId))}>Reset device lock</button>}
+        {d.bound && <button className="ghost" disabled={busy} onClick={() => act(() => researchResetBind(linkId))}>Reset device lock</button>}
       </div>
 
       {d.sessions.length > 0 && <>

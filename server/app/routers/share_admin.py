@@ -300,12 +300,16 @@ def research_detail(link_id: int):
     sessions = conn.execute(
         "SELECT id, name, turn_count, denied_count, retrieved_ids_json, created_at, last_at, status "
         "FROM research_sessions WHERE share_link_id=? ORDER BY created_at DESC LIMIT 50", (link_id,)).fetchall()
-    link = conn.execute("SELECT expires_at, bound_at FROM share_links WHERE id=?", (link_id,)).fetchone()
+    link = conn.execute("SELECT expires_at FROM share_links WHERE id=?", (link_id,)).fetchone()
+    # "Bound" for research = bind is on AND a device already has an active session.
+    bound = bool(spec["bind"]) and conn.execute(
+        "SELECT 1 FROM research_sessions WHERE share_link_id=? AND status='active' LIMIT 1",
+        (link_id,)).fetchone() is not None
     return {
         "spec": {k: spec[k] for k in ("status", "persona_voice", "topics", "intro", "bind", "single_use",
                                        "max_turns", "max_total_replies", "reply_count")},
         "expires_at": link["expires_at"] if link else None,
-        "bound_at": link["bound_at"] if link else None,
+        "bound": bound,
         "scope": json.loads(spec["scope_json"] or "{}"),
         "candidates": research_svc.list_candidates(conn, link_id),
         "approved": research_svc.list_approved(conn, link_id),
@@ -355,9 +359,11 @@ def research_set_details(link_id: int, body: ResearchDetailsIn):
 @router.post("/research/{link_id}/reset-bind")
 def research_reset_bind(link_id: int):
     """Forget the device a lock-to-browser research link bound to, so it can be
-    re-opened on a different device."""
+    re-opened on a different device. Research binds via the first ACTIVE session's
+    secret (not share_links), so abandon active sessions — mirrors guided reset-bind."""
     conn = get_conn()
-    share_svc.reset_bind(conn, link_id)
+    conn.execute("UPDATE research_sessions SET status='ended' "
+                 "WHERE share_link_id=? AND status='active'", (link_id,))
     conn.commit()
     return {"ok": True}
 

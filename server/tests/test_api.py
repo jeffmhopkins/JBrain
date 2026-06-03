@@ -1482,10 +1482,17 @@ def test_research_link_details_parity(client):
     detail = client.get(f"/api/shares/research/{lid}").json()
     assert detail["expires_at"] is not None and detail["spec"]["topics"] == "only meds"
 
-    # Set never-expires, then reset the device lock.
-    client.post(f"/api/shares/research/{lid}/details", json={"ttl_days": 0})
+    # Set never-expires (full save keeps bind on).
+    client.post(f"/api/shares/research/{lid}/details", json={"topics": "only meds", "bind": True, "ttl_days": 0})
     assert client.get(f"/api/shares/research/{lid}").json()["expires_at"] is None
+
+    # Device lock: an active session marks it bound; reset-bind clears it (and must
+    # not violate the status CHECK).
+    conn.execute("INSERT INTO research_sessions (share_link_id, secret, status) VALUES (?, 'sek', 'active')", (lid,))
+    conn.commit()
+    assert client.get(f"/api/shares/research/{lid}").json()["bound"] is True
     assert client.post(f"/api/shares/research/{lid}/reset-bind").json()["ok"] is True
+    assert client.get(f"/api/shares/research/{lid}").json()["bound"] is False
 
 
 def test_notify_posts_to_review_bell(client):

@@ -1055,6 +1055,38 @@ def test_loc_kind_tracks_prefix_on_rename(client):
     assert client.get(f"/api/notes/{back}").json()["kind"] == "entry"
 
 
+def test_kb_kind_tracks_prefix(client):
+    """The kb/ root is authoritative for kind='kb' just like loc/ is for places:
+    creating/moving a note under kb/ promotes it to a KB article, and moving it back
+    out reverts to a plain entry."""
+    # Manual create directly under kb/ → kind='kb'.
+    created = client.post("/api/notes", json={"title": "kb/Espresso", "content_md": "x"}).json()
+    assert client.get(f"/api/notes/{created['slug']}").json()["kind"] == "kb"
+    # Move an existing entry INTO kb/ → promoted; move back OUT → demoted to entry.
+    slug = client.post("/api/notes", json={"title": "notes/Bar", "content_md": "x"}).json()["slug"]
+    up = client.put(f"/api/notes/{slug}", json={"title": "kb/Bar", "content_md": "x"}).json()["slug"]
+    assert client.get(f"/api/notes/{up}").json()["kind"] == "kb"
+    down = client.put(f"/api/notes/{up}", json={"title": "notes/Bar", "content_md": "x"}).json()["slug"]
+    assert client.get(f"/api/notes/{down}").json()["kind"] == "entry"
+
+
+def test_staged_create_under_kb_becomes_kb_article(client):
+    """A propose_actions CREATE titled under kb/ (no explicit kind) is rooted under
+    kb/ and filed as kind='kb' when applied — so the assistant can make KB pages."""
+    import json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('CREATE', ?)",
+        (json.dumps({"title": "kb/Sourdough", "content": "# Sourdough\n"}),),
+    )
+    conn.commit()
+    aid = next(p for p in client.get("/api/staging").json() if p["type"] == "CREATE")["id"]
+    assert client.post(f"/api/staging/{aid}/apply").json()["ok"] is True
+    row = conn.execute("SELECT slug, kind FROM notes WHERE title='kb/Sourdough'").fetchone()
+    assert row is not None and row["kind"] == "kb"
+
+
 def test_place_note_restored_after_delete(client):
     """Deleting a place's loc/ note then re-opening it RESTORES the note (was a 500
     before — the soft-deleted title collided on re-create)."""

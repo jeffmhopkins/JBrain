@@ -85,7 +85,7 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             # kb/; a place note keeps the loc/ root; everything else under notes/.
             if payload.get("kind") == "place" or title.lower().startswith("loc/"):
                 root = "loc"
-            elif payload.get("kind") == "kb":
+            elif payload.get("kind") == "kb" or title.lower().startswith("kb/"):
                 root = "kb"
             else:
                 root = "notes"

@@ -167,7 +167,7 @@ _TOOL_SCHEMAS = {
         "properties": {
             "type": {"type": "string", "enum": ["CREATE", "UPDATE", "LINK", "RENAME", "DELETE",
                                                 "LIST_REMOVE_ITEM", "LIST_EDIT_ITEM", "DELETE_LIST"]},
-            "title": {"type": "string", "description": "Note title (CREATE/UPDATE; RENAME/DELETE: the note's CURRENT exact title)"},
+            "title": {"type": "string", "description": "Note title (CREATE/UPDATE; RENAME/DELETE: the note's CURRENT exact title). Title a CREATE/RENAME under kb/<name> to make it a KB article."},
             "content": {"type": "string", "description": "Full markdown content (CREATE/UPDATE)"},
             "new_title": {"type": "string", "description": "RENAME: the note's new title (e.g. notes/Foo or kb/Foo)"},
             "source_title": {"type": "string", "description": "LINK: note that links out"},

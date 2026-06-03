@@ -233,12 +233,18 @@ def upsert_note(
     note's write transaction open).
     """
     title = title.strip()
-    is_loc = title == "loc" or title.startswith("loc/")
+    low_title = title.lower()
+    is_loc = title == "loc" or low_title.startswith("loc/")
+    is_kb = title == "kb" or low_title.startswith("kb/")
     explicit_kind = kind
-    # A note under the loc/ root is a PLACE note: it backs a geofence and must stay
-    # OUT of KB synthesis (which only pulls entry/daily) while remaining searchable.
+    # The root prefix is authoritative for kind: loc/ → a PLACE note backing a
+    # geofence; kb/ → a synthesized KB article. Both are kept OUT of KB synthesis
+    # as *sources* (it only pulls entry/daily) while staying searchable. This lets
+    # the user (or assistant) promote a note to KB just by titling it kb/<name>.
     if kind is None and is_loc:
         kind = "place"
+    elif kind is None and is_kb:
+        kind = "kb"
     id_targeted = note_id is not None
     old_slug = None
     if note_id is not None:
@@ -275,12 +281,14 @@ def upsert_note(
         if kind is not None and not id_targeted:
             conn.execute("UPDATE notes SET kind = ? WHERE id = ?", (kind, note_id))
         elif id_targeted and explicit_kind is None:
-            # The loc/ prefix is authoritative for place-ness even on a rename, so a
-            # note moved INTO loc/ can't keep leaking into synthesis, and one moved
-            # OUT can't stay frozen as a place.
+            # The root prefix is authoritative for kind even on a rename: a note moved
+            # INTO loc/ or kb/ takes that kind (so it stops leaking into synthesis), and
+            # one moved back OUT of either reverts to a plain entry. Lists are untouched.
             if is_loc and existing["kind"] != "place":
                 conn.execute("UPDATE notes SET kind = 'place' WHERE id = ?", (note_id,))
-            elif not is_loc and existing["kind"] == "place":
+            elif is_kb and existing["kind"] != "kb":
+                conn.execute("UPDATE notes SET kind = 'kb' WHERE id = ?", (note_id,))
+            elif not is_loc and not is_kb and existing["kind"] in ("place", "kb"):
                 conn.execute("UPDATE notes SET kind = 'entry' WHERE id = ?", (note_id,))
         created = False
     else:

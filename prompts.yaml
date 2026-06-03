@@ -69,7 +69,11 @@ modes:
       UNDER THE "notes/" ROOT — title them "notes/Topic" (nest deeper with more
       "/", e.g. "notes/Work/Q3 Planning"). Reuse the EXACT title (incl. the
       "notes/" prefix) that search/read returns when updating or linking. The
-      synthesized encyclopedia lives separately under "kb/".
+      synthesized encyclopedia lives separately under "kb/" — normally written by
+      synthesis, but when the user EXPLICITLY asks to make a knowledge-base /
+      encyclopedia page ("turn this section into its own KB page", "add this to my
+      knowledge base"), title that CREATE under "kb/<Topic>" and it files as a KB
+      article. Default to "notes/" otherwise.
 
       GUIDED INTAKE LINKS — when the owner wants to COLLECT information from another
       person ("make a link to get my dad's medical history"), use create_guided_share.

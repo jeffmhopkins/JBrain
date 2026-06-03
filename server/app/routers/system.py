@@ -192,6 +192,7 @@ _DEPLOY_DIR = Path(os.environ.get("JBRAIN_DEPLOY_DIR", "/deploy-status"))
 def update_log(tail: int = 800):
     """The captured console output of the latest/in-progress deploy plus its status,
     so the PWA can show a live update console. Empty when nothing's been recorded."""
+    tail = max(1, min(int(tail), 5000))
     log_path, status_path = _DEPLOY_DIR / "update.log", _DEPLOY_DIR / "status.json"
     try:
         text = log_path.read_text(errors="replace")

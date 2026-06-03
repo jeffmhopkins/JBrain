@@ -61,7 +61,10 @@ for _ in $(seq 1 45); do   # up to ~90s (covers the embedding-model warmup)
   sleep 2
 done
 if [[ "$HEALTHY" != 1 ]]; then
-  echo "FAIL: API did not become healthy. Check: $DC logs --tail=50 api" >&2
+  echo "FAIL: API did not become healthy. Recent API logs (the startup error is below):" >&2
+  # Capture the container's own logs INTO this run's output so the live update
+  # console shows the actual traceback, not just a hint to go look for it.
+  $DC logs --tail=120 api 2>&1 || true
   exit 1
 fi
 echo "    OK — API is healthy."

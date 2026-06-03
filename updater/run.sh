@@ -41,7 +41,8 @@ while true; do
         docker image prune -f >/dev/null 2>&1 || true
         docker builder prune -f >/dev/null 2>&1 || true
       else
-        echo "[updater] rebuild failed; leaving current version running"
+        echo "[updater] rebuild failed; leaving current version running. Recent API logs:"
+        docker compose logs --tail=120 api 2>&1 || true   # capture the traceback for the console
         printf '{"state":"failed","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
       fi
     } 2>&1 | tee "$DEPLOY_DIR/update.log"

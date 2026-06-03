@@ -391,12 +391,17 @@ def ensure_default_person(conn: sqlite3.Connection) -> None:
     # Runs AFTER migrations, so location_key is guaranteed present (schema.sql on a
     # fresh DB, migration 28 on an upgrade) — safe to index here (NULLs stay distinct).
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
-    if conn.execute("SELECT 1 FROM people LIMIT 1").fetchone():
+    first = conn.execute("SELECT id FROM people ORDER BY id LIMIT 1").fetchone()
+    if first is None:
+        conn.execute(
+            "INSERT INTO people (name, color, is_default, aliases) VALUES (?, ?, 1, ?)",
+            ("Me", "#7f9aa6", "pwa,wear,phone"),
+        )
         return
-    conn.execute(
-        "INSERT INTO people (name, color, is_default, aliases) VALUES (?, ?, 1, ?)",
-        ("Me", "#7f9aa6", "pwa,wear,phone"),
-    )
+    # There ARE people but none is the default (e.g. a raw-SQL edit) — never leave the
+    # registry without a catch-all; promote the first so source resolution stays sane.
+    if conn.execute("SELECT 1 FROM people WHERE is_default = 1 LIMIT 1").fetchone() is None:
+        conn.execute("UPDATE people SET is_default = 1 WHERE id = ?", (first["id"],))
 
 
 def _column_is_not_null(conn: sqlite3.Connection, table: str, column: str) -> bool:

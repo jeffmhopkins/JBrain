@@ -79,6 +79,7 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     var status by remember { mutableStateOf("") }
     var queued by remember { mutableStateOf(FixQueue.size(ctx)) }
     var codeInput by remember { mutableStateOf("") }   // the ONLY editable field
+    var keySet by remember { mutableStateOf(Settings.key(ctx).isNotBlank()) }
 
     fun hasNotif(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -92,6 +93,7 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
         if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
         Settings.setKey(ctx, p.key)
+        keySet = true
         codeInput = ""   // don't leave the secret sitting in the box
         status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
         return true
@@ -211,6 +213,13 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
                 ) { Text("Paste") }
             },
             modifier = Modifier.fillMaxWidth(),
+        )
+        // Lasting confirmation the key landed (the paste box clears itself, so this is
+        // the only persistent "you're configured" signal). Never shows the key itself.
+        Text(
+            if (keySet) "Location key: configured ✓" else "Location key: not set — paste a setup code above.",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (keySet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Row(

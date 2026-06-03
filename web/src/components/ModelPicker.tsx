@@ -34,7 +34,7 @@ export default function ModelPicker() {
       for (const t of TIERS) v[t.key] = rows.find((r) => r.key === t.key)?.effective || "";
       setVals(v);
     } catch { /* ignore */ }
-    try { const i: any = await get("/api/auth/info"); if (i?.llm_keys) setKeys(i.llm_keys); } catch { /* ignore */ }
+    try { const i: any = await get("/api/auth/verify"); if (i?.llm_keys) setKeys(i.llm_keys); } catch { /* ignore */ }
   }
   useEffect(() => { load(); }, []);
 

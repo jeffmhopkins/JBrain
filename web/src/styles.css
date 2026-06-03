@@ -480,6 +480,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md .footnotes li { margin: 0.2em 0; }
 .md .footnotes h2 { font-size: 0; }                         /* hide "Footnotes" label text… */
 .md .footnotes h2::after { content: "References"; font-size: 1rem; color: var(--text); }   /* …show "References" */
+/* A source cited at many claims emits one back-reference arrow ("↩") PER citation,
+   which piles up into an unreadable stack on the reference line. Keep only the first
+   jump-back link and hide the rest, and dim it so the source title leads. */
+.md .footnotes a[data-footnote-backref] ~ a[data-footnote-backref] { display: none; }
+.md .footnotes a[data-footnote-backref] { color: var(--text-dim); text-decoration: none; margin-left: 0.35em; }
 
 /* ---- Lists carousel ----------------------------------------------------- */
 /* One list per screen; swipe / trackpad / drag the scrollbar to move between

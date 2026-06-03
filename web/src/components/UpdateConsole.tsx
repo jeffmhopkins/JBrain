@@ -25,6 +25,8 @@ async function fetchViaCaddy(): Promise<{ log: string; status: any } | null> {
 export default function UpdateConsole({ onClose }: { onClose: () => void }) {
   const [log, setLog] = useState("");
   const [state, setState] = useState<string | null>(null);   // running | ok | failed
+  const [phase, setPhase] = useState<string>("");            // fetching | building | restarting | health-checking
+  const [at, setAt] = useState<string>("");                  // status timestamp (UTC ISO)
   const [reachable, setReachable] = useState(true);          // is the API answering?
   const [copied, setCopied] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -40,12 +42,14 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
         setReachable(true);
         setLog(r.log || "");
         setState(r.status?.state ?? null);
+        setPhase(r.status?.phase ?? "");
+        setAt(r.status?.at ?? "");
       } catch {
         // API unreachable (restarting / failed) → try Caddy's gated static copy.
         try {
           const r = await fetchViaCaddy();
           if (!alive) return;
-          if (r) { setReachable(true); setLog(r.log || ""); setState(r.status?.state ?? null); }
+          if (r) { setReachable(true); setLog(r.log || ""); setState(r.status?.state ?? null); setPhase(r.status?.phase ?? ""); setAt(r.status?.at ?? ""); }
           else setReachable(false);
         } catch {
           if (alive) setReachable(false);
@@ -72,12 +76,18 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
     catch { /* clipboard blocked — ignore */ }
   }
 
+  // "Stale" = a finished deploy whose status is more than ~2 min old, i.e. we're
+  // looking at the LAST run, not one happening now. Keeps "complete" from masquerading
+  // as live (your "it says updating but the console says all good" confusion).
+  const ageMs = at ? Date.now() - Date.parse(at) : Infinity;
+  const stale = (state === "ok" || state === "failed") && ageMs > 120000;
+  const ph = phase ? ` — ${phase}…` : "…";
   const status = !reachable
-    ? { dot: "busy", text: "Server offline — restarting (or failed)…" }
-    : state === "ok" ? { dot: "ok", text: "Update complete" }
-    : state === "failed" ? { dot: "err", text: "Update failed" }
-    : state === "running" ? { dot: "busy", text: "Updating…" }
-    : { dot: "info", text: "No deploy in progress" };
+    ? { dot: "busy", text: "Server offline — restarting (or a failed deploy)…" }
+    : state === "running" ? { dot: "busy", text: `Updating${ph}` }
+    : state === "ok" ? { dot: "ok", text: stale ? "Last deploy: complete" : "Update complete" }
+    : state === "failed" ? { dot: "err", text: stale ? "Last deploy: failed" : "Update failed" }
+    : { dot: "info", text: "No deploy recorded yet" };
 
   return (
     <div className="modal-backdrop compact" onClick={onClose}>

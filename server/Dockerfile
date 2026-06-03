@@ -32,11 +32,5 @@ ENV JBRAIN_PROMPTS_FILE=/app/prompts.yaml
 # Built front-end goes where FastAPI serves static files from.
 COPY --from=web /web/dist ./static
 
-# --- TEMPORARY: deliberate build failure to test the live deploy console. -------
-# The build fails HERE (before the API container is recreated), so update.sh stops
-# at the build step and the OLD container keeps serving — the site stays UP — while
-# the PWA console shows this error. Remove this RUN to fix the build.
-RUN echo "==> DELIBERATE TEST BUILD FAILURE — remove this RUN in server/Dockerfile to fix" && exit 23
-
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

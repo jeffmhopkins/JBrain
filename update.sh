@@ -20,14 +20,17 @@ cd "$(dirname "$0")"
 # record a status the UI can show. Best-effort: never let this break the update.
 DEPLOY_DIR="$(pwd)/deploy-status"
 mkdir -p "$DEPLOY_DIR" 2>/dev/null || true
-_dstatus() { printf '{"state":"%s","at":"%s"}\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
+export BUILDKIT_PROGRESS=plain   # line-buffered build output so the console streams live
+# status.json carries a coarse PHASE so the PWA indicator follows progress.
+_dstatus() { printf '{"state":"%s","phase":"%s","at":"%s"}\n' "$1" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
 exec > >(tee "$DEPLOY_DIR/update.log") 2>&1   # mirror all stdout+stderr to the log
 trap '_dstatus "$([ $? -eq 0 ] && echo ok || echo failed)"' EXIT
-_dstatus running
+_dstatus running starting
 # ---------------------------------------------------------------------------
 
 DC="docker compose"; docker compose version >/dev/null 2>&1 || DC="docker-compose"
 
+_dstatus running fetching
 echo "==> Fetching latest from origin…"
 git fetch --prune origin || { echo "FAIL: git fetch failed (offline?). Nothing changed." >&2; exit 1; }
 
@@ -47,6 +50,7 @@ else
   git --no-pager log --oneline "$BEFORE..$AFTER" 2>/dev/null | sed 's/^/      /' || true
 fi
 
+_dstatus running building
 echo "==> Rebuilding and restarting (volumes + .env preserved)…"
 export GIT_SHA="$(git rev-parse HEAD)"
 $DC build api || { echo "FAIL: image build failed — current version is still running (see output above)." >&2; exit 1; }
@@ -71,9 +75,11 @@ if [[ -f Caddyfile.template ]]; then
   fi
 fi
 
+_dstatus running restarting
 $DC up -d || { echo "FAIL: compose up failed." >&2; exit 1; }
 $DC exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
 
+_dstatus running health-checking
 echo "==> Waiting for the API to come up…"
 HEALTHY=0
 for _ in $(seq 1 45); do   # up to ~90s (covers the embedding-model warmup)
@@ -113,4 +119,11 @@ PY
 $DC ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null | sed 's/^/    /' || $DC ps
 
 rm -f data/update-requested.json 2>/dev/null || true
+
+# The auto-updater is a long-running container, so it keeps executing the run.sh it
+# started with. Recreate it so it picks up any new run.sh (e.g. log-capture changes),
+# and so PWA-triggered deploys are captured to the live console too. No-op if the
+# autoupdate profile isn't enabled.
+$DC up -d --force-recreate updater >/dev/null 2>&1 || $DC restart updater >/dev/null 2>&1 || true
+
 echo "==> Done — now at $AFTER. On your phone, fully close and reopen the app to pick up the new service worker."

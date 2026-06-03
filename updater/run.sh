@@ -15,15 +15,19 @@ git config --global --add safe.directory /repo >/dev/null 2>&1 || true
 MARKER=/data/update-requested.json
 DEPLOY_DIR=/repo/deploy-status   # shared with update.sh, the API and Caddy (live console)
 mkdir -p "$DEPLOY_DIR" 2>/dev/null || true
+export BUILDKIT_PROGRESS=plain   # line-buffered build output so the console streams live
+# status.json carries a coarse PHASE so the PWA indicator follows progress.
+_ustatus() { printf '{"state":"%s","phase":"%s","at":"%s"}\n' "$1" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
 echo "[updater] watching for update requests…"
 
 while true; do
   if [ -f "$MARKER" ]; then
-    printf '{"state":"running","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+    _ustatus running starting
     # Tee the whole update to the shared log so the PWA can stream it; record status.
     {
       echo "[updater] update requested at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       cd /repo
+      _ustatus running fetching
       if git fetch --tags --prune origin 2>/dev/null; then
         TARGET="$(git tag --sort=-v:refname | head -n1 || true)"
         [ -z "$TARGET" ] && TARGET="origin/main"
@@ -34,7 +38,9 @@ while true; do
       fi
       echo "[updater] rebuilding api…"
       export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
-      if docker compose build api && docker compose up -d api; then
+      _ustatus running building
+      if docker compose build api && { _ustatus running restarting; docker compose up -d api; }; then
+        _ustatus running health-checking
         # Don't call it OK just because `up` returned — wait for the new container to
         # actually pass health (≈90s, covers the embedding warmup), else mark failed.
         healthy=0; i=0
@@ -46,19 +52,19 @@ while true; do
         done
         if [ "$healthy" = 1 ]; then
           echo "[updater] update applied -> ${TARGET:-unknown}"
-          printf '{"state":"ok","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+          _ustatus ok
           # Reclaim the now-dangling previous image + build cache (volumes untouched).
           docker image prune -f >/dev/null 2>&1 || true
           docker builder prune -f >/dev/null 2>&1 || true
         else
           echo "[updater] new container did not become healthy. Recent API logs:"
           docker compose logs --tail=120 api 2>&1 || true   # capture the traceback for the console
-          printf '{"state":"failed","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+          _ustatus failed
         fi
       else
         echo "[updater] rebuild failed; leaving current version running. Recent API logs:"
         docker compose logs --tail=120 api 2>&1 || true   # capture the traceback for the console
-        printf '{"state":"failed","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+        _ustatus failed
       fi
     } 2>&1 | tee "$DEPLOY_DIR/update.log"
     rm -f "$MARKER" 2>/dev/null || true

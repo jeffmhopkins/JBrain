@@ -345,76 +345,70 @@ export default function Chat() {
       )}
       <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}
            onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-        {mode === "entry" ? (
-          entries.length === 0
-            ? <div className="msg assistant muted">Type below and Send — it's saved straight to your wiki.</div>
-            : entries.map((en, i) => {
-                // Dated captures have an opaque path title (notes/daily/…); show a
-                // friendly label from the entry's first line instead. Titled notes
-                // (assisted attachments) keep their own name (root stripped).
-                const label = en.title.startsWith("notes/daily/")
-                  ? ((en.text.split("\n").find((l) => l.trim()) || "entry").trim().slice(0, 40) || "entry")
-                  : en.title.replace(/^notes\//, "");
-                return (
-                  <div key={i} style={{ display: "contents" }}>
-                    {en.text && <div className="msg user">{en.text}</div>}
-                    <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>
-                  </div>
-                );
-              })
-        ) : (
-          <>
-            {messages.length === 0 && (
-              <div className="msg assistant muted">
-                {mode === "research"
-                  ? "Ask anything about your notes — I only read; I won’t change anything."
-                  : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
-              </div>
-            )}
-            {messages.map((m, i) => {
-              if (m.role === "event") {
-                let ev: { summary: string; undo_id?: number };
-                try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
-                return (
-                  <div key={i} className="applied-chip">
-                    <span>✓ {renderSummary(ev.summary)}</span>
-                    {ev.undo_id == null ? null : undone.has(ev.undo_id)
-                      ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
-                      : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(ev.undo_id!)}>Undo</button>}
-                  </div>
-                );
-              }
-              // Empty assistant placeholder (waiting on the first token) → render
-              // nothing; the status bar at the bottom shows "Thinking…" instead.
-              if (m.role === "assistant" && !m.content) return null;
-              return (
-                <div key={i} className={`msg ${m.role}`}>
-                  {m.role === "assistant" ? (
-                    <div className="md msg-md">
-                      <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    m.content
-                  )}
-                </div>
-              );
-            })}
-            {applied.map((a) => (
-              <div key={`a${a.id}`} className="applied-chip">
-                <span>✓ {renderSummary(a.summary)}</span>
-                {undone.has(a.id)
-                  ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
-                  : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
-              </div>
-            ))}
-            {/* Staging + applied chips show in BOTH chat modes — pending proposals are
-                global, so they must stay approvable even while read-only (research). */}
-            <StagingPanel
-              tick={stagingTick}
-              onChange={() => { setStagingTick((t) => t + 1); if (convId && !streaming) loadMessages(convId); }}
-            />
-          </>
+        {/* ONE shared view for every mode. The conversation thread always shows; entry
+            just SAVES (no AI turn) and appends its saved-note chips here too. */}
+        {messages.length === 0 && entries.length === 0 && (
+          <div className="msg assistant muted">
+            {mode === "entry"
+              ? "Type below and Send — it’s saved straight to your wiki (the AI isn’t involved)."
+              : mode === "research"
+              ? "Ask anything about your notes — I only read; I won’t change anything."
+              : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
+          </div>
         )}
+        {messages.map((m, i) => {
+          if (m.role === "event") {
+            let ev: { summary: string; undo_id?: number };
+            try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
+            return (
+              <div key={i} className="applied-chip">
+                <span>✓ {renderSummary(ev.summary)}</span>
+                {ev.undo_id == null ? null : undone.has(ev.undo_id)
+                  ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
+                  : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(ev.undo_id!)}>Undo</button>}
+              </div>
+            );
+          }
+          // Empty assistant placeholder (waiting on the first token) → render
+          // nothing; the status bar at the bottom shows "Thinking…" instead.
+          if (m.role === "assistant" && !m.content) return null;
+          return (
+            <div key={i} className={`msg ${m.role}`}>
+              {m.role === "assistant" ? (
+                <div className="md msg-md">
+                  <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                </div>
+              ) : (
+                m.content
+              )}
+            </div>
+          );
+        })}
+        {/* Entry saves (this session): a user bubble + a link to the saved note. */}
+        {entries.map((en, i) => {
+          const label = en.title.startsWith("notes/daily/")
+            ? ((en.text.split("\n").find((l) => l.trim()) || "entry").trim().slice(0, 40) || "entry")
+            : en.title.replace(/^notes\//, "");
+          return (
+            <div key={`en${i}`} style={{ display: "contents" }}>
+              {en.text && <div className="msg user">{en.text}</div>}
+              <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>
+            </div>
+          );
+        })}
+        {applied.map((a) => (
+          <div key={`a${a.id}`} className="applied-chip">
+            <span>✓ {renderSummary(a.summary)}</span>
+            {undone.has(a.id)
+              ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
+              : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
+          </div>
+        ))}
+        {/* Pending proposals are global → keep them approvable in any mode. */}
+        <StagingPanel
+          tick={stagingTick}
+          onChange={() => { setStagingTick((t) => t + 1); if (convId && !streaming) loadMessages(convId); }}
+        />
         {streaming && (
           <div className="chat-status" aria-live="polite">
             <span className="typing-dots"><span /><span /><span /></span>

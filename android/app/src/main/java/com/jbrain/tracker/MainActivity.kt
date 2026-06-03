@@ -1,6 +1,7 @@
 package com.jbrain.tracker
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -18,12 +19,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.core.content.ContextCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -71,9 +74,14 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     var serverUrl by remember { mutableStateOf(Settings.serverUrl(ctx)) }
     var key by remember { mutableStateOf(Settings.key(ctx)) }
     var name by remember { mutableStateOf(Settings.name(ctx)) }
-    var enabled by remember { mutableStateOf(Settings.enabled(ctx)) }
+    var tracking by remember { mutableStateOf(Settings.enabled(ctx)) }
     var status by remember { mutableStateOf("") }
     var queued by remember { mutableStateOf(FixQueue.size(ctx)) }
+
+    fun hasNotif(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    var notif by remember { mutableStateOf(hasNotif()) }
 
     // Keep the queued-fixes count live so you can watch the buffer drain after a sync.
     LaunchedEffect(Unit) {
@@ -82,8 +90,8 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
 
     fun turnOn() {
         Tracking.setEnabled(ctx, true)
-        enabled = true
-        status = if (Tracking.hasBackground(ctx)) "Tracking — runs in the background."
+        tracking = true
+        status = if (Tracking.hasBackground(ctx)) "Tracking — runs in the background, and auto-starts on boot."
         else "Tracking. For when the app is closed, set location to “Allow all the time” in system settings."
     }
 
@@ -96,10 +104,11 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     val fgLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
+        notif = hasNotif()   // the batch may have included POST_NOTIFICATIONS
         val fine = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (!fine) {
-            enabled = false
+            tracking = false
             status = "Location permission denied — can't track without it."
         } else if (!Tracking.hasBackground(ctx) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
@@ -108,10 +117,14 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> notif = granted || hasNotif() }
+
     fun requestEnable() {
         if (!Settings.isConfigured(ctx)) {
             status = "Set the server URL and access key first."
-            enabled = false
+            tracking = false
             return
         }
         if (!Tracking.hasForeground(ctx)) {
@@ -151,14 +164,16 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
+        // While tracking is ON the config is locked — turn tracking off to edit it.
+        val editable = !tracking
         OutlinedTextField(
             value = name, onValueChange = { name = it; Settings.setName(ctx, it) },
-            label = { Text("Name (this device)") }, singleLine = true,
+            label = { Text("Name (this device)") }, singleLine = true, enabled = editable,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = serverUrl, onValueChange = { serverUrl = it; Settings.setServerUrl(ctx, it) },
-            label = { Text("Server URL") }, singleLine = true,
+            label = { Text("Server URL") }, singleLine = true, enabled = editable,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
@@ -175,7 +190,7 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
                     key = v; Settings.setKey(ctx, v)
                 }
             },
-            label = { Text("Access key (or paste a setup code)") }, singleLine = true,
+            label = { Text("Access key (or paste a setup code)") }, singleLine = true, enabled = editable,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )
@@ -187,12 +202,26 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         ) {
             Text("Track my location", style = MaterialTheme.typography.titleMedium)
             Switch(
-                checked = enabled,
+                checked = tracking,
                 onCheckedChange = { on ->
-                    if (on) { enabled = true; requestEnable() }
-                    else { Tracking.setEnabled(ctx, false); enabled = false; status = "Stopped." }
+                    if (on) { tracking = true; requestEnable() }
+                    else { Tracking.setEnabled(ctx, false); tracking = false; status = "Stopped." }
                 },
             )
+        }
+
+        // Allow the persistent status notification (required to show it on Android 13+).
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = notif,
+                enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notif,
+                onCheckedChange = { want ->
+                    if (want && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                },
+            )
+            Text("Allow notifications (shows the tracking status)", style = MaterialTheme.typography.bodyMedium)
         }
 
         if (status.isNotEmpty()) {
@@ -204,9 +233,11 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(8.dp))
         Text(
-            "Tip: also allow unrestricted battery for this app so Android doesn't pause it.",
+            "Tracking auto-resumes after a reboot. Tip: also allow unrestricted battery for this app " +
+                "(and “auto-start” on Samsung/Xiaomi) so Android doesn't pause it.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Start,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         if (!Tracking.hasBackground(ctx)) {

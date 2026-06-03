@@ -153,9 +153,11 @@ export default function SystemPage() {
           <div className="maint-grid">
             <span className="maint-k">Storage</span>
             <span className="maint-v">
-              {stats.storage.percent}% used · {fmtBytes(stats.storage.free)} free of {fmtBytes(stats.storage.total)}
+              {stats.storage.percent}% used · {fmtBytes(stats.storage.free)} free of {fmtBytes(stats.storage.total)} <span className="muted">(whole disk)</span>
               <span className="muted" style={{ display: "block", fontSize: 12 }}>
-                Database {fmtBytes(stats.storage.db_bytes)} · Attachments {fmtBytes(stats.storage.attachments_bytes)} ({stats.storage.attachments_count})
+                JBrain: database {fmtBytes(stats.storage.db_bytes)} · {stats.storage.attachments_count} attachment{stats.storage.attachments_count === 1 ? "" : "s"}
+                {stats.storage.tiles_bytes ? ` · map tiles ${fmtBytes(stats.storage.tiles_bytes)}` : ""}.
+                The rest is the OS + Docker images.
               </span>
             </span>
             <span className="maint-k">Uptime</span>

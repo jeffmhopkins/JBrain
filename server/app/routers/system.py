@@ -157,6 +157,15 @@ def stats():
         if (db_path.parent / f"{db_path.name}{suffix}").exists()
     )
     att = conn.execute("SELECT COUNT(*) c, COALESCE(SUM(byte_size), 0) b FROM attachments").fetchone()
+    # The map tile cache (proxied OSM tiles) is the one app-side thing that grows
+    # unbounded in the data volume — surface it so it's never an invisible hog.
+    tile_dir = db_path.parent / "tilecache"
+    tiles_bytes = 0
+    if tile_dir.exists():
+        try:
+            tiles_bytes = sum(f.stat().st_size for f in tile_dir.rglob("*.png"))
+        except OSError:
+            pass
 
     try:
         warn_usd = float(get_meta("daily_cost_warn_usd") or 5.0)
@@ -165,7 +174,8 @@ def stats():
 
     return {
         "storage": {**disk, "db_bytes": db_bytes,
-                    "attachments_bytes": att["b"], "attachments_count": att["c"]},
+                    "attachments_bytes": att["b"], "attachments_count": att["c"],
+                    "tiles_bytes": tiles_bytes},
         "uptime_seconds": int(time.time() - _START_TS),
         "started_at": _START_ISO,
         "tokens": usage_svc.summary(conn),

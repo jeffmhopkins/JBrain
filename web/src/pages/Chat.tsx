@@ -58,7 +58,9 @@ export default function Chat() {
   const online = useOnline();
   const geo = useGeo();
   const navigate = useNavigate();
-  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem("jbrain_mode") as Mode) || "entry");
+  // Mode persists within a session (so navigating away from chat and back keeps it)
+  // but a fresh PWA launch starts a new session → empty → defaults to Entry capture.
+  const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem("jbrain_mode") as Mode) || "entry");
   const [menuOpen, setMenuOpen] = useState(false);
 
   const [convId, setConvId] = useState<number | null>(null);
@@ -149,7 +151,7 @@ export default function Chat() {
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, [input]);
 
-  function pick(m: Mode) { setMode(m); localStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
+  function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
   // Swipe left/right across the conversation to move between modes (wraps around).
   const touchStart = useRef<{ x: number; y: number } | null>(null);

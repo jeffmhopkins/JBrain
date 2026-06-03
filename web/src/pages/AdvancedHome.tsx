@@ -50,7 +50,7 @@ export default function AdvancedHome() {
     const t = e.changedTouches[0];
     const dx = t.clientX - s.x, dy = t.clientY - s.y;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    localStorage.setItem("jbrain_mode", dx > 0 ? "research" : "entry");
+    sessionStorage.setItem("jbrain_mode", dx > 0 ? "research" : "entry");   // matches Chat's per-session mode
     nav("/chat");
   }
 

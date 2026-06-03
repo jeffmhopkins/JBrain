@@ -238,7 +238,12 @@ export default function MapPage() {
         { radius: 6, color: "#fff", weight: 2, fillColor: "#4ea1ff", fillOpacity: 1 }).addTo(m);
     } else if ((L as any).heatLayer) {
       const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs);
-      overlay.current = (L as any).heatLayer(hUpto, { radius: 22, blur: 18, maxZoom: 17 }).addTo(m);
+      // Bigger, softer blobs + normalise to the DWELL scale (not the default max=1.0,
+      // which leaves sparse/short-window data barely visible): ~an hour at a spot now
+      // reads hot, and minOpacity keeps lighter areas from disappearing.
+      overlay.current = (L as any).heatLayer(hUpto, {
+        radius: 38, blur: 28, max: 0.5, minOpacity: 0.3, maxZoom: 17,
+      }).addTo(m);
     } else {
       overlay.current = L.layerGroup(
         upto.map((p, i) => L.circleMarker([p.lat, p.lon],

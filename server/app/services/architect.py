@@ -301,16 +301,42 @@ def _untrusted(label: str, body: str) -> str:
     )
 
 
+def _snippet(content: str, query: str, width: int = 160) -> str:
+    """A short, query-relevant excerpt of a note for search results — so an opaquely
+    titled note (e.g. notes/daily/2026/06/03/3) still reveals what it's about. Centres
+    on the first matching query term; falls back to the start."""
+    text = " ".join((content or "").split())
+    if not text:
+        return ""
+    low = text.lower()
+    pos = -1
+    for t in (w.lower() for w in query.split() if len(w) > 1):
+        p = low.find(t)
+        if p != -1 and (pos == -1 or p < pos):
+            pos = p
+    if pos == -1:
+        return text[:width] + ("…" if len(text) > width else "")
+    start = max(0, pos - width // 3)
+    seg = text[start:start + width]
+    return ("…" if start > 0 else "") + seg + ("…" if start + width < len(text) else "")
+
+
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
     from . import search as search_svc
     # Hybrid: keyword (FTS) + semantic, fused — so one call covers exact terms AND
-    # meaning. Returns titles only (best-first) to stay token-lean; the model
-    # read_notes the ones it wants.
+    # meaning. Each hit carries a query-relevant snippet so the model can judge
+    # relevance without read_note'ing every result (titles alone — esp. dated daily
+    # paths — gave no clue what the note was about).
     rows = search_svc.hybrid_notes(conn, query, limit)
     if not rows:
         return "No matching notes."
-    # Titles are user-controlled too -> fence them as untrusted data.
-    return _untrusted("search-results", "\n".join(f"- {r['title']}" for r in rows))
+    lines = []
+    for r in rows:
+        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
+        snip = _snippet(c["content_md"] if c else "", query)
+        lines.append(f"- {r['title']}" + (f"\n    {snip}" if snip else ""))
+    # Titles + snippets are user-controlled too -> fence them as untrusted data.
+    return _untrusted("search-results", "\n".join(lines))
 
 
 def _tool_read_note(conn, title: str) -> str:

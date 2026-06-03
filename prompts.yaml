@@ -136,7 +136,7 @@ modes:
 # Tool descriptions (the input schemas live in code). These steer when/how the
 # agent uses each tool, so they're tunable here too.
 tools:
-  search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Read before you propose."
+  search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Each hit returns its title PLUS a short query-relevant snippet — judge relevance from the snippet (don't dismiss an opaquely-titled note like notes/daily/… without checking its snippet), and read_note the promising ones for full content before you answer or propose."
   read_note: "When you need a note's full text: read its complete markdown by exact title (includes the note's stored coordinates + location label when set)."
   current_location: "When the user asks where they are now (or to use 'my/current location'): report the device GPS stamped on this conversation's latest message (lat/lon + label). This is the OWNER's live phone only — for another registered person use locate_person. Read-only; says so when no location has been shared."
   locate_person: "When the user asks where a REGISTERED PERSON is now or was last seen ('where is Allan right now', 'where's mom'): their most recent location fix from the trail, labelled by saved place / coord-note, with how long ago. Pass `person` (their name or alias as configured in People); omit it for the owner. People are tracked via their own JBrain tracker key — this reads their stored trail, not a live phone ping. Read-only. For EXACT coordinates use location_fixes."

@@ -351,10 +351,12 @@ export async function streamChat(
   if (isDemo()) { await demoStream(text, onEvent, mode); return; }
   const body: any = { text, mode };
   if (location) { body.lat = location.lat; body.lon = location.lon; }
+  const ctrl = new AbortController();
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),
+    signal: ctrl.signal,
   });
   if (!res.body) throw new ApiError("No response stream", 500);
 
@@ -362,16 +364,31 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
-      if (!dataLine) continue;
-      try { onEvent(JSON.parse(dataLine.slice(6)) as ChatEvent); } catch { /* ignore */ }
+  // Stall watchdog: if the stream goes fully silent past this window (a stuck/half-open
+  // connection that never closes), abort so streamChat resolves and the caller re-syncs
+  // from the server (which already saved the full reply). Generous so a long tool run
+  // never trips it; reset on every byte received.
+  let idle: number | undefined;
+  const STALL_MS = 90000;
+  const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => ctrl.abort(), STALL_MS); };
+  arm();
+  try {
+    for (;;) {
+      let r: ReadableStreamReadResult<Uint8Array>;
+      try { r = await reader.read(); }
+      catch { break; }   // aborted (stall) or network drop → finalize; caller reloads
+      if (r.done) break;
+      arm();
+      buffer += decoder.decode(r.value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        try { onEvent(JSON.parse(dataLine.slice(6)) as ChatEvent); } catch { /* ignore */ }
+      }
     }
+  } finally {
+    if (idle) clearTimeout(idle);
   }
 }

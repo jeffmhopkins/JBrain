@@ -231,23 +231,35 @@ class XAIProvider:
             model=model or self.default_model(), max_tokens=max_tokens,
             messages=self._wire(messages, system), tools=wire_tools, stream=True,
             stream_options={"include_usage": True})
-        async for chunk in stream:
-            if getattr(chunk, "usage", None):
-                usage = chunk.usage
-            if not getattr(chunk, "choices", None):
-                continue
-            delta = chunk.choices[0].delta
-            if getattr(delta, "content", None):
-                text_parts.append(delta.content)
-                yield TextDelta(delta.content)
-            for tc in (getattr(delta, "tool_calls", None) or []):
-                slot = acc.setdefault(tc.index, {"id": None, "name": "", "args": ""})
-                if tc.id:
-                    slot["id"] = tc.id
-                if tc.function and tc.function.name:
-                    slot["name"] = tc.function.name
-                if tc.function and tc.function.arguments:
-                    slot["args"] += tc.function.arguments
+        try:
+            async for chunk in stream:
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
+                if not getattr(chunk, "choices", None):
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if getattr(delta, "content", None):
+                    text_parts.append(delta.content)
+                    yield TextDelta(delta.content)
+                for tc in (getattr(delta, "tool_calls", None) or []):
+                    slot = acc.setdefault(tc.index, {"id": None, "name": "", "args": ""})
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        slot["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        slot["args"] += tc.function.arguments
+                # The turn is COMPLETE once we see a finish_reason — stop here rather than
+                # waiting on a trailing usage/[DONE] chunk, which some xAI responses don't
+                # close promptly (it left the agent stream hanging on "Responding…").
+                if getattr(choice, "finish_reason", None):
+                    break
+        finally:
+            try:
+                await stream.close()
+            except Exception:  # noqa: BLE001
+                pass
         # Assemble tool calls + record the assistant turn (OpenAI shape) for the loop.
         calls, oa_calls = [], []
         for i in sorted(acc):

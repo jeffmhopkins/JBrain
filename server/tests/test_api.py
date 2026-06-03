@@ -1171,6 +1171,47 @@ def test_loc_note_kind_inferred(client):
     assert client.get(f"/api/notes/{r.json()['slug']}").json()["kind"] == "place"
 
 
+def test_people_registry_and_default(client):
+    """A default person 'Me' is seeded (catch-all for unmatched location sources);
+    people can be created, re-pointed as default (exclusive), and the default can't be
+    deleted. A fix's source resolves to a person by alias, else the default."""
+    from app.db import get_conn
+    from app.services import people as people_svc
+    conn = get_conn()
+
+    me = next(p for p in client.get("/api/people").json() if p["is_default"])
+    assert me["name"] == "Me" and "pwa" in me["aliases"]
+
+    mom = client.post("/api/people", json={"name": "Mom", "color": "#c08585", "aliases": "Mom,moms-pixel"}).json()["id"]
+    # source resolution: alias → Mom; the PWA's 'pwa' → default Me; unknown → default.
+    assert people_svc.resolve(conn, "moms-pixel")["name"] == "Mom"
+    assert people_svc.resolve(conn, "pwa")["is_default"] == 1
+    assert people_svc.resolve(conn, "nobody")["is_default"] == 1
+
+    # Making Mom default is exclusive (Me loses it); the old default can't be deleted only while default.
+    client.patch(f"/api/people/{mom}", json={"is_default": True})
+    defaults = [p for p in client.get("/api/people").json() if p["is_default"]]
+    assert len(defaults) == 1 and defaults[0]["name"] == "Mom"
+    assert client.delete(f"/api/people/{mom}").status_code == 409   # now the default
+    assert client.delete(f"/api/people/{me['id']}").json()["ok"] is True   # no longer default → deletable
+
+
+def test_person_from_kb_note(client):
+    """Tagging a KB note 'as a person' creates/links a person named after the note leaf."""
+    slug = client.post("/api/notes", json={"title": "kb/People/Family/Dad", "content_md": "x"}).json()["slug"]
+    r = client.post("/api/people/from-note", json={"slug": slug}).json()
+    assert r["name"] == "Dad"
+    person = next(p for p in client.get("/api/people").json() if p["name"] == "Dad")
+    assert person["note_slug"] == slug
+
+
+def test_locations_list_includes_source(client):
+    """The trail list exposes each fix's source so the map can colour by person."""
+    client.post("/api/locations", json={"lat": 40.0, "lon": -74.0, "source": "Mom"})
+    rows = client.get("/api/locations").json()
+    assert rows and rows[-1]["source"] == "Mom"
+
+
 def test_place_rename(client):
     r = client.post("/api/places", json={"name": "Old", "lat": 40.0, "lon": -74.0})
     pid = r.json()["id"]

@@ -392,6 +392,20 @@ CREATE TABLE IF NOT EXISTS location_fired (
   PRIMARY KEY (workflow_id, kind)
 );
 
+-- People whose data appears in the brain (NOT auth accounts — JBrain stays single
+-- access key). A person attributes/colours location trails (matched from a fix's
+-- `source` via `aliases`) and can be linked to a KB page (note_slug). Exactly one row
+-- is the default ("Me") — the catch-all for any unmatched source.
+CREATE TABLE IF NOT EXISTS people (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT UNIQUE NOT NULL,
+  color      TEXT NOT NULL DEFAULT '#7f9aa6',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  aliases    TEXT NOT NULL DEFAULT '',          -- comma-separated source aliases
+  note_slug  TEXT,                              -- optional linked KB page
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- LLM token-usage ledger: one row per provider call (recorded on a dedicated
 -- connection so it never touches the caller's transaction). Token counts are
 -- exact; the dollar figure derived from them is an ESTIMATE (see services/usage.py).

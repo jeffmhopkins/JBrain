@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 27
 
 
 def init_db() -> None:
@@ -90,6 +90,7 @@ def init_db() -> None:
         )
 
         _run_migrations(conn)
+        ensure_default_person(conn)
 
         settings = get_settings()
         set_meta(conn, "brain_name", settings.brain_name)
@@ -361,6 +362,31 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
                 COMMIT;
             """)
             conn.execute("PRAGMA foreign_keys=ON")
+
+    if current < 27:
+        # People registry: attribute/colour location trails by person (NOT auth).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS people (
+              id         INTEGER PRIMARY KEY AUTOINCREMENT,
+              name       TEXT UNIQUE NOT NULL,
+              color      TEXT NOT NULL DEFAULT '#7f9aa6',
+              is_default INTEGER NOT NULL DEFAULT 0,
+              aliases    TEXT NOT NULL DEFAULT '',
+              note_slug  TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')));
+        """)
+
+
+def ensure_default_person(conn: sqlite3.Connection) -> None:
+    """Guarantee one default person ('Me') exists — the catch-all any unmatched
+    location `source` (the PWA's 'pwa', the watch's 'wear', a fresh device) rolls up
+    to. Seeded once when the registry is empty; idempotent."""
+    if conn.execute("SELECT 1 FROM people LIMIT 1").fetchone():
+        return
+    conn.execute(
+        "INSERT INTO people (name, color, is_default, aliases) VALUES (?, ?, 1, ?)",
+        ("Me", "#7f9aa6", "pwa,wear,phone"),
+    )
 
 
 def _column_is_not_null(conn: sqlite3.Connection, table: str, column: str) -> bool:

@@ -125,7 +125,7 @@ def _norm(ts: str | None) -> str | None:
 
 @router.get("")
 def list_locations(since: str | None = None, until: str | None = None, limit: int = 5000):
-    sql = "SELECT id, lat, lon, accuracy_m, recorded_at FROM locations WHERE 1=1"
+    sql = "SELECT id, lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []
     s, u = _norm(since), _norm(until)
     if s:

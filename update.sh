@@ -54,6 +54,13 @@ if [[ "$HEALTHY" != 1 ]]; then
 fi
 echo "    OK — API is healthy."
 
+# Reclaim disk: each rebuild leaves the previous image dangling and grows the
+# build cache. Safe to prune now that the new image is up and healthy — named
+# volumes (DB, certs, model cache) are never touched by image/builder prune.
+echo "==> Reclaiming disk (dangling images + build cache)…"
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
+
 echo "==> Status:"
 $DC exec -T api python - <<'PY' 2>/dev/null || echo "    (could not read the database for a summary)"
 import sqlite3

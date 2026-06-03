@@ -31,6 +31,9 @@ while true; do
     export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
     if docker compose build api && docker compose up -d api; then
       echo "[updater] update applied -> ${TARGET:-unknown}"
+      # Reclaim the now-dangling previous image + build cache (volumes untouched).
+      docker image prune -f >/dev/null 2>&1 || true
+      docker builder prune -f >/dev/null 2>&1 || true
     else
       echo "[updater] rebuild failed; leaving current version running"
     fi

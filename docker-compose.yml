@@ -1,5 +1,14 @@
 # JBrain — two services: Caddy (TLS + reverse proxy) and the API (FastAPI +
-# built PWA). State lives in two named volumes so it is trivial to back up.
+# built PWA). State lives in named volumes so it is trivial to back up.
+
+# Cap container logs so they can't fill the disk (json-file grows unbounded by
+# default). 30 MB max per service.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   api:
     build:
@@ -8,6 +17,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       DB_PATH: /data/brain.db
@@ -16,6 +26,9 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - brain-data:/data
+      # Persist the downloaded embedding model across container rebuilds, so an
+      # update doesn't re-download it (and it doesn't bloat each new image layer).
+      - model-cache:/root/.cache
     expose:
       - "8000"
     healthcheck:
@@ -28,6 +41,7 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       api:
         condition: service_healthy   # wait for the API to be up before proxying
@@ -46,6 +60,7 @@ services:
     image: docker:27-cli
     profiles: ["autoupdate"]
     restart: unless-stopped
+    logging: *default-logging
     working_dir: /repo
     command: sh /repo/updater/run.sh
     environment:
@@ -59,3 +74,4 @@ volumes:
   brain-data:
   caddy-data:
   caddy-config:
+  model-cache:

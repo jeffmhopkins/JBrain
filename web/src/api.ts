@@ -328,10 +328,8 @@ export const getLocations = (since?: string, until?: string) => {
   return get<LocPoint[]>(`/api/locations${qs ? `?${qs}` : ""}`);
 };
 
-// Append a fix to the location trail. The server enforces the 100m/60min rule, so
-// it's safe to call liberally — duplicates are dropped server-side.
-export const postLocation = (lat: number, lon: number, accuracy_m?: number) =>
-  post("/api/locations", { lat, lon, accuracy_m, source: "pwa" });
+// (The PWA no longer logs a continuous trail — the native tracker owns that. Posts
+// are still location-STAMPED via useGeo's coords at capture time.)
 
 export const createEntry = <T = any>(text: string, title?: string, loc?: { lat: number; lon: number } | null) =>
   post<T>("/api/notes/entry", { text, title: title || undefined, lat: loc?.lat, lon: loc?.lon });

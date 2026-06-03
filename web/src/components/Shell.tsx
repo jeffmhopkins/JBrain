@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
-import { useLocationTrail, useOnline } from "../hooks";
+import { useOnline } from "../hooks";
 import { Icon } from "./Icon";
 
 interface ReviewItem { id: number; title: string; message: string; link_slug: string | null; created_at: string; }
@@ -156,7 +156,6 @@ function scrollParent(el: HTMLElement | null): HTMLElement | null {
 
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
-  useLocationTrail();   // foreground location trail while the app is open (opt-in via location toggle)
   const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const loc = useLocation();
   const nav = useNavigate();

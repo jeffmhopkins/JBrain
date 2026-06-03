@@ -151,17 +151,22 @@ class LocationService : Service() {
         )
         val transitions = mutableListOf<ActivityTransition>()
         for (a in moves) {
-            transitions.add(ActivityTransition.Builder().setActivityType(a)
-                .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_ENTER).build())
+            transitions.add(buildTransition(a, ActivityTransition.ACTIVITY_TRANSITION_ENTER))
             if (a == DetectedActivity.STILL) {
-                transitions.add(ActivityTransition.Builder().setActivityType(a)
-                    .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_EXIT).build())
+                transitions.add(buildTransition(a, ActivityTransition.ACTIVITY_TRANSITION_EXIT))
             }
         }
         try {
             ActivityRecognition.getClient(this)
                 .requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), activityPI())
         } catch (e: SecurityException) { /* ignore — stay in continuous mode */ }
+    }
+
+    private fun buildTransition(activityType: Int, transitionType: Int): ActivityTransition {
+        val b = ActivityTransition.Builder()
+        b.setActivityType(activityType)
+        b.setActivityTransitionType(transitionType)
+        return b.build()
     }
 
     private fun activityPI(): PendingIntent {

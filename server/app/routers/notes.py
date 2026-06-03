@@ -140,6 +140,23 @@ def update_note(slug: str, body: NoteIn):
     return dict(row)
 
 
+class TagsIn(BaseModel):
+    tags: list[str] = []
+
+
+@router.put("/{slug}/tags")
+def set_note_tags(slug: str, body: TagsIn):
+    """Replace a note's tags directly (the owner editing their own note). The AI path
+    stages a tag change for approval; the owner editing in the UI is a direct edit."""
+    conn = get_conn()
+    note = _note_by_slug(conn, slug)
+    if note is None:
+        raise HTTPException(status_code=404, detail="No such note")
+    tags = notes_svc.set_tags(conn, note["id"], body.tags)
+    conn.commit()
+    return {"tags": tags}
+
+
 @router.post("/entry")
 def create_entry(body: EntryIn):
     """'Make entry' mode: store text directly as a NEW note (unique title), no LLM.

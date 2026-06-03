@@ -690,6 +690,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .approval-tags .tag-chip.added { color: #4ade80; border-color: #4ade8066; }
 .approval-tags .tag-chip.removed { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
 .approval-tags .tag-chip.kept { color: var(--text-dim); }
+/* Inline tag editor on a note page */
+.tag-editor .tag-edit { display: inline-flex; align-items: center; gap: 3px; }
+.tag-editor .tag-x { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 1px; }
+.tag-editor .tag-x:hover { color: var(--danger); }
+.tag-editor .tag-add { width: 80px; font-size: 12px; padding: 2px 8px; border: 1px dashed var(--border); border-radius: 999px; background: transparent; }
 .wikilink-flat { color: var(--text-dim); }
 
 /* Interactive task-list checkboxes inside rendered note markdown. */

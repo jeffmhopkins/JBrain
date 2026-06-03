@@ -107,6 +107,11 @@ export default function NotePage() {
     get<TimelineEntry[]>(`/api/notes/${slug}/versions`).then(setTimeline).catch(() => {});
   }
 
+  async function saveTags(next: string[]) {
+    try { await put(`/api/notes/${slug}/tags`, { tags: next }); reload(); }
+    catch (e: any) { alert(e?.message || "Couldn't update tags."); }
+  }
+
   // Toggle a `- [ ]`/`- [x]` checkbox on the given (0-based) source line and save.
   async function toggleCheckbox(lineIdx: number) {
     if (!note) return;
@@ -274,11 +279,21 @@ export default function NotePage() {
           </Link>
         )}
       </div>
-      {note.tags.length > 0 && (
-        <div className="row" style={{ gap: 6, marginBottom: 8 }}>
-          {note.tags.map((t) => <span key={t} className="badge">#{t}</span>)}
-        </div>
-      )}
+      <div className="row tag-editor" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {note.tags.map((t) => (
+          <span key={t} className="badge tag-edit">#{t}
+            <button className="tag-x" title="Remove tag" onClick={() => saveTags(note.tags.filter((x) => x !== t))}>×</button>
+          </span>
+        ))}
+        <input className="tag-add" placeholder="+ tag"
+               onKeyDown={(e) => {
+                 if (e.key === "Enter") {
+                   const v = e.currentTarget.value.trim().toLowerCase().replace(/^#/, "");
+                   if (v && !note.tags.includes(v)) saveTags([...note.tags, v]);
+                   e.currentTarget.value = "";
+                 }
+               }} />
+      </div>
       {editing !== null ? (
         <div>
           <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)}

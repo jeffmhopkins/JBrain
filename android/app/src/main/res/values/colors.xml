@@ -2,4 +2,6 @@
 <resources>
     <!-- The PWA icon tile colour (web/public/icon.svg). -->
     <color name="ic_launcher_background">#16191B</color>
+    <!-- The PWA app background (--bg) so the window matches before Compose paints. -->
+    <color name="jbrain_bg">#111315</color>
 </resources>

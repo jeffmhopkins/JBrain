@@ -3,6 +3,6 @@
     <!-- A bare Material theme; the UI itself is Compose Material3 (dark). The activity
          theme only needs a sane window background while Compose loads. -->
     <style name="Theme.JBrainTracker" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowBackground">@color/jbrain_bg</item>
     </style>
 </resources>

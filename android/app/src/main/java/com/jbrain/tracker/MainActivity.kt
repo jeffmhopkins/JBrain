@@ -32,17 +32,33 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
+// JBrain's flat-dark palette (mirrors the PWA's CSS variables).
+private val JBrainDark = darkColorScheme(
+    primary = Color(0xFF7F9AA6),
+    onPrimary = Color(0xFF0E1416),
+    secondary = Color(0xFF7F9AA6),
+    background = Color(0xFF111315),
+    onBackground = Color(0xFFD8DCDE),
+    surface = Color(0xFF161A1C),
+    onSurface = Color(0xFFD8DCDE),
+    surfaceVariant = Color(0xFF1C2123),
+    onSurfaceVariant = Color(0xFF828A8E),
+    outline = Color(0xFF2A2F31),
+    error = Color(0xFFC08585),
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MaterialTheme(colorScheme = JBrainDark) {
                 Scaffold { pad -> TrackerScreen(Modifier.padding(pad)) }
             }
         }
@@ -106,6 +122,9 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 perms.add(Manifest.permission.POST_NOTIFICATIONS)
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                perms.add(Manifest.permission.ACTIVITY_RECOGNITION)   // smart polling (sleep GPS when still)
+            }
             fgLauncher.launch(perms.toTypedArray())
         } else if (!Tracking.hasBackground(ctx) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
@@ -121,10 +140,15 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("JBrain Tracker", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text("JBrain", style = MaterialTheme.typography.headlineSmall)
+            Text(".", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text("  Tracker", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Text(
-            "Logs this device's location trail to your JBrain in the background.",
+            "Logs this device's location trail to your JBrain in the background — smart polling sleeps the GPS while you're still.",
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         OutlinedTextField(

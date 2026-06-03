@@ -14,6 +14,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Smart polling: Activity Recognition lets us sleep the GPS while still and wake
+         on motion (saves battery, like OwnTracks/Life360). Optional — without it we
+         fall back to continuous fixes. (Pre-29 used the GMS-namespaced permission.) -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -45,6 +51,11 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Receives activity-transition callbacks (still ⇄ moving) to gate the GPS. -->
+        <receiver
+            android:name=".ActivityReceiver"
+            android:exported="false" />
 
     </application>
 </manifest>

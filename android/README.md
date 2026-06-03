@@ -10,9 +10,12 @@ device's fixes carry its **Name** as the `source`, so they stay distinct on the 
 
 ## How it works
 
-A foreground service uses `FusedLocationProvider` to get a fix once you've moved
-~100 m (as often as every 30 s while moving, ~hourly when still). Fixes are buffered
-on-device and flushed in batches to:
+A foreground service tracks **smartly**: it uses Activity Recognition to detect
+"still ⇄ moving", running continuous GPS only while you're **moving** and shutting
+the GPS off when you're **still** (just a ~20-min heartbeat so "last seen" stays
+fresh), waking the instant you move again — the same battery trick OwnTracks/Life360
+use. (If the Activity Recognition permission is denied it falls back to always-on.)
+Fixes are buffered on-device and flushed in batches to:
 
 ```
 POST https://<your-server>/api/locations/bulk

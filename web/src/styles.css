@@ -429,7 +429,9 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .messages.scrolling::-webkit-scrollbar-thumb { background: var(--border); }
 .msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }
 .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
-.msg.assistant { align-self: flex-start; background: var(--bg-elev); }
+/* Assistant replies run almost full width (room for the longer, formatted answers);
+   the user's own bubbles stay narrow + right-aligned at the .msg 80% default. */
+.msg.assistant { align-self: flex-start; background: var(--bg-elev); max-width: 100%; }
 .saved-chip {
   align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--text-dim); background: var(--bg-elev);

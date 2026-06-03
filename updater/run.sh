@@ -15,6 +15,13 @@ git config --global --add safe.directory /repo >/dev/null 2>&1 || true
 MARKER=/data/update-requested.json
 DEPLOY_DIR=/repo/deploy-status   # shared with update.sh, the API and Caddy (live console)
 mkdir -p "$DEPLOY_DIR" 2>/dev/null || true
+# This container runs ONE long-lived shell holding the run.sh it started with. A deploy
+# git-checks-out a new run.sh on disk, but we'd keep running the stale in-memory copy —
+# which is exactly how the live-console capture silently stops working. Remember our own
+# hash so we can re-exec the new script after an update that changes it.
+SELF=/repo/updater/run.sh
+_selfhash() { md5sum "$SELF" 2>/dev/null | cut -d' ' -f1; }
+SELF_HASH="$(_selfhash)"
 export BUILDKIT_PROGRESS=plain   # line-buffered build output so the console streams live
 # status.json carries a coarse PHASE so the PWA indicator follows progress.
 _ustatus() { printf '{"state":"%s","phase":"%s","at":"%s"}\n' "$1" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
@@ -68,6 +75,13 @@ while true; do
       fi
     } 2>&1 | tee "$DEPLOY_DIR/update.log"
     rm -f "$MARKER" 2>/dev/null || true
+    # If that deploy shipped a new run.sh, re-exec it so the updater never keeps
+    # running stale logic (the very bug that breaks the live console). Safe: only
+    # re-execs when the file actually changed, so it can't loop.
+    if [ "$(_selfhash)" != "$SELF_HASH" ]; then
+      echo "[updater] run.sh changed in this update — relaunching with the new version"
+      exec sh "$SELF"
+    fi
   fi
-  sleep 30
+  sleep 5
 done

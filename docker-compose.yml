@@ -30,8 +30,10 @@ services:
       # update doesn't re-download it (and it doesn't bloat each new image layer).
       - model-cache:/root/.cache
       # Captured deploy console (update.sh / updater tee here) so the API can serve
-      # the live update log to the PWA. Read-only to the API.
-      - ./deploy-status:/deploy-status:ro
+      # the live update log to the PWA. Writable so POST /update can drop an immediate
+      # "queued" status/log the instant you click, instead of the console showing the
+      # PREVIOUS run until the deployer wakes up.
+      - ./deploy-status:/deploy-status
     expose:
       - "8000"
     healthcheck:

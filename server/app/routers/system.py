@@ -213,6 +213,22 @@ def update_log(tail: int = 800):
     return {"log": text, "status": status, "mtime": mtime}
 
 
+def _seed_deploy_console() -> None:
+    """Drop an immediate 'queued' status + log line the moment a deploy is requested,
+    so the live console reflects YOUR click right away instead of showing the previous
+    run until the deployer (host update.sh / auto-updater) wakes up and starts teeing.
+    Best-effort: a no-op on installs whose deploy-status mount is still read-only."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        (_DEPLOY_DIR / "status.json").write_text(json.dumps({"state": "running", "phase": "queued", "at": now}))
+    except OSError:
+        pass
+    try:
+        (_DEPLOY_DIR / "update.log").write_text("==> Update queued — waiting for the deployer to start…\n")
+    except OSError:
+        pass
+
+
 @router.post("/update")
 def update():
     """Trigger a self-update. If JBRAIN_UPDATE_CMD is configured it is run
@@ -220,6 +236,7 @@ def update():
     (see update.sh). Either way the database and secrets are preserved."""
     cmd = os.environ.get("JBRAIN_UPDATE_CMD")
     if cmd:
+        _seed_deploy_console()
         subprocess.Popen(cmd, shell=True, start_new_session=True)
         return {"started": True, "message": "Update started; the server will restart shortly."}
 
@@ -234,12 +251,14 @@ def update():
         pass
 
     auto = "autoupdate" in os.environ.get("COMPOSE_PROFILES", "")
+    if auto:
+        _seed_deploy_console()
     return {
         "scheduled": True,
         "auto": auto,
         "message": (
-            "Update requested — the auto-updater will apply it within ~30s and "
-            "restart the server."
+            "Update requested — the auto-updater will apply it within a few seconds "
+            "and restart the server."
             if auto else
             "Update requested. Run ./update.sh on the host (or enable the "
             "auto-updater / set JBRAIN_UPDATE_CMD) to finish."

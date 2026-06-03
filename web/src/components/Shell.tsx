@@ -171,6 +171,29 @@ export default function Shell({ children }: { children: ReactNode }) {
   // swipe from the box does):
   //   chat:  ↑ from the text box → Lists;  ← → Search;  → → Wiki.
   //   lists: ↓ from the top → chat.
+  // Curated BACK gesture (OS/browser back): a hierarchy, not raw history.
+  //   sub-page → Advanced → Chat;  Search/Wiki opened via the chat swipe → Chat
+  //   (they carry state.backTo);  back from Chat does NOTHING (never exits the PWA).
+  // A same-URL history sentinel makes the OS back fire popstate instead of dropping
+  // out of the app, and we route it ourselves.
+  const locRef = useRef(loc);
+  useEffect(() => { locRef.current = loc; }, [loc]);
+  useEffect(() => {
+    window.history.pushState(null, "");
+    function onPop() {
+      window.history.pushState(null, "");   // re-arm for the next back
+      const { pathname, state } = locRef.current;
+      const backTo = (state as { backTo?: string } | null)?.backTo;
+      const target = pathname === "/chat" ? null
+        : backTo ? backTo
+        : pathname === "/advanced" ? "/chat"
+        : "/advanced";
+      if (target) nav(target);
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);   // install once
+
   const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean; edgeStart: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
@@ -195,7 +218,9 @@ export default function Shell({ children }: { children: ReactNode }) {
     // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe,
     // started clear of the OS edge gutter so it can't collide with system back).
     if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki");
+      // Search/Wiki reached via the chat gesture carry backTo:/chat so the back
+      // gesture returns straight to Chat (vs Advanced when opened from the grid).
+      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki", { state: { backTo: "/chat" } });
       else if (advHome && !s.edgeStart) nav("/chat");   // shuttle back: Advanced ⇄ Chat
       return;
     }

@@ -201,7 +201,7 @@ class LocationService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("JBrain Tracker")
-            .setContentText(if (moving) "Logging your location trail" else "Parked — sleeping until you move")
+            .setContentText(if (moving) "Logging your location trail" else "No change in recent position")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(tap)
             .setOngoing(true)

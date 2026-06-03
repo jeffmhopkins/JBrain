@@ -15,6 +15,7 @@ register it in _REGISTRY, and select it via the LLM_PROVIDER setting.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Protocol, runtime_checkable
 
@@ -227,6 +228,7 @@ class XAIProvider:
         acc: dict[int, dict] = {}     # streamed tool-call fragments, by index
         usage = None
         text_parts: list[str] = []
+        finish = None
         stream = await client.chat.completions.create(
             model=model or self.default_model(), max_tokens=max_tokens,
             messages=self._wire(messages, system), tools=wire_tools, stream=True,
@@ -254,6 +256,7 @@ class XAIProvider:
                 # waiting on a trailing usage/[DONE] chunk, which some xAI responses don't
                 # close promptly (it left the agent stream hanging on "Responding…").
                 if getattr(choice, "finish_reason", None):
+                    finish = choice.finish_reason
                     break
         finally:
             try:
@@ -276,6 +279,10 @@ class XAIProvider:
         if oa_calls:
             amsg["tool_calls"] = oa_calls
         messages.append(amsg)
+        logging.getLogger("jbrain").info(
+            "xai turn: model=%s finish=%s text_chars=%d tool_calls=%d (%s)",
+            model or self.default_model(), finish, len("".join(text_parts)),
+            len(calls), ",".join(c.name for c in calls))
         for c in calls:
             yield ToolCallEvent(c)
         _record_openai_usage(model or self.default_model(), usage, "agent")

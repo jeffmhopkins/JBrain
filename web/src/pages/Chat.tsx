@@ -117,13 +117,19 @@ export default function Chat() {
   useEffect(() => {
     if (reduceMotion.current) return;
     const total = bufRef.current.length;
-    if (shownRef.current >= total) return;   // caught up; a new token will re-arm us
-    const step = Math.max(2, Math.ceil((total - shownRef.current) / 8));
+    const behind = total - shownRef.current;
+    if (behind <= 0) return;   // caught up; a new token will re-arm us
+    // While tokens are still arriving, reveal at a steady fluid pace (catch-up scaled
+    // to the backlog). Once the stream is DONE delivering, drain the remaining buffer
+    // fast — there's nothing left to wait for, so the tail shouldn't crawl behind the
+    // model (the "slow text at the end").
+    const active = streamActiveRef.current;
+    const step = active ? Math.max(2, Math.ceil(behind / 8)) : Math.max(28, Math.ceil(behind / 3));
     const id = window.setTimeout(() => {
       shownRef.current = Math.min(bufRef.current.length, shownRef.current + step);
       paint(shownRef.current);
       setTick((t) => t + 1);
-    }, 20);
+    }, active ? 20 : 8);
     return () => clearTimeout(id);
   }, [tick]);
   // Only auto-follow new content when the user is already at the bottom; if they

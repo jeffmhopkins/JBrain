@@ -1,53 +1,36 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
+import ApprovalView, { Preview, previewStat } from "./ApprovalView";
 
-type ActionType = "CREATE" | "UPDATE" | "LINK" | "RENAME" | "DELETE"
-  | "LIST_REMOVE_ITEM" | "LIST_EDIT_ITEM" | "DELETE_LIST" | "ADD_PLACE";
-interface Action { id: number; type: ActionType; payload: any; current_content?: string | null; }
+interface Action { id: number; type: string; payload: any; preview?: Preview | null; }
 
 const TAG_CLASS: Record<string, string> = {
   CREATE: "tag-create", UPDATE: "tag-update", LINK: "tag-link", RENAME: "tag-update",
-  LIST_EDIT_ITEM: "tag-update", DELETE: "tag-delete", DELETE_LIST: "tag-delete", LIST_REMOVE_ITEM: "tag-delete",
+  LIST_EDIT_ITEM: "tag-update", EDIT_PLACE: "tag-update", SET_TAGS: "tag-update",
+  DELETE: "tag-delete", DELETE_LIST: "tag-delete", LIST_REMOVE_ITEM: "tag-delete",
   ADD_PLACE: "tag-create",
 };
 
-// Cheap line-level diff (set difference of non-empty trimmed lines) so a proposal's
-// additions/removals are visible before applying — same approach as the Shares page.
-function diffLines(cur: string, prop: string) {
-  const a = new Set((cur || "").split("\n").map((s) => s.trim()).filter(Boolean));
-  const b = new Set((prop || "").split("\n").map((s) => s.trim()).filter(Boolean));
-  return { removed: [...a].filter((x) => !b.has(x)), added: [...b].filter((x) => !a.has(x)) };
-}
-
 function actionTitle(a: Action): string {
+  if (a.preview?.label) return a.preview.label;
   const p = a.payload;
-  switch (a.type) {
-    case "RENAME": return `${p.title} → ${p.new_title}`;
-    case "LINK": return `${p.source_title} → ${p.target_title}`;
-    case "DELETE": return `Delete ${p.title}`;
-    case "DELETE_LIST": return `Delete list ${p.list_title}`;
-    case "LIST_REMOVE_ITEM": return `Remove “${p.item}” from ${p.list_title}`;
-    case "LIST_EDIT_ITEM": return `“${p.item}” → “${p.new_item}”`;
-    case "ADD_PLACE": return `📍 ${p.name}`;
-    default: return p.title || "";
-  }
+  return p.title || p.name || p.list_title || p.source_title || "";
 }
 
 export default function StagingPanel({ tick, onChange }: { tick: number; onChange: () => void }) {
   const [actions, setActions] = useState<Action[]>([]);
-  const [open, setOpen] = useState<number | null>(null);   // which proposal's diff is expanded
+  const [open, setOpen] = useState<number | null>(null);   // inline expand
+  const [modal, setModal] = useState<Action | null>(null); // full-screen review
 
   async function load() {
     try { setActions(await get("/api/staging")); } catch { /* ignore */ }
   }
   useEffect(() => { load(); }, [tick]);
 
-  // Always surface a failure (and refresh) — a swallowed error makes Apply look
-  // like it did nothing.
   async function run(fn: () => Promise<unknown>, what: string) {
     try { await fn(); }
     catch (e: any) { alert(e?.message || `Couldn't ${what}.`); }
-    finally { onChange(); load(); }
+    finally { setModal(null); onChange(); load(); }
   }
   const apply = (id: number) => run(() => post(`/api/staging/${id}/apply`), "apply this change");
   const reject = (id: number) => run(() => post(`/api/staging/${id}/reject`), "reject this change");
@@ -66,41 +49,28 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
       </div>
       {actions.map((a) => {
         const cls = TAG_CLASS[a.type] || "tag-link";
-        const title = actionTitle(a);
-        const hasContent = (a.type === "CREATE" || a.type === "UPDATE") && typeof a.payload.content === "string";
-        const d = hasContent ? diffLines(a.current_content || "", a.payload.content) : null;
-        const isNew = hasContent && (a.current_content == null);
+        const pv = a.preview;
+        const stat = previewStat(pv);
         return (
           <div className="card" key={a.id}>
-            <div className="row">
+            <div className="row" style={{ alignItems: "center", gap: 8 }}>
               <strong className={cls}>{a.type}</strong>
+              <span style={{ fontWeight: 600 }}>{actionTitle(a)}</span>
+              {pv?.stale && <span className="badge tag-delete" title="The note changed since this was proposed — applying will be refused; re-propose.">stale</span>}
+              {pv?.conflict && <span className="badge tag-delete" title={pv.conflict}>conflict</span>}
               <span className="spacer" />
+              {stat && <span className="muted" style={{ fontSize: 12 }}>{stat}</span>}
             </div>
-            <div style={{ fontWeight: 600, margin: "4px 0" }}>{title}</div>
-            {a.payload.summary && <div className="muted" style={{ fontSize: 13 }}>{a.payload.summary}</div>}
-            {hasContent && (
+            {a.payload.summary && <div className="muted" style={{ fontSize: 13, margin: "2px 0" }}>{a.payload.summary}</div>}
+            {pv && (
               <button className="ghost" style={{ fontSize: 12, marginTop: 4 }}
                       onClick={() => setOpen(open === a.id ? null : a.id)}>
-                {open === a.id ? "Hide" : "Review"} changes{d && !isNew ? ` (+${d.added.length}/−${d.removed.length})` : isNew ? " (new note)" : ""}
+                {open === a.id ? "Hide" : "See"} changes
               </button>
             )}
-            {hasContent && open === a.id && (
-              isNew
-                ? <pre className="share-diff" style={{ marginTop: 6 }}>{a.payload.content}</pre>
-                : (
-                  <>
-                    <div className="share-diff">
-                      {d!.removed.length === 0 && d!.added.length === 0 && <span className="muted">No textual change.</span>}
-                      {d!.removed.map((l, i) => <div key={"r" + i} style={{ color: "var(--danger)" }}>− {l}</div>)}
-                      {d!.added.map((l, i) => <div key={"x" + i} style={{ color: "#4ade80" }}>+ {l}</div>)}
-                    </div>
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>Full proposed content</summary>
-                      <pre className="share-diff" style={{ marginTop: 6 }}>{a.payload.content}</pre>
-                    </details>
-                  </>
-                )
-            )}
+            {pv && <button className="ghost" style={{ fontSize: 12, marginTop: 4, marginLeft: 8 }} onClick={() => setModal(a)}>Review ⤢</button>}
+            {pv && open === a.id && <div style={{ marginTop: 6 }}><ApprovalView preview={pv} /></div>}
+            {pv?.conflict && <div className="muted" style={{ fontSize: 12, color: "var(--danger)", marginTop: 4 }}>{pv.conflict}</div>}
             <div className="row" style={{ marginTop: 10 }}>
               <button className="primary" onClick={() => apply(a.id)}>Apply</button>
               <button className="ghost" onClick={() => reject(a.id)}>Reject</button>
@@ -108,6 +78,28 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
           </div>
         );
       })}
+
+      {modal && (
+        <div className="modal-backdrop" onClick={() => setModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <strong className={TAG_CLASS[modal.type] || "tag-link"}>{modal.type}</strong>
+              <span className="modal-title" style={{ marginLeft: 8 }}>{actionTitle(modal)}</span>
+              {modal.preview?.stale && <span className="badge tag-delete" style={{ marginLeft: 8 }}>stale</span>}
+              <span className="spacer" />
+              <button className="icon-btn" onClick={() => setModal(null)} aria-label="Close">✕</button>
+            </div>
+            <div className="modal-body">
+              {modal.preview ? <ApprovalView preview={modal.preview} full /> : <span className="muted">No preview.</span>}
+            </div>
+            <div className="modal-foot">
+              <span className="spacer" />
+              <button className="ghost" onClick={() => reject(modal.id)}>Reject</button>
+              <button className="primary" onClick={() => apply(modal.id)}>Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

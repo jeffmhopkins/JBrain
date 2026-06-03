@@ -676,6 +676,20 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .guided-sessions { display: flex; flex-direction: column; gap: 8px; }
 .guided-session { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
 .share-diff { white-space: pre-wrap; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; margin: 8px 0; }
+.share-diff.deleting { border-color: var(--danger); opacity: 0.85; }
+/* Standardized approval preview: field/place before→after table + tag chip diff. */
+.approval-fields { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0; }
+.approval-fields th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 3px 8px 3px 0; white-space: nowrap; vertical-align: top; }
+.approval-fields td { padding: 3px 6px; vertical-align: top; }
+.approval-fields td.was { color: var(--danger); }
+.approval-fields td.now { color: #4ade80; }
+.approval-fields td.arrow { color: var(--text-dim); }
+.approval-fields tr:not(.changed) td.was, .approval-fields tr:not(.changed) td.now { color: var(--text-dim); }
+.approval-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.approval-tags .tag-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.approval-tags .tag-chip.added { color: #4ade80; border-color: #4ade8066; }
+.approval-tags .tag-chip.removed { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
+.approval-tags .tag-chip.kept { color: var(--text-dim); }
 .wikilink-flat { color: var(--text-dim); }
 
 /* Interactive task-list checkboxes inside rendered note markdown. */

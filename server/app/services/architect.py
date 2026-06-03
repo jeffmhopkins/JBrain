@@ -954,10 +954,16 @@ def _tool_set_tags(conn, conversation_id, title, tags, mode="add"):
         new = [t for t in current if t not in want]
     else:  # add
         new = current + [t for t in want if t not in current]
-    notes_svc.set_tags(conn, note["id"], new)
-    display = f"Tags on [[{title}]]: " + (", ".join(new) or "(none)")
-    undo = {"op": "set_tags", "note_id": note["id"], "tags": current}
-    return f"applied: {display}", _record_applied(conn, conversation_id, "SET_TAGS", display, undo)
+    if set(new) == set(current):
+        return f"Tags on '{title}' are already {', '.join(current) or '(none)'} — nothing to change.", None
+    # STAGE the tag change so it shows a before→after and the user confirms it.
+    payload = {"type": "SET_TAGS", "title": note["title"], "note_id": note["id"],
+               "tags": new, "before_tags": current,
+               "summary": f"Tags: {', '.join(current) or '(none)'} → {', '.join(new) or '(none)'}"}
+    conn.execute("INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (?, ?, ?)",
+                 (conversation_id, "SET_TAGS", json.dumps(payload)))
+    conn.commit()
+    return "Staged a tag change for the user to confirm.", {"type": "staging", "actions": [payload]}
 
 
 def _tool_log_entry(conn, conversation_id, target, text, date=None):

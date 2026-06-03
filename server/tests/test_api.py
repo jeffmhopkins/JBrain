@@ -3091,10 +3091,15 @@ def test_list_item_tools(client):
     assert notes_svc.get_by_title(conn, "lists/Errands/Groceries") is not None
     assert "[[lists/Errands/Groceries]]" in notes_svc.get_by_title(conn, "lists/Errands")["content_md"]
 
-    # Tags (additive) + undo restores prior tags.
+    # Tags now STAGE for approval (with a before→after preview); apply, then verify.
     client.post("/api/notes", json={"title": "Taggable", "content_md": "x"})
     architect._tool_set_tags(conn, None, "Taggable", ["running", "nutrition"], "add")
     conn.commit()
+    pend = client.get("/api/staging").json()
+    tag_action = [a for a in pend if a["type"] == "SET_TAGS"][-1]
+    assert tag_action["preview"]["kind"] == "tags"
+    assert set(tag_action["preview"]["after"]) == {"running", "nutrition"}
+    assert client.post(f"/api/staging/{tag_action['id']}/apply").status_code == 200
     assert set(client.get("/api/notes/taggable").json()["tags"]) == {"running", "nutrition"}
 
 

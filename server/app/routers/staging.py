@@ -17,6 +17,93 @@ from ..services import quicktasks
 router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[CurrentUser])
 
 
+def _note_content(conn, title: str):
+    n = notes_svc.get_by_title(conn, (title or "").strip()) if title else None
+    return n["content_md"] if n else None
+
+
+def _note_tags(conn, note_id: int) -> list[str]:
+    return [r["name"] for r in conn.execute(
+        "SELECT t.name FROM tags t JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=? ORDER BY t.name",
+        (note_id,)).fetchall()]
+
+
+def preview_action(conn, t: str, p: dict) -> dict | None:
+    """A uniform before→after for a staged action — what apply WILL change — without
+    writing. Mirrors _apply_action's resolution so the diff matches the real outcome.
+    kind ∈ text | fields | place | tags. `stale` (UPDATE) flags a basis that changed."""
+    try:
+        if t in ("CREATE", "UPDATE"):
+            title = (p.get("title") or "").strip()
+            basis = p.get("_basis") or {}
+            if t == "UPDATE" and basis.get("note_id"):
+                live = conn.execute("SELECT content_md FROM notes WHERE id=? AND deleted_at IS NULL",
+                                    (basis["note_id"],)).fetchone()
+                if live is None:
+                    return {"kind": "text", "before": None, "after": p.get("content") or "", "label": title,
+                            "conflict": "The target note no longer exists — re-propose."}
+                stale = bool(basis.get("content_hash")) and \
+                    hashlib.sha256((live["content_md"] or "").encode("utf-8")).hexdigest() != basis["content_hash"]
+                return {"kind": "text", "before": live["content_md"], "after": p.get("content") or "",
+                        "label": title, "stale": stale}
+            return {"kind": "text", "before": _note_content(conn, title), "after": p.get("content") or "", "label": title}
+        if t == "DELETE":
+            return {"kind": "text", "before": _note_content(conn, p.get("title")), "after": None,
+                    "label": f"Delete {(p.get('title') or '').strip()}"}
+        if t == "DELETE_LIST":
+            raw = (p.get("list_title") or p.get("title") or "").strip()
+            before = _note_content(conn, raw) or _note_content(conn, notes_svc.root_title(raw, "lists"))
+            return {"kind": "text", "before": before, "after": None, "label": f"Delete list {raw}"}
+        if t == "RENAME":
+            cur = (p.get("title") or "").strip()
+            note = notes_svc.get_by_title(conn, cur)
+            root = "kb" if (note and note["kind"] == "kb") else "notes"
+            return {"kind": "fields", "before": {"Title": cur},
+                    "after": {"Title": notes_svc.root_title((p.get("new_title") or "").strip(), root)},
+                    "label": "Rename note"}
+        if t == "LINK":
+            st = (p.get("source_title") or "").strip(); tt = (p.get("target_title") or "").strip()
+            src = notes_svc.get_by_title(conn, st)
+            before = src["content_md"] if src else None
+            if src and f"[[{tt}]]" not in (src["content_md"] or ""):
+                after = src["content_md"].rstrip() + f"\n\n[[{tt}]]\n"
+            else:
+                after = before
+            return {"kind": "text", "before": before, "after": after, "label": f"Link {st} → {tt}"}
+        if t == "LIST_REMOVE_ITEM":
+            return {"kind": "fields", "before": {"Item": p.get("item") or ""}, "after": {"Item": "(removed)"},
+                    "label": f"Remove from {(p.get('list_title') or '').strip()}"}
+        if t == "LIST_EDIT_ITEM":
+            return {"kind": "fields", "before": {"Item": p.get("item") or ""}, "after": {"Item": p.get("new_item") or ""},
+                    "label": f"Edit item in {(p.get('list_title') or '').strip()}"}
+        if t == "ADD_PLACE":
+            return {"kind": "place", "before": None,
+                    "after": {"name": p.get("name"), "lat": p.get("lat"), "lon": p.get("lon"),
+                              "radius_m": int(p.get("radius_m") or 150)},
+                    "label": f"Add place {(p.get('name') or '').strip()}"}
+        if t == "EDIT_PLACE":
+            row = conn.execute("SELECT name, lat, lon, radius_m FROM places WHERE name=? COLLATE NOCASE LIMIT 1",
+                               ((p.get("place") or "").strip(),)).fetchone()
+            before = dict(row) if row else None
+            after = dict(before) if before else {}
+            if p.get("new_name"):
+                after["name"] = p["new_name"]
+            if p.get("lat") is not None:
+                after["lat"] = p["lat"]
+            if p.get("lon") is not None:
+                after["lon"] = p["lon"]
+            if p.get("radius_m") is not None:
+                after["radius_m"] = int(p["radius_m"])
+            return {"kind": "place", "before": before, "after": after,
+                    "label": f"Edit place {(p.get('place') or '').strip()}"}
+        if t == "SET_TAGS":
+            return {"kind": "tags", "before": p.get("before_tags") or [], "after": p.get("tags") or [],
+                    "label": f"Tags on {(p.get('title') or '').strip()}"}
+    except Exception:  # noqa: BLE001 — a preview must never break the list
+        return None
+    return None
+
+
 @router.get("")
 def list_pending():
     conn = get_conn()
@@ -24,26 +111,14 @@ def list_pending():
         "SELECT id, conversation_id, type, payload_json, status, created_at "
         "FROM staging_actions WHERE status = 'pending' ORDER BY id"
     ).fetchall()
-    def _current(payload):
-        # The note's CURRENT content (for a diff preview), by basis id then title.
-        basis = payload.get("_basis") or {}
-        if basis.get("note_id"):
-            r = conn.execute("SELECT content_md FROM notes WHERE id=? AND deleted_at IS NULL",
-                             (basis["note_id"],)).fetchone()
-            if r:
-                return r["content_md"]
-        title = (payload.get("title") or "").strip()
-        if title:
-            n = notes_svc.get_by_title(conn, title)
-            if n:
-                return n["content_md"]
-        return None
     out = []
     for r in rows:
         payload = json.loads(r["payload_json"])
-        item = {**dict(r), "payload": payload}
-        if r["type"] in ("CREATE", "UPDATE"):
-            item["current_content"] = _current(payload)
+        prev = preview_action(conn, r["type"], payload)
+        item = {**dict(r), "payload": payload, "preview": prev}
+        # Back-compat field the old UI read; new UI uses `preview`.
+        if r["type"] in ("CREATE", "UPDATE") and prev:
+            item["current_content"] = prev.get("before")
         out.append(item)
     return out
 
@@ -202,6 +277,17 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         if payload.get("radius_m") is not None:
             conn.execute("UPDATE places SET radius_m = ? WHERE id = ?",
                          (max(20, min(int(payload["radius_m"]), 20000)), pid))
+    elif action_type == "SET_TAGS":
+        nid = payload.get("note_id")
+        note = conn.execute("SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL", (nid,)).fetchone() if nid else None
+        if note is None:
+            note = notes_svc.get_by_title(conn, (payload.get("title") or "").strip())
+        if note is None:
+            raise HTTPException(status_code=404, detail="No such note to tag.")
+        current = [r["name"] for r in conn.execute(
+            "SELECT t.name FROM tags t JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=?", (note["id"],)).fetchall()]
+        notes_svc.set_tags(conn, note["id"], payload.get("tags") or [])
+        undo = {"op": "set_tags", "note_id": note["id"], "tags": current}
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -234,6 +320,8 @@ def _applied_summary(action_type: str, payload: dict) -> str:
         nm = (payload.get("new_name") or "").strip()
         base = (payload.get("place") or "").strip()
         return f"Edited place “{base}”" + (f" → “{nm}”" if nm and nm.lower() != base.lower() else "")
+    if action_type == "SET_TAGS":
+        return f"Set tags on “{(payload.get('title') or '').strip()}”: " + (", ".join(payload.get("tags") or []) or "(none)")
     lt = notes_svc.root_title(payload.get("list_title") or "", "lists")
     if action_type == "DELETE_LIST":
         return f"Deleted list [[{lt}]]"

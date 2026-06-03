@@ -1,0 +1,77 @@
+name: Build Android Tracker APK
+
+# Compiles the android/ phone tracker and uploads an installable release APK you can
+# grab from the run page and sideload onto your (and family) phones.
+#
+# Set these in the repo (Settings → Secrets and variables → Actions):
+#   Variable  JBRAIN_DOMAIN   e.g. https://your-brain.example.com
+#   Secret    JBRAIN_KEY      the same access key the JBrain PWA uses
+# Optional — for a STABLE signing key so updates install in place (otherwise the APK is
+# signed with an ephemeral debug key, still installable but you must uninstall before
+# updating):
+#   Secret    KEYSTORE_BASE64     base64 of your release.keystore
+#   Secret    KEYSTORE_PASSWORD
+#   Secret    KEY_ALIAS
+#   Secret    KEY_PASSWORD
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    env:
+      JBRAIN_DOMAIN: ${{ vars.JBRAIN_DOMAIN }}
+      JBRAIN_KEY: ${{ secrets.JBRAIN_KEY }}
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required SDK packages
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
+
+      - name: Decode release keystore (optional)
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Stage APK
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          cp app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/out/jbrain-tracker.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jbrain-tracker-apk
+          path: ${{ runner.temp }}/out/jbrain-tracker.apk
+          if-no-files-found: error

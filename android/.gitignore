@@ -1,0 +1,16 @@
+# Android / Gradle
+*.iml
+.gradle/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+
+# Holds the secret access key + domain — never commit
+local.properties
+
+# IDE
+.idea/

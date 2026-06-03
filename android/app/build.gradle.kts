@@ -26,8 +26,8 @@ android {
         applicationId = "com.jbrain.tracker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
 
         buildConfigField("String", "JBRAIN_DOMAIN", "\"${secret("JBRAIN_DOMAIN", "https://example.com")}\"")
         buildConfigField("String", "JBRAIN_KEY", "\"${secret("JBRAIN_KEY", "")}\"")

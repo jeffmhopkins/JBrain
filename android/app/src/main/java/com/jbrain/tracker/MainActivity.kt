@@ -25,7 +25,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.Composable
@@ -78,7 +77,6 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     var tracking by remember { mutableStateOf(Settings.enabled(ctx)) }
     var status by remember { mutableStateOf("") }
     var queued by remember { mutableStateOf(FixQueue.size(ctx)) }
-    var codeInput by remember { mutableStateOf("") }   // the ONLY editable field
     var keySet by remember { mutableStateOf(Settings.key(ctx).isNotBlank()) }
 
     fun hasNotif(): Boolean =
@@ -87,14 +85,13 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     var notif by remember { mutableStateOf(hasNotif()) }
 
     // Parse + apply a setup code (fills Name + Server + key). Returns false if it's
-    // not a jbt1 code. Shared by the Paste button and typing/IME-paste in the field.
+    // not a jbt1 code. The code is never shown — it's read from the clipboard and stored.
     fun applyCode(raw: String): Boolean {
         val p = SetupCode.parse(raw) ?: return false
         if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
         if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
         Settings.setKey(ctx, p.key)
         keySet = true
-        codeInput = ""   // don't leave the secret sitting in the box
         status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
         return true
     }
@@ -191,29 +188,21 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             label = { Text("Server (from setup code)") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        // The only editable field, but the real action is the Paste button (the code is a
-        // long base64 string — you wouldn't type it). The button reads the clipboard
-        // directly, so it works regardless of keyboard quirks; the field accepts input
-        // too and auto-applies once a full jbt1 code lands. Locked while tracking.
-        OutlinedTextField(
-            value = codeInput,
-            onValueChange = { v -> codeInput = v; applyCode(v) },
-            label = { Text("Paste setup code") }, singleLine = true, enabled = !tracking,
-            trailingIcon = {
-                TextButton(
-                    enabled = !tracking,
-                    onClick = {
-                        val t = clipboard.getText()?.text?.trim().orEmpty()
-                        when {
-                            t.isBlank() -> status = "Clipboard is empty — copy the setup code from JBrain → People first."
-                            applyCode(t) -> {}
-                            else -> status = "That's not a setup code (it should start with “jbt1.”)."
-                        }
-                    },
-                ) { Text("Paste") }
+        // No text field — the code is a long base64 string you'd never type. One button
+        // reads it straight from the clipboard (copy it in JBrain → People first) and
+        // applies it, filling Name + Server + the location key. Locked while tracking.
+        Button(
+            onClick = {
+                val t = clipboard.getText()?.text?.trim().orEmpty()
+                when {
+                    t.isBlank() -> status = "Clipboard is empty — copy the setup code from JBrain → People first."
+                    applyCode(t) -> {}
+                    else -> status = "That's not a setup code (it should start with “jbt1.”)."
+                }
             },
+            enabled = !tracking,
             modifier = Modifier.fillMaxWidth(),
-        )
+        ) { Text("Paste setup code") }
         // Lasting confirmation the key landed (the paste box clears itself, so this is
         // the only persistent "you're configured" signal). Never shows the key itself.
         Text(

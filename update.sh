@@ -50,7 +50,29 @@ fi
 echo "==> Rebuilding and restarting (volumes + .env preserved)…"
 export GIT_SHA="$(git rev-parse HEAD)"
 $DC build api || { echo "FAIL: image build failed — current version is still running (see output above)." >&2; exit 1; }
+
+# Re-render the Caddyfile from the template so Caddy config changes (e.g. the live
+# deploy-console route) reach existing installs, injecting a bcrypt of the access key
+# to gate it. VALIDATED before swapping — a bad render never replaces a working file.
+if [[ -f Caddyfile.template ]]; then
+  _envval() { grep -E "^$1=" .env 2>/dev/null | head -n1 | cut -d= -f2-; }
+  CDOMAIN="$(_envval JBRAIN_DOMAIN)"; CEMAIL="$(_envval ACME_EMAIL)"; CKEY="$(_envval JBRAIN_ACCESS_KEY)"
+  if [[ -n "$CDOMAIN" && -n "$CKEY" ]]; then
+    CHASH="$(docker run --rm caddy:2 caddy hash-password --plaintext "$CKEY" 2>/dev/null | tr -d '\r' || true)"
+    if [[ -n "$CHASH" ]]; then
+      sed -e "s|{{DOMAIN}}|$CDOMAIN|g" -e "s|{{ACME_EMAIL}}|$CEMAIL|g" -e "s|{{LOG_AUTH_HASH}}|$CHASH|g" \
+        Caddyfile.template > Caddyfile.new
+      if docker run --rm -v "$(pwd)/Caddyfile.new:/c:ro" caddy:2 caddy validate --config /c --adapter caddyfile >/dev/null 2>&1; then
+        mv Caddyfile.new Caddyfile; echo "    Caddyfile re-rendered (live deploy console enabled)."
+      else
+        rm -f Caddyfile.new; echo "    WARN: rendered Caddyfile failed validation — keeping the existing one." >&2
+      fi
+    fi
+  fi
+fi
+
 $DC up -d || { echo "FAIL: compose up failed." >&2; exit 1; }
+$DC exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
 
 echo "==> Waiting for the API to come up…"
 HEALTHY=0

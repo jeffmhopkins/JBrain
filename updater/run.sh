@@ -35,11 +35,26 @@ while true; do
       echo "[updater] rebuilding api…"
       export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
       if docker compose build api && docker compose up -d api; then
-        echo "[updater] update applied -> ${TARGET:-unknown}"
-        printf '{"state":"ok","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
-        # Reclaim the now-dangling previous image + build cache (volumes untouched).
-        docker image prune -f >/dev/null 2>&1 || true
-        docker builder prune -f >/dev/null 2>&1 || true
+        # Don't call it OK just because `up` returned — wait for the new container to
+        # actually pass health (≈90s, covers the embedding warmup), else mark failed.
+        healthy=0; i=0
+        while [ "$i" -lt 45 ]; do
+          if docker compose exec -T api python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health',timeout=3).status==200 else 1)" >/dev/null 2>&1; then
+            healthy=1; break
+          fi
+          i=$((i + 1)); sleep 2
+        done
+        if [ "$healthy" = 1 ]; then
+          echo "[updater] update applied -> ${TARGET:-unknown}"
+          printf '{"state":"ok","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+          # Reclaim the now-dangling previous image + build cache (volumes untouched).
+          docker image prune -f >/dev/null 2>&1 || true
+          docker builder prune -f >/dev/null 2>&1 || true
+        else
+          echo "[updater] new container did not become healthy. Recent API logs:"
+          docker compose logs --tail=120 api 2>&1 || true   # capture the traceback for the console
+          printf '{"state":"failed","at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true
+        fi
       else
         echo "[updater] rebuild failed; leaving current version running. Recent API logs:"
         docker compose logs --tail=120 api 2>&1 || true   # capture the traceback for the console

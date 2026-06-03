@@ -47,12 +47,17 @@ services:
     logging: *default-logging
     depends_on:
       api:
-        condition: service_healthy   # wait for the API to be up before proxying
+        # service_started (not service_healthy): Caddy must stay up even when the API
+        # is unhealthy/restarting so it can still serve the live deploy console.
+        condition: service_started
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Captured deploy console, served (access-key gated) at /deploy-status/* even
+      # while the API is down. Read-only to Caddy.
+      - ./deploy-status:/srv/deploy-status:ro
       - caddy-data:/data
       - caddy-config:/config
 

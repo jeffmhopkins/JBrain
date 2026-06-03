@@ -1,5 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { get } from "../api";
+import { get, u, getAccessKey } from "../api";
+
+// When the API is down (restarting / failed deploy), the API endpoint can't answer —
+// but Caddy stays up and serves the same captured files at /deploy-status/*, gated by
+// the access key (HTTP Basic, username "jbrain"). Fetch those as a fallback.
+async function fetchViaCaddy(): Promise<{ log: string; status: any } | null> {
+  const key = getAccessKey();
+  if (!key) return null;
+  const headers = { Authorization: "Basic " + btoa("jbrain:" + key) };
+  const r = await fetch(u("/deploy-status/update.log"), { headers, cache: "no-store" });
+  if (!r.ok) throw new Error(String(r.status));
+  const log = await r.text();
+  let status: any = null;
+  try {
+    const s = await fetch(u("/deploy-status/status.json"), { headers, cache: "no-store" });
+    if (s.ok) status = await s.json();
+  } catch { /* status optional */ }
+  return { log, status };
+}
 
 // Live update console: polls the captured update.sh / updater output (served by the
 // API — and, when it's down, Caddy in phase 2) and streams it into a scrolling view
@@ -17,13 +35,21 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
     let timer: number | undefined;
     const tick = async () => {
       try {
-        const r: any = await get("/api/system/update-log");
+        const r: any = await get("/api/system/update-log");   // preferred: via the API
         if (!alive) return;
         setReachable(true);
         setLog(r.log || "");
         setState(r.status?.state ?? null);
       } catch {
-        if (alive) setReachable(false);   // API down — restarting or failed deploy
+        // API unreachable (restarting / failed) → try Caddy's gated static copy.
+        try {
+          const r = await fetchViaCaddy();
+          if (!alive) return;
+          if (r) { setReachable(true); setLog(r.log || ""); setState(r.status?.state ?? null); }
+          else setReachable(false);
+        } catch {
+          if (alive) setReachable(false);
+        }
       }
       if (alive) timer = window.setTimeout(tick, 1200);
     };

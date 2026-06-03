@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Person, getPeople, addPerson, updatePerson, deletePerson, generateLocationKey, revokeLocationKey } from "../api";
+import { Person, getPeople, addPerson, updatePerson, deletePerson, generateLocationKey, revokeLocationKey, getServer } from "../api";
+
+// One copyable "setup code" the tracker app parses into Name + Server + Key, so a
+// family phone is configured by pasting a single string. jbt1.<base64url(JSON)>.
+function setupCode(name: string, server: string, token: string): string {
+  const json = JSON.stringify({ n: name, s: server, k: token });
+  const b64 = btoa(unescape(encodeURIComponent(json)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return "jbt1." + b64;
+}
 
 // People aren't accounts — they label/colour location trails (matched from a fix's
 // `source` via aliases) and can link to a KB page. Exactly one is the default ("Me"),
@@ -10,6 +19,8 @@ export default function PeoplePage() {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
+  const server = getServer() || window.location.origin;   // baked into the setup code
+  const codeFor = (p: Person) => (p.location_key ? setupCode(p.name, server, p.location_key) : "");
 
   const load = () => getPeople().then(setPeople).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -44,9 +55,10 @@ export default function PeoplePage() {
     catch (e: any) { alert(e?.message || "Couldn't revoke."); }
   }
   async function copyKey(p: Person) {
-    if (!p.location_key) return;
-    try { await navigator.clipboard.writeText(p.location_key); setCopied(p.id); setTimeout(() => setCopied(null), 1500); }
-    catch { alert(p.location_key); }
+    const code = codeFor(p);
+    if (!code) return;
+    try { await navigator.clipboard.writeText(code); setCopied(p.id); setTimeout(() => setCopied(null), 1500); }
+    catch { alert(code); }
   }
   async function remove(p: Person) {
     if (!confirm(`Remove “${p.name}”? Their trail stays but un-attributes to the default.`)) return;
@@ -96,8 +108,8 @@ export default function PeoplePage() {
             <div className="person-key">
               {p.location_key ? (
                 <>
-                  <code className="person-key-val" title={p.location_key}>{p.location_key}</code>
-                  <button className="ghost" onClick={() => copyKey(p)}>{copied === p.id ? "Copied ✓" : "Copy"}</button>
+                  <code className="person-key-val" title={codeFor(p)}>{codeFor(p)}</code>
+                  <button className="ghost" onClick={() => copyKey(p)}>{copied === p.id ? "Copied ✓" : "Copy setup code"}</button>
                   <button className="ghost" onClick={() => genKey(p.id)}>Regenerate</button>
                   <button className="ghost danger-hover" onClick={() => revokeKey(p.id)}>Revoke</button>
                 </>
@@ -110,10 +122,10 @@ export default function PeoplePage() {
       </ul>
 
       <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
-        Location key: paste it into the tracker app's <strong>Access key</strong> field instead of your full key —
-        it can ONLY log this person's location (no reading the trail, no access to anything else), and every fix
-        is attributed to them automatically (no Name needed). Tip: you can also tag a KB note as a person from the
-        note itself, or add a tracker's Name as an alias above to fold its trail into someone.
+        Setup code: copy it and paste into the tracker app's <strong>Access key</strong> field — it auto-fills the
+        person's Name, your server, and a location-only key (no typing). That key can ONLY log this person's location
+        (no reading the trail, no access to anything else), and every fix is attributed to them. Tip: you can also tag
+        a KB note as a person from the note itself, or add a tracker's Name as an alias above to fold its trail in.
       </p>
     </div>
   );

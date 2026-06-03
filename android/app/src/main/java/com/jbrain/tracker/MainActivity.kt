@@ -162,8 +162,20 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = key, onValueChange = { key = it; Settings.setKey(ctx, it) },
-            label = { Text("Access key") }, singleLine = true,
+            value = key,
+            onValueChange = { v ->
+                // Pasting a setup code (jbt1.…) fills Name + Server + Key at once.
+                val p = SetupCode.parse(v)
+                if (p != null) {
+                    if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
+                    if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
+                    key = p.key; Settings.setKey(ctx, p.key)
+                    status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
+                } else {
+                    key = v; Settings.setKey(ctx, v)
+                }
+            },
+            label = { Text("Access key (or paste a setup code)") }, singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0B1F3A</color>
+    <!-- The PWA icon tile colour (web/public/icon.svg). -->
+    <color name="ic_launcher_background">#16191B</color>
 </resources>

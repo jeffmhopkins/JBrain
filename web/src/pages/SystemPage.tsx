@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { get, post } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { get, post, u } from "../api";
 import { useAuth } from "../App";
 import { enablePush, pushSupported, pushSupportReason } from "../push";
 import { useGeo } from "../hooks";
@@ -13,17 +13,53 @@ export default function SystemPage() {
   const [info, setInfo] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [msg, setMsg] = useState("");
+  // Live update lifecycle: requesting → restarting (server offline) → online.
+  type UpStatus = "idle" | "requesting" | "restarting" | "online" | "error";
+  const [up, setUp] = useState<UpStatus>("idle");
+  const pollRef = useRef<number | undefined>(undefined);
   const [notifMsg, setNotifMsg] = useState("");
   const [notifBusy, setNotifBusy] = useState(false);
   const [notifDelay, setNotifDelay] = useState(0);   // seconds before the test fires
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
   useEffect(() => { get("/api/system/stats").then(setStats).catch(() => {}); }, []);
+  useEffect(() => () => { if (pollRef.current) window.clearTimeout(pollRef.current); }, []);
+
+  const ping = () =>
+    fetch(u("/api/health"), { cache: "no-store" }).then((r) => r.ok).catch(() => false);
 
   async function doUpdate() {
-    setMsg("Requesting update…");
-    const r = await post("/api/system/update");
-    setMsg(r.message || (r.started ? "Updating…" : "Update requested."));
+    setUp("requesting"); setMsg("Requesting update…");
+    try {
+      const r = await post("/api/system/update");
+      setMsg(r.message || "Update started — the server will restart shortly.");
+    } catch {
+      setUp("error"); setMsg("Couldn’t start the update. Check the server logs.");
+      return;
+    }
+    // Poll the public health endpoint: wait for the server to drop (restarting),
+    // then come back; report the live version once it's up.
+    const startedAt = Date.now();
+    let sawDown = false;
+    const poll = async () => {
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        setUp("error"); setMsg("Timed out waiting for the server to come back — it may still be updating. Try reloading.");
+        return;
+      }
+      const ok = await ping();
+      if (!ok) {
+        sawDown = true; setUp("restarting"); setMsg("Server restarting… (offline)");
+      } else if (sawDown) {
+        const ver = await get("/api/system/version").catch(() => null);
+        setUp("online");
+        setMsg(`Back online${ver?.current ? ` · ${ver.current}` : ""}. Reload the app to finish updating.`);
+        return;
+      } else {
+        setMsg("Waiting for the server to restart…");
+      }
+      pollRef.current = window.setTimeout(poll, 2000);
+    };
+    pollRef.current = window.setTimeout(poll, 3000);   // give it a moment to begin
   }
 
   // Subscribe THIS device (asking permission if needed), then have the server
@@ -78,14 +114,27 @@ export default function SystemPage() {
           <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
             <span>Update available: {info.current} → {info.latest}</span>
             {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
-            <button className="primary" onClick={doUpdate}>Update server</button>
+            <button className="primary" onClick={doUpdate} disabled={up === "requesting" || up === "restarting"}>
+              {up === "requesting" || up === "restarting" ? "Updating…" : "Update server"}
+            </button>
           </div>
         ) : (
           <p className="muted" style={{ fontSize: 13 }}>
             You’re on the latest server release{info?.current ? ` (${info.current})` : ""}.
           </p>
         )}
-        {msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
+        {up !== "idle" && (
+          <div className="update-status">
+            <span className={"status-dot " + (up === "online" ? "ok" : up === "error" ? "err" : "busy")} />
+            <span style={{ fontSize: 13 }}>{msg}</span>
+            {up === "online" && (
+              <button className="primary" style={{ padding: "4px 12px" }} onClick={() => window.location.reload()}>
+                Reload now
+              </button>
+            )}
+          </div>
+        )}
+        {up === "idle" && msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
       </div>
 
       {stats && (

@@ -1,5 +1,6 @@
 """JBrain API entrypoint: middleware, routers, health, and PWA static serving."""
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,6 +8,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# App-level logs ("jbrain") were filtered out by the default root level, so INFO
+# diagnostics never reached `docker compose logs`. Emit them alongside uvicorn's.
+_jlog = logging.getLogger("jbrain")
+if not _jlog.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s:     [jbrain] %(message)s"))
+    _jlog.addHandler(_h)
+    _jlog.setLevel(logging.INFO)
+    _jlog.propagate = False
 
 from .auth import ensure_access_key
 from .config import get_settings

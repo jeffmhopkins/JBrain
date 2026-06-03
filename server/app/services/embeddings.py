@@ -87,7 +87,7 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
     qvec = embed(query)
     rows = conn.execute(
         """
-        SELECT c.attachment_id, c.note_id, c.text, a.filename,
+        SELECT c.attachment_id, c.note_id, c.text, c.chunk_index, a.filename,
                n.title, n.slug, v.distance
         FROM vec_chunks v
         JOIN attachment_chunks c ON c.id = v.chunk_id
@@ -109,6 +109,7 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
                 "title": r["title"],
                 "slug": r["slug"],
                 "distance": r["distance"],
+                "chunk_index": r["chunk_index"],
                 "snippet": r["text"][:200],
             }
     return list(best.values())

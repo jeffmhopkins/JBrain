@@ -27,7 +27,8 @@ models:
 modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:
-    tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
+    tools: [search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
+            list_recent_notes, read_inbox, search_attachments,
             read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place, list_trips, trip_detail, add_list_item, read_list,
@@ -108,7 +109,8 @@ modes:
 
   # "Research" — read-only Q&A over the brain. No write tools are exposed.
   research:
-    tools: [search_notes, read_note, list_recent_notes, search_attachments,
+    tools: [search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
+            list_recent_notes, search_attachments,
             read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place]
@@ -138,6 +140,8 @@ modes:
 tools:
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Each hit returns its title PLUS a short query-relevant snippet — judge relevance from the snippet (don't dismiss an opaquely-titled note like notes/daily/… without checking its snippet), and read_note the promising ones for full content before you answer or propose."
   read_note: "When you need a note's full text: read its complete markdown by exact title (includes the note's stored coordinates + location label when set)."
+  read_notes: "When several search hits look promising: read MULTIPLE notes' full text in ONE call by passing their exact titles (max 12). Prefer this over calling read_note repeatedly — it expands all the candidates in a single turn."
+  related_notes: "When you've found ONE relevant note and want what's connected to it ('what else relates to [[X]]'): traverse out from it — its outgoing [[links]], its backlinks (notes that link TO it), and its nearest-in-meaning neighbours (with snippets). Use this to follow the brain's own structure instead of running another keyword search. Read-only."
   current_location: "When the user asks where they are now (or to use 'my/current location'): report the device GPS stamped on this conversation's latest message (lat/lon + label). This is the OWNER's live phone only — for another registered person use locate_person. Read-only; says so when no location has been shared."
   locate_person: "When the user asks where a REGISTERED PERSON is now or was last seen ('where is Allan right now', 'where's mom'): their most recent location fix from the trail, labelled by saved place / coord-note, with how long ago. Pass `person` (their name or alias as configured in People); omit it for the owner. People are tracked via their own JBrain tracker key — this reads their stored trail, not a live phone ping. Read-only. For EXACT coordinates use location_fixes."
   location_fixes: "When the user wants EXACT coordinates — a specific raw GPS fix or several — for themselves or a registered person ('what were Allan's exact coordinates at 3pm', 'give me the raw fixes for my drive this morning', 'the lat/lon where I was at noon'): returns full-precision lat/lon + UTC timestamps (with accuracy and a place/note label when known). Pass `when` for the single nearest fix, OR `since`/`until` for a window (capped by `limit`, evenly sampled if more exist); `person` for someone other than the owner. This is the ONLY location tool that returns raw coordinates — use it whenever exact lat/lon is asked for. Read-only — reports stored fixes only, never invents coordinates."
@@ -152,6 +156,8 @@ tools:
   list_trips: "When the user asks about TRIPS / journeys / drives / their commute ('my trips this week', 'where did Allan drive yesterday', 'how was my commute', 'longest trip last month'): the server has already detected and measured each trip (a journey between two stops), so this returns them ready-made — start→end places, distance, duration, max speed — newest first. Pass `person` for someone other than the owner and optional `since`/`until` (owner's local time). Prefer this over re-deriving from raw fixes. Read-only. Use trip_detail with a trip's #id for its stops and full speed breakdown."
   trip_detail: "Full breakdown of ONE trip by its #id (from list_trips): exact distance vs straight-line, duration, avg + max speed, and every geofence it passed through with dwell time. Read-only."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
+  list_tags: "When you want to see how the brain is organised, or before browsing by topic: list every tag with its note count (most-used first). Tags are an access path that keyword/semantic search can't enumerate — use this then notes_with_tag to browse a topic the user has explicitly grouped. Read-only."
+  notes_with_tag: "When the user refers to a topic they tag ('my running notes', 'everything tagged medical') or a search misses what an explicit tag groups: list every note carrying a tag, newest first, each with a snippet. Get exact tag names from list_tags first. Read-only."
   read_inbox: "When folding captures into the wiki: read unprocessed quick-capture inbox items (e.g. dictations)."
   add_list_item: "When the user wants something on a checklist ('add milk to the shopping list'): append an item, creating the list if absent. Optional priority (1=highest). Lists live under the lists/ root (you may pass a bare name; it's filed there). APPLIES IMMEDIATELY (additive, undoable) — name the resolved list back."
   read_list: "When you need to act on specific list items: read a list's items as an INDEXED view ('[2] [ ] Bread'). Use the index + exact item text with set_item_checked/set_item_priority or a staged LIST_* action so the right line is targeted."
@@ -171,8 +177,8 @@ tools:
   log_entry: "When the user logs an event ('log a 5k run', 'journal: ...'): append a dated entry to a log/journal note, creating it if absent. APPLIES IMMEDIATELY (additive, undoable) — name the resolved log back."
   capture_inbox: "When the user jots a fleeting fragment ('remember to...', 'note to self'): save it to the capture inbox for later. APPLIES IMMEDIATELY; does not touch the wiki."
   mark_inbox_processed: "When inbox items have been folded into the wiki: mark them processed. Pass ids from read_inbox."
-  search_attachments: "When the answer may live in an uploaded file: search attachment text by meaning. Returns matching files and their parent note."
-  read_attachment: "When you need an attachment's full text: read it by id (from search_attachments)."
+  search_attachments: "When the answer may live in an uploaded file: search attachment text by meaning. Returns matching files, their parent note, the best-matching chunk index, and a snippet of it. Pass that chunk index to read_attachment's around_chunk to read just the relevant part of a large file."
+  read_attachment: "When you need an attachment's text: read it by id (from search_attachments). Pass around_chunk (the chunk index search_attachments reported) to read just the window around the match instead of the whole file — important for large documents. Omit around_chunk to read the entire attachment."
   query_sql: "When a question is structural or aggregate: run a READ-ONLY query (SELECT/WITH only) over the brain's database. Returns rows as text."
   propose_actions: "When a change needs confirmation, STAGE it for the user: CREATE/UPDATE/LINK/RENAME, DELETE (a note), list edits LIST_REMOVE_ITEM / LIST_EDIT_ITEM / DELETE_LIST, or saved-place edits ADD_PLACE / EDIT_PLACE. RENAME moves/retitles a note (current title + new_title; inbound links follow). For list edits, read_list first and pass the exact item + item_index. ADD_PLACE is how you create a saved map place: it sets a GEOFENCE (centre + radius) AND a loc/<name> page in one step — pass `name`, `lat`, `lon`, and a `radius_m` sized to the place (always set the radius; ~60–100 m a home, ~100–150 m a shop/office, ~250–600 m a campus/park/hospital). To create a place, ALWAYS use ADD_PLACE — never CREATE a loc/<name> note for a place, since that makes a page with NO geofence (it won't show on the map or fire location triggers). If a place page already exists without a geofence, ADD_PLACE with that same name attaches the geofence to it. EDIT_PLACE modifies an existing place — pass `place` (its current name) plus any of `new_name`, `lat`/`lon` (move the centre), `radius_m` (resize the geofence). You MUST supply a REAL coordinate for places — get it from location_fixes, current_location, a note's stored location, or by asking; NEVER invent lat/lon. Destructive ops are soft/undoable. Does NOT apply them — never say you saved or made the change."
 

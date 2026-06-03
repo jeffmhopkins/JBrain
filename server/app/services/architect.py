@@ -38,7 +38,8 @@ _FALLBACK_SYSTEM = {
                 "read/query_sql tools; never modify anything; cite notes as [[Title]].",
 }
 _DEFAULT_MODE_TOOLS = {
-    "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
+    "assisted": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+                 "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "list_trips", "trip_detail", "add_list_item", "read_list",
@@ -47,7 +48,8 @@ _DEFAULT_MODE_TOOLS = {
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences", "propose_actions"],
-    "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
+    "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+                 "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place"],
@@ -58,6 +60,13 @@ _TOOL_SCHEMAS = {
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+    "read_notes": {"type": "object", "properties": {
+        "titles": {"type": "array", "items": {"type": "string"}, "description": "Exact note titles to read in one call (max 12)."}},
+        "required": ["titles"]},
+    "related_notes": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The note to traverse out from (exact title)."},
+        "limit": {"type": "integer", "default": 8, "description": "Max semantic neighbours."}},
+        "required": ["title"]},
     "current_location": {"type": "object", "properties": {}},
     "locate_person": {"type": "object", "properties": {
         "person": {"type": "string", "description": "A registered person's name (or alias). Omit for the owner/default person."}}},
@@ -114,6 +123,10 @@ _TOOL_SCHEMAS = {
         "kind": {"type": "string", "enum": ["entry", "kb"], "description": "Optional: restrict to raw entries or synthesized KB."}},
         "required": ["place"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
+    "list_tags": {"type": "object", "properties": {}},
+    "notes_with_tag": {"type": "object", "properties": {
+        "tag": {"type": "string", "description": "A tag name (from list_tags), with or without a leading #."},
+        "limit": {"type": "integer", "default": 25}}, "required": ["tag"]},
     "read_inbox": {"type": "object", "properties": {}},
     "add_list_item": {"type": "object", "properties": {
         "list_title": {"type": "string"},
@@ -179,7 +192,11 @@ _TOOL_SCHEMAS = {
         "ids": {"type": "array", "items": {"type": "integer"}}}, "required": ["ids"]},
     "search_attachments": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
-    "read_attachment": {"type": "object", "properties": {"attachment_id": {"type": "integer"}}, "required": ["attachment_id"]},
+    "read_attachment": {"type": "object", "properties": {
+        "attachment_id": {"type": "integer"},
+        "around_chunk": {"type": "integer", "description": "Read only the window around this chunk index (from search_attachments) instead of the whole file. Omit to read everything."},
+        "window": {"type": "integer", "default": 2, "description": "Chunks of context on each side of around_chunk (0–10)."}},
+        "required": ["attachment_id"]},
     "query_sql": {"type": "object", "properties": {
         "sql": {"type": "string"}, "limit": {"type": "integer", "default": 50}}, "required": ["sql"]},
     "propose_actions": {"type": "object", "properties": {"actions": {"type": "array", "items": {
@@ -339,17 +356,91 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
     return _untrusted("search-results", "\n".join(lines))
 
 
-def _tool_read_note(conn, title: str) -> str:
-    row = notes_svc.get_by_title(conn, title)
-    if not row:
-        return f"No note titled '{title}'."
+def _render_note_body(row) -> str:
     # Expand @t[...] live values so the agent reads "40", not the raw token.
     body = f"# {row['title']}\n\n{clock.expand_tokens(row['content_md'])}"
     if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
         body += f"\n\nLocation: {row['lat']:.5f}, {row['lon']:.5f}"
         if row["location_label"]:
             body += f" ({row['location_label']})"
-    return _untrusted("note", body)
+    return body
+
+
+def _tool_read_note(conn, title: str) -> str:
+    row = notes_svc.get_by_title(conn, title)
+    if not row:
+        return f"No note titled '{title}'."
+    return _untrusted("note", _render_note_body(row))
+
+
+def _tool_read_notes(conn, titles: list[str]) -> str:
+    """Batch read — pull several notes' full text in ONE turn (search returns
+    snippets; this expands the promising hits without one round-trip per title)."""
+    titles = [t for t in (titles or []) if (t or "").strip()][:12]
+    if not titles:
+        return "Give one or more note titles to read."
+    parts, missing = [], []
+    for t in titles:
+        row = notes_svc.get_by_title(conn, t)
+        if row:
+            parts.append(_render_note_body(row))
+        else:
+            missing.append(t)
+    if not parts:
+        return "No notes found for: " + ", ".join(f"'{t}'" for t in missing)
+    body = "\n\n---\n\n".join(parts)
+    if missing:
+        body += "\n\n---\n\n(not found: " + ", ".join(f"'{t}'" for t in missing) + ")"
+    return _untrusted("notes", body)
+
+
+def _tool_related_notes(conn, title: str, limit: int = 8) -> str:
+    """Traverse OUT from one note instead of re-searching: its outgoing [[links]],
+    its backlinks (what links TO it), and its nearest semantic neighbours."""
+    row = notes_svc.get_by_title(conn, title)
+    if not row:
+        return f"No note titled '{title}'."
+    limit = max(1, min(int(limit or 8), 25))
+    seen = {row["id"]}
+    sections: list[str] = []
+
+    out = conn.execute(
+        "SELECT DISTINCT n.title FROM links l JOIN notes n ON n.id = l.target_note_id "
+        "WHERE l.source_note_id = ? AND n.deleted_at IS NULL ORDER BY n.title",
+        (row["id"],),
+    ).fetchall()
+    if out:
+        sections.append("Links to:\n" + "\n".join(f"- {r['title']}" for r in out))
+
+    back = conn.execute(
+        "SELECT DISTINCT n.title FROM links l JOIN notes n ON n.id = l.source_note_id "
+        "WHERE l.target_note_id = ? AND n.deleted_at IS NULL ORDER BY n.title",
+        (row["id"],),
+    ).fetchall()
+    if back:
+        sections.append("Linked from (backlinks):\n" + "\n".join(f"- {r['title']}" for r in back))
+
+    # Semantic neighbours: embed this note's own text, drop itself from the hits.
+    try:
+        neigh = embeddings.semantic_search(conn, row["content_md"] or row["title"], limit + 1)
+    except Exception:  # noqa: BLE001 — embeddings optional; links still useful
+        neigh = []
+    near_lines = []
+    for r in neigh:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
+        snip = _snippet(c["content_md"] if c else "", "", 120)
+        near_lines.append(f"- {r['title']}" + (f"\n    {snip}" if snip else ""))
+        if len(near_lines) >= limit:
+            break
+    if near_lines:
+        sections.append("Similar in meaning:\n" + "\n".join(near_lines))
+
+    if not sections:
+        return f"'{row['title']}' has no links or close neighbours yet."
+    return _untrusted("related", f"Related to '{row['title']}':\n\n" + "\n\n".join(sections))
 
 
 _COORD_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
@@ -761,19 +852,48 @@ def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     rows = embeddings.semantic_search_attachments(conn, query, limit)
     if not rows:
         return "No matching attachments."
-    return _untrusted("search-results", "\n".join(
-        f"- #{r['attachment_id']} {r['filename']} (in note '{r['title']}')"
-        + (f"\n    {_snippet(r['snippet'], query, 160)}" if r.get("snippet") else "")
-        for r in rows
-    ))
+    lines = []
+    for r in rows:
+        ci = r.get("chunk_index")
+        loc = f" [chunk {ci}]" if ci is not None else ""
+        lines.append(f"- #{r['attachment_id']} {r['filename']}{loc} (in note '{r['title']}')"
+                     + (f"\n    {_snippet(r['snippet'], query, 160)}" if r.get("snippet") else ""))
+    return _untrusted("search-results", "\n".join(lines))
 
 
-def _tool_read_attachment(conn, attachment_id: int) -> str:
+def _tool_read_attachment(conn, attachment_id: int, around_chunk=None, window: int = 2) -> str:
     row = conn.execute(
         "SELECT filename, content_text FROM attachments WHERE id = ?", (attachment_id,)
     ).fetchone()
     if not row:
         return f"No attachment with id {attachment_id}."
+    # Windowed read: pull just the chunk that matched (± window) so a large file
+    # (up to 200 chunks) doesn't dump its whole body into context. Falls back to the
+    # full text when the file was never chunked or no window is requested.
+    if around_chunk is not None:
+        try:
+            center = int(around_chunk)
+            window = max(0, min(int(window), 10))
+        except (TypeError, ValueError):
+            center = None
+        if center is not None:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM attachment_chunks WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()["n"]
+            if total:
+                lo, hi = center - window, center + window
+                chunks = conn.execute(
+                    "SELECT chunk_index, text FROM attachment_chunks "
+                    "WHERE attachment_id = ? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index",
+                    (attachment_id, lo, hi),
+                ).fetchall()
+                if chunks:
+                    shown_lo, shown_hi = chunks[0]["chunk_index"], chunks[-1]["chunk_index"]
+                    head = (f"{row['filename']} — chunks {shown_lo}–{shown_hi} of {total} "
+                            f"(read_attachment with a different around_chunk for more)")
+                    body = "\n\n".join(c["text"] for c in chunks)
+                    return _untrusted("attachment", f"{head}\n\n{body}")
     return _untrusted("attachment", f"{row['filename']}\n\n{row['content_text']}")
 
 
@@ -803,6 +923,42 @@ def _tool_list_recent(conn, limit: int = 10) -> str:
     lines = [f"- {r['title']}" + (f"\n    {_snippet(r['content_md'], '', 120)}" if r["content_md"] else "")
              for r in rows]
     return _untrusted("recent-notes", "\n".join(lines))
+
+
+def _tool_list_tags(conn) -> str:
+    """The tag taxonomy with live note counts — an organizational access path that
+    keyword/semantic search can't enumerate."""
+    rows = conn.execute(
+        "SELECT t.name, COUNT(n.id) AS n FROM tags t "
+        "JOIN note_tags nt ON nt.tag_id = t.id "
+        "JOIN notes n ON n.id = nt.note_id AND n.deleted_at IS NULL "
+        "GROUP BY t.id HAVING n > 0 ORDER BY n DESC, t.name"
+    ).fetchall()
+    if not rows:
+        return "No tags yet."
+    return _untrusted("tags", "\n".join(f"- {r['name']} ({r['n']})" for r in rows))
+
+
+def _tool_notes_with_tag(conn, tag: str, limit: int = 25) -> str:
+    """Every note carrying a tag — the browse path for the brain's own structure
+    (orthogonal to search; a topic search can miss what an explicit tag groups)."""
+    tag = (tag or "").strip().lstrip("#").lower()
+    if not tag:
+        return "Give a tag name."
+    limit = max(1, min(int(limit or 25), 100))
+    rows = conn.execute(
+        "SELECT n.title, n.content_md FROM notes n "
+        "JOIN note_tags nt ON nt.note_id = n.id "
+        "JOIN tags t ON t.id = nt.tag_id "
+        "WHERE t.name = ? AND n.deleted_at IS NULL "
+        "ORDER BY n.updated_at DESC LIMIT ?",
+        (tag, limit),
+    ).fetchall()
+    if not rows:
+        return f"No notes tagged '{tag}'. (Use list_tags to see existing tags.)"
+    lines = [f"- {r['title']}" + (f"\n    {_snippet(r['content_md'], '', 120)}" if r["content_md"] else "")
+             for r in rows]
+    return _untrusted("tagged-notes", f"Tagged #{tag}:\n" + "\n".join(lines))
 
 
 def _tool_read_inbox(conn) -> str:
@@ -1162,6 +1318,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
         return _tool_read_note(conn, args["title"]), None
+    if name == "read_notes":
+        return _tool_read_notes(conn, args.get("titles") or []), None
+    if name == "related_notes":
+        return _tool_related_notes(conn, args["title"], args.get("limit", 8)), None
     if name == "current_location":
         return _tool_current_location(conn, conversation_id), None
     if name == "locate_person":
@@ -1196,12 +1356,16 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
                                       args.get("since"), args.get("until"), args.get("kind")), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
+    if name == "list_tags":
+        return _tool_list_tags(conn), None
+    if name == "notes_with_tag":
+        return _tool_notes_with_tag(conn, args["tag"], args.get("limit", 25)), None
     if name == "read_inbox":
         return _tool_read_inbox(conn), None
     if name == "search_attachments":
         return _tool_search_attachments(conn, args["query"], args.get("limit", 6)), None
     if name == "read_attachment":
-        return _tool_read_attachment(conn, args["attachment_id"]), None
+        return _tool_read_attachment(conn, args["attachment_id"], args.get("around_chunk"), args.get("window", 2)), None
     if name == "query_sql":
         return _tool_query_sql(conn, args["sql"], args.get("limit", 50)), None
     if name == "add_list_item":

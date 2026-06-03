@@ -639,6 +639,41 @@ def test_geo_tools(client):
     assert {"geo_distance", "nearby_notes", "current_location"} <= research
 
 
+def test_navigation_tools(client):
+    """read_notes (batch), list_tags / notes_with_tag (tag browse), and related_notes
+    (link + neighbour traversal) — the access paths added so the agent stops dismissing
+    opaque references and can drill in without one round-trip per note."""
+    from app.db import get_conn
+    from app.services import architect, notes as ns, wikilinks
+    conn = get_conn()
+    aid = ns.upsert_note(conn, "Running Plan", "Weekly mileage and [[Race Day]] prep. Long runs Sunday.")
+    bid = ns.upsert_note(conn, "Race Day", "Marathon logistics: bib pickup, corral times, gear check.")
+    wikilinks.reconcile_links(conn, aid, "Weekly mileage and [[Race Day]] prep.")
+    ns.set_tags(conn, aid, ["running", "training"])
+    ns.set_tags(conn, bid, ["running"])
+    conn.commit()
+
+    # read_notes pulls several at once and reports the misses.
+    out = architect._tool_read_notes(conn, ["Running Plan", "Race Day", "Nope"])
+    assert "Running Plan" in out and "Race Day" in out and "not found" in out and "Nope" in out
+
+    # list_tags enumerates with counts (most-used first); notes_with_tag browses one.
+    tags = architect._tool_list_tags(conn)
+    assert "running (2)" in tags and "training (1)" in tags
+    tagged = architect._tool_notes_with_tag(conn, "#running")  # leading # tolerated
+    assert "Running Plan" in tagged and "Race Day" in tagged
+    assert "No notes tagged" in architect._tool_notes_with_tag(conn, "nonexistent")
+
+    # related_notes follows the backlink from Running Plan -> Race Day.
+    rel = architect._tool_related_notes(conn, "Race Day")
+    assert "Running Plan" in rel and "backlink" in rel.lower()
+
+    # All four are advertised in both read-only research and assisted.
+    for mode in ("research", "assisted"):
+        names = {t.name for t in architect._tools_for(mode)}
+        assert {"read_notes", "list_tags", "notes_with_tag", "related_notes"} <= names
+
+
 def test_geo_distance_resolves_place_geofence(client):
     """A saved place keeps its coords in the geofence table, not on its loc/ note, so
     geo_distance must resolve it by place name AND by the loc/ note title — otherwise a

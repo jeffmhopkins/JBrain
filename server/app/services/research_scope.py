@@ -43,18 +43,24 @@ def _scope(spec) -> dict:
 # --- candidate detection (the FILTER; never a retrieval gate) ---------------
 
 def filter_match_ids(conn, scope: dict) -> set[int]:
-    """Notes matching the owner's candidate filter (folder prefixes + optional
-    kinds). Empty/root prefixes match NOTHING (F10) — an empty filter can't expose
-    the whole brain. This only surfaces candidates; approval is what exposes."""
+    """Notes matching the owner's candidate filter: folder prefixes AND/OR explicit
+    note titles, optional kinds. Empty/root prefixes match NOTHING (F10) — an empty
+    filter can't expose the whole brain. This only surfaces candidates; approval is
+    what exposes."""
     prefixes = [p.strip().strip("/") for p in (scope.get("prefixes") or [])]
     prefixes = [p for p in prefixes if p]                       # drop "", "/", whitespace
-    if not prefixes:
+    titles = [t.strip().strip("/") for t in (scope.get("titles") or [])]
+    titles = [t for t in titles if t]
+    if not prefixes and not titles:
         return set()
     kinds = [k for k in (scope.get("kinds") or []) if k]
     clauses, params = [], []
     for p in prefixes:
         clauses.append("(n.title = ? OR n.title LIKE ?)")
         params += [p, p + "/%"]
+    for t in titles:                                            # exact single-note match
+        clauses.append("n.title = ?")
+        params.append(t)
     sql = "SELECT n.id FROM notes n WHERE n.deleted_at IS NULL AND (" + " OR ".join(clauses) + ")"
     if kinds:
         sql += " AND n.kind IN (%s)" % ",".join("?" * len(kinds))

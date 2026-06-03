@@ -1414,6 +1414,27 @@ def test_create_research_share_tool(client):
     assert ev2 is None and "isn't allowed" in msg2
 
 
+def test_research_share_single_note_scope(client):
+    """A research link can be scoped to ONE exact note title (no folder), so only
+    that note is a candidate — not its 7 siblings."""
+    from app.db import get_conn
+    from app.services import architect, research
+    for n in range(1, 4):
+        client.post("/api/notes", json={"title": f"notes/daily/2026/06/01/{n}", "content_md": f"entry {n}"})
+    conn = get_conn()
+    msg, ev = architect._tool_create_research_share(
+        conn, None, label="One day", notes=["notes/daily/2026/06/01/2"])
+    conn.commit()
+    assert ev is not None and "DRAFT research link" in msg
+    link = conn.execute("SELECT * FROM share_links WHERE kind='research' ORDER BY id DESC LIMIT 1").fetchone()
+    cands = research.list_candidates(conn, link["id"])
+    assert [c["title"] for c in cands] == ["notes/daily/2026/06/01/2"]   # exactly the one note
+
+    # Neither prefixes nor notes → refused.
+    _, ev2 = architect._tool_create_research_share(conn, None)
+    assert ev2 is None
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

@@ -138,12 +138,13 @@ _TOOL_SCHEMAS = {
         "label": {"type": "string", "description": "Short label, e.g. 'Medical history'."},
         "prefixes": {"type": "array", "items": {"type": "string"},
                      "description": "Folder path(s) to draw candidate notes from, e.g. ['notes/Medical']. NEVER root/whole-brain."},
+        "notes": {"type": "array", "items": {"type": "string"},
+                  "description": "Exact note title(s) to expose — use for sharing specific entries (e.g. one day's note 'notes/daily/2026/06/01/6') instead of a whole folder."},
         "intro": {"type": "string", "description": "Optional 1-2 sentence greeting the recipient sees."},
         "persona_voice": {"type": "string", "description": "Optional tone/role for the answering AI (cannot change its rules)."},
         "ttl_days": {"type": "integer", "default": 0},
         "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that opens it."},
-        "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}},
-        "required": ["prefixes"]},
+        "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}}},
     "list_share_links": {"type": "object", "properties": {}},
     "revoke_share_link": {"type": "object", "properties": {
         "token": {"type": "string"},
@@ -805,22 +806,23 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
     return f"applied: {display}", _record_applied(conn, conversation_id, "GUIDED_SHARE", display, undo)
 
 
-def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, intro="",
+def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, notes=None, intro="",
                                 persona_voice="", ttl_days=0, bind=False, single_use=False):
     """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
-    (it ANSWERS from the owner's notes instead of collecting). The `prefixes` only
-    FIND candidate notes; the owner approves exactly which are exposed and activates
-    the link in Shares. Never expose a root/whole-brain scope."""
+    (it ANSWERS from the owner's notes instead of collecting). `prefixes` (folders) and
+    `notes` (exact titles) only FIND candidate notes; the owner approves exactly which
+    are exposed and activates the link in Shares. Never expose a root/whole-brain scope."""
     from . import share as share_svc
     from . import research as research_svc
     from . import research_scope as rscope
     pre = [p.strip().strip("/") for p in (prefixes or []) if p and p.strip().strip("/")]
-    if not pre:
-        return ("I need at least one folder to scope this to (e.g. notes/Medical) — a whole-brain "
-                "research link isn't allowed.", None)
-    scope = {"prefixes": pre, "kinds": []}
+    titles = [t.strip().strip("/") for t in (notes or []) if t and t.strip().strip("/")]
+    if not pre and not titles:
+        return ("I need at least one folder (prefixes) or specific note title (notes) to scope this to — "
+                "a whole-brain research link isn't allowed.", None)
+    scope = {"prefixes": pre, "titles": titles, "kinds": []}
     candidates = rscope.filter_match_ids(conn, scope)   # blast-radius preview for the owner
-    label = (label or pre[0]).strip()[:80]
+    label = (label or (pre[0] if pre else titles[0])).strip()[:80]
     title = notes_svc.root_title(f"Research — {label}", "notes")
     note_id = notes_svc.upsert_note(
         conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
@@ -831,7 +833,7 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
                              intro=intro, bind=bool(bind), single_use=bool(single_use))
     url = share_svc.share_url(token)
     display = (f"Created a DRAFT research link “{label}” → {url}\n"
-               f"It matches {len(candidates)} note(s) under {', '.join(pre)}, but NOTHING is exposed yet. "
+               f"It matches {len(candidates)} note(s) from {', '.join(pre + titles)}, but NOTHING is exposed yet. "
                f"Go to Advanced → Shares, APPROVE exactly which of those notes it may read, then ACTIVATE it. "
                f"It's read-only — recipients can only ask questions, never change anything.")
     undo = {"op": "revoke_share", "token": token}
@@ -930,7 +932,7 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
                                          args.get("bind", False), args.get("single_use", False))
     if name == "create_research_share":
         return _tool_create_research_share(conn, conversation_id, args.get("label"), args.get("prefixes"),
-                                           args.get("intro", ""), args.get("persona_voice", ""),
+                                           args.get("notes"), args.get("intro", ""), args.get("persona_voice", ""),
                                            args.get("ttl_days", 0), args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None

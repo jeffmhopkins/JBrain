@@ -665,6 +665,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .guided-convo .msg.user { align-self: flex-end; }
 .guided-convo .msg.assistant { align-self: flex-start; }
 .guided-convo .convo-who { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 3px; }
+.guided-sessions { display: flex; flex-direction: column; gap: 8px; }
+.guided-session { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
 .share-diff { white-space: pre-wrap; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; margin: 8px 0; }
 .wikilink-flat { color: var(--text-dim); }
 

@@ -108,6 +108,10 @@ export const guidedOptions = (linkId: number, bind: boolean, single_use: boolean
 export const guidedResetBind = (linkId: number) => post(`/api/shares/guided/${linkId}/reset-bind`);
 export const guidedReopen = (sid: number) => post(`/api/shares/guided/sessions/${sid}/reopen`);
 export const guidedAcknowledge = (sid: number) => post(`/api/shares/guided/sessions/${sid}/acknowledge`);
+// All recipient sessions for a guided link (incl. in-progress/abandoned), and one transcript.
+export const guidedSessions = <T = any>(linkId: number) => get<T>(`/api/shares/guided/${linkId}/sessions`);
+export const guidedSession = <T = any>(linkId: number, sid: number) =>
+  get<T>(`/api/shares/guided/${linkId}/sessions/${sid}`);
 
 // Research links — public (recipient) Q&A.
 export const researchStart = <T = any>(token: string, name?: string) =>

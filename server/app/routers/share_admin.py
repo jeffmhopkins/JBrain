@@ -153,6 +153,40 @@ def list_shares():
     }
 
 
+@router.get("/guided/{link_id}/sessions")
+def guided_sessions(link_id: int):
+    """Owner-only: every recipient session for a guided link — INCLUDING ones still in
+    progress (active/drafting) that have no review item yet, so partial or abandoned
+    conversations are visible, not just submitted/ended ones. The transcript itself is
+    fetched per session below (kept out of this list payload)."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, name, status, end_reason, turn_count, created_at, completed_at, "
+        "       (document_md IS NOT NULL AND document_md <> '') AS has_document, "
+        "       (transcript_json IS NOT NULL AND LENGTH(transcript_json) > 2) AS has_transcript "
+        "FROM guided_sessions WHERE share_link_id = ? ORDER BY created_at DESC LIMIT 100",
+        (link_id,),
+    ).fetchall()
+    return {"sessions": [dict(r) for r in rows]}
+
+
+@router.get("/guided/{link_id}/sessions/{sid}")
+def guided_session_transcript(link_id: int, sid: int):
+    """Owner-only: read a recipient's full guided transcript (+ any drafted document)
+    for this link — works for in-progress, submitted, ended, or abandoned sessions.
+    Like the pending/ended views, this is for owner review only: it's never written to
+    a note or embedded, so it stays out of brain search."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT name, status, end_reason, document_md, transcript_json "
+        "FROM guided_sessions WHERE id = ? AND share_link_id = ?", (sid, link_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"name": row["name"], "status": row["status"], "end_reason": row["end_reason"],
+            "document_md": row["document_md"], "transcript": json.loads(row["transcript_json"] or "[]")}
+
+
 @router.post("/guided/sessions/{sid}/reopen")
 def guided_reopen(sid: int):
     """Recover from an abuse lock: un-revoke the link and clear the ended session."""

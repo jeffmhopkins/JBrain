@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSetDetails, setLinkExpiry, post } from "../api";
+import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSession, guidedSessions, guidedSetDetails, setLinkExpiry, post } from "../api";
 import ResearchLinks from "../components/ResearchLinks";
 import { useAuth } from "../App";
 import { fmtTs, fmtTsShort } from "../time";
@@ -43,6 +43,7 @@ export default function SharesPage() {
   const [openDiff, setOpenDiff] = useState<number | null>(null);
   const [openPrompt, setOpenPrompt] = useState<number | null>(null);
   const [openConvo, setOpenConvo] = useState<number | null>(null);
+  const [openSessions, setOpenSessions] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
@@ -281,6 +282,15 @@ export default function SharesPage() {
                   <button className="ghost" style={{ fontSize: 12 }} onClick={() => resetGuidedBind(g)}>Reset lock</button>
                 )}
               </div>
+              {g.started > 0 && (
+                <>
+                  <button className="ghost" style={{ fontSize: 12, marginTop: 6 }}
+                          onClick={() => setOpenSessions(openSessions === g.id ? null : g.id)}>
+                    {openSessions === g.id ? "Hide" : "View"} conversations ({g.started})
+                  </button>
+                  {openSessions === g.id && <GuidedSessions linkId={g.id} />}
+                </>
+              )}
               {g.spec_status === "active" && (
                 <div className="row" style={{ marginTop: 6, gap: 6 }}>
                   <input readOnly value={g.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
@@ -368,6 +378,83 @@ function HistRow({ status, slug, title, meta, when, appTz }: {
               : <span className="share-hist-title">{title}</span>}
         <div className="share-hist-meta">{meta}{when ? ` · ${fmtTsShort(when, appTz)}` : ""}</div>
       </div>
+    </div>
+  );
+}
+
+interface GuidedSessionRow {
+  id: number; name: string | null; status: string; end_reason: string | null;
+  turn_count: number; created_at: string; completed_at: string | null;
+  has_document: number; has_transcript: number;
+}
+
+// Every recipient conversation for a guided link — including ones still in progress or
+// abandoned, which the pending/ended/history views don't surface. The transcript for a
+// row is fetched lazily when expanded (kept out of the list payload).
+function GuidedSessions({ linkId }: { linkId: number }) {
+  const [rows, setRows] = useState<GuidedSessionRow[] | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const [convo, setConvo] = useState<Record<number, any>>({});
+
+  useEffect(() => {
+    guidedSessions<{ sessions: GuidedSessionRow[] }>(linkId)
+      .then((r) => setRows(r.sessions || [])).catch(() => setRows([]));
+  }, [linkId]);
+
+  async function view(sid: number) {
+    if (open === sid) { setOpen(null); return; }
+    setOpen(sid);
+    if (!convo[sid]) {
+      try { const r = await guidedSession(linkId, sid); setConvo((c) => ({ ...c, [sid]: r })); }
+      catch { setConvo((c) => ({ ...c, [sid]: { transcript: [], error: true } })); }
+    }
+  }
+
+  const label = (s: GuidedSessionRow) =>
+    s.status === "submitted" ? "completed"
+      : s.status === "drafting" ? "drafted — not submitted"
+      : s.status === "active" ? "in progress"
+      : s.end_reason?.startsWith("abuse") ? "ended (abuse)"
+      : s.end_reason === "distress" ? "ended (distress)"
+      : "abandoned";
+
+  if (rows === null) return <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Loading…</div>;
+  if (rows.length === 0) return <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>No one has started this intake yet.</div>;
+
+  return (
+    <div className="guided-sessions" style={{ marginTop: 8 }}>
+      {rows.map((s) => {
+        const c = convo[s.id];
+        const viewable = !!(s.has_transcript || s.has_document);
+        return (
+          <div className="guided-session" key={"gs" + s.id}>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>{s.name || "Anonymous"}</strong>
+              <span className={"badge " + (s.status === "active" || s.status === "drafting" ? "prio" : "")}>{label(s)}</span>
+              <span className="muted" style={{ fontSize: 12 }}>{s.turn_count} turn{s.turn_count === 1 ? "" : "s"}</span>
+              <span className="spacer" />
+              {viewable
+                ? <button className="ghost" style={{ fontSize: 12 }} onClick={() => view(s.id)}>{open === s.id ? "Hide" : "View"}</button>
+                : <span className="muted" style={{ fontSize: 12 }}>nothing to show</span>}
+            </div>
+            {open === s.id && c && (
+              <div className="guided-convo">
+                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                  Your eyes only — not saved to your brain or searchable.
+                </div>
+                {c.document_md && <div className="md guided-doc"><ReactMarkdown>{c.document_md}</ReactMarkdown></div>}
+                {(c.transcript || []).length === 0
+                  ? <div className="muted" style={{ fontSize: 12 }}>{c.error ? "Couldn't load this conversation." : "No messages were exchanged."}</div>
+                  : c.transcript.map((t: { role: string; content: string }, i: number) => (
+                      <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
+                        <span className="convo-who">{t.role === "assistant" ? "AI" : (s.name || "Them")}</span>{t.content}
+                      </div>
+                    ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

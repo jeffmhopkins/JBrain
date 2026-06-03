@@ -15,15 +15,30 @@ cd "$(dirname "$0")"
 [[ -f docker-compose.yml ]] || { echo "FAIL: run update.sh from the JBrain repo ($(pwd))." >&2; exit 1; }
 
 # --- Live console capture --------------------------------------------------
-# Tee the whole run to a shared file (bind-mounted at ./deploy-status) so the API
-# (and, when it's down, Caddy) can serve it to the PWA's live update console, and
-# record a status the UI can show. Best-effort: never let this break the update.
+# Mirror the run to a shared file (bind-mounted at ./deploy-status) so the API (and,
+# when it's down, Caddy) can serve it to the PWA's live update console, and record a
+# status the UI can show. Best-effort: never let this break the update.
 DEPLOY_DIR="$(pwd)/deploy-status"
 mkdir -p "$DEPLOY_DIR" 2>/dev/null || true
-export BUILDKIT_PROGRESS=plain   # line-buffered build output so the console streams live
 # status.json carries a coarse PHASE so the PWA indicator follows progress.
 _dstatus() { printf '{"state":"%s","phase":"%s","at":"%s"}\n' "$1" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
-exec > >(tee "$DEPLOY_DIR/update.log") 2>&1   # mirror all stdout+stderr to the log
+
+if [ -t 1 ]; then
+  # A human is watching at the terminal → keep Docker's rich COLOURED build UI
+  # (the cursor-redraw progress + colours). Re-exec once under `script` so the run is
+  # STILL captured to the live log; if `script` isn't available, just show colour
+  # without capturing (the terminal is the source of truth in that case).
+  export BUILDKIT_PROGRESS=auto
+  if [ -z "${_JBRAIN_CAPTURED:-}" ] && command -v script >/dev/null 2>&1; then
+    export _JBRAIN_CAPTURED=1
+    exec script -q -e -c "$0 $*" "$DEPLOY_DIR/update.log"
+  fi
+else
+  # Captured for the PWA/updater console (no TTY) → plain, append-only, escape-free
+  # output that streams line-by-line and reads cleanly in the web console.
+  export BUILDKIT_PROGRESS=plain
+  exec > >(tee "$DEPLOY_DIR/update.log") 2>&1
+fi
 trap '_dstatus "$([ $? -eq 0 ] && echo ok || echo failed)"' EXIT
 _dstatus running starting
 # ---------------------------------------------------------------------------

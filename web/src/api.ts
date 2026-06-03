@@ -298,6 +298,15 @@ export const updatePlace = (id: number, body: { name?: string; radius_m?: number
 export const ensurePlaceNote = (id: number) => post<{ slug: string }>(`/api/places/${id}/note`);
 export const deletePlace = (id: number) => del(`/api/places/${id}`);
 
+export interface Person { id: number; name: string; color: string; is_default: boolean; aliases: string; note_slug: string | null; }
+export const getPeople = () => get<Person[]>("/api/people");
+export const addPerson = (p: { name: string; color?: string; aliases?: string; is_default?: boolean }) =>
+  post<{ id: number; name: string }>("/api/people", p);
+export const updatePerson = (id: number, body: Partial<{ name: string; color: string; aliases: string; note_slug: string | null; is_default: boolean }>) =>
+  api(`/api/people/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+export const deletePerson = (id: number) => del(`/api/people/${id}`);
+export const personFromNote = (slug: string) => post<{ id: number; name: string }>("/api/people/from-note", { slug });
+
 // Notes that carry a capture coordinate — the Map's note pins.
 export interface LocatedNote { slug: string; title: string; lat: number; lon: number; location_label: string | null; kind: string; created_at: string; }
 export const getLocatedNotes = (since?: string, until?: string) => {
@@ -308,7 +317,7 @@ export const getLocatedNotes = (since?: string, until?: string) => {
   return get<LocatedNote[]>(`/api/notes/located${qs ? `?${qs}` : ""}`);
 };
 
-export interface LocPoint { id: number; lat: number; lon: number; accuracy_m: number | null; recorded_at: string; }
+export interface LocPoint { id: number; lat: number; lon: number; accuracy_m: number | null; recorded_at: string; source?: string | null; }
 export const getLocations = (since?: string, until?: string) => {
   const p = new URLSearchParams();
   if (since) p.set("since", since);

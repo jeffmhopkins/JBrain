@@ -12,6 +12,7 @@ import NotePage from "./pages/NotePage";
 import GraphPage from "./pages/GraphPage";
 import MapPage from "./pages/MapPage";
 import SearchPage from "./pages/SearchPage";
+import PeoplePage from "./pages/PeoplePage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
@@ -131,6 +132,7 @@ export default function App() {
                 <Route path="/note/:slug" element={<NotePage />} />
                 <Route path="/graph" element={<GraphPage />} />
                 <Route path="/map" element={<MapPage />} />
+                <Route path="/people" element={<PeoplePage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/prompts" element={<PromptsPanel />} />
                 <Route path="/actions" element={<ActionsPage />} />

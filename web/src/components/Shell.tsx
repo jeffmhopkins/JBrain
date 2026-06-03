@@ -131,6 +131,7 @@ const TOOL_TITLES: Record<string, string> = {
   "/search": "Search",
   "/graph": "Graph",
   "/map": "Map",
+  "/people": "People",
   "/prompts": "Prompts",
   "/actions": "Actions",
   "/flows": "Triggers",

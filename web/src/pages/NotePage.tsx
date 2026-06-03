@@ -2,7 +2,7 @@ import { Children, isValidElement, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { del, get, post, put, getPlaces, Place } from "../api";
+import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
 import { fmtTs, expandTimeTokens } from "../time";
@@ -187,6 +187,15 @@ export default function NotePage() {
       )}
       {editing === null && (
         <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: "flex-end" }}>
+          {note.kind === "kb" && (
+            <button className="ghost" title="Make this KB page a Person (for trail attribution)"
+                    onClick={async () => {
+                      try {
+                        const r = await personFromNote(note.slug);
+                        alert(`Tagged as person “${r.name}”. Set their colour/aliases in Advanced → People.`);
+                      } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
+                    }}>Tag as person</button>
+          )}
           <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>
           <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>
           <button className="ghost danger-hover" onClick={remove}>Delete</button>

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
-import { getLocations, getLocatedNotes, getPlaces, addPlace, updatePlace, deletePlace, ensurePlaceNote, LocPoint, LocatedNote, Place } from "../api";
+import { getLocations, getLocatedNotes, getPlaces, addPlace, updatePlace, deletePlace, ensurePlaceNote, getPeople, LocPoint, LocatedNote, Place, Person } from "../api";
 
 type Mode = "trail" | "heat";
 const RANGES = [
@@ -58,6 +58,9 @@ export default function MapPage() {
   const [adding, setAdding] = useState(false);
   // Inline place editor (name + geofence radius); the radius previews live on the map.
   const [editing, setEditing] = useState<{ id: number; name: string; radius: number } | null>(null);
+  // People: colour the trail by who each fix belongs to (matched from its source).
+  const [people, setPeople] = useState<Person[]>([]);
+  const [hidden, setHidden] = useState<Set<number>>(new Set());   // person ids toggled off
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
 
@@ -83,6 +86,24 @@ export default function MapPage() {
   };
 
   useEffect(() => { loadPlaces(); }, []);
+  useEffect(() => { getPeople().then(setPeople).catch(() => {}); }, []);
+
+  // Resolve a fix's `source` to a person (by name/alias, else default) → its colour.
+  const personOf = useMemo(() => {
+    const byKey = new Map<string, Person>();
+    for (const p of people) {
+      byKey.set(p.name.toLowerCase(), p);
+      for (const a of p.aliases.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) byKey.set(a, p);
+    }
+    const def = people.find((p) => p.is_default) || people[0];
+    return (source?: string | null) => byKey.get((source || "").trim().toLowerCase()) || def;
+  }, [people]);
+  // People who actually appear in the loaded trail (drives the filter chips).
+  const presentPeople = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of points) { const per = personOf(p.source); if (per) ids.add(per.id); }
+    return people.filter((p) => ids.has(p.id));
+  }, [points, people, personOf]);
   useEffect(() => { addingRef.current = adding; }, [adding]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
 
@@ -254,16 +275,30 @@ export default function MapPage() {
     const m = map.current; if (!m) return;
     if (overlay.current) { m.removeLayer(overlay.current); overlay.current = null; }
     if (head.current) { m.removeLayer(head.current); head.current = null; }
-    const upto = points.filter((p) => parseTs(p.recorded_at) <= curTs);
+    // A point is shown unless its person is toggled off.
+    const visible = (p: LocPoint) => { const per = personOf(p.source); return !per || !hidden.has(per.id); };
+    const upto = points.filter((p) => parseTs(p.recorded_at) <= curTs && visible(p));
     if (!upto.length) return;
     if (mode === "trail") {
-      overlay.current = L.polyline(upto.map((p) => [p.lat, p.lon] as [number, number]),
-        { color: "#4ea1ff", weight: 3, opacity: 0.85 }).addTo(m);
+      // One polyline per person in their colour (different people aren't joined).
+      const byPerson = new Map<number, { color: string; pts: [number, number][] }>();
+      for (const p of upto) {
+        const per = personOf(p.source);
+        const key = per?.id ?? -1;
+        const g = byPerson.get(key) ?? { color: per?.color || "#4ea1ff", pts: [] };
+        g.pts.push([p.lat, p.lon]);
+        byPerson.set(key, g);
+      }
+      const group = L.layerGroup();
+      for (const { color, pts } of byPerson.values()) {
+        L.polyline(pts, { color, weight: 3, opacity: 0.85 }).addTo(group);
+      }
+      overlay.current = group.addTo(m);
       const last = upto[upto.length - 1];
       head.current = L.circleMarker([last.lat, last.lon],
-        { radius: 6, color: "#fff", weight: 2, fillColor: "#4ea1ff", fillOpacity: 1 }).addTo(m);
+        { radius: 6, color: "#fff", weight: 2, fillColor: personOf(last.source)?.color || "#4ea1ff", fillOpacity: 1 }).addTo(m);
     } else if ((L as any).heatLayer) {
-      const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs);
+      const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs && visible(points[i]));
       // The slider drives intensity: a higher level lowers `max` (more of the trail
       // reaches "hot") and grows the radius (bigger shading), and vice-versa.
       const heatMax = Math.max(0.12, 1 - heatLevel * 0.85);   // higher level → hotter
@@ -272,12 +307,13 @@ export default function MapPage() {
         radius, blur: Math.round(radius * 0.7), max: heatMax, minOpacity: 0.3, maxZoom: 17,
       }).addTo(m);
     } else {
+      const hv = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs && visible(points[i]));
       overlay.current = L.layerGroup(
-        upto.map((p, i) => L.circleMarker([p.lat, p.lon],
-          { radius: 4 + 10 * heat[i][2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
+        hv.map((h) => L.circleMarker([h[0], h[1]],
+          { radius: 4 + 10 * h[2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
       ).addTo(m);
     }
-  }, [points, mode, curTs, heat, heatLevel]);
+  }, [points, mode, curTs, heat, heatLevel, personOf, hidden]);
 
   useEffect(() => {
     if (!playing || timeline.length < 2) return;
@@ -312,6 +348,19 @@ export default function MapPage() {
           <button className={showPlaces ? "on" : ""} onClick={() => setShowPlaces((s) => !s)}>Places</button>
         </div>
       </div>
+      {presentPeople.length > 1 && (
+        <div className="people-filter">
+          {presentPeople.map((p) => {
+            const off = hidden.has(p.id);
+            return (
+              <button key={p.id} className={"people-chip" + (off ? " off" : "")}
+                      onClick={() => setHidden((h) => { const n = new Set(h); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })}>
+                <i className="legend-dot" style={{ background: p.color }} />{p.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div ref={mapEl} className="map-canvas" />
       {showPlaces && (
         <div className="places-panel">

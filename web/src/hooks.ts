@@ -19,10 +19,31 @@ export const useIsDesktop = () => useMediaQuery("(min-width: 900px)");
 
 export interface Coords { lat: number; lon: number; }
 
+// The opt-in location flag is shared by two independent hooks (useGeo's toggle/UI
+// and useLocationTrail). Reading localStorage isn't reactive, so the toggle
+// broadcasts this event; both hooks re-sync on it (and on cross-tab `storage`),
+// making a flip take effect instantly in both directions.
+const GEO_EVENT = "jbrain-geo-changed";
+const geoOn = () => localStorage.getItem("jbrain_geo") === "1";
+
+/** Subscribe a setter to geo-flag changes (same-tab event + cross-tab storage). */
+function useGeoFlagSync(setOn: (on: boolean) => void): void {
+  useEffect(() => {
+    const sync = () => setOn(geoOn());
+    window.addEventListener(GEO_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(GEO_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [setOn]);
+}
+
 /** Opt-in geolocation. Persists the toggle; watches position only while enabled. */
 export function useGeo() {
-  const [enabled, setEnabled] = useState(() => localStorage.getItem("jbrain_geo") === "1");
+  const [enabled, setEnabled] = useState(geoOn);
   const [coords, setCoords] = useState<Coords | null>(null);
+  useGeoFlagSync(setEnabled);   // stay in sync if toggled elsewhere
 
   useEffect(() => {
     if (!enabled || !("geolocation" in navigator)) { setCoords(null); return; }
@@ -38,11 +59,10 @@ export function useGeo() {
   }, [enabled]);
 
   function toggle() {
-    setEnabled((e) => {
-      const next = !e;
-      localStorage.setItem("jbrain_geo", next ? "1" : "0");
-      return next;
-    });
+    const next = !geoOn();
+    localStorage.setItem("jbrain_geo", next ? "1" : "0");
+    setEnabled(next);
+    window.dispatchEvent(new Event(GEO_EVENT));   // tell the trail (and any other view) right away
   }
   return { enabled, coords, toggle };
 }
@@ -61,8 +81,11 @@ function _haversineM(aLat: number, aLon: number, bLat: number, bLon: number): nu
  * a trip is captured densely without draining battery sitting still. Mounted ONCE
  * (in Shell). A PWA can only do this while open; background is the watch app. */
 export function useLocationTrail(): void {
+  const [enabled, setEnabled] = useState(geoOn);
+  useGeoFlagSync(setEnabled);   // start/stop the moment the toggle flips (no reload needed)
+
   useEffect(() => {
-    if (localStorage.getItem("jbrain_geo") !== "1" || !("geolocation" in navigator)) return;
+    if (!enabled || !("geolocation" in navigator)) return;
     const FAST = 15 * 1000, IDLE = 5 * 60 * 1000, GRACE = 2 * 60 * 1000;
     let alive = true;
     let timer: number | undefined;
@@ -116,7 +139,7 @@ export function useLocationTrail(): void {
       clear();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [enabled]);
 }
 
 /** Track online/offline so the UI can show a banner and gate writes. */

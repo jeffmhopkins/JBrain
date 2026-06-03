@@ -378,15 +378,19 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 
     if current < 28:
         # Per-person LOCATION KEY: a scoped token for the tracker that can only write
-        # this person's location (never read the trail or anything else).
+        # this person's location (never read the trail or anything else). The UNIQUE
+        # index is created in ensure_default_person() AFTER this — once the column
+        # exists for sure — never in schema.sql (which runs before migrations).
         _add_column(conn, "people", "location_key", "TEXT")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:
     """Guarantee one default person ('Me') exists — the catch-all any unmatched
     location `source` (the PWA's 'pwa', the watch's 'wear', a fresh device) rolls up
     to. Seeded once when the registry is empty; idempotent."""
+    # Runs AFTER migrations, so location_key is guaranteed present (schema.sql on a
+    # fresh DB, migration 28 on an upgrade) — safe to index here (NULLs stay distinct).
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
     if conn.execute("SELECT 1 FROM people LIMIT 1").fetchone():
         return
     conn.execute(

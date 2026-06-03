@@ -406,8 +406,10 @@ CREATE TABLE IF NOT EXISTS people (
   location_key TEXT,                            -- scoped token: location-WRITE only, forces source=this person
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
--- NULLs are distinct, so many people may have no key; non-null keys are unique.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key);
+-- NOTE: the UNIQUE index on location_key is created in ensure_default_person(), NOT
+-- here. schema.sql runs BEFORE migrations, and an existing people table (from
+-- migration 27, pre-location_key) won't have the column yet — indexing it here would
+-- crash with "no such column" on upgrade.
 
 -- LLM token-usage ledger: one row per provider call (recorded on a dedicated
 -- connection so it never touches the caller's transaction). Token counts are

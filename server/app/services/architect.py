@@ -273,7 +273,11 @@ def _untrusted(label: str, body: str) -> str:
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
-    rows = embeddings.semantic_search(conn, query, limit)
+    from . import search as search_svc
+    # Hybrid: keyword (FTS) + semantic, fused — so one call covers exact terms AND
+    # meaning. Returns titles only (best-first) to stay token-lean; the model
+    # read_notes the ones it wants.
+    rows = search_svc.hybrid_notes(conn, query, limit)
     if not rows:
         return "No matching notes."
     # Titles are user-controlled too -> fence them as untrusted data.

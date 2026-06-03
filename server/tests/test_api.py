@@ -1154,6 +1154,18 @@ def test_system_stats_and_token_meter(client):
     assert r["daily_warn_usd"] > 0
 
 
+def test_search_notes_tool_is_hybrid(client):
+    """search_notes now folds in keyword (FTS) results, not just semantic. With the
+    embedding search stubbed to [] (test fixture), a keyword hit must still surface —
+    which the old semantic-only tool could not do."""
+    from app.db import get_conn
+    from app.services import architect
+    client.post("/api/notes", json={"title": "notes/Kayaking", "content_md": "paddling the river"})
+    conn = get_conn()
+    msg, _ = architect._run_tool(conn, None, "search_notes", {"query": "kayaking"})
+    assert "notes/Kayaking" in msg
+
+
 def test_search_note_hit_reports_attachments(client):
     """A note hit carries an attachment count even when the query matched the NOTE
     body (not the attachment text) — so the card can always show the clip."""

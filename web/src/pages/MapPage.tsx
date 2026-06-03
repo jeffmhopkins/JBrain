@@ -45,6 +45,7 @@ export default function MapPage() {
   const addingRef = useRef(false);
 
   const [mode, setMode] = useState<Mode>("trail");
+  const [heatLevel, setHeatLevel] = useState(0.6);   // 0 = subtle … 1 = intense
   const [rangeDays, setRangeDays] = useState(7);
   const [points, setPoints] = useState<LocPoint[]>([]);
   const [notes, setNotes] = useState<LocatedNote[]>([]);
@@ -238,11 +239,12 @@ export default function MapPage() {
         { radius: 6, color: "#fff", weight: 2, fillColor: "#4ea1ff", fillOpacity: 1 }).addTo(m);
     } else if ((L as any).heatLayer) {
       const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs);
-      // Bigger, softer blobs + normalise to the DWELL scale (not the default max=1.0,
-      // which leaves sparse/short-window data barely visible): ~an hour at a spot now
-      // reads hot, and minOpacity keeps lighter areas from disappearing.
+      // The slider drives intensity: a higher level lowers `max` (more of the trail
+      // reaches "hot") and grows the radius (bigger shading), and vice-versa.
+      const heatMax = Math.max(0.12, 1 - heatLevel * 0.85);   // higher level → hotter
+      const radius = Math.round(26 + heatLevel * 26);          // ~26–52 px
       overlay.current = (L as any).heatLayer(hUpto, {
-        radius: 38, blur: 28, max: 0.5, minOpacity: 0.3, maxZoom: 17,
+        radius, blur: Math.round(radius * 0.7), max: heatMax, minOpacity: 0.3, maxZoom: 17,
       }).addTo(m);
     } else {
       overlay.current = L.layerGroup(
@@ -250,7 +252,7 @@ export default function MapPage() {
           { radius: 4 + 10 * heat[i][2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
       ).addTo(m);
     }
-  }, [points, mode, curTs, heat]);
+  }, [points, mode, curTs, heat, heatLevel]);
 
   useEffect(() => {
     if (!playing || timeline.length < 2) return;
@@ -266,6 +268,14 @@ export default function MapPage() {
           <button className={mode === "trail" ? "on" : ""} onClick={() => setMode("trail")}>Trail</button>
           <button className={mode === "heat" ? "on" : ""} onClick={() => setMode("heat")}>Heatmap</button>
         </div>
+        {mode === "heat" && (
+          <label className="heat-slider" title="Heat intensity">
+            <span className="muted">less</span>
+            <input type="range" min={0} max={100} value={Math.round(heatLevel * 100)}
+                   onChange={(e) => setHeatLevel(+e.target.value / 100)} />
+            <span className="muted">more</span>
+          </label>
+        )}
         <span className="spacer" />
         <div className="seg">
           {RANGES.map((r) => (

@@ -149,14 +149,13 @@ class LocationService : Service() {
             DetectedActivity.STILL, DetectedActivity.WALKING, DetectedActivity.RUNNING,
             DetectedActivity.ON_FOOT, DetectedActivity.ON_BICYCLE, DetectedActivity.IN_VEHICLE,
         )
-        val transitions = buildList {
-            for (a in moves) {
-                add(ActivityTransition.Builder().setActivityType(a)
-                    .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_ENTER).build())
-                if (a == DetectedActivity.STILL) {
-                    add(ActivityTransition.Builder().setActivityType(a)
-                        .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_EXIT).build())
-                }
+        val transitions = mutableListOf<ActivityTransition>()
+        for (a in moves) {
+            transitions.add(ActivityTransition.Builder().setActivityType(a)
+                .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_ENTER).build())
+            if (a == DetectedActivity.STILL) {
+                transitions.add(ActivityTransition.Builder().setActivityType(a)
+                    .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_EXIT).build())
             }
         }
         try {

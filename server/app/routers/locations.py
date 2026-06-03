@@ -30,6 +30,10 @@ class LocationIn(BaseModel):
     source: str = "wear"
 
 
+class LocationBatch(BaseModel):
+    points: list[LocationIn]
+
+
 def _parse(ts: str | None) -> datetime | None:
     if not ts:
         return None
@@ -71,6 +75,46 @@ def add_location(body: LocationIn):
         pass
     conn.commit()
     return {"stored": True, "id": cur.lastrowid}
+
+
+@router.post("/bulk")
+def add_locations(body: LocationBatch):
+    """Ingest a batch of fixes (a native tracker's offline-queue flush) in one call.
+
+    The keep-if-far-enough-OR-long-enough rule is applied IN ORDER — points are sorted
+    chronologically and each compared against the last KEPT point (the DB's newest,
+    then whatever we just stored), so an offline burst dedups exactly as a live stream
+    would. Capped per request so one flush can't run unbounded."""
+    conn = get_conn()
+    now = datetime.now(timezone.utc)
+    pts = sorted(body.points or [], key=lambda p: _parse(p.recorded_at) or now)[:5000]
+    last = conn.execute(
+        "SELECT lat, lon, recorded_at FROM locations ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    last_lat = last["lat"] if last else None
+    last_lon = last["lon"] if last else None
+    last_dt = _parse(last["recorded_at"]) if last else None
+    stored = 0
+    for p in pts:
+        rec_dt = _parse(p.recorded_at) or now
+        rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if last_lat is not None:
+            moved_m = geo.haversine_km(last_lat, last_lon, p.lat, p.lon) * 1000.0
+            elapsed_min = abs((rec_dt - (last_dt or rec_dt)).total_seconds()) / 60.0
+            if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
+                continue
+        conn.execute(
+            "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
+            (p.lat, p.lon, p.accuracy_m, rec_str, (p.source or "phone")[:32]),
+        )
+        try:
+            geotrail.update_location_state(conn, p.lat, p.lon, rec_str)
+        except Exception:  # noqa: BLE001
+            pass
+        last_lat, last_lon, last_dt = p.lat, p.lon, rec_dt
+        stored += 1
+    conn.commit()
+    return {"stored": stored, "received": len(body.points or [])}
 
 
 def _norm(ts: str | None) -> str | None:

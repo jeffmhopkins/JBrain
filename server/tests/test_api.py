@@ -1370,6 +1370,24 @@ def test_location_trail_dedup_rule(client):
     assert len(ranged) == 1 and ranged[0]["recorded_at"].startswith("2026-06-02 11:")
 
 
+def test_location_bulk_ingest_dedups_in_order(client):
+    """A batch (offline-queue flush) applies the same keep-if-far/long rule in
+    chronological order — out-of-order points are sorted, near-duplicates dropped,
+    and the per-device 'source' label is preserved (so family phones stay distinct)."""
+    pts = [
+        {"lat": 40.0020, "lon": -74.0, "recorded_at": "2026-06-02T10:02:00Z", "source": "Mom"},   # 3rd chrono, far → kept
+        {"lat": 40.0000, "lon": -74.0, "recorded_at": "2026-06-02T10:00:00Z", "source": "Mom"},   # 1st → kept
+        {"lat": 40.0002, "lon": -74.0, "recorded_at": "2026-06-02T10:01:00Z", "source": "Mom"},   # 2nd, ~30 m/1 min → dropped
+    ]
+    r = client.post("/api/locations/bulk", json={"points": pts}).json()
+    assert r["received"] == 3 and r["stored"] == 2
+    rows = client.get("/api/locations").json()
+    assert len(rows) == 2 and rows[0]["recorded_at"] <= rows[1]["recorded_at"]   # sorted, deduped
+    # source is recorded per point (family phones distinguishable).
+    from app.db import get_conn
+    assert get_conn().execute("SELECT DISTINCT source FROM locations").fetchone()["source"] == "Mom"
+
+
 def test_tile_proxy(client, monkeypatch):
     """The tile proxy validates coords, serves PNG bytes, and caches (no auth — it's
     public OSM imagery loaded via <img>, which can't carry the bearer token)."""

@@ -166,10 +166,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   const advTool = !capture && !review && !advHome;   // a tool open full-screen
   const advanced = advHome || advTool;
 
-  // Vertical swipe between chat and Lists.
-  //   chat:  ↑ starting in the composer text box → Lists. Gating on the composer
-  //          (not the scroll position) means swiping/scrolling the message body
-  //          never navigates — only a deliberate swipe up from the input does.
+  // Swipes anchored on the composer text box (gating on the input, not the scroll
+  // position, means scrolling the message body never navigates — only a deliberate
+  // swipe from the box does):
+  //   chat:  ↑ from the text box → Lists;  ← → Search;  → → Wiki.
   //   lists: ↓ from the top → chat.
   const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
@@ -187,6 +187,11 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (!s) return;
     const t = e.changedTouches[0];
     const dy = t.clientY - s.y, dx = t.clientX - s.x;
+    // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe).
+    if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if (s.fromComposer) nav(dx < 0 ? "/search" : "/wiki");
+      return;
+    }
     if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe
     const down = dy > 0;
     if (path === "/chat") { if (!down && s.fromComposer) nav("/lists"); }   // swipe up from the text box → Lists

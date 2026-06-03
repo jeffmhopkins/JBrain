@@ -89,15 +89,18 @@ export default function Wiki() {
     return [...nodes]
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((node) => {
-        // Compress a chain of single-child DIRECTORIES into one row, e.g.
-        // Work/Q3/Planning instead of three nested levels. Each segment is kept
-        // separately so a folder that's ALSO a note stays its own clickable link.
+        // Compress a chain of single-child pure-FOLDER directories into one row,
+        // e.g. Work/Q3/Planning instead of three nested levels. An article (a node
+        // with its own note) ALWAYS gets its own row — never glued into a breadcrumb:
+        // stop the moment the tail is an article (!cur.note) or the only child is one
+        // (!kids[0].note), so a sub-article like Jeff Hopkins/Medical nests under its
+        // parent rather than reading as part of the parent's path.
         const segments: { name: string; path: string; note?: NoteRow }[] = [];
         let cur = node;
         let path = prefix ? `${prefix}/${node.name}` : node.name;
         segments.push({ name: cur.name, path, note: cur.note });
         for (let kids = Object.values(cur.children);
-             kids.length === 1 && Object.keys(kids[0].children).length > 0;
+             !cur.note && kids.length === 1 && !kids[0].note && Object.keys(kids[0].children).length > 0;
              kids = Object.values(cur.children)) {
           cur = kids[0];
           path = `${path}/${cur.name}`;

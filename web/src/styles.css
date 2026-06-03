@@ -396,6 +396,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .person-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .person-name { font-weight: 600; }
 .person-aliases { font-size: 12px; }
+/* Locked while a setup code is live (revoke to edit) — dim + a 🔒 cursor hint. */
+.person-main input:disabled { opacity: 0.6; cursor: not-allowed; }
 .person-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .person-actions .ghost { font-size: 12px; padding: 4px 10px; }
 /* Map per-person trail filter chips */

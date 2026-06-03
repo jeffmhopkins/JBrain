@@ -68,6 +68,13 @@ def update_person(person_id: int, body: PersonPatch):
     p = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
     if p is None:
         raise HTTPException(status_code=404, detail="No such person")
+    # Name + aliases are baked into the live setup code and drive fix attribution.
+    # Locked while a key is active so already-distributed codes can't desync — revoke first.
+    if p["location_key"]:
+        if body.name is not None and body.name.strip()[:40] != p["name"]:
+            raise HTTPException(status_code=409, detail="Revoke the location key before renaming this person.")
+        if body.aliases is not None and body.aliases.strip() != (p["aliases"] or ""):
+            raise HTTPException(status_code=409, detail="Revoke the location key before changing ingestion sources.")
     name = body.name.strip()[:40] if body.name is not None else None
     if body.name is not None and not name:
         raise HTTPException(status_code=422, detail="Name required")

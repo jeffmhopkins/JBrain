@@ -89,11 +89,18 @@ export default function PeoplePage() {
                      onChange={(e) => { patch(p.id, "color", e.target.value); commit(p.id, { color: e.target.value }); }}
                      title="Trail colour" />
               <div className="person-main">
+                {/* Name + aliases are baked into the live setup code and drive fix
+                    attribution — changing them would desync the codes already on
+                    people's phones, so they're locked until the key is revoked. */}
                 <input className="person-name" value={p.name}
+                       disabled={!!p.location_key}
+                       title={p.location_key ? "Locked while a setup code is active — revoke it to rename." : undefined}
                        onChange={(e) => patch(p.id, "name", e.target.value)}
                        onBlur={(e) => commit(p.id, { name: e.target.value.trim() })} />
                 <input className="person-aliases" placeholder="source aliases (comma-separated)"
                        value={p.aliases}
+                       disabled={!!p.location_key}
+                       title={p.location_key ? "Locked while a setup code is active — revoke it to change ingestion sources." : undefined}
                        onChange={(e) => patch(p.id, "aliases", e.target.value)}
                        onBlur={(e) => commit(p.id, { aliases: e.target.value })} />
               </div>
@@ -124,8 +131,10 @@ export default function PeoplePage() {
       <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
         Setup code: copy it and paste into the tracker app's <strong>Access key</strong> field — it auto-fills the
         person's Name, your server, and a location-only key (no typing). That key can ONLY log this person's location
-        (no reading the trail, no access to anything else), and every fix is attributed to them. Tip: you can also tag
-        a KB note as a person from the note itself, or add a tracker's Name as an alias above to fold its trail in.
+        (no reading the trail, no access to anything else), and every fix is attributed to them. While a code is active
+        the person's <strong>Name</strong> and <strong>ingestion sources</strong> lock (the code on their phone bakes those
+        in) — <strong>Revoke</strong> to edit, then re-issue. Tip: you can also tag a KB note as a person from the note
+        itself, or add a tracker's Name as an alias above to fold its trail in.
       </p>
     </div>
   );

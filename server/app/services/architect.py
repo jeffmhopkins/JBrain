@@ -60,11 +60,11 @@ _TOOL_SCHEMAS = {
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
     "current_location": {"type": "object", "properties": {}},
     "geo_distance": {"type": "object", "properties": {
-        "from": {"type": "string", "description": "Note title OR 'lat,lon'."},
-        "to": {"type": "string", "description": "Note title OR 'lat,lon'. Omit to measure from the current location."}},
+        "from": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'."},
+        "to": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'. Omit to measure from the current location."}},
         "required": ["from"]},
     "nearby_notes": {"type": "object", "properties": {
-        "center": {"type": "string", "description": "Note title or 'lat,lon'. Omit to use the current location."},
+        "center": {"type": "string", "description": "A saved place name, a note title, or 'lat,lon'. Omit to use the current location."},
         "radius_km": {"type": "number", "default": 25},
         "limit": {"type": "integer", "default": 10}}},
     "where_was_i": {"type": "object", "properties": {
@@ -303,20 +303,37 @@ _COORD_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 def _resolve_point(conn, ref: str):
-    """Resolve a geo endpoint given as 'lat,lon' OR a note title.
-    Returns (lat, lon, label) or an error string."""
-    m = _COORD_RE.match(ref or "")
+    """Resolve a geo endpoint given as 'lat,lon', a SAVED PLACE name, or a note title.
+    A place that shows on the map keeps its coordinates in the places (geofence) table,
+    NOT on its loc/ note, so we consult both. Returns (lat, lon, label) or an error str."""
+    ref = (ref or "").strip()
+    m = _COORD_RE.match(ref)
     if m:
         lat, lon = float(m.group(1)), float(m.group(2))
         if not geo.valid_coord(lat, lon):
             return f"'{ref}' is out of range (lat -90..90, lon -180..180)."
         return (lat, lon, None)
-    note = notes_svc.get_by_title(conn, (ref or "").strip())
+    # A saved place (geofence), matched by name — tolerate a loc/ note-style prefix.
+    pname = ref[4:].strip() if ref.lower().startswith("loc/") else ref
+    place = conn.execute(
+        "SELECT name, lat, lon FROM places WHERE name = ? COLLATE NOCASE AND lat IS NOT NULL LIMIT 1",
+        (pname,),
+    ).fetchone()
+    if place:
+        return (place["lat"], place["lon"], place["name"])
+    note = notes_svc.get_by_title(conn, ref)
     if note is None:
-        return f"No note titled '{ref}' (give a note title or 'lat,lon')."
-    if note["lat"] is None or note["lon"] is None:
-        return f"Note '{note['title']}' has no stored location."
-    return (note["lat"], note["lon"], note["title"])
+        return f"No saved place or note named '{ref}' (give a place name, a note title, or 'lat,lon')."
+    if note["lat"] is not None and note["lon"] is not None:
+        return (note["lat"], note["lon"], note["title"])
+    # A loc/ place note carries no coords of its own — fall back to its linked geofence.
+    fence = conn.execute(
+        "SELECT lat, lon FROM places WHERE note_slug = ? AND lat IS NOT NULL LIMIT 1",
+        (note["slug"],),
+    ).fetchone()
+    if fence:
+        return (fence["lat"], fence["lon"], note["title"])
+    return f"'{note['title']}' has no stored location (and no geofence on the map)."
 
 
 def _tool_current_location(conn, conversation_id):

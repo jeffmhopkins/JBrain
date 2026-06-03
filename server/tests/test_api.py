@@ -639,6 +639,27 @@ def test_geo_tools(client):
     assert {"geo_distance", "nearby_notes", "current_location"} <= research
 
 
+def test_geo_distance_resolves_place_geofence(client):
+    """A saved place keeps its coords in the geofence table, not on its loc/ note, so
+    geo_distance must resolve it by place name AND by the loc/ note title — otherwise a
+    place that shows on the map reads as 'no stored coordinates'."""
+    from app.db import get_conn
+    from app.services import architect, places as places_svc
+    conn = get_conn()
+    pid = conn.execute(
+        "INSERT INTO places (name, lat, lon, radius_m) VALUES ('Hangar X, KSC', 28.5, -80.6, 200)"
+    ).lastrowid
+    places_svc.ensure_note(conn, pid)        # creates the loc/ note (no coords on the note itself)
+    conn.commit()
+    note = conn.execute("SELECT lat, lon FROM notes WHERE title='loc/Hangar X, KSC'").fetchone()
+    assert note["lat"] is None              # the note carries no coords…
+
+    # …yet geo_distance resolves it three ways: bare place name, loc/ title, and as a note title.
+    for ref in ("Hangar X, KSC", "loc/Hangar X, KSC"):
+        out = architect._tool_geo_distance(conn, None, "28.4,-80.5", ref)
+        assert "km" in out and "no stored location" not in out
+
+
 def test_share_link_bind(client):
     # A 'bind' link shows a consent landing; ACCEPT (claim) locks it to that
     # browser. Others are locked out until the owner resets.

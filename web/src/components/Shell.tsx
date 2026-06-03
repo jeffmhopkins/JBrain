@@ -171,7 +171,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   // swipe from the box does):
   //   chat:  ↑ from the text box → Lists;  ← → Search;  → → Wiki.
   //   lists: ↓ from the top → chat.
-  const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean } | null>(null);
+  const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean; edgeStart: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
     const el = e.target as HTMLElement;
@@ -180,6 +180,11 @@ export default function Shell({ children }: { children: ReactNode }) {
       y: t.clientY, x: t.clientX,
       fromComposer: !!el.closest(".composer-box"),
       atTop: !sc || sc.scrollTop <= 2,
+      // A horizontal swipe that STARTS in the OS edge gutter is the system back/
+      // forward gesture (Android uses both edges). The composer spans the full
+      // width at the bottom, so without this an edge-back lands on it and our
+      // nav() fires too — fighting the system back and dumping out of the PWA.
+      edgeStart: t.clientX <= 30 || t.clientX >= window.innerWidth - 30,
     };
   }
   function onTouchEnd(e: TouchEvent) {
@@ -187,9 +192,10 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (!s) return;
     const t = e.changedTouches[0];
     const dy = t.clientY - s.y, dx = t.clientX - s.x;
-    // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe).
+    // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe,
+    // started clear of the OS edge gutter so it can't collide with system back).
     if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      if (s.fromComposer) nav(dx < 0 ? "/search" : "/wiki");
+      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki");
       return;
     }
     if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe

@@ -170,6 +170,38 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             # "Places" tab — not only the Map panel. Undo removes geofence + note.
             slug = places_svc.ensure_note(conn, pid)
             undo = {"op": "delete_place", "id": pid, "note_slug": slug}
+    elif action_type == "EDIT_PLACE":
+        target = (payload.get("place") or "").strip()
+        place = conn.execute(
+            "SELECT id, name, lat, lon, radius_m, note_slug FROM places WHERE name = ? COLLATE NOCASE LIMIT 1",
+            (target,)).fetchone()
+        if not target or place is None:
+            raise HTTPException(status_code=400, detail=f"EDIT_PLACE: no saved place named “{target}”.")
+        pid = place["id"]
+        # Capture the prior state so the change is undoable.
+        undo = {"op": "edit_place", "id": pid, "name": place["name"], "lat": place["lat"],
+                "lon": place["lon"], "radius_m": place["radius_m"], "note_slug": place["note_slug"]}
+        new_name = (payload.get("new_name") or "").strip()[:80]
+        if new_name and new_name.lower() != place["name"].lower():
+            if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
+                            (new_name, pid)).fetchone():
+                raise HTTPException(status_code=409, detail=f"A place named “{new_name}” already exists.")
+            conn.execute("UPDATE places SET name = ? WHERE id = ?", (new_name, pid))
+            # Keep the linked loc/ page's title in sync with the rename.
+            if place["note_slug"]:
+                note = conn.execute("SELECT id, content_md FROM notes WHERE slug = ? AND deleted_at IS NULL",
+                                    (place["note_slug"],)).fetchone()
+                if note is not None:
+                    notes_svc.upsert_note(conn, places_svc._loc_title(new_name), note["content_md"],
+                                          note_id=note["id"], source="user", kind="place")
+                    nslug = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
+                    conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (nslug["slug"], pid))
+        if payload.get("lat") is not None and payload.get("lon") is not None:
+            conn.execute("UPDATE places SET lat = ?, lon = ? WHERE id = ?",
+                         (payload["lat"], payload["lon"], pid))
+        if payload.get("radius_m") is not None:
+            conn.execute("UPDATE places SET radius_m = ? WHERE id = ?",
+                         (max(20, min(int(payload["radius_m"]), 20000)), pid))
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -198,6 +230,10 @@ def _applied_summary(action_type: str, payload: dict) -> str:
         return f"Deleted [[{(payload.get('title') or '').strip()}]]"
     if action_type == "ADD_PLACE":
         return f"Saved place “{(payload.get('name') or '').strip()}”"
+    if action_type == "EDIT_PLACE":
+        nm = (payload.get("new_name") or "").strip()
+        base = (payload.get("place") or "").strip()
+        return f"Edited place “{base}”" + (f" → “{nm}”" if nm and nm.lower() != base.lower() else "")
     lt = notes_svc.root_title(payload.get("list_title") or "", "lists")
     if action_type == "DELETE_LIST":
         return f"Deleted list [[{lt}]]"
@@ -320,6 +356,20 @@ def undo_action(action_id: int):
                              (undo["note_slug"],)).fetchone()
             if n:
                 notes_svc.soft_delete(conn, n["id"])
+    elif op == "edit_place":
+        # Restore the place's prior name/centre/radius (and re-sync its loc/ page title).
+        cur = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (undo["id"],)).fetchone()
+        if cur is not None:
+            conn.execute("UPDATE places SET name = ?, lat = ?, lon = ?, radius_m = ? WHERE id = ?",
+                         (undo["name"], undo["lat"], undo["lon"], undo["radius_m"], undo["id"]))
+            if cur["name"].lower() != (undo["name"] or "").lower() and cur["note_slug"]:
+                note = conn.execute("SELECT id, content_md FROM notes WHERE slug = ? AND deleted_at IS NULL",
+                                    (cur["note_slug"],)).fetchone()
+                if note is not None:
+                    notes_svc.upsert_note(conn, places_svc._loc_title(undo["name"]), note["content_md"],
+                                          note_id=note["id"], source="user", kind="place")
+                    nslug = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
+                    conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (nslug["slug"], undo["id"]))
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

@@ -40,3 +40,19 @@ def list_inbox(include_processed: bool = False):
         f"FROM inbox {where} ORDER BY created_at DESC LIMIT 200"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+@router.post("/{item_id}/processed")
+def mark_processed(item_id: int, processed: bool = True):
+    """Owner clears (or restores) a captured item from the inbox UI."""
+    get_conn().execute("UPDATE inbox SET processed = ? WHERE id = ?", (1 if processed else 0, item_id))
+    get_conn().commit()
+    return {"ok": True}
+
+
+@router.delete("/{item_id}")
+def delete_inbox(item_id: int):
+    """Owner deletes a captured item outright."""
+    get_conn().execute("DELETE FROM inbox WHERE id = ?", (item_id,))
+    get_conn().commit()
+    return {"ok": True}

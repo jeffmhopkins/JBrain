@@ -16,6 +16,7 @@ import PeoplePage from "./pages/PeoplePage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
+import InboxPage from "./pages/InboxPage";
 import AdvancedHome from "./pages/AdvancedHome";
 import ActionsPage from "./pages/ActionsPage";
 import SystemPage from "./pages/SystemPage";
@@ -133,6 +134,7 @@ export default function App() {
                 <Route path="/graph" element={<GraphPage />} />
                 <Route path="/map" element={<MapPage />} />
                 <Route path="/people" element={<PeoplePage />} />
+                <Route path="/inbox" element={<InboxPage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/prompts" element={<PromptsPanel />} />
                 <Route path="/actions" element={<ActionsPage />} />

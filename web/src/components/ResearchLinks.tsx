@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import {
   post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
+  researchResetBind, researchSetDetails,
 } from "../api";
 
 interface RLink {
@@ -72,16 +73,38 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
   );
 }
 
+interface Settings { persona_voice: string; topics: string; intro: string; bind: boolean; single_use: boolean; ttl_days: number; }
+
 function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void }) {
   const [d, setD] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [s, setS] = useState<Settings | null>(null);
+  const [saved, setSaved] = useState(false);
 
-  async function refresh() { try { setD(await researchDetail(linkId)); } catch { /* ignore */ } }
+  async function refresh() {
+    try {
+      const detail = await researchDetail(linkId);
+      setD(detail);
+      setS({
+        persona_voice: detail.spec.persona_voice || "", topics: detail.spec.topics || "",
+        intro: detail.spec.intro || "", bind: !!detail.spec.bind, single_use: !!detail.spec.single_use,
+        ttl_days: 0,
+      });
+    } catch { /* ignore */ }
+  }
   useEffect(() => { refresh(); }, [linkId]);
 
   async function act(fn: () => Promise<any>) { setBusy(true); try { await fn(); await refresh(); } finally { setBusy(false); } }
+  async function saveSettings() {
+    if (!s) return;
+    setBusy(true);
+    try { await researchSetDetails(linkId, { ...s }); setSaved(true); setTimeout(() => setSaved(false), 1500); await refresh(); }
+    catch (e: any) { alert(e?.message || "Couldn't save."); }
+    finally { setBusy(false); }
+  }
+  const set = (patch: Partial<Settings>) => setS((p) => p ? { ...p, ...patch } : p);
 
-  if (!d) return <Modal title="Research link" onClose={onClose} footer={null}><p className="muted">Loading…</p></Modal>;
+  if (!d || !s) return <Modal title="Research link" onClose={onClose} footer={null}><p className="muted">Loading…</p></Modal>;
 
   const draft = d.spec.status === "draft";
   return (
@@ -120,12 +143,44 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
         </div>
       ))}
 
+      <div className="adv-section" style={{ marginTop: 16 }}>Settings</div>
+      <label className="share-field">What the AI may &amp; may NOT discuss (scope)
+        <textarea rows={2} value={s.topics} disabled={busy}
+                  placeholder="e.g. only medications and allergies; never finances or family"
+                  onChange={(e) => set({ topics: e.target.value })} /></label>
+      <label className="share-field">Tone / role (persona)
+        <textarea rows={2} value={s.persona_voice} disabled={busy}
+                  placeholder="e.g. answer warmly, like a helpful nurse"
+                  onChange={(e) => set({ persona_voice: e.target.value })} /></label>
+      <label className="share-field">Recipient greeting (intro)
+        <textarea rows={2} value={s.intro} disabled={busy}
+                  onChange={(e) => set({ intro: e.target.value })} /></label>
+      <div className="row" style={{ gap: 14, flexWrap: "wrap", marginTop: 4 }}>
+        <label className="row" style={{ gap: 6 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={s.bind} disabled={busy}
+                 onChange={(e) => set({ bind: e.target.checked })} /> Lock to first browser</label>
+        <label className="row" style={{ gap: 6 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={s.single_use} disabled={busy}
+                 onChange={(e) => set({ single_use: e.target.checked })} /> Single use</label>
+        <label className="row" style={{ gap: 6 }}>Expires in
+          <input type="number" min={0} style={{ width: 64 }} value={s.ttl_days} disabled={busy}
+                 onChange={(e) => set({ ttl_days: Math.max(0, +e.target.value) })} /> days (0 = never)</label>
+      </div>
+      <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>
+        {d.expires_at ? `Currently expires ${d.expires_at} UTC.` : "Currently never expires."}
+        {d.bound_at ? " · Bound to a device." : ""}
+      </p>
+      <div className="row" style={{ gap: 8, marginTop: 6 }}>
+        <button className="primary" disabled={busy} onClick={saveSettings}>{saved ? "Saved ✓" : "Save settings"}</button>
+        {d.bound_at && <button className="ghost" disabled={busy} onClick={() => act(() => researchResetBind(linkId))}>Reset device lock</button>}
+      </div>
+
       {d.sessions.length > 0 && <>
         <div className="adv-section" style={{ marginTop: 16 }}>Sessions ({d.sessions.length})</div>
-        {d.sessions.map((s: any) => (
-          <div className="muted" key={s.id} style={{ fontSize: 12 }}>
-            {s.name || "Someone"} · {s.turn_count} question(s) · {s.retrieved} note(s) used
-            {s.denied_count ? ` · ${s.denied_count} blocked` : ""}
+        {d.sessions.map((se: any) => (
+          <div className="muted" key={se.id} style={{ fontSize: 12 }}>
+            {se.name || "Someone"} · {se.turn_count} question(s) · {se.retrieved} note(s) used
+            {se.denied_count ? ` · ${se.denied_count} blocked` : ""}
           </div>
         ))}
       </>}

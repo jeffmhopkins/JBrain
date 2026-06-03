@@ -1462,6 +1462,50 @@ def test_research_share_topics_stored(client):
     assert "allergies" in (research.get_spec(conn, link["id"])["topics"] or "")
 
 
+def test_research_link_details_parity(client):
+    """Owner can edit the research link's prompts/topics, lock-to-browser, and expiry
+    post-creation (parity with other share links), and reset the device lock."""
+    from app.db import get_conn
+    from app.services import architect, research
+    client.post("/api/notes", json={"title": "notes/Medical/A", "content_md": "x"})
+    conn = get_conn()
+    architect._tool_create_research_share(conn, None, prefixes=["notes/Medical"])
+    conn.commit()
+    lid = conn.execute("SELECT id FROM share_links WHERE kind='research' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+
+    r = client.post(f"/api/shares/research/{lid}/details", json={
+        "persona_voice": "warm nurse", "topics": "only meds", "intro": "hi",
+        "bind": True, "single_use": False, "ttl_days": 7})
+    assert r.status_code == 200
+    spec = research.get_spec(conn, lid)
+    assert spec["topics"] == "only meds" and spec["persona_voice"] == "warm nurse" and spec["bind"] == 1
+    detail = client.get(f"/api/shares/research/{lid}").json()
+    assert detail["expires_at"] is not None and detail["spec"]["topics"] == "only meds"
+
+    # Set never-expires, then reset the device lock.
+    client.post(f"/api/shares/research/{lid}/details", json={"ttl_days": 0})
+    assert client.get(f"/api/shares/research/{lid}").json()["expires_at"] is None
+    assert client.post(f"/api/shares/research/{lid}/reset-bind").json()["ok"] is True
+
+
+def test_notify_posts_to_review_bell(client):
+    """push.notify creates a review-inbox item (with a deep-link) so the in-app bell
+    mirrors the native notification."""
+    from app.db import get_conn
+    from app.services import push
+    before = client.get("/api/reviews/count").json()["pending"]
+    push.notify("Map ping", "you arrived", "/map")
+    # notify runs on a daemon thread; give it a beat to commit.
+    import time
+    for _ in range(20):
+        if client.get("/api/reviews/count").json()["pending"] > before:
+            break
+        time.sleep(0.05)
+    items = client.get("/api/reviews").json()
+    hit = next((i for i in items if i["title"] == "Map ping"), None)
+    assert hit and hit["link_slug"] == "/map"
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

@@ -326,6 +326,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .share-hist-meta { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
 /* One terse, consistent caption under each Shares section header. */
 .share-hint { font-size: 12px; color: var(--text-dim); line-height: 1.45; margin: 2px 0 12px; }
+.share-field { display: block; font-size: 12px; color: var(--text-dim); margin: 8px 0; }
+.share-field textarea, .share-field input { display: block; width: 100%; margin-top: 4px; font-size: 13px; }
 /* ---- Location-trail map tool ---- */
 .map-tool { display: flex; flex-direction: column; gap: 8px; }
 .map-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

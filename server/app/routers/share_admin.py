@@ -300,9 +300,12 @@ def research_detail(link_id: int):
     sessions = conn.execute(
         "SELECT id, name, turn_count, denied_count, retrieved_ids_json, created_at, last_at, status "
         "FROM research_sessions WHERE share_link_id=? ORDER BY created_at DESC LIMIT 50", (link_id,)).fetchall()
+    link = conn.execute("SELECT expires_at, bound_at FROM share_links WHERE id=?", (link_id,)).fetchone()
     return {
-        "spec": {k: spec[k] for k in ("status", "persona_voice", "intro", "bind", "single_use",
+        "spec": {k: spec[k] for k in ("status", "persona_voice", "topics", "intro", "bind", "single_use",
                                        "max_turns", "max_total_replies", "reply_count")},
+        "expires_at": link["expires_at"] if link else None,
+        "bound_at": link["bound_at"] if link else None,
         "scope": json.loads(spec["scope_json"] or "{}"),
         "candidates": research_svc.list_candidates(conn, link_id),
         "approved": research_svc.list_approved(conn, link_id),
@@ -325,9 +328,11 @@ def research_set_scope(link_id: int, body: ResearchScopeIn):
 
 class ResearchDetailsIn(BaseModel):
     persona_voice: str = ""
+    topics: str = ""
     intro: str = ""
     bind: bool = False
     single_use: bool = False
+    ttl_days: int = 0                 # 0 = never expires; reset on each save
     max_turns: int = 30
     max_total_replies: int = 200
 
@@ -335,9 +340,24 @@ class ResearchDetailsIn(BaseModel):
 @router.post("/research/{link_id}/details")
 def research_set_details(link_id: int, body: ResearchDetailsIn):
     conn = get_conn()
-    research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, intro=body.intro,
-                             bind=body.bind, single_use=body.single_use, max_turns=body.max_turns,
-                             max_total_replies=body.max_total_replies)
+    research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, topics=body.topics,
+                             intro=body.intro, bind=body.bind, single_use=body.single_use,
+                             max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+    # Expiry lives on the share_link; reset the clock on each save (0 = never).
+    exp = f"+{int(body.ttl_days)} days" if (body.ttl_days and int(body.ttl_days) > 0) else None
+    conn.execute("UPDATE share_links SET expires_at = %s WHERE id = ?"
+                 % ("datetime('now', ?)" if exp else "NULL"),
+                 ((exp, link_id) if exp else (link_id,)))
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/research/{link_id}/reset-bind")
+def research_reset_bind(link_id: int):
+    """Forget the device a lock-to-browser research link bound to, so it can be
+    re-opened on a different device."""
+    conn = get_conn()
+    share_svc.reset_bind(conn, link_id)
     conn.commit()
     return {"ok": True}
 

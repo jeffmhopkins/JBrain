@@ -115,14 +115,22 @@ def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> Non
 
 
 def notify(title: str, body: str, url: str = "/") -> None:
-    """Fire-and-forget push to all devices with a custom title/body/deep-link.
-    Runs on its own connection in a daemon thread, so it's safe to call from a
-    request handler or the scheduler thread; it never raises and never touches the
-    caller's transaction. Backs the `notify` pipeline primitive (location triggers)."""
-    threading.Thread(
-        target=lambda: _send_all(get_conn(), title, body, url=url or "/", tag="jbrain-notify"),
-        daemon=True,
-    ).start()
+    """Fire-and-forget notification: post it to the in-app review bell AND push to
+    every device with a deep-link. Runs on its own connection in a daemon thread, so
+    it's safe from a request handler or the scheduler thread; never raises, never
+    touches the caller's transaction. Backs the `notify` pipeline primitive."""
+    def _go():
+        conn = get_conn()
+        # A bell item so the alarm icon mirrors the native push (link_slug carries a
+        # path like "/map" — the bell opens it directly). Committed BEFORE the push so
+        # the count rides in the payload and the bell updates live.
+        try:
+            reviews_svc.create_review_item(conn, None, title[:120], (body or "")[:400], (url or "/"))
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+        _send_all(conn, title, body, url=url or "/", tag="jbrain-notify")
+    threading.Thread(target=_go, daemon=True).start()
 
 
 def _send_all(conn, title: str, body: str, url: str = "/shares", tag: str = "jbrain-reviews") -> dict:

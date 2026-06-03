@@ -123,6 +123,7 @@ export const researchApprove = (linkId: number, ids: number[]) => post(`/api/sha
 export const researchDismiss = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/dismiss`, { ids });
 export const researchRemove = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/remove`, { ids });
 export const researchActivate = (linkId: number) => post(`/api/shares/research/${linkId}/activate`);
+export const researchResetBind = (linkId: number) => post(`/api/shares/research/${linkId}/reset-bind`);
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.

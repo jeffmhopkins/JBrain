@@ -46,7 +46,7 @@ _DEFAULT_MODE_TOOLS = {
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
-                 "kb_citation_cleanup", "kb_promote_recurrences", "propose_actions"],
+                 "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -188,6 +188,8 @@ _TOOL_SCHEMAS = {
     "kb_promote_recurrences": {"type": "object", "properties": {
         "min_days": {"type": "integer", "default": 3, "description": "Distinct days a thing must recur to count as a pattern."},
         "auto_apply": {"type": "boolean", "default": False, "description": "Write pattern articles directly instead of staging for review."}}},
+    "kb_audit": {"type": "object", "properties": {
+        "limit": {"type": "integer", "default": 1000, "description": "Max KB articles to scan."}}},
 }
 
 
@@ -653,6 +655,24 @@ def _tool_kb_promote_recurrences(conn, conversation_id, min_days=3, auto_apply=F
     return f"Recurring-pattern check ({detail}). Any pattern articles are staged below — review the diffs and approve.", {"type": "staging"}
 
 
+def _tool_kb_audit(conn, conversation_id, limit=1000):
+    """Read-only lint of the KB: report each article's citation/formatting problems
+    inline. Writes nothing to the KB (the same check runs on a schedule via the
+    kb_audit action, which files findings to the Review inbox)."""
+    from . import pipeline
+    try:
+        res = pipeline._PRIMITIVES["kb_audit"](pipeline._Ctx(conn, None, None), limit=int(limit))
+    except Exception as e:
+        return f"KB audit failed: {e}", None
+    flagged = res["flagged"]
+    if not flagged:
+        return f"Audited {res['scanned']} KB article(s) — formatting and citations look correct.", None
+    lines = [f"- [[{a['title']}]] — {'; '.join(a['issues'])}" for a in flagged[:30]]
+    more = f"\n…and {len(flagged) - 30} more." if len(flagged) > 30 else ""
+    return (f"KB audit — {res['bad']} of {res['scanned']} article(s) have issues:\n"
+            + "\n".join(lines) + more), None
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -969,6 +989,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_citation_cleanup(conn, conversation_id, args.get("batch_limit", 10), args.get("auto_apply", False))
     if name == "kb_promote_recurrences":
         return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
+    if name == "kb_audit":
+        return _tool_kb_audit(conn, conversation_id, args.get("limit", 1000))
     return f"Unknown tool: {name}", None
 
 

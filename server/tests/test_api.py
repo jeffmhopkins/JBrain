@@ -1087,6 +1087,41 @@ def test_staged_create_under_kb_becomes_kb_article(client):
     assert row is not None and row["kind"] == "kb"
 
 
+def test_kb_audit_flags_citation_and_formatting_issues(client):
+    """The read-only KB audit flags articles with broken footnotes, dangling [[links]],
+    or formatting drift, and leaves clean articles alone — without writing anything."""
+    from app.db import get_conn
+    from app.services import notes as notes_svc, architect, pipeline
+    conn = get_conn()
+    # A source entry + a CLEAN footnoted article that cites it → no issues.
+    notes_svc.upsert_note(conn, "notes/Trip", "went to Rome", kind="entry")
+    notes_svc.upsert_note(conn, "kb/Rome",
+                          "Rome is a city.[^s1]\n\n## References\n[^s1]: [[notes/Trip]] — 2026-06-01",
+                          kind="kb")
+    # A BROKEN article: a marker with no definition AND a [[link]] to a missing note.
+    notes_svc.upsert_note(conn, "kb/Broken",
+                          "A claim.[^s1]\n\nSee [[notes/Ghost]].\n", kind="kb")
+    # An OLD-STYLE article: leftover "## Sources" list (formatting drift).
+    notes_svc.upsert_note(conn, "kb/Legacy",
+                          "Body [[notes/Trip]].\n\n## Sources\n- [[notes/Trip]]\n", kind="kb")
+    conn.commit()
+
+    res = pipeline._PRIMITIVES["kb_audit"](pipeline._Ctx(conn, None, None))
+    flagged = {a["title"]: a["issues"] for a in res["flagged"]}
+    assert "kb/Rome" not in flagged                      # clean → not flagged
+    assert "kb/Broken" in flagged and "kb/Legacy" in flagged
+    assert any("no definition" in i for i in flagged["kb/Broken"])
+    assert any("resolves to no note" in i for i in flagged["kb/Broken"])
+    assert any("Sources" in i for i in flagged["kb/Legacy"])
+
+    # The architect tool reports the same inline and writes nothing.
+    before = conn.execute("SELECT content_md FROM notes WHERE title='kb/Broken'").fetchone()["content_md"]
+    msg, event = architect._run_tool(conn, None, "kb_audit", {})
+    assert "kb/Broken" in msg and event is None
+    after = conn.execute("SELECT content_md FROM notes WHERE title='kb/Broken'").fetchone()["content_md"]
+    assert before == after                               # read-only
+
+
 def test_place_note_restored_after_delete(client):
     """Deleting a place's loc/ note then re-opening it RESTORES the note (was a 500
     before — the soft-deleted title collided on re-create)."""

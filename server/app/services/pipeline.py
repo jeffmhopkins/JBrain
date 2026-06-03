@@ -404,6 +404,47 @@ def _cited_titles(md: str) -> set:
             for m in re.finditer(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]", md or "") if m.group(1).strip()}
 
 
+def _p_kb_audit(ctx, limit=1000):
+    """Read-only LINT of the knowledge base: scan every kb article for citation and
+    formatting problems WITHOUT writing anything. Per article it reports:
+      - footnote integrity (a marker with no definition, an id defined twice, a
+        definition carrying no [[source]] link) — via citation_issues()
+      - a citation / cross-link whose [[target]] resolves to no existing note (broken)
+      - leftover old-style "## Sources" list (should be a "## References" footnote block)
+      - footnote markers used but no "## References" section holding their definitions
+      - no citations at all (a KB article with durable facts but nothing traced)
+    Returns {flagged: [{id,title,slug,issues:[...]}], bad, ok, scanned}."""
+    rows = ctx.conn.execute(
+        "SELECT id, title, slug, content_md FROM notes "
+        "WHERE kind='kb' AND deleted_at IS NULL ORDER BY title"
+    ).fetchall()
+    capped = rows[: max(1, min(int(limit), 5000))]
+    flagged = []
+    for r in capped:
+        md = r["content_md"] or ""
+        issues = list(citation_issues(md))
+        # Broken targets: every [[title]] (cite or cross-link) must resolve to a note.
+        # Keep the original casing for the message; dedupe case-insensitively.
+        seen = set()
+        for m in re.finditer(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]", md):
+            tgt = m.group(1).strip()
+            if not tgt or tgt.lower() in seen:
+                continue
+            seen.add(tgt.lower())
+            if notes_svc.get_by_title(ctx.conn, tgt) is None:
+                issues.append(f"link [[{tgt}]] resolves to no note")
+        # Formatting drift against the house style.
+        if "## Sources" in md:
+            issues.append('old-style "## Sources" list — convert to "## References" footnotes')
+        if _FN_MARK_RE.search(md) and "## References" not in md:
+            issues.append('footnote markers present but no "## References" section')
+        if not _WIKILINK_RE.search(md):
+            issues.append("no citations — no [[source]] link anywhere")
+        if issues:
+            flagged.append({"id": r["id"], "title": r["title"], "slug": r["slug"], "issues": issues})
+    return {"flagged": flagged, "bad": len(flagged), "ok": len(capped) - len(flagged), "scanned": len(capped)}
+
+
 def _strip_code_fence(s: str) -> str:
     s = (s or "").strip()
     if s.startswith("```"):
@@ -887,6 +928,7 @@ _PRIMITIVES = {
     "wiki_plan": _p_wiki_plan,
     "validate_citations": _p_validate_citations,
     "kb_old_citation_pending": _p_kb_old_citation_pending,
+    "kb_audit": _p_kb_audit,
     "recite_articles": _p_recite_articles,
     "kb_uncited_pending": _p_kb_uncited_pending,
     "mark_evaluated": _p_mark_evaluated,
@@ -983,6 +1025,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                            "output": "object"},
     "kb_old_citation_pending": {"summary": "KB articles still in the old citation style (not yet footnoted).",
                                 "inputs": [{"name": "limit", "type": "int"}], "output": "object"},
+    "kb_audit": {"summary": "Read-only lint of every KB article: citation integrity, broken [[links]], formatting drift.",
+                 "inputs": [{"name": "limit", "type": "int"}], "output": "object"},
     "recite_articles": {"summary": "LLM-reformat articles to footnote citations; reject ones that drop a link.",
                         "inputs": [{"name": "articles", "type": "list", "required": True}], "output": "object"},
     "kb_uncited_pending": {"summary": "Entries no kb article cites and synthesis hasn't evaluated.",

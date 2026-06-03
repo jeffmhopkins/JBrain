@@ -1,0 +1,28 @@
+# Declarative action: KB AUDIT (read-only). Lint every knowledge-base article for
+# citation + formatting problems WITHOUT changing anything. It checks footnote
+# integrity (markers/definitions/[[source]] links), broken [[links]] that resolve to
+# no note, leftover old-style "## Sources" lists, footnotes with no "## References"
+# block, and articles with no citations at all. Findings are posted to the Review
+# inbox so the owner can decide what to fix (run a citation cleanup or edit by hand).
+# Nothing is written or staged — this only reports.
+#
+# config keys:
+#   limit — max articles to scan (default 1000)
+type: kb_audit
+category: Knowledge base
+config:
+  - { key: limit, label: Max articles to scan, type: number, default: 1000 }
+steps:
+  - id: audit
+    do: kb_audit
+    with: { limit: "{{ config.limit | default(1000) }}" }
+
+  - stop_when: "{{ not audit.flagged }}"
+    stop_message: "scanned {{ audit.scanned }} KB article(s) — formatting and citations look correct"
+
+  - do: create_review
+    with:
+      title: "KB audit — {{ audit.bad }} of {{ audit.scanned }} article(s) need attention"
+      message: |
+        {% for a in audit.flagged %}• [[{{ a.title }}]] — {{ a.issues | join('; ') }}
+        {% endfor %}

@@ -3,6 +3,7 @@ import { get, post, u } from "../api";
 import { useAuth } from "../App";
 import { enablePush, pushSupported, pushSupportReason } from "../push";
 import { useGeo } from "../hooks";
+import UpdateConsole from "../components/UpdateConsole";
 
 // "System" card: version + server update (reusing the same endpoints the
 // header UpdateBanner reads), the opt-in location toggle (which previously had
@@ -18,6 +19,7 @@ export default function SystemPage() {
   type UpStatus = "idle" | "requesting" | "restarting" | "online" | "queued" | "error" | "failed";
   const [up, setUp] = useState<UpStatus>("idle");
   const [copied, setCopied] = useState(false);
+  const [console_, setConsole] = useState(false);   // live update-console modal open
   const pollRef = useRef<number | undefined>(undefined);
 
   // Host commands to diagnose a failed deploy (the API is down, so we can't fetch the
@@ -149,13 +151,15 @@ export default function SystemPage() {
           <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
             <span>Update available: {info.current} → {info.latest}</span>
             {info.release_url && <a href={info.release_url} target="_blank" rel="noreferrer">notes</a>}
-            <button className="primary" onClick={doUpdate} disabled={up === "requesting" || up === "restarting"}>
+            <button className="primary" onClick={() => { setConsole(true); doUpdate(); }} disabled={up === "requesting" || up === "restarting"}>
               {up === "requesting" || up === "restarting" ? "Updating…" : "Update server"}
             </button>
+            <button className="ghost" onClick={() => setConsole(true)}>Live console</button>
           </div>
         ) : (
-          <p className="muted" style={{ fontSize: 13 }}>
-            You’re on the latest server release{info?.current ? ` (${info.current})` : ""}.
+          <p className="muted" style={{ fontSize: 13, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span>You’re on the latest server release{info?.current ? ` (${info.current})` : ""}.</span>
+            <button className="ghost" onClick={() => setConsole(true)}>Live console</button>
           </p>
         )}
         {up !== "idle" && (
@@ -266,6 +270,8 @@ export default function SystemPage() {
         </p>
         <button className="ghost" onClick={disconnect}>Disconnect</button>
       </div>
+
+      {console_ && <UpdateConsole onClose={() => setConsole(false)} />}
     </div>
   );
 }

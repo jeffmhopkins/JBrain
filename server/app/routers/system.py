@@ -183,6 +183,35 @@ def stats():
     }
 
 
+# Shared dir where update.sh / the auto-updater tee their console output (a bind mount
+# also read by Caddy, so the log survives the api restart and a failed deploy).
+_DEPLOY_DIR = Path(os.environ.get("JBRAIN_DEPLOY_DIR", "/deploy-status"))
+
+
+@router.get("/update-log")
+def update_log(tail: int = 800):
+    """The captured console output of the latest/in-progress deploy plus its status,
+    so the PWA can show a live update console. Empty when nothing's been recorded."""
+    log_path, status_path = _DEPLOY_DIR / "update.log", _DEPLOY_DIR / "status.json"
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        text = ""
+    if text:
+        lines = text.splitlines()
+        if len(lines) > tail:
+            text = "…(truncated)…\n" + "\n".join(lines[-tail:])
+    try:
+        status = json.loads(status_path.read_text())
+    except (OSError, ValueError):
+        status = None
+    try:
+        mtime = log_path.stat().st_mtime
+    except OSError:
+        mtime = None
+    return {"log": text, "status": status, "mtime": mtime}
+
+
 @router.post("/update")
 def update():
     """Trigger a self-update. If JBRAIN_UPDATE_CMD is configured it is run

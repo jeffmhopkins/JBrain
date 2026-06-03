@@ -2425,6 +2425,24 @@ def test_system_update_schedules_when_no_cmd(client, monkeypatch):
     assert os.path.exists(flag)
 
 
+def test_update_log_endpoint(client, tmp_path, monkeypatch):
+    """The deploy console + status are served (access-key authed) for the PWA's live
+    update modal; missing files yield an empty, non-erroring response."""
+    from app.routers import system
+    monkeypatch.setattr(system, "_DEPLOY_DIR", tmp_path)
+    (tmp_path / "update.log").write_text("==> Fetching…\nrebuilding api\nOK — API is healthy.\n")
+    (tmp_path / "status.json").write_text('{"state":"ok","at":"2026-06-03T14:00:00Z"}')
+    r = client.get("/api/system/update-log").json()
+    assert "API is healthy" in r["log"] and r["status"]["state"] == "ok"
+    monkeypatch.setattr(system, "_DEPLOY_DIR", tmp_path / "absent")
+    r2 = client.get("/api/system/update-log").json()
+    assert r2["log"] == "" and r2["status"] is None
+    # And it's behind the access key.
+    from fastapi.testclient import TestClient
+    from app.main import app
+    assert TestClient(app).get("/api/system/update-log").status_code == 401
+
+
 def test_backup_and_restore(client):
     client.post("/api/notes", json={"title": "Keep Me", "content_md": "precious"})
     blob = client.get("/api/system/backup")

@@ -14,6 +14,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [[ -f docker-compose.yml ]] || { echo "FAIL: run update.sh from the JBrain repo ($(pwd))." >&2; exit 1; }
 
+# --- Live console capture --------------------------------------------------
+# Tee the whole run to a shared file (bind-mounted at ./deploy-status) so the API
+# (and, when it's down, Caddy) can serve it to the PWA's live update console, and
+# record a status the UI can show. Best-effort: never let this break the update.
+DEPLOY_DIR="$(pwd)/deploy-status"
+mkdir -p "$DEPLOY_DIR" 2>/dev/null || true
+_dstatus() { printf '{"state":"%s","at":"%s"}\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
+exec > >(tee "$DEPLOY_DIR/update.log") 2>&1   # mirror all stdout+stderr to the log
+trap '_dstatus "$([ $? -eq 0 ] && echo ok || echo failed)"' EXIT
+_dstatus running
+# ---------------------------------------------------------------------------
+
 DC="docker compose"; docker compose version >/dev/null 2>&1 || DC="docker-compose"
 
 echo "==> Fetching latest from origin…"

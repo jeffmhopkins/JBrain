@@ -29,6 +29,9 @@ services:
       # Persist the downloaded embedding model across container rebuilds, so an
       # update doesn't re-download it (and it doesn't bloat each new image layer).
       - model-cache:/root/.cache
+      # Captured deploy console (update.sh / updater tee here) so the API can serve
+      # the live update log to the PWA. Read-only to the API.
+      - ./deploy-status:/deploy-status:ro
     expose:
       - "8000"
     healthcheck:

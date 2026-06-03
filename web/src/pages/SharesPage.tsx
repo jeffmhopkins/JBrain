@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSession, guidedSessions, guidedSetDetails, setLinkExpiry, post } from "../api";
+import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedDeleteSession, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSession, guidedSessions, guidedSetDetails, setLinkExpiry, post } from "../api";
 import ResearchLinks from "../components/ResearchLinks";
+import ConversationView from "../components/ConversationView";
 import { useAuth } from "../App";
 import { fmtTs, fmtTsShort } from "../time";
 
@@ -186,7 +187,7 @@ export default function SharesPage() {
                   {openConvo === gp.id && (
                     <div className="guided-convo">
                       <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-                        Your eyes only — not saved to your brain or searchable, and removed when you approve or discard.
+                        Your eyes only — not saved to your brain or searchable. Kept as a record after you decide (delete it from “View conversations”).
                       </div>
                       {gp.transcript.map((t, i) => (
                         <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
@@ -231,7 +232,7 @@ export default function SharesPage() {
                     </button>
                     {openConvo === -ge.id && (
                       <div className="guided-convo">
-                        <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Your eyes only — removed when you dismiss or re-open.</div>
+                        <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Your eyes only — kept as a record after you dismiss or re-open.</div>
                         {ge.transcript.map((t, i) => (
                           <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
                             <span className="convo-who">{t.role === "assistant" ? "AI" : (ge.name || "Them")}</span>{t.content}
@@ -410,6 +411,14 @@ function GuidedSessions({ linkId }: { linkId: number }) {
     }
   }
 
+  async function del(sid: number) {
+    if (!confirm("Permanently delete this conversation and its drafted document?")) return;
+    try { await guidedDeleteSession(sid); } catch { /* ignore */ }
+    setConvo((c) => { const n = { ...c }; delete n[sid]; return n; });
+    setOpen(null);
+    guidedSessions<{ sessions: GuidedSessionRow[] }>(linkId).then((r) => setRows(r.sessions || [])).catch(() => {});
+  }
+
   const label = (s: GuidedSessionRow) =>
     s.status === "submitted" ? "completed"
       : s.status === "drafting" ? "drafted — not submitted"
@@ -438,19 +447,11 @@ function GuidedSessions({ linkId }: { linkId: number }) {
                 : <span className="muted" style={{ fontSize: 12 }}>nothing to show</span>}
             </div>
             {open === s.id && c && (
-              <div className="guided-convo">
-                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-                  Your eyes only — not saved to your brain or searchable.
-                </div>
-                {c.document_md && <div className="md guided-doc"><ReactMarkdown>{c.document_md}</ReactMarkdown></div>}
-                {(c.transcript || []).length === 0
-                  ? <div className="muted" style={{ fontSize: 12 }}>{c.error ? "Couldn't load this conversation." : "No messages were exchanged."}</div>
-                  : c.transcript.map((t: { role: string; content: string }, i: number) => (
-                      <div key={i} className={"msg " + (t.role === "assistant" ? "assistant" : "user")}>
-                        <span className="convo-who">{t.role === "assistant" ? "AI" : (s.name || "Them")}</span>{t.content}
-                      </div>
-                    ))}
-              </div>
+              c.error
+                ? <div className="muted" style={{ fontSize: 12 }}>Couldn't load this conversation.</div>
+                : <ConversationView messages={c.transcript || []} name={s.name}
+                                    documentMd={c.document_md} noteSlug={c.note_slug}
+                                    onDelete={() => del(s.id)} />
             )}
           </div>
         );

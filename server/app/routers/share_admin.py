@@ -198,14 +198,16 @@ def guided_reopen(sid: int):
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
-    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    # Retain the transcript as an archived record — reopening re-enables the link; a new
+    # visit starts a fresh session. (Use "Delete conversation" to purge deliberately.)
     conn.commit()
     return {"ok": True}
 
 
 @router.post("/guided/sessions/{sid}/acknowledge")
 def guided_acknowledge(sid: int):
-    """Dismiss an auto-ended (abuse/distress) session without re-opening the link."""
+    """Dismiss an auto-ended (abuse/distress) session without re-opening the link.
+    The transcript is kept as a record (delete it explicitly if you want it gone)."""
     conn = get_conn()
     s = conn.execute("SELECT review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
     if not s:
@@ -213,7 +215,18 @@ def guided_acknowledge(sid: int):
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
-    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    conn.commit()
+    return {"ok": True}
+
+
+@router.delete("/guided/sessions/{sid}")
+def guided_delete_session(sid: int):
+    """Permanently delete one guided conversation + its drafted artifact (owner choice).
+    Transcripts are kept by default now, so this is the deliberate way to purge one."""
+    conn = get_conn()
+    if conn.execute("SELECT 1 FROM guided_sessions WHERE id=?", (sid,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    conn.execute("UPDATE guided_sessions SET transcript_json='[]', document_md=NULL WHERE id=?", (sid,))
     conn.commit()
     return {"ok": True}
 
@@ -308,21 +321,21 @@ def guided_accept(sid: int):
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
-    # Approved → the raw conversation has served its review purpose; delete it.
-    conn.execute("UPDATE guided_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    # Approved: the conversation + draft are KEPT as a record. The saved note (note_slug)
+    # is the canonical artifact going forward; the session keeps the draft-as-submitted.
     conn.commit()
     return {"ok": True, "note_slug": note["slug"]}
 
 
 @router.post("/guided/sessions/{sid}/reject")
 def guided_reject(sid: int):
-    """Discard a guided response (nothing is written)."""
+    """Discard a guided response (nothing is written to a note). The conversation + the
+    drafted document are KEPT as a record — use 'Delete conversation' to purge them."""
     conn = get_conn()
     s = conn.execute("SELECT review_item_id FROM guided_sessions s WHERE id=? AND status='submitted'", (sid,)).fetchone()
     if not s:
         raise HTTPException(status_code=404, detail="No submitted guided response found.")
-    # Discarded → drop the document and the raw conversation entirely.
-    conn.execute("UPDATE guided_sessions SET status='abandoned', document_md=NULL, transcript_json='[]' WHERE id=?", (sid,))
+    conn.execute("UPDATE guided_sessions SET status='abandoned' WHERE id=?", (sid,))
     if s["review_item_id"]:
         conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
                      (s["review_item_id"],))
@@ -408,6 +421,17 @@ def research_session_transcript(link_id: int, sid: int):
     if not row:
         raise HTTPException(status_code=404, detail="Session not found.")
     return {"name": row["name"], "transcript": json.loads(row["transcript_json"] or "[]")}
+
+
+@router.delete("/research/{link_id}/sessions/{sid}")
+def research_delete_session(link_id: int, sid: int):
+    """Permanently delete one research Q&A conversation (owner choice)."""
+    conn = get_conn()
+    if conn.execute("SELECT 1 FROM research_sessions WHERE id=? AND share_link_id=?", (sid, link_id)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    conn.execute("UPDATE research_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+    conn.commit()
+    return {"ok": True}
 
 
 class ResearchScopeIn(BaseModel):

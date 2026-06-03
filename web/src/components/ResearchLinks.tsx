@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
+import ConversationView from "./ConversationView";
 import {
   post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
-  researchResetBind, researchSetDetails, researchSession,
+  researchResetBind, researchSetDetails, researchSession, researchDeleteSession,
 } from "../api";
 
 interface RLink {
@@ -196,6 +197,7 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
 // Q&A over their own notes — parity with guided links).
 function SessionRow({ linkId, se }: { linkId: number; se: any }) {
   const [open, setOpen] = useState(false);
+  const [gone, setGone] = useState(false);
   const [tx, setTx] = useState<{ role: string; content: string }[] | null>(null);
   async function toggle() {
     const next = !open; setOpen(next);
@@ -203,6 +205,12 @@ function SessionRow({ linkId, se }: { linkId: number; se: any }) {
       try { setTx((await researchSession(linkId, se.id)).transcript || []); } catch { setTx([]); }
     }
   }
+  async function del() {
+    if (!confirm("Permanently delete this conversation?")) return;
+    try { await researchDeleteSession(linkId, se.id); } catch { /* ignore */ }
+    setGone(true);
+  }
+  if (gone) return null;
   return (
     <div style={{ padding: "3px 0" }}>
       <div className="row" style={{ gap: 8 }}>
@@ -214,16 +222,7 @@ function SessionRow({ linkId, se }: { linkId: number; se: any }) {
         {se.turn_count > 0 && <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={toggle}>{open ? "Hide" : "View"}</button>}
       </div>
       {open && (
-        <div className="research-transcript">
-          {tx === null ? <span className="muted" style={{ fontSize: 12 }}>Loading…</span>
-            : tx.length === 0 ? <span className="muted" style={{ fontSize: 12 }}>No messages.</span>
-            : tx.map((m, i) => (
-              <div key={i} className={"tx-msg tx-" + (m.role === "assistant" ? "a" : "q")}>
-                <span className="tx-who">{m.role === "assistant" ? "AI" : (se.name || "Visitor")}</span>
-                <span className="tx-body">{m.content}</span>
-              </div>
-            ))}
-        </div>
+        <ConversationView messages={tx || []} name={se.name} onDelete={del} />
       )}
     </div>
   );

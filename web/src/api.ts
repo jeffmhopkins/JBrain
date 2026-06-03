@@ -112,6 +112,9 @@ export const guidedAcknowledge = (sid: number) => post(`/api/shares/guided/sessi
 export const guidedSessions = <T = any>(linkId: number) => get<T>(`/api/shares/guided/${linkId}/sessions`);
 export const guidedSession = <T = any>(linkId: number, sid: number) =>
   get<T>(`/api/shares/guided/${linkId}/sessions/${sid}`);
+export const guidedDeleteSession = (sid: number) => del(`/api/shares/guided/sessions/${sid}`);
+export const researchDeleteSession = (linkId: number, sid: number) =>
+  del(`/api/shares/research/${linkId}/sessions/${sid}`);
 
 // Research links — public (recipient) Q&A.
 export const researchStart = <T = any>(token: string, name?: string) =>

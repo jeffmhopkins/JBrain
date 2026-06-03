@@ -3189,7 +3189,11 @@ def test_guided_intake_full_flow(client, monkeypatch):
     assert client.post(f"/api/shares/guided/sessions/{sid}/accept").status_code == 200
     body = client.get("/api/notes/notes-dad-medical-history").json()["content_md"]
     assert "diabetes" in body and "metformin" in body               # approved doc written
-    # Approved → the raw conversation is deleted (it was never a note / never searchable).
+    # Approved → the conversation is now KEPT as a record (retain-forever policy).
+    tj = get_conn().execute("SELECT transcript_json FROM guided_sessions WHERE id=?", (sid,)).fetchone()["transcript_json"]
+    assert "diabetes" in tj                                          # transcript retained, viewable
+    # …until the owner explicitly deletes it.
+    assert client.delete(f"/api/shares/guided/sessions/{sid}").status_code == 200
     tj = get_conn().execute("SELECT transcript_json FROM guided_sessions WHERE id=?", (sid,)).fetchone()["transcript_json"]
     assert tj == "[]"
 

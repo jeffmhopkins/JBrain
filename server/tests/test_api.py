@@ -994,6 +994,32 @@ def test_place_note_backing(client):
     assert client.get(f"/api/notes/{linked}").json()["title"] == "loc/The Gym"
 
 
+def test_applied_add_place_creates_loc_note(client):
+    """Applying an ADD_PLACE proposal saves the geofence AND materialises its
+    loc/<name> note (kind='place'), so the place shows up in the Wiki "Places" tab —
+    not just the Map panel. Undo reverses both the geofence and the note."""
+    import json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO staging_actions (type, payload_json) VALUES ('ADD_PLACE', ?)",
+        (json.dumps({"name": "Hangar X", "lat": 40.0, "lon": -74.0, "radius_m": 150}),),
+    )
+    conn.commit()
+    aid = next(p for p in client.get("/api/staging").json() if p["type"] == "ADD_PLACE")["id"]
+    assert client.post(f"/api/staging/{aid}/apply").json()["ok"] is True
+
+    place = conn.execute("SELECT id, note_slug FROM places WHERE name='Hangar X'").fetchone()
+    assert place is not None and place["note_slug"]
+    note = client.get(f"/api/notes/{place['note_slug']}").json()
+    assert note["title"] == "loc/Hangar X" and note["kind"] == "place"
+
+    # Undo removes the geofence and retires the loc note.
+    assert client.post(f"/api/staging/{aid}/undo").json()["ok"] is True
+    assert not any(p["name"] == "Hangar X" for p in client.get("/api/places").json())
+    assert client.get(f"/api/notes/{place['note_slug']}").status_code == 404
+
+
 def test_place_note_rename_collision_is_clean(client):
     """Renaming a place so its loc/ note would collide returns 409 (not 500) and rolls
     back — the place keeps its old name, no dirty transaction."""

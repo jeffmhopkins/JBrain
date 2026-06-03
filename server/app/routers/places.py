@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import notes as notes_svc
+from ..services import places as places_svc
 
 router = APIRouter(prefix="/api/places", tags=["places"], dependencies=[CurrentUser])
 
@@ -51,7 +52,13 @@ def add_place(body: PlaceIn):
         "INSERT INTO places (name, lat, lon, radius_m, note_slug) VALUES (?, ?, ?, ?, ?)",
         (name, body.lat, body.lon, max(20, min(int(body.radius_m), 20000)), body.note_slug),
     )
-    conn.commit()
+    # Back every place with its loc/<name> note so it shows in the Wiki "Places" tab.
+    try:
+        places_svc.ensure_note(conn, cur.lastrowid)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {"id": cur.lastrowid, "name": name}
 
 
@@ -97,33 +104,16 @@ def ensure_place_note(place_id: int):
     The place page is that note + a geofence card; bare geofences carry no note until
     you add content here. Returns the note slug to navigate to."""
     conn = get_conn()
-    place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
+    place = conn.execute("SELECT name FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         raise HTTPException(status_code=404, detail="No such place")
-    title = _loc_title(place["name"])
     try:
-        note = (_note_by_slug(conn, place["note_slug"]) if place["note_slug"] else None) \
-            or notes_svc.get_by_title(conn, title)
-        if note is None:
-            # A soft-deleted note still owns the (UNIQUE) title; restore it instead of
-            # colliding — re-opening a place's notes brings the prior content back.
-            tomb = conn.execute(
-                "SELECT id, slug FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NOT NULL",
-                (title,),
-            ).fetchone()
-            if tomb is not None:
-                notes_svc.restore(conn, tomb["id"])
-                note = tomb
-            else:
-                nid = notes_svc.upsert_note(conn, title, f"# {place['name']}\n\n", source="user",
-                                            kind="place", fire_events=False)
-                note = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()
-        conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (note["slug"], place_id))
+        slug = places_svc.ensure_note(conn, place_id)
         conn.commit()
     except sqlite3.IntegrityError:
         # Lost a create race — the note exists now; adopt it (idempotent "ensure").
         conn.rollback()
-        existing = notes_svc.get_by_title(conn, title)
+        existing = notes_svc.get_by_title(conn, _loc_title(place["name"]))
         if existing is None:
             raise HTTPException(status_code=409, detail="Couldn't create the place note.")
         conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (existing["slug"], place_id))
@@ -132,7 +122,7 @@ def ensure_place_note(place_id: int):
     except Exception:
         conn.rollback()
         raise
-    return {"slug": note["slug"]}
+    return {"slug": slug}
 
 
 @router.delete("/{place_id}")

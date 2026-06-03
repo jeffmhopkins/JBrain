@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import notes as notes_svc
+from ..services import places as places_svc
 from ..services import quicktasks
 
 router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[CurrentUser])
@@ -164,7 +165,11 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
                 (name, payload["lat"], payload["lon"], max(20, min(int(payload.get("radius_m") or 150), 20000)),
                  payload.get("note_slug")),
             )
-            undo = {"op": "delete_place", "id": cur.lastrowid}
+            pid = cur.lastrowid
+            # Materialise the loc/<name> note so the saved place appears in the Wiki
+            # "Places" tab — not only the Map panel. Undo removes geofence + note.
+            slug = places_svc.ensure_note(conn, pid)
+            undo = {"op": "delete_place", "id": pid, "note_slug": slug}
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
@@ -309,6 +314,12 @@ def undo_action(action_id: int):
     elif op == "delete_place":
         conn.execute("DELETE FROM places WHERE id = ?", (undo["id"],))
         conn.execute("DELETE FROM location_state WHERE place_id = ?", (undo["id"],))
+        # Also retire the loc/<name> note the apply created, so undo fully reverses it.
+        if undo.get("note_slug"):
+            n = conn.execute("SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL",
+                             (undo["note_slug"],)).fetchone()
+            if n:
+                notes_svc.soft_delete(conn, n["id"])
     elif op == "delete_inbox":
         conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
     elif op == "unmark_inbox":

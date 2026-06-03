@@ -37,7 +37,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -72,11 +71,11 @@ class MainActivity : ComponentActivity() {
 private fun TrackerScreen(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     var serverUrl by remember { mutableStateOf(Settings.serverUrl(ctx)) }
-    var key by remember { mutableStateOf(Settings.key(ctx)) }
     var name by remember { mutableStateOf(Settings.name(ctx)) }
     var tracking by remember { mutableStateOf(Settings.enabled(ctx)) }
     var status by remember { mutableStateOf("") }
     var queued by remember { mutableStateOf(FixQueue.size(ctx)) }
+    var codeInput by remember { mutableStateOf("") }   // the ONLY editable field
 
     fun hasNotif(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -123,7 +122,7 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
 
     fun requestEnable() {
         if (!Settings.isConfigured(ctx)) {
-            status = "Set the server URL and access key first."
+            status = "Paste a setup code first (from JBrain → People → Copy setup code)."
             tracking = false
             return
         }
@@ -164,34 +163,34 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        // While tracking is ON the config is locked — turn tracking off to edit it.
-        val editable = !tracking
+        // Name + Server are read-only — they're set by the setup code, never typed.
         OutlinedTextField(
-            value = name, onValueChange = { name = it; Settings.setName(ctx, it) },
-            label = { Text("Name (this device)") }, singleLine = true, enabled = editable,
+            value = name, onValueChange = {}, readOnly = true, enabled = false,
+            label = { Text("Name (from setup code)") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = serverUrl, onValueChange = { serverUrl = it; Settings.setServerUrl(ctx, it) },
-            label = { Text("Server URL") }, singleLine = true, enabled = editable,
+            value = serverUrl, onValueChange = {}, readOnly = true, enabled = false,
+            label = { Text("Server (from setup code)") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        // The ONLY editable field: paste the setup code from JBrain → People (it fills
+        // Name + Server + the location key). Locked while tracking; turn it off to change.
         OutlinedTextField(
-            value = key,
+            value = codeInput,
             onValueChange = { v ->
-                // Pasting a setup code (jbt1.…) fills Name + Server + Key at once.
                 val p = SetupCode.parse(v)
                 if (p != null) {
                     if (p.name.isNotBlank()) { name = p.name; Settings.setName(ctx, p.name) }
                     if (p.server.isNotBlank()) { serverUrl = p.server; Settings.setServerUrl(ctx, p.server) }
-                    key = p.key; Settings.setKey(ctx, p.key)
+                    Settings.setKey(ctx, p.key)
+                    codeInput = ""   // don't leave the secret sitting in the box
                     status = "Setup code applied" + (if (p.name.isNotBlank()) " for ${p.name}." else ".")
                 } else {
-                    key = v; Settings.setKey(ctx, v)
+                    codeInput = v
                 }
             },
-            label = { Text("Access key (or paste a setup code)") }, singleLine = true, enabled = editable,
-            visualTransformation = PasswordVisualTransformation(),
+            label = { Text("Paste setup code") }, singleLine = true, enabled = !tracking,
             modifier = Modifier.fillMaxWidth(),
         )
 

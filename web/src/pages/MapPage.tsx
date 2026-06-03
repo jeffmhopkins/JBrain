@@ -56,8 +56,26 @@ export default function MapPage() {
   const [showPlaces, setShowPlaces] = useState(false);
   const [showNotes, setShowNotes] = useState(true);
   const [adding, setAdding] = useState(false);
+  // Inline place editor (name + geofence radius); the radius previews live on the map.
+  const [editing, setEditing] = useState<{ id: number; name: string; radius: number } | null>(null);
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
+
+  // Commit the inline place edit (name and/or geofence radius); only send changes.
+  async function saveEditing() {
+    if (!editing) return;
+    const p = places.find((x) => x.id === editing.id);
+    const name = editing.name.trim();
+    const radius = Math.round(editing.radius);
+    const body: { name?: string; radius_m?: number } = {};
+    if (name && (!p || name !== p.name)) body.name = name;
+    if (!p || radius !== p.radius_m) body.radius_m = radius;
+    setEditing(null);
+    if (Object.keys(body).length) {
+      try { await updatePlace(editing.id, body); await loadPlaces(); }
+      catch (e: any) { alert(e?.message || "Couldn't update place."); }
+    }
+  }
   const openPlaceNotes = (id: number) => ensurePlaceNote(id).then((r) => navigate(`/note/${r.slug}`)).catch(() => {});
   const savePlaceAt = (lat: number, lon: number, suggested: string) => {
     const name = window.prompt("Place name:", suggested)?.trim();
@@ -175,13 +193,20 @@ export default function MapPage() {
     if (placeLayer.current) { m.removeLayer(placeLayer.current); placeLayer.current = null; }
     if (!places.length) return;
     placeLayer.current = L.layerGroup(
-      places.map((p) =>
-        L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 2, fillOpacity: 0.1 })
-          .bindTooltip(p.name, { permanent: true, direction: "top", className: "place-label", offset: [0, -4] })
+      places.map((p) => {
+        // While this place is being edited, draw it at the in-progress radius (live
+        // preview) and brighten its ring so the one you're resizing stands out.
+        const live = editing && editing.id === p.id;
+        const radius = live ? editing.radius : p.radius_m;
+        return L.circle([p.lat, p.lon],
+          { radius, color: live ? "#ffd54f" : "#ffb300", weight: live ? 3 : 2, fillOpacity: live ? 0.18 : 0.1 })
+          .bindTooltip(live ? `${p.name} · ${radius} m` : p.name,
+            { permanent: true, direction: "top", className: "place-label", offset: [0, -4] })
           // Tap a geofence → its loc/ note, except while dropping a new place.
-          .on("click", () => { if (!addingRef.current) openPlaceNotes(p.id); })),
+          .on("click", () => { if (!addingRef.current) openPlaceNotes(p.id); });
+      }),
     ).addTo(m);
-  }, [places]);
+  }, [places, editing]);
 
   // Build the note markers ONCE per note-set change (not per scrub tick) and keep an
   // empty layer group on the map; scrubbing only reconciles which markers are in it.
@@ -301,22 +326,36 @@ export default function MapPage() {
           ) : (
             <ul className="places-list">
               {places.map((p) => (
-                <li key={p.id}>
-                  <button className="place-go" onClick={() => map.current?.setView([p.lat, p.lon], 16)}>{p.name}</button>
-                  <span className="place-r">{p.radius_m} m</span>
-                  <button className="place-del" title="Open notes" onClick={() => openPlaceNotes(p.id)}>📝</button>
-                  <button className="place-del" title="Edit name & fence size" onClick={() => {
-                    const name = window.prompt("Place name:", p.name);
-                    if (name === null) return;                                  // cancelled
-                    const rStr = window.prompt("Geofence radius (meters, 20–20000):", String(p.radius_m));
-                    if (rStr === null) return;                                  // cancelled
-                    const radius = Math.round(Number(rStr));
-                    const body: { name?: string; radius_m?: number } = {};
-                    if (name.trim() && name.trim() !== p.name) body.name = name.trim();
-                    if (Number.isFinite(radius) && radius !== p.radius_m) body.radius_m = radius;
-                    if (Object.keys(body).length) updatePlace(p.id, body).then(loadPlaces).catch((e) => alert(e?.message || "Couldn't update place."));
-                  }}>✎</button>
-                  <button className="place-del" title="Delete" onClick={() => deletePlace(p.id).then(loadPlaces)}>✕</button>
+                <li key={p.id} className={editing?.id === p.id ? "editing" : undefined}>
+                  {editing?.id === p.id ? (
+                    <div className="place-edit">
+                      <input className="place-edit-name" value={editing.name} autoFocus
+                             placeholder="Place name"
+                             onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                             onKeyDown={(e) => { if (e.key === "Enter") saveEditing(); if (e.key === "Escape") setEditing(null); }} />
+                      <div className="place-edit-fence">
+                        <span className="place-edit-label">Fence</span>
+                        <input type="range" min={20} max={2000} step={10} value={Math.min(editing.radius, 2000)}
+                               onChange={(e) => setEditing({ ...editing, radius: Number(e.target.value) })} />
+                        <input type="number" className="place-edit-num" min={20} max={20000} value={editing.radius}
+                               onChange={(e) => setEditing({ ...editing, radius: Math.max(20, Math.min(Number(e.target.value) || 20, 20000)) })} />
+                        <span className="place-edit-unit">m</span>
+                      </div>
+                      <div className="place-edit-actions">
+                        <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+                        <button className="primary" onClick={saveEditing}>Save</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <button className="place-go" onClick={() => map.current?.setView([p.lat, p.lon], 16)}>{p.name}</button>
+                      <span className="place-r">{p.radius_m} m</span>
+                      <button className="place-del" title="Open notes" onClick={() => openPlaceNotes(p.id)}>📝</button>
+                      <button className="place-del" title="Edit name & fence size"
+                              onClick={() => setEditing({ id: p.id, name: p.name, radius: p.radius_m })}>✎</button>
+                      <button className="place-del" title="Delete" onClick={() => deletePlace(p.id).then(loadPlaces)}>✕</button>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

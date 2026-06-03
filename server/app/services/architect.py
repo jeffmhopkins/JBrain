@@ -577,7 +577,7 @@ def _tool_nearby_notes(conn, conversation_id, center=None, radius_km=25, limit=1
         radius_km = 25.0
     limit = max(1, min(int(limit or 10), 50))
     rows = conn.execute(
-        "SELECT title, lat, lon, location_label FROM notes "
+        "SELECT title, content_md, lat, lon, location_label FROM notes "
         "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL"
     ).fetchall()
     near = []
@@ -590,6 +590,7 @@ def _tool_nearby_notes(conn, conversation_id, center=None, radius_km=25, limit=1
         return f"No notes with a location within {radius_km:.0f} km of {c[2] or 'that point'}."
     lines = [f"- {r['title']} — {d:.1f} km ({geo.km_to_miles(d):.1f} mi)"
              + (f" [{r['location_label']}]" if r["location_label"] else "")
+             + (f"\n    {_snippet(r['content_md'], '', 120)}" if r["content_md"] else "")
              for d, r in near[:limit]]
     return _untrusted("nearby-notes", f"Near {c[2] or 'that point'}:\n" + "\n".join(lines))
 
@@ -732,7 +733,7 @@ def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=Non
     if isinstance(pt, str):
         return pt
     lat, lon, r, label = pt
-    sql = ("SELECT title, lat, lon, created_at FROM notes "
+    sql = ("SELECT title, content_md, lat, lon, created_at FROM notes "
            "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
     params: list = []
     if kind in ("entry", "kb"):
@@ -750,7 +751,9 @@ def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=Non
     if not near:
         return f"No entries captured within {r:.0f} m of {label} in that window."
     near.sort(key=lambda x: x[0])
-    lines = [f"- {row['title']} ({row['created_at'][:10]}, {d:.0f} m)" for d, row in near[:30]]
+    lines = [f"- {row['title']} ({row['created_at'][:10]}, {d:.0f} m)"
+             + (f"\n    {_snippet(row['content_md'], '', 120)}" if row["content_md"] else "")
+             for d, row in near[:30]]
     return _untrusted("entries-at-place", f"At {label}:\n" + "\n".join(lines))
 
 
@@ -759,7 +762,9 @@ def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     if not rows:
         return "No matching attachments."
     return _untrusted("search-results", "\n".join(
-        f"- #{r['attachment_id']} {r['filename']} (in note '{r['title']}')" for r in rows
+        f"- #{r['attachment_id']} {r['filename']} (in note '{r['title']}')"
+        + (f"\n    {_snippet(r['snippet'], query, 160)}" if r.get("snippet") else "")
+        for r in rows
     ))
 
 
@@ -787,13 +792,17 @@ def _tool_query_sql(conn, sql: str, limit: int = 50) -> str:
 
 def _tool_list_recent(conn, limit: int = 10) -> str:
     rows = conn.execute(
-        "SELECT title FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?",
+        "SELECT title, content_md FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     if not rows:
         return "The wiki is empty — this is a fresh brain."
     # Titles are user-controlled -> fence as untrusted data, like search_notes.
-    return _untrusted("recent-notes", "\n".join(f"- {r['title']}" for r in rows))
+    # A leading snippet keeps opaquely-titled notes (e.g. daily-log paths) from
+    # being dismissed sight-unseen.
+    lines = [f"- {r['title']}" + (f"\n    {_snippet(r['content_md'], '', 120)}" if r["content_md"] else "")
+             for r in rows]
+    return _untrusted("recent-notes", "\n".join(lines))
 
 
 def _tool_read_inbox(conn) -> str:

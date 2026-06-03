@@ -162,12 +162,11 @@ class LocationService : Service() {
         } catch (e: SecurityException) { /* ignore — stay in continuous mode */ }
     }
 
-    private fun buildTransition(activityType: Int, transitionType: Int): ActivityTransition {
-        val b = ActivityTransition.Builder()
-        b.setActivityType(activityType)
-        b.setActivityTransitionType(transitionType)
-        return b.build()
-    }
+    private fun buildTransition(activityType: Int, transitionType: Int): ActivityTransition =
+        ActivityTransition.Builder()
+            .setActivityType(activityType)
+            .setActivityTransition(transitionType)   // 21.x AAR name (docs say …TransitionType)
+            .build()
 
     private fun activityPI(): PendingIntent {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or

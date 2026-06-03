@@ -32,11 +32,5 @@ ENV JBRAIN_PROMPTS_FILE=/app/prompts.yaml
 # Built front-end goes where FastAPI serves static files from.
 COPY --from=web /web/dist ./static
 
-# --- TEMPORARY: deliberate build failure to watch a FAILED deploy stream live. --
-# Build fails HERE, before the API is recreated → update.sh stops at the build step,
-# the old container keeps serving (site stays UP), and the console streams this.
-# Remove this RUN to fix.
-RUN echo "==> DELIBERATE TEST BUILD FAILURE — remove this RUN in server/Dockerfile to fix" && exit 23
-
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

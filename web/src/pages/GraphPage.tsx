@@ -19,6 +19,28 @@ const colorOf = (kind: string) => KIND_COLOR[kind] ?? "#94a3b8";
 type Kind = "all" | "kb" | "entry" | "list";
 const linkEnd = (e: number | GNode) => (typeof e === "object" ? e.id : e);
 
+// On-canvas label: strip the root, then show the DISTINGUISHING tail (the last path
+// segment) so siblings under a shared folder don't all read "People/Family/…" and get
+// clipped right where the name begins. Daily rollups show their date, not a bare day.
+function graphLabel(title: string): string {
+  const parts = leaf(title).split("/").filter(Boolean);
+  if (parts.length === 0) return title;
+  if (/^daily$/i.test(parts[0]) && parts.length >= 2) return parts.slice(1).join("-");
+  return parts[parts.length - 1];
+}
+
+// Rounded-rect path (canvas roundRect isn't universal on older mobile WebViews).
+function roundRect(ctx: any, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
 export default function GraphPage() {
   const navigate = useNavigate();
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
@@ -27,6 +49,7 @@ export default function GraphPage() {
   const [depth, setDepth] = useState(1);
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
+  const drawnRef = useRef<{ x: number; y: number; w: number; h: number }[]>([]);   // label boxes drawn this frame
   const [size, setSize] = useState({ w: 600, h: 600 });
 
   useEffect(() => { get<GraphData>("/api/graph").then(setData).catch(() => {}); }, []);
@@ -47,7 +70,7 @@ export default function GraphPage() {
   // Apply the kind filter, then (if a node is focused) keep only its neighbourhood
   // within `depth` hops. Fresh objects each time so the force sim owns its own
   // copies and never mutates the source data.
-  const view = useMemo<GraphData>(() => {
+  const view = useMemo<{ nodes: GNode[]; links: { source: number; target: number }[]; neighbors: Set<number> }>(() => {
     const ids = new Set(data.nodes.filter((n) => kind === "all" || n.kind === kind).map((n) => n.id));
 
     // Edges among the kept nodes. Under a single-kind filter we PROJECT through the
@@ -111,14 +134,24 @@ export default function GraphPage() {
       }
       links = links.filter((l) => keep.has(l.source as number) && keep.has(l.target as number));
     }
-    // Precompute the on-canvas label: root prefix stripped always, and clipped to
-    // 24 chars for every node except the focused one (which shows its full leaf
-    // title for discoverability). This is what stops long names overlapping.
+    // Precompute the on-canvas label: the distinguishing tail (or date), clipped so a
+    // box stays bounded — focused node gets a longer cap. graphLabel() is what stops
+    // sibling nodes all reading the same clipped folder prefix.
     const nodes = data.nodes.filter((n) => keep.has(n.id)).map((n) => ({
       ...n,
-      _label: n.id === focusId ? leaf(n.title) : truncate(leaf(n.title), 24),
+      _label: truncate(graphLabel(n.title), n.id === focusId ? 30 : 20),
     }));
-    return { nodes, links };
+    // Neighbours of the focused node: their labels are always drawn (never culled).
+    const neighbors = new Set<number>();
+    if (focusId != null) for (const l of links) {
+      if (l.source === focusId) neighbors.add(l.target);
+      else if (l.target === focusId) neighbors.add(l.source);
+    }
+    // Draw order = label priority (first drawn wins the overlap test): the focused
+    // node, then its neighbours, then bigger (more-connected) nodes.
+    const pri = (n: GNode) => (n.id === focusId ? 3e9 : neighbors.has(n.id) ? 2e9 : 0) + (n.val || 0);
+    nodes.sort((a, b) => pri(b) - pri(a));
+    return { nodes, links, neighbors };
   }, [data, kind, focusId, depth]);
 
   // Spread nodes apart so labels have room: a stronger charge plus a collision
@@ -187,7 +220,7 @@ export default function GraphPage() {
           ref={fgRef}
           width={size.w}
           height={size.h}
-          graphData={view as any}
+          graphData={{ nodes: view.nodes, links: view.links } as any}
           nodeId="id"
           nodeLabel="title"
           nodeVal="val"
@@ -199,6 +232,7 @@ export default function GraphPage() {
           onEngineStop={() => fgRef.current?.zoomToFit(400, 40)}
           onBackgroundClick={() => setFocusId(null)}
           onNodeClick={(n: any) => (focusId === n.id ? navigate(`/note/${n.slug}`) : setFocusId(n.id))}
+          onRenderFramePre={() => { drawnRef.current = []; }}   // reset per-frame label boxes
           nodeCanvasObjectMode={() => "after"}
           nodeCanvasObject={(node: any, ctx, scale) => {
             const r = Math.sqrt(Math.max(node.val || 1, 1)) * NODE_REL;
@@ -210,17 +244,29 @@ export default function GraphPage() {
               ctx.strokeStyle = "#e6edf3";
               ctx.stroke();
             }
+            const label = node._label ?? graphLabel(node.title);
+            if (!label) return;
             const fontSize = 13 / scale;
             ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+            const tw = ctx.measureText(label).width;
+            const padX = 4 / scale, padY = 2.5 / scale;
+            const top = node.y + r + 4 / scale;
+            const box = { x: node.x - tw / 2 - padX, y: top - padY, w: tw + 2 * padX, h: fontSize + 2 * padY };
+            // Cull overlap: a label is drawn only if it clears every higher-priority
+            // label already placed this frame. The focused node and its neighbours are
+            // exempt (always shown). Zoom in → boxes shrink in graph-space → more fit.
+            const must = node.id === focusId || view.neighbors.has(node.id);
+            const hit = drawnRef.current.some((d) =>
+              box.x < d.x + d.w && box.x + box.w > d.x && box.y < d.y + d.h && box.y + box.h > d.y);
+            if (!must && hit) return;
+            drawnRef.current.push(box);
+            ctx.fillStyle = "rgba(8,10,14,0.82)";   // pill for contrast over nodes/edges
+            roundRect(ctx, box.x, box.y, box.w, box.h, 3 / scale);
+            ctx.fill();
+            ctx.fillStyle = node.id === focusId ? "#ffffff" : "#dfe7ef";
             ctx.textAlign = "center";
             ctx.textBaseline = "top";
-            const y = node.y + r + 4 / scale;
-            ctx.lineWidth = 3 / scale;
-            ctx.lineJoin = "round";
-            ctx.strokeStyle = "rgba(8,10,14,0.92)";
-            ctx.strokeText(node._label ?? node.title, node.x, y);
-            ctx.fillStyle = "#e6edf3";
-            ctx.fillText(node._label ?? node.title, node.x, y);
+            ctx.fillText(label, node.x, top);
           }}
         />
       </div>

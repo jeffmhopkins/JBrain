@@ -109,3 +109,39 @@ def require_key(request: Request) -> str:
 
 # Kept as the name routers already import, now backed by access-key auth.
 CurrentUser = Depends(require_key)
+
+
+def require_location_writer(request: Request):
+    """Dependency for the location-INGEST endpoints. Authorizes EITHER:
+      - the full access key  → returns None (source taken from the request body), or
+      - a per-person LOCATION KEY → returns that person row (the caller forces the
+        fix's source to this person).
+    A location key grants ONLY this; it can't read the trail or reach any other route.
+    """
+    ip = _client_ip(request)
+    now = time.monotonic()
+    recent = [t for t in _fails.get(ip, []) if now - t < _FAIL_WINDOW]
+    if len(recent) >= _FAIL_MAX:
+        _fails[ip] = recent
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many attempts; slow down.")
+    key = _extract_key(request)
+    if verify_key(key):
+        _fails.pop(ip, None)
+        return None
+    if key:
+        row = get_conn().execute(
+            "SELECT * FROM people WHERE location_key = ?", (key,)
+        ).fetchone()
+        if row is not None:
+            _fails.pop(ip, None)
+            return row
+    recent.append(now)
+    _fails[ip] = recent
+    if len(_fails) > 10_000:
+        _fails.clear()
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid or missing access key")
+
+
+LocationWriter = Depends(require_location_writer)

@@ -1196,6 +1196,30 @@ def test_people_registry_and_default(client):
     assert client.delete(f"/api/people/{me['id']}").json()["ok"] is True   # no longer default → deletable
 
 
+def test_person_location_key_scoped(client):
+    """A per-person location key can ONLY write that person's location (source forced
+    to them); it can't read the trail or reach other endpoints, and revoking kills it."""
+    pid = client.post("/api/people", json={"name": "Kiddo"}).json()["id"]
+    key = client.post(f"/api/people/{pid}/location-key").json()["location_key"]
+    assert key.startswith("jbloc_")
+    h = {"Authorization": f"Bearer {key}"}
+
+    # Writes work and are attributed to the person regardless of any source in the body.
+    assert client.post("/api/locations", json={"lat": 40.0, "lon": -74.0, "source": "spoof"}, headers=h).json()["stored"] is True
+    assert client.post("/api/locations/bulk", json={"points": [{"lat": 41.0, "lon": -75.0}]}, headers=h).json()["stored"] == 1
+    from app.db import get_conn
+    assert {r["source"] for r in get_conn().execute("SELECT source FROM locations").fetchall()} == {"Kiddo"}
+
+    # …but it is WRITE-ONLY and location-ONLY: no trail read, no other routes.
+    assert client.get("/api/locations", headers=h).status_code == 401
+    assert client.get("/api/notes", headers=h).status_code == 401
+    assert client.get("/api/people", headers=h).status_code == 401
+
+    # Revoke → the key stops working.
+    assert client.delete(f"/api/people/{pid}/location-key").json()["ok"] is True
+    assert client.post("/api/locations", json={"lat": 42.0, "lon": -76.0}, headers=h).status_code == 401
+
+
 def test_person_from_kb_note(client):
     """Tagging a KB note 'as a person' creates/links a person named after the note leaf."""
     slug = client.post("/api/notes", json={"title": "kb/People/Family/Dad", "content_md": "x"}).json()["slug"]

@@ -397,14 +397,17 @@ CREATE TABLE IF NOT EXISTS location_fired (
 -- `source` via `aliases`) and can be linked to a KB page (note_slug). Exactly one row
 -- is the default ("Me") — the catch-all for any unmatched source.
 CREATE TABLE IF NOT EXISTS people (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  name       TEXT UNIQUE NOT NULL,
-  color      TEXT NOT NULL DEFAULT '#7f9aa6',
-  is_default INTEGER NOT NULL DEFAULT 0,
-  aliases    TEXT NOT NULL DEFAULT '',          -- comma-separated source aliases
-  note_slug  TEXT,                              -- optional linked KB page
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT UNIQUE NOT NULL,
+  color        TEXT NOT NULL DEFAULT '#7f9aa6',
+  is_default   INTEGER NOT NULL DEFAULT 0,
+  aliases      TEXT NOT NULL DEFAULT '',        -- comma-separated source aliases
+  note_slug    TEXT,                            -- optional linked KB page
+  location_key TEXT,                            -- scoped token: location-WRITE only, forces source=this person
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- NULLs are distinct, so many people may have no key; non-null keys are unique.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key);
 
 -- LLM token-usage ledger: one row per provider call (recorded on a dedicated
 -- connection so it never touches the caller's transaction). Token counts are

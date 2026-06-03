@@ -387,7 +387,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .people-add { display: flex; gap: 8px; margin-bottom: 12px; }
 .people-add input { flex: 1; }
 .people-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.person-row { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--bg-elev); }
+.person-row { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--bg-elev); }
+.person-top { display: flex; align-items: center; gap: 10px; }
+.person-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.person-key .ghost { font-size: 12px; padding: 4px 10px; }
+.person-key-val { flex: 1; min-width: 120px; font-size: 11px; color: var(--text-dim); background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person-color { width: 30px; height: 30px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: transparent; flex-shrink: 0; cursor: pointer; }
 .person-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .person-name { font-weight: 600; }

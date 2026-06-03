@@ -1,5 +1,6 @@
 """People registry — owner-only. People label/colour location trails and can be
 linked to a KB page; they are NOT auth accounts (JBrain stays single access key)."""
+import secrets
 import sqlite3
 
 from fastapi import APIRouter, HTTPException
@@ -134,6 +135,28 @@ def person_from_note(body: TagNoteIn):
         conn.rollback()
         raise HTTPException(status_code=409, detail="Couldn't tag this note as a person.")
     return {"id": pid, "name": name}
+
+
+@router.post("/{person_id}/location-key")
+def generate_location_key(person_id: int):
+    """Mint (or rotate) a scoped LOCATION KEY for this person — paste it into the
+    tracker's Access key field. It can ONLY post this person's location; it can't read
+    the trail or reach anything else, and every fix it sends is attributed to them."""
+    conn = get_conn()
+    if conn.execute("SELECT 1 FROM people WHERE id = ?", (person_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="No such person")
+    key = "jbloc_" + secrets.token_urlsafe(24)
+    conn.execute("UPDATE people SET location_key = ? WHERE id = ?", (key, person_id))
+    conn.commit()
+    return {"location_key": key}
+
+
+@router.delete("/{person_id}/location-key")
+def revoke_location_key(person_id: int):
+    conn = get_conn()
+    conn.execute("UPDATE people SET location_key = NULL WHERE id = ?", (person_id,))
+    conn.commit()
+    return {"ok": True}
 
 
 def _make_default(conn, person_id: int) -> None:

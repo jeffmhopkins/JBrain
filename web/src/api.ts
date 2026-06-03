@@ -298,8 +298,10 @@ export const updatePlace = (id: number, body: { name?: string; radius_m?: number
 export const ensurePlaceNote = (id: number) => post<{ slug: string }>(`/api/places/${id}/note`);
 export const deletePlace = (id: number) => del(`/api/places/${id}`);
 
-export interface Person { id: number; name: string; color: string; is_default: boolean; aliases: string; note_slug: string | null; }
+export interface Person { id: number; name: string; color: string; is_default: boolean; aliases: string; note_slug: string | null; location_key: string | null; }
 export const getPeople = () => get<Person[]>("/api/people");
+export const generateLocationKey = (id: number) => post<{ location_key: string }>(`/api/people/${id}/location-key`, {});
+export const revokeLocationKey = (id: number) => del(`/api/people/${id}/location-key`);
 export const addPerson = (p: { name: string; color?: string; aliases?: string; is_default?: boolean }) =>
   post<{ id: number; name: string }>("/api/people", p);
 export const updatePerson = (id: number, body: Partial<{ name: string; color: string; aliases: string; note_slug: string | null; is_default: boolean }>) =>

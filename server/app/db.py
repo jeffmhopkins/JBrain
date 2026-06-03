@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 def init_db() -> None:
@@ -375,6 +375,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               note_slug  TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')));
         """)
+
+    if current < 28:
+        # Per-person LOCATION KEY: a scoped token for the tracker that can only write
+        # this person's location (never read the trail or anything else).
+        _add_column(conn, "people", "location_key", "TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:

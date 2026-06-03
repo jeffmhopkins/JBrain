@@ -8,15 +8,17 @@ is sensitive, so it lives behind the same access key as everything else.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from ..auth import CurrentUser
+from ..auth import CurrentUser, require_location_writer
 from ..db import get_conn
 from ..services import geo
 from ..services import geotrail
 
-router = APIRouter(prefix="/api/locations", tags=["locations"], dependencies=[CurrentUser])
+# No router-level auth: the WRITE endpoints accept the full key OR a per-person
+# location key (require_location_writer); the READ endpoint stays full-key only.
+router = APIRouter(prefix="/api/locations", tags=["locations"])
 
 MIN_METERS = 100.0     # store if moved at least this far…
 MIN_MINUTES = 60.0     # …OR at least this long since the last stored point
@@ -46,11 +48,13 @@ def _parse(ts: str | None) -> datetime | None:
 
 
 @router.post("")
-def add_location(body: LocationIn):
+def add_location(body: LocationIn, writer=Depends(require_location_writer)):
     conn = get_conn()
     now = datetime.now(timezone.utc)
     rec_dt = _parse(body.recorded_at) or now
     rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # A per-person location key forces the fix's source to that person.
+    source = writer["name"] if writer is not None else (body.source or "wear")
 
     last = conn.execute(
         "SELECT lat, lon, recorded_at FROM locations ORDER BY id DESC LIMIT 1"
@@ -65,7 +69,7 @@ def add_location(body: LocationIn):
 
     cur = conn.execute(
         "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
-        (body.lat, body.lon, body.accuracy_m, rec_str, (body.source or "wear")[:32]),
+        (body.lat, body.lon, body.accuracy_m, rec_str, source[:32]),
     )
     # Refresh per-place geofence state (cheap, no actions) so the scheduler's
     # trigger evaluator has fresh truth. Never let it break ingest.
@@ -78,7 +82,7 @@ def add_location(body: LocationIn):
 
 
 @router.post("/bulk")
-def add_locations(body: LocationBatch):
+def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
     """Ingest a batch of fixes (a native tracker's offline-queue flush) in one call.
 
     The keep-if-far-enough-OR-long-enough rule is applied IN ORDER — points are sorted
@@ -103,9 +107,11 @@ def add_locations(body: LocationBatch):
             elapsed_min = abs((rec_dt - (last_dt or rec_dt)).total_seconds()) / 60.0
             if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
                 continue
+        # A per-person location key forces every fix's source to that person.
+        source = writer["name"] if writer is not None else (p.source or "phone")
         conn.execute(
             "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
-            (p.lat, p.lon, p.accuracy_m, rec_str, (p.source or "phone")[:32]),
+            (p.lat, p.lon, p.accuracy_m, rec_str, source[:32]),
         )
         try:
             geotrail.update_location_state(conn, p.lat, p.lon, rec_str)
@@ -123,7 +129,7 @@ def _norm(ts: str | None) -> str | None:
     return ts.strip().replace("T", " ").replace("Z", "").strip() if ts else None
 
 
-@router.get("")
+@router.get("", dependencies=[CurrentUser])
 def list_locations(since: str | None = None, until: str | None = None, limit: int = 5000):
     sql = "SELECT id, lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []

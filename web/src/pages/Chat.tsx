@@ -228,7 +228,7 @@ export default function Chat() {
     const text = input.trim();
     if ((!text && !pendingFile) || streaming || busy || !online) return;
     if (mode !== "entry" && text === "/clear") { setInput(""); newConversation(); return; }
-    const coords = geo.enabled ? geo.coords : null;
+    const coords = await geo.getCoords();   // one-shot GPS fix, only now (if enabled)
     const file = pendingFile;
     setInput(""); setPendingFile(null);
 

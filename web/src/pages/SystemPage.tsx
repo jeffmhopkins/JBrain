@@ -232,15 +232,13 @@ export default function SystemPage() {
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Location stamping</h3>
         <p className="muted" style={{ fontSize: 13 }}>
-          Attach your coordinates to new entries (opt-in, this device only).
+          Attach your coordinates to new entries (opt-in, this device only). GPS is read
+          ONLY at the moment you post — never continuously while the app is open.
         </p>
         <label className="row" style={{ gap: 8 }}>
           <input type="checkbox" style={{ width: "auto" }} checked={geo.enabled} onChange={geo.toggle} />
           Stamp new entries with my location
         </label>
-        {geo.enabled && geo.coords && (
-          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Current: {geo.coords.lat}, {geo.coords.lon}</p>
-        )}
       </div>
 
       <div className="card">

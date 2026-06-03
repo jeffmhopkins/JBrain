@@ -39,32 +39,32 @@ function useGeoFlagSync(setOn: (on: boolean) => void): void {
   }, [setOn]);
 }
 
-/** Opt-in geolocation. Persists the toggle; watches position only while enabled. */
+/** Opt-in geolocation. Persists the toggle. Acquires GPS ONLY on demand (one fix at
+ * post time via getCoords) — never a continuous watch while the app is open. */
 export function useGeo() {
   const [enabled, setEnabled] = useState(geoOn);
-  const [coords, setCoords] = useState<Coords | null>(null);
   useGeoFlagSync(setEnabled);   // stay in sync if toggled elsewhere
 
-  useEffect(() => {
-    if (!enabled || !("geolocation" in navigator)) { setCoords(null); return; }
-    const id = navigator.geolocation.watchPosition(
-      (p) => setCoords({
-        lat: +p.coords.latitude.toFixed(6),
-        lon: +p.coords.longitude.toFixed(6),
-      }),
-      () => setCoords(null),
-      { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 },
-    );
-    return () => navigator.geolocation.clearWatch(id);
-  }, [enabled]);
+  /** One-shot fix, taken at the moment of posting. Resolves null if the toggle is off,
+   *  geolocation is unavailable, or the request is denied/times out. */
+  function getCoords(): Promise<Coords | null> {
+    if (!enabled || !("geolocation" in navigator)) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (p) => resolve({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
+        () => resolve(null),
+        { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 },
+      );
+    });
+  }
 
   function toggle() {
     const next = !geoOn();
     localStorage.setItem("jbrain_geo", next ? "1" : "0");
     setEnabled(next);
-    window.dispatchEvent(new Event(GEO_EVENT));   // tell the trail (and any other view) right away
+    window.dispatchEvent(new Event(GEO_EVENT));   // notify any other view right away
   }
-  return { enabled, coords, toggle };
+  return { enabled, getCoords, toggle };
 }
 
 // The continuous foreground trail used to live here (useLocationTrail), posting to

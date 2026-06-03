@@ -1513,6 +1513,43 @@ def test_notify_posts_to_review_bell(client):
     assert hit and hit["link_slug"] == "/map"
 
 
+def test_share_parity_endpoints(client):
+    """Parity additions: research transcript view, guided brief+expiry edit, plain-link expiry."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+
+    # Research: owner can read a recipient's Q&A transcript.
+    client.post("/api/notes", json={"title": "notes/Medical/A", "content_md": "x"})
+    architect._tool_create_research_share(conn, None, prefixes=["notes/Medical"]); conn.commit()
+    rid = conn.execute("SELECT id FROM share_links WHERE kind='research' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+    conn.execute("INSERT INTO research_sessions (share_link_id, secret, transcript_json, turn_count, status) "
+                 "VALUES (?,?,?,1,'active')",
+                 (rid, "sek", '[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]'))
+    conn.commit()
+    sid = conn.execute("SELECT id FROM research_sessions WHERE share_link_id=?", (rid,)).fetchone()["id"]
+    tx = client.get(f"/api/shares/research/{rid}/sessions/{sid}").json()["transcript"]
+    assert len(tx) == 2 and tx[-1]["content"] == "hello"
+
+    # Guided: edit the interview brief + expiry; empty brief rejected.
+    architect._tool_create_guided_share(conn, None, "collect recipe", "ask for the recipe steps"); conn.commit()
+    gid = conn.execute("SELECT id FROM share_links WHERE kind='guided' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+    assert client.post(f"/api/shares/guided/{gid}/details",
+                       json={"goal": "g2", "intro": "hi", "sub_prompt": "ask about Y", "ttl_days": 3}).status_code == 200
+    assert conn.execute("SELECT sub_prompt FROM guided_specs WHERE share_link_id=?", (gid,)).fetchone()["sub_prompt"] == "ask about Y"
+    assert conn.execute("SELECT expires_at FROM share_links WHERE id=?", (gid,)).fetchone()["expires_at"] is not None
+    assert client.post(f"/api/shares/guided/{gid}/details", json={"sub_prompt": ""}).status_code == 422
+
+    # Plain view/edit link: set then clear expiry.
+    client.post("/api/notes", json={"title": "notes/Doc", "content_md": "y"})
+    client.post("/api/shares", json={"title": "notes/Doc", "scope": "view"})
+    plid = conn.execute("SELECT id FROM share_links WHERE scope='view' AND kind='note' ORDER BY id DESC LIMIT 1").fetchone()["id"]
+    client.post(f"/api/shares/{plid}/expiry", json={"ttl_days": 5})
+    assert conn.execute("SELECT expires_at FROM share_links WHERE id=?", (plid,)).fetchone()["expires_at"] is not None
+    client.post(f"/api/shares/{plid}/expiry", json={"ttl_days": 0})
+    assert conn.execute("SELECT expires_at FROM share_links WHERE id=?", (plid,)).fetchone()["expires_at"] is None
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, post } from "../api";
+import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSetDetails, setLinkExpiry, post } from "../api";
 import ResearchLinks from "../components/ResearchLinks";
 import { useAuth } from "../App";
 import { fmtTs, fmtTsShort } from "../time";
@@ -9,7 +9,7 @@ import { fmtTs, fmtTsShort } from "../time";
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
-interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; }
+interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; expires_at: string | null; }
 interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
 interface GuidedEnded { id: number; name: string | null; end_reason: string; goal: string; note_title: string; note_slug: string; link_id: number; link_status: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
 interface GuidedHist { id: number; name: string | null; goal: string; disposition: string; note_title: string; note_slug: string; completed_at: string | null; }
@@ -267,9 +267,9 @@ export default function SharesPage() {
                 <Link className="ghost" to={`/note/${g.note_slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Note</Link>
               </div>
               <button className="ghost" style={{ fontSize: 12 }} onClick={() => setOpenPrompt(openPrompt === g.id ? null : g.id)}>
-                {openPrompt === g.id ? "Hide" : "Review"} the AI’s instructions
+                {openPrompt === g.id ? "Hide" : "Edit"} the AI’s instructions &amp; expiry
               </button>
-              {openPrompt === g.id && <pre className="share-diff" style={{ marginTop: 6 }}>{g.sub_prompt}</pre>}
+              {openPrompt === g.id && <GuidedEditor g={g} onSaved={load} />}
               <div className="row" style={{ marginTop: 8, gap: 18, flexWrap: "wrap", alignItems: "center" }}>
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
                   <input className="share-check" type="checkbox" checked={!!g.bind} onChange={() => toggleGuidedOpt(g, "bind")} /> Lock to first device
@@ -319,6 +319,10 @@ export default function SharesPage() {
             <input readOnly value={l.url} onFocus={(e) => e.currentTarget.select()} style={{ fontSize: 12 }} />
             <button className="ghost" onClick={() => copy(l)}>{copied === l.id ? "Copied" : "Copy"}</button>
             {l.bind ? <button className="ghost" onClick={() => resetBind(l)} title="Forget the locked browser so the link can be opened fresh">Reset lock</button> : null}
+            <button className="ghost" title="Set/clear link expiry" onClick={() => {
+              const v = prompt("Expire this link in how many days? (0 = never)", "0");
+              if (v !== null) setLinkExpiry(l.id, Math.max(0, parseInt(v, 10) || 0)).then(load);
+            }}>Expiry</button>
             <button className="ghost danger-hover" onClick={() => revoke(l)}>Revoke</button>
           </div>
         </div>
@@ -363,6 +367,43 @@ function HistRow({ status, slug, title, meta, when, appTz }: {
         <Link to={`/note/${slug}`} className="share-hist-title">{title}</Link>
         <div className="share-hist-meta">{meta}{when ? ` · ${fmtTsShort(when, appTz)}` : ""}</div>
       </div>
+    </div>
+  );
+}
+
+// Edit a guided link's interview brief + expiry post-creation (parity with research
+// links). Prefills the expiry as remaining days so saving doesn't wipe it.
+function GuidedEditor({ g, onSaved }: { g: GuidedLink; onSaved: () => void }) {
+  const remaining = g.expires_at
+    ? Math.max(0, Math.ceil((Date.parse(g.expires_at.replace(" ", "T") + "Z") - Date.now()) / 86400000))
+    : 0;
+  const [goal, setGoal] = useState(g.goal || "");
+  const [intro, setIntro] = useState(g.intro || "");
+  const [sub, setSub] = useState(g.sub_prompt || "");
+  const [ttl, setTtl] = useState(remaining);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  async function save() {
+    setBusy(true);
+    try {
+      await guidedSetDetails(g.id, { goal, intro, sub_prompt: sub, ttl_days: ttl });
+      setSaved(true); setTimeout(() => setSaved(false), 1500); onSaved();
+    } catch (e: any) { alert(e?.message || "Couldn't save."); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div style={{ marginTop: 6 }}>
+      <label className="share-field">Goal
+        <input value={goal} disabled={busy} onChange={(e) => setGoal(e.target.value)} /></label>
+      <label className="share-field">Recipient greeting (intro)
+        <textarea rows={2} value={intro} disabled={busy} onChange={(e) => setIntro(e.target.value)} /></label>
+      <label className="share-field">Interview instructions (the AI’s brief)
+        <textarea rows={5} value={sub} disabled={busy} onChange={(e) => setSub(e.target.value)} /></label>
+      <label className="row" style={{ gap: 6, fontSize: 12 }}>Expires in
+        <input type="number" min={0} style={{ width: 64 }} value={ttl} disabled={busy}
+               onChange={(e) => setTtl(Math.max(0, +e.target.value))} /> days (0 = never)</label>
+      <button className="primary" style={{ marginTop: 6 }} disabled={busy || !sub.trim()} onClick={save}>
+        {saved ? "Saved ✓" : "Save"}</button>
     </div>
   );
 }

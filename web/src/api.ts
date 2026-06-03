@@ -124,6 +124,12 @@ export const researchDismiss = (linkId: number, ids: number[]) => post(`/api/sha
 export const researchRemove = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/remove`, { ids });
 export const researchActivate = (linkId: number) => post(`/api/shares/research/${linkId}/activate`);
 export const researchResetBind = (linkId: number) => post(`/api/shares/research/${linkId}/reset-bind`);
+export const researchSession = <T = any>(linkId: number, sid: number) =>
+  get<T>(`/api/shares/research/${linkId}/sessions/${sid}`);
+export const guidedSetDetails = (linkId: number, body: Record<string, unknown>) =>
+  post(`/api/shares/guided/${linkId}/details`, body);
+export const setLinkExpiry = (linkId: number, ttl_days: number) =>
+  post(`/api/shares/${linkId}/expiry`, { ttl_days });
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.

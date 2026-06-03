@@ -153,6 +153,12 @@ def set_options(conn, link_id: int, *, bind: bool, single_use: bool) -> None:
                  (1 if bind else 0, 1 if single_use else 0, link_id))
 
 
+def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -> None:
+    """Edit a guided link's interview brief post-creation (parity with research)."""
+    conn.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
+                 ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
+
+
 def reset_bind(conn, link_id: int) -> None:
     """Forget the device that claimed a locked link so it can be started fresh
     (abandons any in-progress session, mirroring share-link reset-bind)."""

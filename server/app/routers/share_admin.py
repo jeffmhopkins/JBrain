@@ -16,6 +16,15 @@ from .staging import _apply_action
 router = APIRouter(prefix="/api/shares", tags=["shares"], dependencies=[CurrentUser])
 
 
+def _set_link_expiry(conn, link_id: int, ttl_days: int) -> None:
+    """Set/clear a share link's expiry from the host now (0 = never). Shared by the
+    view/edit, guided, and research detail editors so expiry behaves identically."""
+    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+    conn.execute("UPDATE share_links SET expires_at = %s WHERE id = ?"
+                 % ("datetime('now', ?)" if exp else "NULL"),
+                 ((exp, link_id) if exp else (link_id,)))
+
+
 class MintIn(BaseModel):
     title: str
     scope: str = "view"
@@ -200,6 +209,31 @@ def guided_reset_bind(link_id: int):
     return {"ok": True}
 
 
+class GuidedDetailsIn(BaseModel):
+    goal: str = ""
+    intro: str = ""
+    sub_prompt: str = ""
+    ttl_days: int = 0
+
+
+@router.post("/guided/{link_id}/details")
+def guided_set_details(link_id: int, body: GuidedDetailsIn):
+    """Edit a guided link's interview brief + expiry post-creation (parity with
+    research). The sensitive-content guard runs here too, so an edit can't slip in
+    a request for passwords/IDs."""
+    conn = get_conn()
+    from ..services import guided as guided_svc
+    bad = guided_svc.sensitive_reason(f"{body.goal}\n{body.intro}\n{body.sub_prompt}")
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Can't ask for sensitive info (matched “{bad}”).")
+    if not body.sub_prompt.strip():
+        raise HTTPException(status_code=422, detail="The interview instructions can't be empty.")
+    guided_svc.set_details(conn, link_id, goal=body.goal, intro=body.intro, sub_prompt=body.sub_prompt)
+    _set_link_expiry(conn, link_id, body.ttl_days)
+    conn.commit()
+    return {"ok": True}
+
+
 @router.post("/guided/{link_id}/activate")
 def guided_activate(link_id: int):
     """Approval #1: make a draft guided link live for recipients."""
@@ -317,6 +351,18 @@ def research_detail(link_id: int):
     }
 
 
+@router.get("/research/{link_id}/sessions/{sid}")
+def research_session_transcript(link_id: int, sid: int):
+    """Owner-only: read a recipient's Q&A transcript for this link (parity with
+    guided). It's the owner's own notes being queried, so the exchange is visible."""
+    conn = get_conn()
+    row = conn.execute("SELECT name, transcript_json FROM research_sessions WHERE id=? AND share_link_id=?",
+                       (sid, link_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"name": row["name"], "transcript": json.loads(row["transcript_json"] or "[]")}
+
+
 class ResearchScopeIn(BaseModel):
     prefixes: list[str] = []
     kinds: list[str] = []
@@ -347,11 +393,7 @@ def research_set_details(link_id: int, body: ResearchDetailsIn):
     research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, topics=body.topics,
                              intro=body.intro, bind=body.bind, single_use=body.single_use,
                              max_turns=body.max_turns, max_total_replies=body.max_total_replies)
-    # Expiry lives on the share_link; reset the clock on each save (0 = never).
-    exp = f"+{int(body.ttl_days)} days" if (body.ttl_days and int(body.ttl_days) > 0) else None
-    conn.execute("UPDATE share_links SET expires_at = %s WHERE id = ?"
-                 % ("datetime('now', ?)" if exp else "NULL"),
-                 ((exp, link_id) if exp else (link_id,)))
+    _set_link_expiry(conn, link_id, body.ttl_days)   # reset the clock on each save (0 = never)
     conn.commit()
     return {"ok": True}
 
@@ -426,6 +468,20 @@ def reset_bind(link_id: int):
     locked to the wrong in-app browser)."""
     conn = get_conn()
     share_svc.reset_bind(conn, link_id)
+    conn.commit()
+    return {"ok": True}
+
+
+class ExpiryIn(BaseModel):
+    ttl_days: int = 0
+
+
+@router.post("/{link_id}/expiry")
+def set_expiry(link_id: int, body: ExpiryIn):
+    """Edit a view/edit link's expiry post-creation (0 = never) — parity with the
+    AI links, which can already edit expiry via their details panels."""
+    conn = get_conn()
+    _set_link_expiry(conn, link_id, body.ttl_days)
     conn.commit()
     return {"ok": True}
 

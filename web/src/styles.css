@@ -326,6 +326,11 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .share-hist-meta { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
 /* One terse, consistent caption under each Shares section header. */
 .share-hint { font-size: 12px; color: var(--text-dim); line-height: 1.45; margin: 2px 0 12px; }
+.research-transcript { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); display: flex; flex-direction: column; gap: 6px; }
+.tx-msg { font-size: 13px; }
+.tx-who { display: inline-block; min-width: 56px; font-weight: 600; font-size: 11px; color: var(--text-dim); margin-right: 6px; vertical-align: top; }
+.tx-a .tx-who { color: var(--accent); }
+.tx-body { white-space: pre-wrap; }
 .share-field { display: block; font-size: 12px; color: var(--text-dim); margin: 8px 0; }
 .share-field textarea, .share-field input { display: block; width: 100%; margin-top: 4px; font-size: 13px; }
 /* ---- Location-trail map tool ---- */

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import {
   post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
-  researchResetBind, researchSetDetails,
+  researchResetBind, researchSetDetails, researchSession,
 } from "../api";
 
 interface RLink {
@@ -185,12 +185,46 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
       {d.sessions.length > 0 && <>
         <div className="adv-section" style={{ marginTop: 16 }}>Sessions ({d.sessions.length})</div>
         {d.sessions.map((se: any) => (
-          <div className="muted" key={se.id} style={{ fontSize: 12 }}>
-            {se.name || "Someone"} · {se.turn_count} question(s) · {se.retrieved} note(s) used
-            {se.denied_count ? ` · ${se.denied_count} blocked` : ""}
-          </div>
+          <SessionRow key={se.id} linkId={linkId} se={se} />
         ))}
       </>}
     </Modal>
+  );
+}
+
+// One session row: summary + an expandable read-only transcript (owner viewing the
+// Q&A over their own notes — parity with guided links).
+function SessionRow({ linkId, se }: { linkId: number; se: any }) {
+  const [open, setOpen] = useState(false);
+  const [tx, setTx] = useState<{ role: string; content: string }[] | null>(null);
+  async function toggle() {
+    const next = !open; setOpen(next);
+    if (next && tx === null) {
+      try { setTx((await researchSession(linkId, se.id)).transcript || []); } catch { setTx([]); }
+    }
+  }
+  return (
+    <div style={{ padding: "3px 0" }}>
+      <div className="row" style={{ gap: 8 }}>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {se.name || "Someone"} · {se.turn_count} question(s) · {se.retrieved} note(s) used
+          {se.denied_count ? ` · ${se.denied_count} blocked` : ""}
+        </span>
+        <span className="spacer" />
+        {se.turn_count > 0 && <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={toggle}>{open ? "Hide" : "View"}</button>}
+      </div>
+      {open && (
+        <div className="research-transcript">
+          {tx === null ? <span className="muted" style={{ fontSize: 12 }}>Loading…</span>
+            : tx.length === 0 ? <span className="muted" style={{ fontSize: 12 }}>No messages.</span>
+            : tx.map((m, i) => (
+              <div key={i} className={"tx-msg tx-" + (m.role === "assistant" ? "a" : "q")}>
+                <span className="tx-who">{m.role === "assistant" ? "AI" : (se.name || "Visitor")}</span>
+                <span className="tx-body">{m.content}</span>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
   );
 }

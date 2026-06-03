@@ -427,7 +427,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .messages::-webkit-scrollbar { width: 8px; }
 .messages::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
 .messages.scrolling::-webkit-scrollbar-thumb { background: var(--border); }
-.msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border); }
+.msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border);
+  overflow-wrap: anywhere; min-width: 0; }   /* long URLs/words wrap; min-width:0 lets the flex bubble shrink */
 .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
 /* Assistant replies run almost full width (room for the longer, formatted answers);
    the user's own bubbles stay narrow + right-aligned at the .msg 80% default. */
@@ -451,7 +452,12 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .msg-md > :last-child { margin-bottom: 0; }
 .msg-md p { margin: 0 0 0.5em; }
 .msg-md ul, .msg-md ol { margin: 0.35em 0; padding-left: 1.3em; }
-.msg-md pre { margin: 0.5em 0; }
+/* Keep wide content inside the bubble: code scrolls within itself, inline code +
+   tables wrap/scroll rather than pushing the bubble off-screen. */
+.msg-md pre { margin: 0.5em 0; max-width: 100%; overflow-x: auto; }
+.msg-md code { overflow-wrap: anywhere; }
+.msg-md table { display: block; max-width: 100%; overflow-x: auto; }
+.msg-md img { max-width: 100%; height: auto; }
 
 .md { line-height: 1.65; }
 .md h1, .md h2, .md h3 { line-height: 1.25; }

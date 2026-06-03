@@ -191,7 +191,9 @@ export default function Chat() {
     return () => clearTimeout(flashTimer.current);
   }, [mode]);
 
-  const convKey = (m: Mode) => `jbrain_conv_${m}`;
+  // Assisted + research share ONE conversation/thread; only the per-turn AI permission
+  // differs. (Entry has no conversation.)
+  const CHAT_CONV_KEY = "jbrain_conv_chat";
 
   async function loadMessages(id: number) {
     try {
@@ -202,18 +204,29 @@ export default function Chat() {
 
   async function newConversation() {
     const { id } = await post("/api/chat/conversations");
-    localStorage.setItem(convKey(mode), String(id));
+    localStorage.setItem(CHAT_CONV_KEY, String(id));
     setConvId(id); setMessages([]); setApplied([]); setUndone(new Set());
   }
 
-  // On entering a chat mode, restore that mode's saved conversation (so the chat
-  // survives navigating to Advanced and back); only create one if none is saved.
+  // Restore (or migrate to) the single shared chat thread on first entry into a chat
+  // mode. Toggling assisted↔research afterwards keeps the SAME thread (the guard below) —
+  // only the AI's permission changes per turn. One-time migration adopts the old
+  // per-mode conversation (assisted preferred) into jbrain_conv_chat.
   useEffect(() => {
     if (mode === "entry") return;
-    const saved = localStorage.getItem(convKey(mode));
-    if (saved) { setConvId(Number(saved)); loadMessages(Number(saved)); }
+    if (convId) return;                       // already in a thread → keep it across toggles
+    let id = localStorage.getItem(CHAT_CONV_KEY);
+    if (!id) {
+      id = localStorage.getItem("jbrain_conv_assisted") || localStorage.getItem("jbrain_conv_research");
+      if (id) {
+        localStorage.setItem(CHAT_CONV_KEY, id);
+        localStorage.removeItem("jbrain_conv_assisted");
+        localStorage.removeItem("jbrain_conv_research");
+      }
+    }
+    if (id) { setConvId(Number(id)); loadMessages(Number(id)); }
     else { newConversation(); }
-  }, [mode]);
+  }, [mode, convId]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages, entries]);
@@ -314,7 +327,7 @@ export default function Chat() {
       streamActiveRef.current = false;
       setStreaming(false);
       setStatus("");
-      if (mode === "assisted") setStagingTick((t) => t + 1);
+      setStagingTick((t) => t + 1);   // chat modes (assisted+research) share staging
       // Re-sync from the server: the authoritative turn + any persisted approval
       // ('event') records, correctly ordered. Skip on error to keep the ⚠️.
       if (!errored && convId) { await loadMessages(convId); setApplied([]); }
@@ -386,7 +399,7 @@ export default function Chat() {
                 </div>
               );
             })}
-            {mode === "assisted" && applied.map((a) => (
+            {applied.map((a) => (
               <div key={`a${a.id}`} className="applied-chip">
                 <span>✓ {renderSummary(a.summary)}</span>
                 {undone.has(a.id)
@@ -394,12 +407,12 @@ export default function Chat() {
                   : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}
               </div>
             ))}
-            {mode === "assisted" && (
-              <StagingPanel
-                tick={stagingTick}
-                onChange={() => { setStagingTick((t) => t + 1); if (convId && !streaming) loadMessages(convId); }}
-              />
-            )}
+            {/* Staging + applied chips show in BOTH chat modes — pending proposals are
+                global, so they must stay approvable even while read-only (research). */}
+            <StagingPanel
+              tick={stagingTick}
+              onChange={() => { setStagingTick((t) => t + 1); if (convId && !streaming) loadMessages(convId); }}
+            />
           </>
         )}
         {streaming && (

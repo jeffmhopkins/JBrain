@@ -15,9 +15,18 @@ export default function SystemPage() {
   const [msg, setMsg] = useState("");
   // Live update lifecycle: requesting → restarting (server offline) → online; or
   // "queued" when the deploy needs a manual host step and won't restart itself.
-  type UpStatus = "idle" | "requesting" | "restarting" | "online" | "queued" | "error";
+  type UpStatus = "idle" | "requesting" | "restarting" | "online" | "queued" | "error" | "failed";
   const [up, setUp] = useState<UpStatus>("idle");
+  const [copied, setCopied] = useState(false);
   const pollRef = useRef<number | undefined>(undefined);
+
+  // Host commands to diagnose a failed deploy (the API is down, so we can't fetch the
+  // logs ourselves yet — phase 2). Offered with a Copy button.
+  const DIAG_CMDS =
+    "cd ~/JBrain\n" +
+    "docker compose logs --tail=200 api\n\n" +
+    "# Or reproduce the startup error directly against your data:\n" +
+    "docker compose run --rm api python -c \"from app.db import init_db; init_db(); print('INIT OK')\"";
   const [notifMsg, setNotifMsg] = useState("");
   const [notifBusy, setNotifBusy] = useState(false);
   const [notifDelay, setNotifDelay] = useState(0);   // seconds before the test fires
@@ -50,26 +59,42 @@ export default function SystemPage() {
 
     setMsg("Update triggered — waiting for the server to restart…");
     const startedAt = Date.now();
+    const FAIL_AFTER = 90 * 1000;        // down this long after going offline → likely a failed deploy
+    const HARD_CAP = 8 * 60 * 1000;      // stop polling after this (leave the last state shown)
     let sawDown = false;
+    let downSince = 0;
     const poll = async () => {
-      if (Date.now() - startedAt > 5 * 60 * 1000) {
-        setUp("error"); setMsg("Timed out waiting for the server to come back — it may still be updating. Try reloading.");
-        return;
-      }
       const ok = await ping();
-      if (!ok) {
-        sawDown = true; setUp("restarting"); setMsg("Server offline — restarting…");
-      } else if (sawDown) {
-        const ver = await get("/api/system/version").catch(() => null);
-        setUp("online");
-        setMsg(`Back online${ver?.current ? ` · ${ver.current}` : ""}. Reload the app to finish updating.`);
-        return;
-      } else {
+      if (ok) {
+        if (sawDown) {                   // went down then came back → success
+          const ver = await get("/api/system/version").catch(() => null);
+          setUp("online");
+          setMsg(`Back online${ver?.current ? ` · ${ver.current}` : ""}. Reload the app to finish updating.`);
+          return;
+        }
         setUp("restarting"); setMsg("Update triggered — waiting for the server to restart…");
+      } else {
+        sawDown = true;
+        if (!downSince) downSince = Date.now();
+        if (Date.now() - downSince > FAIL_AFTER) {
+          // Offline well past a normal restart → the new version probably failed to boot.
+          // Keep polling (slower) so a host-side fix still flips this to "online".
+          setUp("failed");
+          setMsg("The server didn’t come back up after the update — the new version likely failed to start.");
+        } else {
+          setUp("restarting"); setMsg("Server offline — restarting…");
+        }
       }
-      pollRef.current = window.setTimeout(poll, 2000);
+      if (Date.now() - startedAt > HARD_CAP) return;   // give up polling; leave failed/restarting visible
+      const failing = sawDown && downSince && Date.now() - downSince > FAIL_AFTER;
+      pollRef.current = window.setTimeout(poll, failing ? 5000 : 2000);
     };
     pollRef.current = window.setTimeout(poll, 3000);   // give it a moment to begin
+  }
+
+  async function copyDiag() {
+    try { await navigator.clipboard.writeText(DIAG_CMDS); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { alert(DIAG_CMDS); }
   }
 
   // Subscribe THIS device (asking permission if needed), then have the server
@@ -135,13 +160,29 @@ export default function SystemPage() {
         )}
         {up !== "idle" && (
           <div className="update-status">
-            <span className={"status-dot " + (up === "online" ? "ok" : up === "error" ? "err" : up === "queued" ? "info" : "busy")} />
+            <span className={"status-dot " + (up === "online" ? "ok" : up === "error" || up === "failed" ? "err" : up === "queued" ? "info" : "busy")} />
             <span style={{ fontSize: 13 }}>{msg}</span>
             {(up === "online" || up === "queued") && (
               <button className="primary" style={{ padding: "4px 12px" }} onClick={() => window.location.reload()}>
                 Reload now
               </button>
             )}
+          </div>
+        )}
+        {up === "failed" && (
+          <div className="deploy-failed">
+            <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+              Grab the logs on the host and paste them here (or to your AI) to debug or roll back:
+            </p>
+            <pre className="deploy-cmd">{DIAG_CMDS}</pre>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="primary" style={{ padding: "4px 12px" }} onClick={copyDiag}>
+                {copied ? "Copied ✓" : "Copy commands"}
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              Still re-checking — if the server recovers, this switches to online automatically.
+            </p>
           </div>
         )}
         {up === "idle" && msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}

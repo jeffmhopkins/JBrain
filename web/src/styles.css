@@ -427,6 +427,9 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .status-dot.err { background: var(--danger, #ff6b6b); }
 .status-dot.info { background: var(--accent, #4ea1ff); }
 @keyframes status-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+/* Failed-deploy panel: copyable host commands to grab the logs. */
+.deploy-failed { margin-top: 10px; border: 1px solid var(--danger, #c08585); border-radius: var(--radius); padding: 10px 12px; background: var(--bg-elev-2); }
+.deploy-cmd { margin: 0 0 8px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; overflow-x: auto; color: var(--text); }
 .geofence-card a { color: var(--accent); text-decoration: none; }
 .geofence-card a:hover { text-decoration: underline; }
 /* Inline image-attachment preview: capped so a huge photo never blows out the page. */

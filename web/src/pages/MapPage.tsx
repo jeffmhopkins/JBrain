@@ -12,6 +12,7 @@ const RANGES = [
   { k: "all", label: "All", days: 0 },
 ];
 const NOTES_HERE_M = 200;   // tap-the-map radius for "what notes are here"
+const LIVE_POLL_MS = 15000; // how often to pull newly-arrived fixes onto the live map
 
 const parseTs = (s: string) => new Date(s.replace(" ", "T") + "Z").getTime();
 const fmt = (ms: number) =>
@@ -36,13 +37,16 @@ export default function MapPage() {
   const mapEl = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const overlay = useRef<L.Layer | null>(null);
-  const head = useRef<L.CircleMarker | null>(null);
+  const head = useRef<L.Layer | null>(null);
   const placeLayer = useRef<L.LayerGroup | null>(null);
   const noteLayer = useRef<L.LayerGroup | null>(null);
   const noteMarkers = useRef<Record<string, L.Marker>>({});
   const shownSlugs = useRef<Set<string>>(new Set());
   const notesRef = useRef<LocatedNote[]>([]);
   const addingRef = useRef(false);
+  const pointsRef = useRef<LocPoint[]>([]);     // latest points, for the live poller
+  const followingRef = useRef(true);            // scrubber pinned to the live edge?
+  const needFitRef = useRef(true);              // refit bounds only on (re)load, not live appends
 
   const [mode, setMode] = useState<Mode>("trail");
   const [heatLevel, setHeatLevel] = useState(0.6);   // 0 = subtle … 1 = intense
@@ -106,6 +110,7 @@ export default function MapPage() {
   }, [points, people, personOf]);
   useEffect(() => { addingRef.current = adding; }, [adding]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
+  useEffect(() => { pointsRef.current = points; }, [points]);
 
   // A popup for a note pin: open it, or save its spot as a place. Built as a DOM
   // node so the link can use client-side routing instead of a full reload.
@@ -163,10 +168,34 @@ export default function MapPage() {
   // Load both the trail and the located notes for the chosen range.
   useEffect(() => {
     setLoading(true);
+    needFitRef.current = true;       // a fresh range → refit once
+    followingRef.current = true;     // …and re-pin to the live edge
     const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
     Promise.all([getLocations(since).catch(() => []), getLocatedNotes(since).catch(() => [])])
       .then(([pts, ns]) => { setPoints(pts); setNotes(ns); setPlaying(false); })
       .finally(() => setLoading(false));
+  }, [rangeDays]);
+
+  // LIVE: poll for fixes newer than the last one we hold and append them (deduped by
+  // id). The trail redraws and the head dot moves on its own as packets land.
+  useEffect(() => {
+    const tick = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;   // pause when tab/app is backgrounded
+      const cur = pointsRef.current;
+      const lastTs = cur.length ? cur[cur.length - 1].recorded_at : null;
+      const since = lastTs
+        ? new Date(lastTs.replace(" ", "T") + "Z").toISOString()
+        : (rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined);
+      try {
+        const fresh = await getLocations(since);
+        if (!fresh?.length) return;
+        const seen = new Set(cur.map((p) => p.id));
+        const add = fresh.filter((p) => !seen.has(p.id));
+        if (add.length) setPoints((prev) => [...prev, ...add]);
+      } catch { /* transient — try again next tick */ }
+    };
+    const id = window.setInterval(tick, LIVE_POLL_MS);
+    return () => window.clearInterval(id);
   }, [rangeDays]);
 
   // The scrubber walks the UNION of fix-times and note-times, so notes still appear
@@ -177,18 +206,23 @@ export default function MapPage() {
     notes.forEach((n) => ts.add(parseTs(n.created_at)));
     return [...ts].sort((a, b) => a - b);
   }, [points, notes]);
-  useEffect(() => { setIdx(Math.max(0, timeline.length - 1)); }, [timeline.length]);
+  // Follow the live edge only while the user is pinned there; if they've scrubbed back
+  // (or are playing history), new fixes append silently without yanking the scrubber.
+  useEffect(() => {
+    if (followingRef.current) setIdx(Math.max(0, timeline.length - 1));
+  }, [timeline.length]);
 
   const curTs = timeline[idx] ?? 0;
 
-  // Fit to everything we have (trail + notes) on load.
+  // Fit to everything we have (trail + notes) ONCE per (re)load — never on a live
+  // append, so polling doesn't keep snapping the user's pan/zoom back.
   useEffect(() => {
-    const m = map.current; if (!m) return;
+    const m = map.current; if (!m || !needFitRef.current) return;
     const coords = [
       ...points.map((p) => [p.lat, p.lon] as [number, number]),
       ...notes.map((n) => [n.lat, n.lon] as [number, number]),
     ];
-    if (coords.length) m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 });
+    if (coords.length) { m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 }); needFitRef.current = false; }
   }, [points, notes]);
 
   // ?focus=<slug>: center on that note and open its pin, regardless of scrub.
@@ -280,13 +314,15 @@ export default function MapPage() {
     const upto = points.filter((p) => parseTs(p.recorded_at) <= curTs && visible(p));
     if (!upto.length) return;
     if (mode === "trail") {
-      // One polyline per person in their colour (different people aren't joined).
-      const byPerson = new Map<number, { color: string; pts: [number, number][] }>();
+      // One polyline per person in their colour (different people aren't joined); track
+      // each person's MOST RECENT fix (upto is chronological) for a labeled head dot.
+      const byPerson = new Map<number, { color: string; name: string; pts: [number, number][]; last: LocPoint }>();
       for (const p of upto) {
         const per = personOf(p.source);
         const key = per?.id ?? -1;
-        const g = byPerson.get(key) ?? { color: per?.color || "#4ea1ff", pts: [] };
+        const g = byPerson.get(key) ?? { color: per?.color || "#4ea1ff", name: per?.name || "", pts: [], last: p };
         g.pts.push([p.lat, p.lon]);
+        g.last = p;   // chronological order → ends on this person's newest fix
         byPerson.set(key, g);
       }
       const group = L.layerGroup();
@@ -294,9 +330,15 @@ export default function MapPage() {
         L.polyline(pts, { color, weight: 3, opacity: 0.85 }).addTo(group);
       }
       overlay.current = group.addTo(m);
-      const last = upto[upto.length - 1];
-      head.current = L.circleMarker([last.lat, last.lon],
-        { radius: 6, color: "#fff", weight: 2, fillColor: personOf(last.source)?.color || "#4ea1ff", fillOpacity: 1 }).addTo(m);
+      // Each person's latest position as a white-ringed dot, labeled with their name.
+      const heads = L.layerGroup();
+      for (const { color, name, last } of byPerson.values()) {
+        const dot = L.circleMarker([last.lat, last.lon],
+          { radius: 6, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 });
+        if (name) dot.bindTooltip(name, { permanent: true, direction: "top", className: "head-label", offset: [0, -6] });
+        dot.addTo(heads);
+      }
+      head.current = heads.addTo(m);
     } else if ((L as any).heatLayer) {
       const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs && visible(points[i]));
       // The slider drives intensity: a higher level lowers `max` (more of the trail
@@ -413,12 +455,13 @@ export default function MapPage() {
       )}
       <div className="map-play">
         <button className="icon-btn" disabled={timeline.length < 2}
-                onClick={() => { if (idx >= timeline.length - 1) setIdx(0); setPlaying((p) => !p); }}>
+                onClick={() => { if (idx >= timeline.length - 1) setIdx(0); followingRef.current = false; setPlaying((p) => !p); }}>
           {playing ? "❚❚" : "▶"}
         </button>
         <input type="range" min={0} max={Math.max(0, timeline.length - 1)} value={idx}
                disabled={timeline.length < 2}
-               onChange={(e) => { setPlaying(false); setIdx(+e.target.value); }} />
+               onChange={(e) => { const v = +e.target.value; setPlaying(false); setIdx(v);
+                                  followingRef.current = v >= timeline.length - 1; }} />
         <span className="map-time">
           {loading ? "Loading…" : timeline.length ? `${fmt(curTs)}  ·  ${idx + 1}/${timeline.length}` : "No location data yet"}
         </span>

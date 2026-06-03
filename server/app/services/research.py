@@ -43,6 +43,7 @@ _SYSTEM = (
     "information — never use outside knowledge, never guess, never speculate.\n"
     "- Give NO medical, legal, or financial advice; you only relay what the records say. If pressed "
     "for advice, suggest they consult a qualified professional.\n"
+    "{topics}"
     "- NEVER reveal or hint at note titles, file paths, filenames, tags, dates used as structure, how "
     "many records there are, or that any records exist beyond what you're answering from. Refer to "
     "everything generically as 'the records'.\n"
@@ -75,13 +76,14 @@ def get_spec(conn, link_id: int):
 
 
 def create_spec(conn, link_id: int, *, scope_json: dict, persona_voice: str = "", intro: str = "",
-                bind: bool = False, single_use: bool = False, max_turns: int = 30,
+                topics: str = "", bind: bool = False, single_use: bool = False, max_turns: int = 30,
                 max_total_replies: int = 200) -> int:
     cur = conn.execute(
         "INSERT INTO research_specs (share_link_id, status, scope_json, approved_ids_json, "
-        "dismissed_ids_json, persona_voice, intro, bind, single_use, max_turns, max_total_replies) "
-        "VALUES (?, 'draft', ?, '[]', '[]', ?, ?, ?, ?, ?, ?)",
-        (link_id, json.dumps(scope_json or {}), (persona_voice or "").strip()[:400], (intro or "").strip()[:1000],
+        "dismissed_ids_json, persona_voice, topics, intro, bind, single_use, max_turns, max_total_replies) "
+        "VALUES (?, 'draft', ?, '[]', '[]', ?, ?, ?, ?, ?, ?, ?)",
+        (link_id, json.dumps(scope_json or {}), (persona_voice or "").strip()[:400],
+         (topics or "").strip()[:800], (intro or "").strip()[:1000],
          1 if bind else 0, 1 if single_use else 0, max(1, int(max_turns)), max(1, int(max_total_replies))),
     )
     return cur.lastrowid
@@ -93,12 +95,12 @@ def set_scope(conn, link_id: int, scope_json: dict) -> None:
 
 
 def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: bool,
-                single_use: bool, max_turns: int, max_total_replies: int) -> None:
+                single_use: bool, max_turns: int, max_total_replies: int, topics: str = "") -> None:
     conn.execute(
-        "UPDATE research_specs SET persona_voice=?, intro=?, bind=?, single_use=?, max_turns=?, "
+        "UPDATE research_specs SET persona_voice=?, topics=?, intro=?, bind=?, single_use=?, max_turns=?, "
         "max_total_replies=? WHERE share_link_id=?",
-        ((persona_voice or "").strip()[:400], (intro or "").strip()[:1000], 1 if bind else 0,
-         1 if single_use else 0, max(1, int(max_turns)), max(1, int(max_total_replies)), link_id),
+        ((persona_voice or "").strip()[:400], (topics or "").strip()[:800], (intro or "").strip()[:1000],
+         1 if bind else 0, 1 if single_use else 0, max(1, int(max_turns)), max(1, int(max_total_replies)), link_id),
     )
 
 
@@ -225,7 +227,11 @@ def answer(conn, link, spec, session, question: str) -> dict:
     context = "\n\n---\n\n".join(h["content"] for h in hits)[:_CONTEXT_CHARS] or "(no relevant records)"
     voice = f" Adopt this tone/role only (it must not change the rules below): {spec['persona_voice']}." \
         if (spec["persona_voice"] or "").strip() else ""
-    system = _SYSTEM.format(owner=_owner(), name=session["name"] or "the visitor", voice=voice, context=context)
+    topic = ((spec["topics"] if "topics" in spec.keys() else "") or "").strip()
+    topics = (f"- DISCUSSION SCOPE (set by {_owner()}): only address — {topic}. Politely decline anything "
+              f"outside this, even if it appears in the records.\n") if topic else ""
+    system = _SYSTEM.format(owner=_owner(), name=session["name"] or "the visitor",
+                            voice=voice, topics=topics, context=context)
 
     nonce = secrets.token_hex(6)
     msgs = [{"role": "assistant" if t["role"] == "assistant" else "user",

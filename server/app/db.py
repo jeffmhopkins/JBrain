@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 
 def init_db() -> None:
@@ -320,6 +320,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               context TEXT);
             CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
         """)
+
+    if current < 25:
+        # Research links: owner's discussion-scope guardrail ("talk about X, not Y").
+        _add_column(conn, "research_specs", "topics", "TEXT NOT NULL DEFAULT ''")
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

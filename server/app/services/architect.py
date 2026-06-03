@@ -142,6 +142,7 @@ _TOOL_SCHEMAS = {
                   "description": "Exact note title(s) to expose — use for sharing specific entries (e.g. one day's note 'notes/daily/2026/06/01/6') instead of a whole folder."},
         "intro": {"type": "string", "description": "Optional 1-2 sentence greeting the recipient sees."},
         "persona_voice": {"type": "string", "description": "Optional tone/role for the answering AI (cannot change its rules)."},
+        "topics": {"type": "string", "description": "What the AI MAY and may NOT discuss — a hard scope it must follow (e.g. 'only medications and allergies; never finances or family'). Ask the owner; it shows in the proposal."},
         "ttl_days": {"type": "integer", "default": 0},
         "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that opens it."},
         "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}}},
@@ -760,6 +761,16 @@ def _tool_mark_inbox_processed(conn, conversation_id, ids):
     )
 
 
+def _notify_share_created(kind: str, url: str) -> None:
+    """Push the new share link to the owner's devices so it's easy to grab/forward
+    from anywhere. Best-effort; deep-links to the Shares admin."""
+    try:
+        from . import push
+        push.notify(f"{kind} created", url, "/shares")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _tool_create_share_link(conn, conversation_id, title, scope="view"):
     from . import share as share_svc
     if scope not in ("view", "edit"):
@@ -770,6 +781,7 @@ def _tool_create_share_link(conn, conversation_id, title, scope="view"):
     token = share_svc.create_link(conn, note["id"], scope)
     url = share_svc.share_url(token)
     display = f"Created a {scope} share link for [[{note['title']}]]: {url}"
+    _notify_share_created(f"{scope.capitalize()} share link", url)
     undo = {"op": "revoke_share", "token": token}
     return f"applied: {display}", _record_applied(conn, conversation_id, "SHARE_LINK", display, undo)
 
@@ -802,12 +814,13 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
               f"It's not live yet — review the interview and ACTIVATE it under Advanced → Shares "
               f"(approval #1). When someone completes it, you'll approve the AI's document before "
               f"it's saved (approval #2).")
+    _notify_share_created("Guided intake link", url)
     undo = {"op": "revoke_share", "token": token}
     return f"applied: {display}", _record_applied(conn, conversation_id, "GUIDED_SHARE", display, undo)
 
 
 def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, notes=None, intro="",
-                                persona_voice="", ttl_days=0, bind=False, single_use=False):
+                                persona_voice="", topics="", ttl_days=0, bind=False, single_use=False):
     """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
     (it ANSWERS from the owner's notes instead of collecting). `prefixes` (folders) and
     `notes` (exact titles) only FIND candidate notes; the owner approves exactly which
@@ -830,12 +843,14 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
     token, link_id = share_svc.create_research_link(conn, note_id, label=label,
                                                     ttl_days=ttl_days or None, bind=bool(bind))
     research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=persona_voice,
-                             intro=intro, bind=bool(bind), single_use=bool(single_use))
+                             topics=topics, intro=intro, bind=bool(bind), single_use=bool(single_use))
     url = share_svc.share_url(token)
+    scope_line = f"\nDiscussion scope: {topics.strip()}" if (topics or "").strip() else ""
     display = (f"Created a DRAFT research link “{label}” → {url}\n"
                f"It matches {len(candidates)} note(s) from {', '.join(pre + titles)}, but NOTHING is exposed yet. "
                f"Go to Advanced → Shares, APPROVE exactly which of those notes it may read, then ACTIVATE it. "
-               f"It's read-only — recipients can only ask questions, never change anything.")
+               f"It's read-only — recipients can only ask questions, never change anything.{scope_line}")
+    _notify_share_created("Research link", url)
     undo = {"op": "revoke_share", "token": token}
     return f"applied: {display}", _record_applied(conn, conversation_id, "RESEARCH_SHARE", display, undo)
 
@@ -933,7 +948,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "create_research_share":
         return _tool_create_research_share(conn, conversation_id, args.get("label"), args.get("prefixes"),
                                            args.get("notes"), args.get("intro", ""), args.get("persona_voice", ""),
-                                           args.get("ttl_days", 0), args.get("bind", False), args.get("single_use", False))
+                                           args.get("topics", ""), args.get("ttl_days", 0),
+                                           args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None
     if name == "revoke_share_link":

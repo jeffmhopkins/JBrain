@@ -91,6 +91,9 @@ modes:
       (e.g. ["notes/Medical"]) for a whole folder, and/or `notes` = exact note
       title(s) to share specific entries (e.g. ["notes/daily/2026/06/01/6"] for a
       single note); always a short `label`; NEVER a root/whole-brain scope.
+      ALSO ASK the owner what the answering AI may and may NOT talk about and pass it
+      as `topics` (a hard discussion scope, e.g. "only meds and allergies; never
+      finances"); echo that scope back in your proposal so they can confirm it.
       It mints a DRAFT and reports how many notes match — then tell the owner they
       MUST go to Shares to APPROVE exactly which of those notes are exposed and
       ACTIVATE the link. The filter only finds candidates; per-note approval is the

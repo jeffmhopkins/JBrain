@@ -305,6 +305,7 @@ CREATE TABLE IF NOT EXISTS research_specs (
   approved_ids_json TEXT NOT NULL DEFAULT '[]',        -- the exposed allowlist (the ONLY boundary)
   dismissed_ids_json TEXT NOT NULL DEFAULT '[]',       -- candidates the owner rejected (don't re-nag)
   persona_voice     TEXT NOT NULL DEFAULT '',          -- optional tone/role; '' = neutral default
+  topics            TEXT NOT NULL DEFAULT '',          -- owner's discussion scope (what to/not discuss)
   intro             TEXT NOT NULL DEFAULT '',          -- recipient consent-landing text
   bind              INTEGER NOT NULL DEFAULT 0,
   single_use        INTEGER NOT NULL DEFAULT 0,

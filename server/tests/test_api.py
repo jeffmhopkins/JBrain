@@ -1435,6 +1435,21 @@ def test_research_share_single_note_scope(client):
     assert ev2 is None
 
 
+def test_research_share_topics_stored(client):
+    """The owner's discussion-scope ('talk about X, not Y') is saved on the spec and
+    surfaced in the proposal."""
+    from app.db import get_conn
+    from app.services import architect, research
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "x"})
+    conn = get_conn()
+    msg, _ = architect._tool_create_research_share(
+        conn, None, prefixes=["notes/Medical"], topics="only allergies and meds; never finances")
+    conn.commit()
+    assert "Discussion scope:" in msg and "allergies" in msg
+    link = conn.execute("SELECT id FROM share_links WHERE kind='research' ORDER BY id DESC LIMIT 1").fetchone()
+    assert "allergies" in (research.get_spec(conn, link["id"])["topics"] or "")
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

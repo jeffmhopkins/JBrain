@@ -12,6 +12,16 @@ import { makeLinkRenderer, renderWikiLinks } from "../util";
 interface Msg { role: "user" | "assistant" | "event"; content: string; }
 type Mode = "entry" | "assisted" | "research";
 
+// Render an applied-action summary with any URL made clickable (so a freshly-minted
+// share link is tappable right on the card).
+const _URL_RE = /(https?:\/\/[^\s]+)/g;
+function renderSummary(text: string) {
+  return text.split(_URL_RE).map((part, i) =>
+    /^https?:\/\//.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noreferrer">{part}</a>
+      : <span key={i}>{part}</span>);
+}
+
 const MODES: { key: Mode; label: string; icon: string }[] = [
   { key: "entry", label: "Entry", icon: "plus" },
   { key: "assisted", label: "Assisted", icon: "robot" },
@@ -352,7 +362,7 @@ export default function Chat() {
                 try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
                 return (
                   <div key={i} className="applied-chip">
-                    <span>✓ {ev.summary}</span>
+                    <span>✓ {renderSummary(ev.summary)}</span>
                     {ev.undo_id == null ? null : undone.has(ev.undo_id)
                       ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
                       : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(ev.undo_id!)}>Undo</button>}
@@ -376,7 +386,7 @@ export default function Chat() {
             })}
             {mode === "assisted" && applied.map((a) => (
               <div key={`a${a.id}`} className="applied-chip">
-                <span>✓ {a.summary}</span>
+                <span>✓ {renderSummary(a.summary)}</span>
                 {undone.has(a.id)
                   ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
                   : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(a.id)}>Undo</button>}

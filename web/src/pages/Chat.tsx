@@ -153,9 +153,11 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
-  // Swipe left/right across the conversation to move between modes (wraps around).
+  // A horizontal swipe across the conversation shuttles to Advanced — the carousel is
+  // just two stops now: Chat ⇄ Advanced. (Modes change via the mode button, not swipe,
+  // since entry/assisted/research share this one window.)
   const touchStart = useRef<{ x: number; y: number } | null>(null);
-  const slideFrom = useRef(16);   // px the mode-flash slides in from (swipe direction)
+  const slideFrom = useRef(16);   // px the mode-flash slides in from (button mode-change)
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
@@ -164,17 +166,13 @@ export default function Chat() {
     const s = touchStart.current;
     touchStart.current = null;
     if (!s) return;
+    // Ignore swipes that start in the OS edge gutter (system back/forward).
+    if (s.x <= 30 || s.x >= window.innerWidth - 30) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - s.x, dy = t.clientY - s.y;
     // Require a clear, mostly-horizontal swipe so it doesn't fight vertical scroll.
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    // Carousel of 4 stops: Entry ↔ Assisted ↔ Research ↔ Advanced (wraps).
-    const n = MODES.length;
-    const i = MODES.findIndex((m) => m.key === mode);
-    const ni = (i + (dx < 0 ? 1 : -1) + (n + 1)) % (n + 1);
-    if (ni === n) { navigate("/advanced"); return; }   // the 4th stop is Advanced
-    slideFrom.current = dx < 0 ? 22 : -22;
-    pick(MODES[ni].key);
+    navigate("/advanced");
   }
 
   // Brief sliding mode-name flash on every switch (swipe or menu).

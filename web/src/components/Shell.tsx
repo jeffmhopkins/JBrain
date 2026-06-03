@@ -196,6 +196,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     // started clear of the OS edge gutter so it can't collide with system back).
     if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki");
+      else if (advHome && !s.edgeStart) nav("/chat");   // shuttle back: Advanced ⇄ Chat
       return;
     }
     if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe

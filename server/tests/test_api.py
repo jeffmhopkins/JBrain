@@ -1178,6 +1178,23 @@ def test_place_rename(client):
     assert any(p["name"] == "New" for p in client.get("/api/places").json())
 
 
+def test_place_resize_geofence(client):
+    """Editing a place can change the geofence radius (clamped 20–20000), with or
+    without a rename, and it doesn't disturb the name."""
+    pid = client.post("/api/places", json={"name": "Gym", "lat": 40.0, "lon": -74.0, "radius_m": 150}).json()["id"]
+    # Resize only — name unchanged.
+    assert client.patch(f"/api/places/{pid}", json={"radius_m": 500}).status_code == 200
+    p = next(x for x in client.get("/api/places").json() if x["id"] == pid)
+    assert p["radius_m"] == 500 and p["name"] == "Gym"
+    # Out-of-range is clamped, not rejected.
+    client.patch(f"/api/places/{pid}", json={"radius_m": 99999})
+    assert next(x for x in client.get("/api/places").json() if x["id"] == pid)["radius_m"] == 20000
+    # Rename + resize together.
+    client.patch(f"/api/places/{pid}", json={"name": "The Gym", "radius_m": 80})
+    p = next(x for x in client.get("/api/places").json() if x["id"] == pid)
+    assert p["name"] == "The Gym" and p["radius_m"] == 80
+
+
 def test_places_crud(client):
     """Places CRUD: add (radius clamped), list, delete (cascades location_state)."""
     r = client.post("/api/places", json={"name": "Home", "lat": 40.0, "lon": -74.0, "radius_m": 5})

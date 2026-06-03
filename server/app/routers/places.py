@@ -63,31 +63,38 @@ def add_place(body: PlaceIn):
 
 
 class PlacePatch(BaseModel):
-    name: str
+    name: str | None = None
+    radius_m: int | None = None
 
 
 @router.patch("/{place_id}")
-def rename_place(place_id: int, body: PlacePatch):
-    name = body.name.strip()[:80]
-    if not name:
-        raise HTTPException(status_code=422, detail="Name required")
+def update_place(place_id: int, body: PlacePatch):
+    """Edit a place: rename it and/or resize its geofence. Either field is optional."""
     conn = get_conn()
-    place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
+    place = conn.execute("SELECT name, note_slug, radius_m FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         raise HTTPException(status_code=404, detail="No such place")
-    if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
-                    (name, place_id)).fetchone():
+    name = body.name.strip()[:80] if body.name is not None else None
+    if body.name is not None and not name:
+        raise HTTPException(status_code=422, detail="Name required")
+    renaming = name is not None and name.lower() != place["name"].lower()
+    if renaming and conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
+                                 (name, place_id)).fetchone():
         raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
     try:
-        conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
-        # Keep the linked loc/ note's title in sync so the place and its page stay paired.
-        if place["note_slug"]:
-            note = _note_by_slug(conn, place["note_slug"])
-            if note is not None:
-                notes_svc.upsert_note(conn, _loc_title(name), note["content_md"],
-                                      note_id=note["id"], source="user", kind="place")
-                new = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
-                conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
+        if renaming:
+            conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
+            # Keep the linked loc/ note's title in sync so the place and its page stay paired.
+            if place["note_slug"]:
+                note = _note_by_slug(conn, place["note_slug"])
+                if note is not None:
+                    notes_svc.upsert_note(conn, _loc_title(name), note["content_md"],
+                                          note_id=note["id"], source="user", kind="place")
+                    new = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
+                    conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
+        if body.radius_m is not None:
+            radius = max(20, min(int(body.radius_m), 20000))
+            conn.execute("UPDATE places SET radius_m = ? WHERE id = ?", (radius, place_id))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.rollback()
@@ -95,7 +102,7 @@ def rename_place(place_id: int, body: PlacePatch):
     except Exception:
         conn.rollback()
         raise
-    return {"ok": True, "name": name}
+    return {"ok": True, "name": name or place["name"]}
 
 
 @router.post("/{place_id}/note")

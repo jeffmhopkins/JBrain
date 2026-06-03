@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
-import { getLocations, getLocatedNotes, getPlaces, addPlace, renamePlace, deletePlace, ensurePlaceNote, LocPoint, LocatedNote, Place } from "../api";
+import { getLocations, getLocatedNotes, getPlaces, addPlace, updatePlace, deletePlace, ensurePlaceNote, LocPoint, LocatedNote, Place } from "../api";
 
 type Mode = "trail" | "heat";
 const RANGES = [
@@ -305,9 +305,16 @@ export default function MapPage() {
                   <button className="place-go" onClick={() => map.current?.setView([p.lat, p.lon], 16)}>{p.name}</button>
                   <span className="place-r">{p.radius_m} m</span>
                   <button className="place-del" title="Open notes" onClick={() => openPlaceNotes(p.id)}>📝</button>
-                  <button className="place-del" title="Rename" onClick={() => {
-                    const name = window.prompt("Rename place:", p.name)?.trim();
-                    if (name && name !== p.name) renamePlace(p.id, name).then(loadPlaces);
+                  <button className="place-del" title="Edit name & fence size" onClick={() => {
+                    const name = window.prompt("Place name:", p.name);
+                    if (name === null) return;                                  // cancelled
+                    const rStr = window.prompt("Geofence radius (meters, 20–20000):", String(p.radius_m));
+                    if (rStr === null) return;                                  // cancelled
+                    const radius = Math.round(Number(rStr));
+                    const body: { name?: string; radius_m?: number } = {};
+                    if (name.trim() && name.trim() !== p.name) body.name = name.trim();
+                    if (Number.isFinite(radius) && radius !== p.radius_m) body.radius_m = radius;
+                    if (Object.keys(body).length) updatePlace(p.id, body).then(loadPlaces).catch((e) => alert(e?.message || "Couldn't update place."));
                   }}>✎</button>
                   <button className="place-del" title="Delete" onClick={() => deletePlace(p.id).then(loadPlaces)}>✕</button>
                 </li>

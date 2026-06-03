@@ -9,12 +9,12 @@ import { fmtTs, fmtTsShort } from "../time";
 interface ShareLink { id: number; token: string; scope: "view" | "edit"; label: string | null; created_at: string; last_used_at: string | null; expires_at: string | null; bind: number; bound_at: string | null; pending: number; note_title: string; note_slug: string; url: string; }
 interface Proposal { id: number; note_title: string; note_slug: string; proposed_content: string; current_content: string; proposer_name: string | null; proposer_note: string | null; created_at: string; stale: boolean; }
 interface HistItem { id: number; proposer_name: string | null; status: string; created_at: string; resolved_at: string | null; note_title: string; note_slug: string; }
-interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string; note_slug: string; submitted: number; expires_at: string | null; }
-interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string; note_slug: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
-interface GuidedEnded { id: number; name: string | null; end_reason: string; goal: string; note_title: string; note_slug: string; link_id: number; link_status: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
-interface GuidedHist { id: number; name: string | null; goal: string; disposition: string; note_title: string; note_slug: string; completed_at: string | null; }
+interface GuidedLink { id: number; token: string; url: string; goal: string; intro: string; sub_prompt: string; spec_status: string; bind: number; single_use: number; started: number; note_title: string | null; note_slug: string | null; submitted: number; expires_at: string | null; }
+interface GuidedPending { id: number; name: string | null; document_md: string; goal: string; note_title: string | null; note_slug: string | null; completed_at: string | null; transcript: { role: string; content: string }[]; }
+interface GuidedEnded { id: number; name: string | null; end_reason: string; goal: string; note_title: string | null; note_slug: string | null; link_id: number; link_status: string; completed_at: string | null; transcript: { role: string; content: string }[]; }
+interface GuidedHist { id: number; name: string | null; goal: string; disposition: string; note_title: string | null; note_slug: string | null; completed_at: string | null; }
 
-const leaf = (t: string) => t.replace(/^(notes|kb|lists)\//i, "");
+const leaf = (t: string | null) => (t || "").replace(/^(notes|kb|lists)\//i, "");
 const STATUS_CLR: Record<string, string> = {
   accepted: "#4ade80", approved: "#4ade80", rejected: "var(--danger)", ended: "var(--danger)",
   superseded: "var(--text-dim)", discarded: "var(--text-dim)", distress: "#fbbf24",
@@ -170,7 +170,7 @@ export default function SharesPage() {
           {guidedPending.map((gp) => (
             <div className="card" key={"gp" + gp.id}>
               <div className="row">
-                <strong>{leaf(gp.note_title)}</strong>
+                <strong>{gp.goal || "Intake"}{gp.note_title ? ` → ${leaf(gp.note_title)}` : ""}</strong>
                 <span className="badge">{gp.name ? `${gp.name} completed` : "completed"}</span>
                 <span className="spacer" />
                 {gp.completed_at && <span className="muted" style={{ fontSize: 12 }}>{fmtTs(gp.completed_at, appTz)}</span>}
@@ -264,7 +264,7 @@ export default function SharesPage() {
                 </span>
                 {g.submitted > 0 && <span className="badge">{g.submitted} response{g.submitted === 1 ? "" : "s"}</span>}
                 <span className="spacer" />
-                <Link className="ghost" to={`/note/${g.note_slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Note</Link>
+                {g.note_slug && <Link className="ghost" to={`/note/${g.note_slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Note</Link>}
               </div>
               <button className="ghost" style={{ fontSize: 12 }} onClick={() => setOpenPrompt(openPrompt === g.id ? null : g.id)}>
                 {openPrompt === g.id ? "Hide" : "Edit"} the AI’s instructions &amp; expiry
@@ -356,7 +356,7 @@ export default function SharesPage() {
 // "<source> · <who> · <when>" line. Replaces the old single-row layout whose long
 // timestamp wrapped onto three lines on a phone.
 function HistRow({ status, slug, title, meta, when, appTz }: {
-  status: string; slug: string; title: string; meta: string; when?: string | null; appTz?: string;
+  status: string; slug: string | null; title: string; meta: string; when?: string | null; appTz?: string;
 }) {
   return (
     <div className="share-hist-item">
@@ -364,7 +364,8 @@ function HistRow({ status, slug, title, meta, when, appTz }: {
         {status}
       </span>
       <div className="share-hist-body">
-        <Link to={`/note/${slug}`} className="share-hist-title">{title}</Link>
+        {slug ? <Link to={`/note/${slug}`} className="share-hist-title">{title}</Link>
+              : <span className="share-hist-title">{title}</span>}
         <div className="share-hist-meta">{meta}{when ? ` · ${fmtTsShort(when, appTz)}` : ""}</div>
       </div>
     </div>

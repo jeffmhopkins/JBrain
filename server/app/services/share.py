@@ -44,11 +44,15 @@ def resolve_active_link(conn, token: str):
     if not token or len(token) < 20:            # cheap shape gate before any DB hit
         return None
     row = conn.execute(
-        "SELECT sl.*, n.title, n.slug, n.kind, n.content_md, n.updated_at, n.deleted_at AS note_deleted "
-        "FROM share_links sl JOIN notes n ON n.id = sl.note_id WHERE sl.token = ?",
+        "SELECT sl.*, n.title, n.slug, n.content_md, n.updated_at, n.deleted_at AS note_deleted "
+        "FROM share_links sl LEFT JOIN notes n ON n.id = sl.note_id WHERE sl.token = ?",
         (token,),
     ).fetchone()
-    if row is None or row["status"] != "active" or row["note_deleted"] is not None:
+    if row is None or row["status"] != "active":
+        return None
+    # View/edit links serve a note → it must exist and be live. Guided/research answer
+    # from elsewhere (intake doc / approved notes) and back no page, so they need none.
+    if row["kind"] == "note" and (row["note_id"] is None or row["note_deleted"] is not None):
         return None
     if row["expires_at"] and row["expires_at"] <= _utcnow():
         return None
@@ -73,7 +77,7 @@ def create_link(conn, note_id: int, scope: str, label: str | None = None,
     return token
 
 
-def create_guided_link(conn, note_id: int, label: str | None = None,
+def create_guided_link(conn, note_id: int | None = None, label: str | None = None,
                         ttl_days: int | None = 14, bind: bool = False) -> tuple[str, int]:
     """Mint a guided AI intake link (scope='view', kind='guided'). Returns (token, link_id).
     The interview spec is attached separately via guided.create_spec; the link is inert
@@ -88,12 +92,11 @@ def create_guided_link(conn, note_id: int, label: str | None = None,
     return token, cur.lastrowid
 
 
-def create_research_link(conn, note_id: int, label: str | None = None,
+def create_research_link(conn, note_id: int | None = None, label: str | None = None,
                          ttl_days: int | None = None, bind: bool = False) -> tuple[str, int]:
     """Mint a research Q&A link (scope='view', kind='research'). Returns (token, link_id).
-    Anchored to a placeholder/audit note (note_id) so it stays visible/revocable in the
-    owner's listings; the scope spec is attached separately via research.create_spec, and
-    the link is inert until the owner activates it."""
+    Backs NO note (note_id stays NULL) — it answers from the owner-approved notes; the
+    scope spec is attached via research.create_spec and the link is inert until activated."""
     token = mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     cur = conn.execute(

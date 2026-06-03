@@ -805,19 +805,17 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
                 f"government IDs, or financial account numbers.", None)
     if not (sub_prompt or "").strip():
         return "I need the interview instructions (sub_prompt) before creating the link.", None
-    # Owner-side: create the destination note (placeholder until a response is approved).
-    title = notes_svc.root_title(dest_title or f"Intake — {goal}", "notes")
-    note_id = notes_svc.upsert_note(
-        conn, title, f"# {title.split('/')[-1]}\n\n_Awaiting a guided response…_\n",
-        source="user", version_note="guided intake note", fire_events=False)
-    token, link_id = share_svc.create_guided_link(conn, note_id, label=goal[:80], ttl_days=ttl_days)
+    # No page is created now — the destination note is minted only when the owner
+    # ACCEPTS a response (approval #2). The intended title rides on the spec.
+    dest = notes_svc.root_title(dest_title or f"Intake — {goal}", "notes")
+    token, link_id = share_svc.create_guided_link(conn, label=goal[:80], ttl_days=ttl_days)
     guided_svc.create_spec(conn, link_id, goal=goal, intro=intro, sub_prompt=sub_prompt,
-                           bind=bool(bind), single_use=bool(single_use))
+                           dest_title=dest, bind=bool(bind), single_use=bool(single_use))
     url = share_svc.share_url(token)
-    display = (f"Created a DRAFT guided intake link for [[{title}]] → {url}\n"
+    display = (f"Created a DRAFT guided intake link “{goal}” → {url}\n"
               f"It's not live yet — review the interview and ACTIVATE it under Advanced → Shares "
-              f"(approval #1). When someone completes it, you'll approve the AI's document before "
-              f"it's saved (approval #2).")
+              f"(approval #1). When someone completes it, you'll approve the AI's document — and only "
+              f"then is the note “{dest}” created (approval #2).")
     _notify_share_created("Guided intake link", url)
     undo = {"op": "revoke_share", "token": token}
     return f"applied: {display}", _record_applied(conn, conversation_id, "GUIDED_SHARE", display, undo)
@@ -840,11 +838,8 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
     scope = {"prefixes": pre, "titles": titles, "kinds": []}
     candidates = rscope.filter_match_ids(conn, scope)   # blast-radius preview for the owner
     label = (label or (pre[0] if pre else titles[0])).strip()[:80]
-    title = notes_svc.root_title(f"Research — {label}", "notes")
-    note_id = notes_svc.upsert_note(
-        conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
-        source="user", version_note="research link anchor", fire_events=False)
-    token, link_id = share_svc.create_research_link(conn, note_id, label=label,
+    # No backing note — a research link answers from the approved notes and creates no page.
+    token, link_id = share_svc.create_research_link(conn, label=label,
                                                     ttl_days=ttl_days or None, bind=bool(bind))
     research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=persona_voice,
                              topics=topics, intro=intro, bind=bool(bind), single_use=bool(single_use))

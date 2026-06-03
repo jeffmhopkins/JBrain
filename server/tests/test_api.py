@@ -1550,6 +1550,52 @@ def test_share_parity_endpoints(client):
     assert conn.execute("SELECT expires_at FROM share_links WHERE id=?", (plid,)).fetchone()["expires_at"] is None
 
 
+def test_share_links_create_no_page(client):
+    """No page is minted up front: research links back NO note; guided links back none
+    until the owner ACCEPTS a response, which then creates the destination note."""
+    from app.db import get_conn
+    from app.services import architect, guided
+    conn = get_conn()
+
+    # Research: no anchor note, ever.
+    client.post("/api/notes", json={"title": "notes/Medical/A", "content_md": "x"})
+    architect._tool_create_research_share(conn, None, prefixes=["notes/Medical"]); conn.commit()
+    rlink = conn.execute("SELECT note_id FROM share_links WHERE kind='research' ORDER BY id DESC LIMIT 1").fetchone()
+    assert rlink["note_id"] is None
+    assert conn.execute("SELECT COUNT(*) c FROM notes WHERE title LIKE 'notes/Research%'").fetchone()["c"] == 0
+
+    # Guided: no page until accept.
+    architect._tool_create_guided_share(conn, None, "collect recipe", "ask for the recipe steps"); conn.commit()
+    gl = conn.execute("SELECT id, note_id FROM share_links WHERE kind='guided' ORDER BY id DESC LIMIT 1").fetchone()
+    assert gl["note_id"] is None
+    assert conn.execute("SELECT COUNT(*) c FROM notes WHERE title LIKE 'notes/Intake%'").fetchone()["c"] == 0
+
+    guided.activate_spec(conn, gl["id"])
+    conn.execute("INSERT INTO guided_sessions (share_link_id, secret, name, status, document_md) "
+                 "VALUES (?, 'sek', 'Ray', 'submitted', '# Recipe\n\nSteps')", (gl["id"],))
+    conn.commit()
+    sid = conn.execute("SELECT id FROM guided_sessions WHERE share_link_id=?", (gl["id"],)).fetchone()["id"]
+    assert client.post(f"/api/shares/guided/sessions/{sid}/accept").status_code == 200
+    # NOW the destination note exists and the link points at it.
+    assert conn.execute("SELECT COUNT(*) c FROM notes WHERE title LIKE 'notes/Intake%' AND deleted_at IS NULL").fetchone()["c"] == 1
+    assert conn.execute("SELECT note_id FROM share_links WHERE id=?", (gl["id"],)).fetchone()["note_id"] is not None
+
+
+def test_share_links_note_id_nullable(client):
+    """note_id may be NULL — but a view/edit (kind='note') link with no live note must
+    still NOT resolve (security gate intact), while a research link with no note does."""
+    from app.db import get_conn
+    from app.services import share as share_svc
+    conn = get_conn()
+    note_tok = "notelink_" + "a" * 20          # ≥20 chars to pass the resolver shape gate
+    res_tok = "reslink_" + "b" * 20
+    conn.execute("INSERT INTO share_links (token, note_id, scope, kind) VALUES (?, NULL, 'view', 'note')", (note_tok,))
+    conn.execute("INSERT INTO share_links (token, note_id, scope, kind) VALUES (?, NULL, 'view', 'research')", (res_tok,))
+    conn.commit()
+    assert share_svc.resolve_active_link(conn, note_tok) is None       # note kind + no note → blocked
+    assert share_svc.resolve_active_link(conn, res_tok) is not None     # research kind → resolves note-less
+
+
 def test_research_candidate_nudge(client):
     """The daily nudge posts a review card when an active research link has pending
     candidate notes, and stops once they're approved."""

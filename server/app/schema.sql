@@ -215,7 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
 CREATE TABLE IF NOT EXISTS share_links (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   token        TEXT UNIQUE NOT NULL,                -- 256-bit URL-safe; the capability itself
-  note_id      INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  note_id      INTEGER REFERENCES notes(id) ON DELETE CASCADE,   -- NULL for guided/research (no page until accepted)
   scope        TEXT NOT NULL CHECK (scope IN ('view','edit')),
   kind         TEXT NOT NULL DEFAULT 'note',          -- 'note' (view/edit a note) | 'guided' (AI intake)
   status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
@@ -261,6 +261,7 @@ CREATE TABLE IF NOT EXISTS guided_specs (
   goal            TEXT NOT NULL DEFAULT '',           -- owner's stated goal (audit/UI)
   intro           TEXT NOT NULL DEFAULT '',           -- what the recipient sees on the consent landing
   sub_prompt      TEXT NOT NULL,                      -- generated instructions for the interview AI
+  dest_title      TEXT NOT NULL DEFAULT '',           -- where the accepted doc lands (note created on accept)
   status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
   bind            INTEGER NOT NULL DEFAULT 0,         -- lock to the first device that begins it
   single_use      INTEGER NOT NULL DEFAULT 0,         -- close after one completed response

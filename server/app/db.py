@@ -325,6 +325,42 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # Research links: owner's discussion-scope guardrail ("talk about X, not Y").
         _add_column(conn, "research_specs", "topics", "TEXT NOT NULL DEFAULT ''")
 
+    if current < 26:
+        # Share links no longer pre-create a page: note_id becomes NULLable (guided/
+        # research mint no note until accepted). SQLite can't drop NOT NULL in place,
+        # so rebuild share_links preserving every row/id/index. Children FK to its id,
+        # so swap with FK enforcement off (ids are preserved → references stay valid).
+        _add_column(conn, "guided_specs", "dest_title", "TEXT NOT NULL DEFAULT ''")
+        if _column_is_not_null(conn, "share_links", "note_id"):
+            conn.commit()                       # close the implicit txn so PRAGMA takes effect
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.executescript("""
+                CREATE TABLE share_links_new (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  token TEXT UNIQUE NOT NULL,
+                  note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                  scope TEXT NOT NULL CHECK (scope IN ('view','edit')),
+                  kind TEXT NOT NULL DEFAULT 'note',
+                  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+                  label TEXT, expires_at TEXT,
+                  bind INTEGER NOT NULL DEFAULT 0, bind_secret TEXT, bound_at TEXT, bound_name TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  revoked_at TEXT, last_used_at TEXT);
+                INSERT INTO share_links_new SELECT
+                  id, token, note_id, scope, kind, status, label, expires_at,
+                  bind, bind_secret, bound_at, bound_name, created_at, revoked_at, last_used_at
+                FROM share_links;
+                DROP TABLE share_links;
+                ALTER TABLE share_links_new RENAME TO share_links;
+                CREATE INDEX IF NOT EXISTS idx_share_links_note ON share_links(note_id);
+            """)
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _column_is_not_null(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column and r["notnull"] for r in conn.execute(f"PRAGMA table_info({table})"))
+
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(

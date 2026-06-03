@@ -136,14 +136,14 @@ def _fence(text: str, nonce: str) -> str:
 
 # --- spec lifecycle (owner side calls these; no note access here) ------------
 
-def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str,
+def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str, dest_title: str = "",
                 bind: bool = False, single_use: bool = False,
                 max_turns: int = 40, max_total_replies: int = 80) -> int:
     cur = conn.execute(
-        "INSERT INTO guided_specs (share_link_id, goal, intro, sub_prompt, status, "
-        "bind, single_use, max_turns, max_total_replies) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
-        (link_id, goal or "", intro or "", sub_prompt, 1 if bind else 0, 1 if single_use else 0,
-         max(1, int(max_turns)), max(1, int(max_total_replies))),
+        "INSERT INTO guided_specs (share_link_id, goal, intro, sub_prompt, dest_title, status, "
+        "bind, single_use, max_turns, max_total_replies) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
+        (link_id, goal or "", intro or "", sub_prompt, (dest_title or "").strip(),
+         1 if bind else 0, 1 if single_use else 0, max(1, int(max_turns)), max(1, int(max_total_replies))),
     )
     return cur.lastrowid
 

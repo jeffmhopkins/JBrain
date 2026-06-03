@@ -195,7 +195,7 @@ _TOOL_SCHEMAS = {
             "new_name": {"type": "string", "description": "EDIT_PLACE: a new name for the place (renames its loc/ page too). Optional."},
             "lat": {"type": "number", "description": "ADD_PLACE: latitude. EDIT_PLACE: new latitude (move the geofence centre). You MUST have a real coordinate — from location_fixes, current_location, a note's stored location, or the user; never invent one."},
             "lon": {"type": "number", "description": "ADD_PLACE: longitude. EDIT_PLACE: new longitude. Same sourcing rule as lat."},
-            "radius_m": {"type": "integer", "description": "ADD_PLACE/EDIT_PLACE: geofence radius in metres (default 150, clamped 20–20000). Optional."},
+            "radius_m": {"type": "integer", "description": "ADD_PLACE/EDIT_PLACE: the GEOFENCE radius in metres — always set it, sized to the place (a house/apartment ~60–100, a shop/office ~100–150, a school/park/hospital campus ~250–600). Clamped 20–20000."},
             "summary": {"type": "string", "description": "Short human-readable description"},
         },
         "required": ["type", "summary"]}}}, "required": ["actions"]},

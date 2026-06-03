@@ -28,7 +28,7 @@ modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log/capture ops.
   assisted:
     tools: [search_notes, read_note, list_recent_notes, read_inbox, search_attachments,
-            read_attachment, query_sql, current_location, locate_person, geo_distance, nearby_notes,
+            read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place, add_list_item, read_list,
             set_item_checked, set_item_priority, add_sublist, log_entry, capture_inbox,
@@ -109,7 +109,7 @@ modes:
   # "Research" — read-only Q&A over the brain. No write tools are exposed.
   research:
     tools: [search_notes, read_note, list_recent_notes, search_attachments,
-            read_attachment, query_sql, current_location, locate_person, geo_distance, nearby_notes,
+            read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place]
     system: |
@@ -139,7 +139,8 @@ tools:
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Read before you propose."
   read_note: "When you need a note's full text: read its complete markdown by exact title (includes the note's stored coordinates + location label when set)."
   current_location: "When the user asks where they are now (or to use 'my/current location'): report the device GPS stamped on this conversation's latest message (lat/lon + label). This is the OWNER's live phone only — for another registered person use locate_person. Read-only; says so when no location has been shared."
-  locate_person: "When the user asks where a REGISTERED PERSON is now or was last seen ('where is Allan right now', 'where's mom'): their most recent location fix from the trail, labelled by saved place / coord-note, with how long ago. Pass `person` (their name or alias as configured in People); omit it for the owner. People are tracked via their own JBrain tracker key — this reads their stored trail, not a live phone ping. Read-only."
+  locate_person: "When the user asks where a REGISTERED PERSON is now or was last seen ('where is Allan right now', 'where's mom'): their most recent location fix from the trail, labelled by saved place / coord-note, with how long ago. Pass `person` (their name or alias as configured in People); omit it for the owner. People are tracked via their own JBrain tracker key — this reads their stored trail, not a live phone ping. Read-only. For EXACT coordinates use location_fixes."
+  location_fixes: "When the user wants EXACT coordinates — a specific raw GPS fix or several — for themselves or a registered person ('what were Allan's exact coordinates at 3pm', 'give me the raw fixes for my drive this morning', 'the lat/lon where I was at noon'): returns full-precision lat/lon + UTC timestamps (with accuracy and a place/note label when known). Pass `when` for the single nearest fix, OR `since`/`until` for a window (capped by `limit`, evenly sampled if more exist); `person` for someone other than the owner. This is the ONLY location tool that returns raw coordinates — use it whenever exact lat/lon is asked for. Read-only — reports stored fixes only, never invents coordinates."
   geo_distance: "When the user asks how far apart two places/notes are: great-circle distance (km + miles) + bearing between two points. Each point is a note title or 'lat,lon'; omit 'to' to measure from the user's current location. Read-only — never invent coordinates."
   nearby_notes: "When the user asks what notes are near a place ('what did I note near here / near [[X]]'): notes with coordinates within radius_km, nearest first. Omit center to use the current location. Read-only."
   where_was_i: "When the user asks where they (or a registered person) WERE at a past moment ('where was I last Tuesday afternoon', 'where was Allan at 6pm'): the nearest recorded location fix to that instant, labelled by saved place / coord-note when known. Pass `when` in the owner's local time (the tool handles the conversion); pass `person` (name/alias) for someone other than the owner. Read-only."

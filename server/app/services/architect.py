@@ -39,7 +39,7 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "list_recent_notes", "read_inbox", "search_attachments",
-                 "read_attachment", "query_sql", "current_location", "locate_person", "geo_distance", "nearby_notes",
+                 "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
@@ -48,7 +48,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences", "propose_actions"],
     "research": ["search_notes", "read_note", "list_recent_notes", "search_attachments",
-                 "read_attachment", "query_sql", "current_location", "locate_person", "geo_distance", "nearby_notes",
+                 "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place"],
 }
@@ -61,6 +61,12 @@ _TOOL_SCHEMAS = {
     "current_location": {"type": "object", "properties": {}},
     "locate_person": {"type": "object", "properties": {
         "person": {"type": "string", "description": "A registered person's name (or alias). Omit for the owner/default person."}}},
+    "location_fixes": {"type": "object", "properties": {
+        "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."},
+        "when": {"type": "string", "description": "A single moment (owner's local time) → the nearest exact fix. Use this OR since/until."},
+        "since": {"type": "string", "description": "Window start — owner's local time (offset/Z honored). Optional."},
+        "until": {"type": "string", "description": "Window end — owner's local time (offset/Z honored). Optional."},
+        "limit": {"type": "integer", "default": 20, "description": "Max fixes for a window (evenly sampled if more exist; hard cap 500)."}}},
     "geo_distance": {"type": "object", "properties": {
         "from": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'."},
         "to": {"type": "string", "description": "A saved place name, a note title, OR 'lat,lon'. Omit to measure from the current location."}},
@@ -402,6 +408,48 @@ def _tool_locate_person(conn, person=None):
     return _untrusted("location",
                       f"{who} was last at {where} ({_ago(fix['recorded_at'])}, "
                       f"{fix['recorded_at']} UTC).")
+
+
+def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, limit=20):
+    """EXACT fixes (full-precision lat/lon + timestamp) for the owner or a registered
+    person — the one trail tool that returns raw coordinates, because the owner is
+    entitled to the precise data in their own brain. `when` → the single nearest fix;
+    otherwise a window (capped/evenly-sampled by `limit`)."""
+    pid, who, explicit, err = _resolve_person(conn, person)
+    if err:
+        return err
+    subj = f"{who}: " if explicit else ""
+    if when:
+        fix, gap = geotrail.nearest_fix(conn, _utc_bound(when), pid)
+        if not fix:
+            return f"No location fixes have been recorded for {who}."
+        label = geotrail.label_point(conn, fix["lat"], fix["lon"])
+        lbl = f"  ({label})" if label else ""
+        off = f"  — nearest fix is {gap:.0f} min off" if gap > 30 else ""
+        return _untrusted("location-fix",
+                          f"{subj}{fix['recorded_at']} UTC: {fix['lat']:.6f}, {fix['lon']:.6f}{lbl}{off}")
+    try:
+        lim = max(1, min(int(limit or 20), 500))
+    except (TypeError, ValueError):
+        lim = 20
+    pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)
+    if not pts:
+        return f"No fixes for {who} in that window." if explicit else "No fixes in that window."
+    total = len(pts)
+    if total > lim:                      # evenly sample so the list represents the whole span
+        step = total / lim
+        shown = [pts[int(i * step)] for i in range(lim)]
+        head = f"{subj}{total} fixes, {lim} shown (evenly sampled):"
+    else:
+        shown = pts
+        head = f"{subj}{total} fix{'es' if total != 1 else ''}:"
+    lines = []
+    for p in shown:
+        label = geotrail.label_point(conn, p["lat"], p["lon"])
+        lbl = f"  {label}" if label else ""
+        acc = f"  ±{p['accuracy_m']:.0f}m" if p.get("accuracy_m") else ""
+        lines.append(f"- {p['recorded_at']} UTC: {p['lat']:.6f}, {p['lon']:.6f}{acc}{lbl}")
+    return _untrusted("location-fixes", head + "\n" + "\n".join(lines))
 
 
 def _tool_geo_distance(conn, conversation_id, frm, to=None):
@@ -1013,6 +1061,9 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_current_location(conn, conversation_id), None
     if name == "locate_person":
         return _tool_locate_person(conn, args.get("person")), None
+    if name == "location_fixes":
+        return _tool_location_fixes(conn, args.get("person"), args.get("when"),
+                                    args.get("since"), args.get("until"), args.get("limit", 20)), None
     if name == "geo_distance":
         return _tool_geo_distance(conn, conversation_id, args["from"], args.get("to")), None
     if name == "nearby_notes":

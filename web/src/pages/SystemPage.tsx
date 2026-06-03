@@ -13,8 +13,9 @@ export default function SystemPage() {
   const [info, setInfo] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [msg, setMsg] = useState("");
-  // Live update lifecycle: requesting → restarting (server offline) → online.
-  type UpStatus = "idle" | "requesting" | "restarting" | "online" | "error";
+  // Live update lifecycle: requesting → restarting (server offline) → online; or
+  // "queued" when the deploy needs a manual host step and won't restart itself.
+  type UpStatus = "idle" | "requesting" | "restarting" | "online" | "queued" | "error";
   const [up, setUp] = useState<UpStatus>("idle");
   const pollRef = useRef<number | undefined>(undefined);
   const [notifMsg, setNotifMsg] = useState("");
@@ -29,16 +30,25 @@ export default function SystemPage() {
     fetch(u("/api/health"), { cache: "no-store" }).then((r) => r.ok).catch(() => false);
 
   async function doUpdate() {
-    setUp("requesting"); setMsg("Requesting update…");
+    setUp("requesting"); setMsg("Triggering update…");
+    let r: any;
     try {
-      const r = await post("/api/system/update");
-      setMsg(r.message || "Update started — the server will restart shortly.");
+      r = await post("/api/system/update");
     } catch {
-      setUp("error"); setMsg("Couldn’t start the update. Check the server logs.");
+      setUp("error"); setMsg("Couldn’t reach the server to start the update. Check the server logs.");
       return;
     }
-    // Poll the public health endpoint: wait for the server to drop (restarting),
-    // then come back; report the live version once it's up.
+    // Three deploy modes: a configured command (started) or the auto-updater
+    // (scheduled+auto) WILL restart the server — watch for it. A bare "scheduled"
+    // needs a manual host step (./update.sh), so the server won't drop on its own.
+    const willRestart = !!r.started || (!!r.scheduled && !!r.auto);
+    if (!willRestart) {
+      setUp("queued");
+      setMsg(r.message || "Update requested — run ./update.sh on the host to apply it, then reload.");
+      return;
+    }
+
+    setMsg("Update triggered — waiting for the server to restart…");
     const startedAt = Date.now();
     let sawDown = false;
     const poll = async () => {
@@ -48,14 +58,14 @@ export default function SystemPage() {
       }
       const ok = await ping();
       if (!ok) {
-        sawDown = true; setUp("restarting"); setMsg("Server restarting… (offline)");
+        sawDown = true; setUp("restarting"); setMsg("Server offline — restarting…");
       } else if (sawDown) {
         const ver = await get("/api/system/version").catch(() => null);
         setUp("online");
         setMsg(`Back online${ver?.current ? ` · ${ver.current}` : ""}. Reload the app to finish updating.`);
         return;
       } else {
-        setMsg("Waiting for the server to restart…");
+        setUp("restarting"); setMsg("Update triggered — waiting for the server to restart…");
       }
       pollRef.current = window.setTimeout(poll, 2000);
     };
@@ -125,9 +135,9 @@ export default function SystemPage() {
         )}
         {up !== "idle" && (
           <div className="update-status">
-            <span className={"status-dot " + (up === "online" ? "ok" : up === "error" ? "err" : "busy")} />
+            <span className={"status-dot " + (up === "online" ? "ok" : up === "error" ? "err" : up === "queued" ? "info" : "busy")} />
             <span style={{ fontSize: 13 }}>{msg}</span>
-            {up === "online" && (
+            {(up === "online" || up === "queued") && (
               <button className="primary" style={{ padding: "4px 12px" }} onClick={() => window.location.reload()}>
                 Reload now
               </button>

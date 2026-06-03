@@ -378,6 +378,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .status-dot.busy { background: #f59e0b; animation: status-pulse 1.1s ease-in-out infinite; }
 .status-dot.ok { background: #4ade80; }
 .status-dot.err { background: var(--danger, #ff6b6b); }
+.status-dot.info { background: var(--accent, #4ea1ff); }
 @keyframes status-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 .geofence-card a { color: var(--accent); text-decoration: none; }
 .geofence-card a:hover { text-decoration: underline; }

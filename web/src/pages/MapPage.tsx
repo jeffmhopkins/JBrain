@@ -176,8 +176,8 @@ export default function MapPage() {
     if (!places.length) return;
     placeLayer.current = L.layerGroup(
       places.map((p) =>
-        L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 1.5, fillOpacity: 0.08 })
-          .bindTooltip(p.name, { permanent: true, direction: "center", className: "place-label" })
+        L.circle([p.lat, p.lon], { radius: p.radius_m, color: "#ffb300", weight: 2, fillOpacity: 0.1 })
+          .bindTooltip(p.name, { permanent: true, direction: "top", className: "place-label", offset: [0, -4] })
           // Tap a geofence → its loc/ note, except while dropping a new place.
           .on("click", () => { if (!addingRef.current) openPlaceNotes(p.id); })),
     ).addTo(m);

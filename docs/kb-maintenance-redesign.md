@@ -221,15 +221,19 @@ human-triggered global re-cluster. It remains the only op that re-partitions the
 
 ## 7. Phasing
 
-- **Phase 1** (self-contained): `scoped_known_titles` (kill the 600 cap, lead-sentence
+- **Phase 1** (self-contained): the **deterministic gate pipeline** (§10: promote existing
+  lint/structure/collision/grounding signals to block/fail/advisory + a bounded 2-revise
+  loop, zero new LLM calls) + `scoped_known_titles` (kill the 600 cap, lead-sentence
   scope) + `rebuild_article` (in-place, one transaction, quarantine→open-item) +
   `check_needed_links` + the `{instructions}` prompt fix + prompt de-reliance + the **lock
   table** (§4). Prereqs from feasibility: `{instructions}`, lock table.
-- **Phase 2** (self-sufficiency): `create_article` (dedup-before-spawn) + the scrub
-  (scheduler-driven bounded batch) + the `restructure` kind + watermark-holds-on-failure +
-  attempt counters + `taxonomy_health`.
+- **Phase 2** (self-sufficiency): `create_article` (dedup-before-spawn, sharing the §10
+  taxonomy-collision gate) + the scrub (scheduler-driven bounded batch) + the
+  `restructure` kind + watermark-holds-on-failure + attempt counters + `taxonomy_health`.
 - **Phase 3** (structure): `merge`/`split`/`recategorize` with `_rename_inbound_links`
-  rewrite + inverse-pair hysteresis (K=3) + second-block→Review; demote rebuild→Reorganize.
+  rewrite + inverse-pair hysteresis (K=3) + second-block→Review; demote rebuild→Reorganize;
+  **+ the two narrow LLM review gates** (§10.3: near-duplicate adjudication on
+  create/rebuild + a budgeted sampled grounding audit — never on the hot scrub path).
 
 ---
 
@@ -273,3 +277,73 @@ human-triggered global re-cluster. It remains the only op that re-partitions the
 7. **Tunables to settle in Phase 2/3:** `K` (hysteresis, default 3), `new_subject_min`,
    `scoped budget` (default 400), attempt-counter park threshold (default 2),
    `taxonomy_health` thresholds.
+
+---
+
+## 10. Review architecture: stepped *deterministic* gates, not an LLM gauntlet
+
+Two adversarial reviews (a designer + a contrarian red-team) **converged**: decompose the
+pre-commit review into focused, ordered **gates**, but make them **deterministic**; reject
+per-article LLM "taxonomy"/"intent" review on the hot path. Rationale, grounded in code:
+- Today's `write_one`/`maintain_one` is already *"N deterministic checks + ONE bounded,
+  non-regressing revise"* — the revision is kept only if it doesn't increase errors
+  (`wiki_build.py:315`,`:518`), so it **cannot oscillate**.
+- **LLM-judging-LLM is only adversarial when the judge has information the writer lacked**
+  (a tool, retrieval, a different model, or data). A same-model pass reading the same
+  `{sources}` is an *echo* — it rubber-stamps shared blind spots or thrashes a revise loop.
+- The scrub is the **hottest, continuously re-invoked loop** with a hard fan-out cap
+  (`max_articles`, `wiki_build.py:713`). An unconditional 4-gate LLM pipeline is a 2.5–9×
+  call multiplier there, mostly spent interrogating already-clean drafts.
+
+### 10.1 The gate model
+Insert a pure function `run_gates(conn, candidate) -> {commit, verdicts, feedback, talk,
+restructure_hints}` between a candidate `content_md` and `upsert_note`. Each gate returns:
+- **block** → quarantine (build) / restore-prior (maintenance) + open `todo` + attempt
+  counter (the §1.2 F8 pattern);
+- **fail** → re-enter a **bounded revise loop (max 2 iterations, shared counter)** carrying
+  that gate's specific feedback as the `wiki_revise` `{issues}` block;
+- **advisory** → commit anyway, record an `article_talk` note (the `flag_dead_links`
+  log-don't-block pattern, `:371`).
+
+**Commit ⟺ no surviving `block` ∧ no surviving `fail` after ≤2 revise iterations.** This is
+a strict generalization of today's `ok = not errors`. Anti-thrash invariant (generalizes
+the `:315` ratchet): a revise iteration is kept only if it **reduces** at least one
+fail/block and **increases none** — else discard and stop.
+
+### 10.2 The gates — deterministic first, fail-fast (zero new LLM calls in the common case)
+| Gate | Kind | Reuses | Verdict mapping |
+|---|---|---|---|
+| **Lint** | deterministic | `validate_structure` + `citation_issues` + `_bad_links` | citation/PII → block; dead link → fail-then-advisory+neutralize |
+| **Structure shape** | deterministic | `validate_structure` required/recommended sections | missing lead/required → fail; recommended → advisory |
+| **Taxonomy collision/dedup** | deterministic | `entity_index.normalize` + leaf map + `ambiguous_terms` | exact/normalize collision → block→fold/merge (this **is** `create_article`'s §1.3 dedup, lifted into the shared function); ambiguous title → advisory `_disambig` |
+| **Intent: padding** | deterministic | `flag_ungrounded_reference` body/source ratio | gross padding → fail (trim) |
+Ordering: the four above (all free) run first and fail-fast. A structured **self-report**
+piggybacked on the existing draft `talk` block (`prompts.yaml:479`) can *nominate*
+structure/intent/near-dup flags at **zero extra calls**, so the expensive passes fire only
+when something already looks wrong.
+
+### 10.3 The only justified LLM gates — narrow, off the hot path
+Run **only on create/rebuild and a separately-budgeted *sampled* audit**, never on every
+scrub edit, and **never gating the scrub's `ok`/watermark** (LLM nondeterminism must not
+undermine idempotency):
+1. **Near-duplicate adjudication** — embeddings nominate a candidate; the LLM is fed the
+   candidate articles' **bodies** (which `write_one` only ever sees as *titles*) → genuinely
+   new information → a *real* adversary. Verdict: block→merge/fold on create; advisory
+   `restructure` hint on maintenance.
+2. **Per-claim grounding critic** — *deferred / optional.* The red-team's strongest target
+   (collusion, no ground truth); only worth building if given a *different* lens (a cheaper
+   second model or retrieval). Lean **no** — the deterministic ratio + the GROUNDING prompt
+   rule already cover the honest slice.
+
+### 10.4 What we explicitly do NOT build
+Per-article **LLM taxonomy review** (category error — taxonomy is whole-corpus; the
+answerable slice is a `SELECT COUNT(*)` sibling check + `taxonomy_health` + manual
+Reorganize) and **unconditional LLM intent review** (vibes/echo). Humans (Review cards) are
+the only non-colluding adversary and stay reserved for the genuine judgment calls.
+
+### 10.5 Orchestration
+`run_gates` lives **in-function** in `wiki_build.py` (the loop needs a shared counter +
+short-circuit the linear recipe engine, `pipeline.py:1-13`, deliberately lacks). The recipe
+decides *which* articles are processed; `run_gates` decides *whether one commits*. The
+scrub's per-edit maintenance path runs **deterministic gates only**, preserving its call
+budget and the watermark-hold-on-failure semantics unchanged.

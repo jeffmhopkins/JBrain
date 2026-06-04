@@ -180,7 +180,11 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
         ids = entity_index.note_ids_for_name(conn, leaf)
         if ids:
             art["sources"] = sorted(set(art["sources"]) | set(ids))
-    return {"articles": articles, "index_md": build_index_md(articles)}
+    # Scope floor: drop any article with no source note — it isn't grounded in your notes
+    # (a >1-hop / general-knowledge article). Keeps the wiki to "1 hop out from the notes".
+    grounded = [a for a in articles if a["sources"]]
+    dropped = len(articles) - len(grounded)
+    return {"articles": grounded, "index_md": build_index_md(grounded), "dropped": dropped}
 
 
 def _load_sources(conn, ids: list[int]) -> list[dict]:

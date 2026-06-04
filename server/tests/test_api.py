@@ -785,6 +785,16 @@ def test_entity_index(client, monkeypatch):
     out = wiki_build.outline(conn, [{"id": a, "title": "notes/a", "gist": "g", "domain": "People", "entities": []}])
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
+    # Scope floor: an article that grounds in no note (>1 hop / general knowledge) is dropped.
+    _j = ('[{"title":"kb/People/Summer E. Hopkins","domain":"People","scope":"x","sources":[%d]},'
+          '{"title":"kb/Reference/Concepts/Quantum Chromodynamics","domain":"Reference","scope":"y","sources":[]}]' % a)
+    monkeypatch.setattr(llm, "complete", lambda *args, **k: _j)
+    out2 = wiki_build.outline(conn, [{"id": a, "title": "notes/a", "gist": "g", "domain": "People", "entities": []}])
+    titles = {x["title"] for x in out2["articles"]}
+    assert "kb/People/Summer E. Hopkins" in titles                       # grounded → kept
+    assert "kb/Reference/Concepts/Quantum Chromodynamics" not in titles  # ungrounded → dropped
+    assert out2["dropped"] == 1
+
 
 def test_retired_workflows_removed(client):
     """Retired repo workflows (e.g. the old incremental wiki synthesis) are dropped from

@@ -392,6 +392,18 @@ actions:
     article per note. Prefer a few solid articles over many thin stubs. Use each note id
     at most once, in its best-fit article.
 
+    SCOPE DISCIPLINE — keep the wiki tightly bounded to your life; do NOT let it sprawl:
+    - 1 HOP ONLY: every article's subject must appear in your NOTES. Never create an article
+      for something that only shows up inside another article, or that is just general
+      knowledge — no "related topic" expansion beyond what your notes actually touch.
+    - EARNS ITS PLACE: create an article only when it adds context — the notes say enough
+      about the subject, or it recurs (the roster's note count is your guide; a count of 1
+      usually means fold it in, not a new page). A subject mentioned once in passing is a
+      FACT inside the most relevant article (usually the person/place it relates to), not
+      its own stub. When in doubt, fold rather than spawn.
+    - This is strictest for Reference: only make a Reference article for a topic your notes
+      meaningfully engage — never one per term that appears once.
+
     REFERENCE MUST BE FOLDERED: every Reference article lives in at least one subcategory —
     kb/Reference/<Subcategory>/<Name>, never kb/Reference/<Name> directly. Build a logical,
     several-levels-deep tree where it helps, e.g. kb/Reference/Medicine/Conditions/<Name>,

@@ -92,15 +92,15 @@ def test_entry_mode_dated_titles_no_first_line_convention(client):
     # body (first line is NOT consumed as a title).
     c = client.post("/api/notes/entry", json={"text": "buy a tent\nfor camping"}).json()
     import re
-    assert re.match(r"^notes/daily/\d{4}/\d{2}/\d{2}/1$", c["title"]), c["title"]
+    assert re.match(r"^notes/daily/\d{4}/\d{2}/\d{2}/01$", c["title"]), c["title"]   # two-digit numbering
     assert client.get(f"/api/notes/{c['slug']}").json()["content_md"] == "buy a tent\nfor camping"
     # Second same-day entry increments the counter.
     d = client.post("/api/notes/entry", json={"text": "another thought"}).json()
-    assert d["title"].rsplit("/", 1)[1] == "2"
+    assert d["title"].rsplit("/", 1)[1] == "02"
     # Deleting then adding does NOT reuse the number (MAX+1, gap-tolerant).
     client.delete(f"/api/notes/{d['slug']}")
     e = client.post("/api/notes/entry", json={"text": "third"}).json()
-    assert e["title"].rsplit("/", 1)[1] == "3"
+    assert e["title"].rsplit("/", 1)[1] == "03"
 
 
 def test_research_mode_is_read_only(client):
@@ -998,7 +998,7 @@ def test_note_normalize_redate_and_title(client, monkeypatch):
     assert res["count"] == 2
     t1 = conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"]
     t2 = conn.execute("SELECT title FROM notes WHERE id=?", (loose2,)).fetchone()["title"]
-    assert t1 == "notes/2026/06/04/2" and t2 == "notes/2026/06/04/3"   # continue after existing /1, in order
+    assert t1 == "notes/2026/06/04/02" and t2 == "notes/2026/06/04/03"   # continue after existing /1, two-digit
     assert conn.execute("SELECT title FROM notes WHERE title='notes/daily/2026/06/04/5'").fetchone()  # untouched
     assert conn.execute("SELECT title FROM notes WHERE title='kb/People/Allan'").fetchone()           # untouched
     assert note_normalize.redate_batch(conn)["count"] == 0          # idempotent
@@ -1009,7 +1009,7 @@ def test_note_normalize_redate_and_title(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "Cardiology Invoice")
     tres = note_normalize.title_batch(conn, limit=10)
     assert tres["count"] == 3                                        # /1, /2, /3 (all bare) titled
-    assert conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"] == "notes/2026/06/04/2 - Cardiology Invoice"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"] == "notes/2026/06/04/02 - Cardiology Invoice"
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
 
 

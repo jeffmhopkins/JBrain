@@ -159,7 +159,7 @@ def next_daily_title(conn, day) -> str:
         tail = r["title"][len(prefix) + 1:]
         if tail.isdigit():
             n = max(n, int(tail))
-    return f"{prefix}/{n + 1}"
+    return f"{prefix}/{n + 1:02d}"      # zero-padded to ≥2 digits so the day's notes sort right
 
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:

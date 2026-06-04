@@ -58,7 +58,7 @@ def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
         day = _day_of(conn, r["created_at"])
         if day not in next_n:
             next_n[day] = _max_flat_n(conn, day) + 1
-        plan.append({"id": r["id"], "old": r["title"], "new": f"notes/{day}/{next_n[day]}"})
+        plan.append({"id": r["id"], "old": r["title"], "new": f"notes/{day}/{next_n[day]:02d}"})
         next_n[day] += 1
 
     if not dry_run:

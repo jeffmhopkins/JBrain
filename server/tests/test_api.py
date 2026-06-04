@@ -116,6 +116,30 @@ def test_entry_source_watch_is_recorded_and_clamped(client):
     assert client.get(f"/api/notes/{x['slug']}/versions").json()[0]["source"] == "user"
 
 
+def test_entry_via_person_location_key(client):
+    # A family phone holding only its scoped per-person location key can drop a watch
+    # dictation: filed as a dated note, attributed to that person, even though that key
+    # can't reach any other notes route.
+    pid = client.post("/api/people", json={"name": "Mom"}).json()["id"]
+    loc_key = client.post(f"/api/people/{pid}/location-key").json()["location_key"]
+    hdr = {"Authorization": f"Bearer {loc_key}"}
+
+    r = client.post("/api/notes/entry", json={"text": "pick up milk", "source": "watch"}, headers=hdr)
+    assert r.status_code == 200, r.text
+    slug = r.json()["slug"]
+    import re
+    assert re.match(r"^notes/\d{4}/\d{2}/\d{2}/\d+$", r.json()["title"]), r.json()["title"]
+    # Attributed to the person, and provenance recorded as a watch dictation.
+    assert client.get(f"/api/notes/{slug}").json()["content_md"] == "(Mom) pick up milk"
+    assert client.get(f"/api/notes/{slug}/versions").json()[0]["source"] == "watch"
+
+    # The scoped path is still gated: a bogus key is rejected, and a location key can't
+    # reach the full-key-only notes routes (listing).
+    assert client.post("/api/notes/entry", json={"text": "x"},
+                       headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert client.get("/api/notes", headers=hdr).status_code == 401
+
+
 def test_research_mode_is_read_only(client):
     # Research mode must not expose write tools.
     from app.services import architect

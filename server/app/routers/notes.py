@@ -1,15 +1,21 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
 import sqlite3
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import CurrentUser
+from ..auth import CurrentUser, require_capture_writer
 from ..db import get_conn
 from ..services import clock, diffing
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[CurrentUser])
+
+# Watch/phone dictation capture lives on its own router so it can use a LOOSER auth than
+# the rest of /api/notes (which is full-key only): it also accepts a per-person location
+# key, so a family phone holding only its scoped setup-code key can drop a dictated note.
+# Same prefix → the path stays POST /api/notes/entry, so installed apps don't change.
+entry_router = APIRouter(prefix="/api/notes", tags=["notes"])
 
 
 class NoteIn(BaseModel):
@@ -217,15 +223,24 @@ def set_note_tags(slug: str, body: TagsIn):
     return {"tags": tags}
 
 
-@router.post("/entry")
-def create_entry(body: EntryIn):
+@entry_router.post("/entry")
+def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
     """'Make entry' mode: store text directly as a NEW note (unique title), no LLM.
-    Fires the entry_created hooks (auto-tag, etc.)."""
+    Fires the entry_created hooks (auto-tag, etc.).
+
+    `writer` is None for the full access key (PWA / owner) or a person row when a
+    family phone authenticates with its per-person location key — in which case the
+    dictation is attributed to that person so you can tell whose watch it came from.
+    """
     conn = get_conn()
     text = body.text.strip()
     explicit = (body.title or "").strip()
     if not text and not explicit:
         raise HTTPException(status_code=422, detail="Entry text cannot be empty")
+    # Attribute a family member's dictation (per-person key, not the owner/default) so
+    # the note shows whose watch spoke it. The owner's own captures stay pristine.
+    if writer is not None and not writer["is_default"] and text:
+        text = f"({writer['name']}) {text}"
     # Provenance: `watch` for relayed wrist dictations, else a plain human `user`
     # entry. Clamp anything unknown so the version badge stays a known value and the
     # entry_created enrichment still fires (see upsert_note's human-source gate).

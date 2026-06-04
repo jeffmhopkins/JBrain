@@ -145,3 +145,19 @@ def require_location_writer(request: Request):
 
 
 LocationWriter = Depends(require_location_writer)
+
+
+def require_capture_writer(request: Request):
+    """Dependency for device DICTATION capture (a watch note relayed by the phone).
+    Authorizes EITHER:
+      - the full access key  → returns None, or
+      - a per-person LOCATION KEY → returns that person row, so the note can be
+        attributed to them.
+    This lets a family phone configured with only its scoped setup-code key drop a
+    dictated note, without ever putting the master key on the device. The validation
+    (and failure throttle) is identical to the location writer.
+    """
+    return require_location_writer(request)
+
+
+CaptureWriter = Depends(require_capture_writer)

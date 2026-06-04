@@ -69,13 +69,16 @@ export default function PeoplePage() {
   return (
     <div className="tool-body">
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
-        People colour and label location trails on the Map. A fix is matched to a person by its
-        source (the PWA sends <code>pwa</code>, the watch <code>wear</code>, a phone its Name) via
-        the aliases below; anything unmatched falls to the <strong>default</strong>.
+        Users label and colour the people whose devices feed this brain. Each one colours its
+        location trail on the Map, and a note dictated on its watch is attributed to it too. A
+        location fix is matched to a user by its source (the PWA sends <code>pwa</code>, the watch
+        <code>wear</code>, a phone its Name) via the aliases below; anything unmatched falls to the
+        {" "}<strong>default</strong>. Users aren't login accounts — they're labels for the people
+        and devices sharing this brain.
       </p>
 
       <div className="people-add">
-        <input placeholder="Add a person…" value={newName}
+        <input placeholder="Add a user…" value={newName}
                onChange={(e) => setNewName(e.target.value)}
                onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
         <button className="primary" disabled={busy || !newName.trim()} onClick={add}>Add</button>
@@ -130,11 +133,11 @@ export default function PeoplePage() {
 
       <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
         Setup code: copy it and paste into the tracker app's <strong>Access key</strong> field — it auto-fills the
-        person's Name, your server, and a location-only key (no typing). That key can ONLY log this person's location
-        (no reading the trail, no access to anything else), and every fix is attributed to them. While a code is active
-        the person's <strong>Name</strong> and <strong>ingestion sources</strong> lock (the code on their phone bakes those
-        in) — <strong>Revoke</strong> to edit, then re-issue. Tip: you can also tag a KB note as a person from the note
-        itself, or add a tracker's Name as an alias above to fold its trail in.
+        user's Name, your server, and a scoped key (no typing). That key can log this user's location and file notes
+        dictated on their watch, and nothing else (it can't read the trail or reach anything else); both are attributed
+        to them. While a code is active the user's <strong>Name</strong> and <strong>ingestion sources</strong> lock
+        (the code on their phone bakes those in) — <strong>Revoke</strong> to edit, then re-issue. Tip: you can also tag
+        a KB note as a user from the note itself, or add a tracker's Name as an alias above to fold its trail in.
       </p>
     </div>
   );

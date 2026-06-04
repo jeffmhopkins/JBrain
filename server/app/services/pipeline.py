@@ -213,6 +213,18 @@ def _p_flag_ungrounded_reference(ctx):
     return wiki_build.flag_ungrounded_reference(ctx.conn)
 
 
+def _p_redate_notes(ctx, limit=2000, dry_run=False):
+    """File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N."""
+    from . import note_normalize
+    return note_normalize.redate_batch(ctx.conn, int(limit), bool(dry_run))
+
+
+def _p_title_notes(ctx, limit=40, dry_run=False):
+    """Give bare dated notes a generated leaf title (notes/<date>/N - <title>)."""
+    from . import note_normalize
+    return note_normalize.title_batch(ctx.conn, int(limit), bool(dry_run))
+
+
 def _p_seed_kb_watermark(ctx):
     """Reset the incremental-update watermark to now — the full build just covered all
     history, so incremental should only pick up changes from here on."""
@@ -1088,6 +1100,8 @@ _PRIMITIVES = {
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
+    "redate_notes": _p_redate_notes,
+    "title_notes": _p_title_notes,
     "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
@@ -1194,6 +1208,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                     "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
                                   "inputs": [], "output": "dict"},
+    "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",
+                     "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
+    "title_notes": {"summary": "Give bare dated notes a generated leaf title (notes/<date>/N - title).",
+                    "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
     "seed_kb_watermark": {"summary": "Reset the incremental-update watermark to now (after a full build).",
                           "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",

@@ -1,0 +1,30 @@
+# Declarative action: RE-DATE loose notes into the flat dated tree.
+#
+# Files every entry note that doesn't already follow notes/YYYY/MM/DD/N under that scheme,
+# numbered per day by capture order (created_at). Deterministic — no LLM. It SKIPS the
+# kb/ layer, protected pages, and the PWA's own notes/daily/ capture tree, and is
+# idempotent (already-dated notes are left alone), so it's safe to re-run.
+#
+# Renames are versioned and rewrite inbound [[links]]. NOTE: because a bulk rename bumps
+# updated_at + the analysis hash, follow this with a full knowledge-base REBUILD rather
+# than leaving it to the incremental update.
+#
+# config keys:
+#   limit   — max notes to re-file per run (default 2000)
+#   dry_run — preview the old->new plan without applying (default false)
+#   review  — post a summary card (default true)
+type: redate_notes
+category: Notes
+config:
+  - { key: limit, label: Max notes per run, type: number, default: 2000 }
+  - { key: dry_run, label: Preview only (don't apply), type: review, default: false }
+  - { key: review, label: Post a summary card, type: review, default: true }
+steps:
+  - id: redate
+    do: redate_notes
+    with: { limit: "{{ config.limit | default(2000) }}", dry_run: "{{ config.dry_run | default(false) }}" }
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "Notes re-dated"
+      message: "{{ redate.count }} note(s) filed under notes/YYYY/MM/DD/N{{ ' (preview only)' if redate.dry_run else '' }}. Run a KB rebuild next."

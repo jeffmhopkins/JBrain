@@ -1,0 +1,19 @@
+# Re-date loose notes — run-only, never scheduled.
+#
+# Wraps the redate_notes action: files entry notes that don't follow notes/YYYY/MM/DD/N
+# under that scheme (by capture date + order). Deterministic; skips kb/, protected pages
+# and the notes/daily/ tree; idempotent. Run it from the Workflows page with "Run now"
+# (turn on Preview first if you want to see the plan), then run a KB rebuild.
+key: redate-notes
+name: Re-date loose notes
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 0     # manual only
+
+action:
+  type: redate_notes
+  config:
+    limit: 2000
+    review: true

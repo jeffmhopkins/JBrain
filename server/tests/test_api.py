@@ -973,6 +973,46 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_note_normalize_redate_and_title(client, monkeypatch):
+    """redate files loose entry notes under notes/YYYY/MM/DD/N (continuing the day's
+    numbering, skipping kb/ + daily/ + already-dated), idempotently; title adds a generated
+    leaf to bare dated notes only."""
+    from app.db import get_conn
+    from app.services import note_normalize, llm
+    from app.services import notes as ns
+    conn = get_conn()
+
+    def mk(title, created):
+        nid = ns.upsert_note(conn, title, "body of " + title)
+        conn.execute("UPDATE notes SET created_at=? WHERE id=?", (created, nid))
+        return nid
+
+    loose1 = mk("Cardiology invoice", "2026-06-04 09:00:00.000")
+    loose2 = mk("Grocery list", "2026-06-04 10:00:00.000")
+    mk("notes/2026/06/04/1", "2026-06-04 08:00:00.000")          # already dated → max N on the day = 1
+    mk("notes/daily/2026/06/04/5", "2026-06-04 07:00:00.000")    # PWA daily capture → must be left alone
+    ns.upsert_note(conn, "kb/People/Allan", "# Allan", kind="kb")  # kb layer → never touched
+    conn.commit()
+
+    res = note_normalize.redate_batch(conn)
+    assert res["count"] == 2
+    t1 = conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"]
+    t2 = conn.execute("SELECT title FROM notes WHERE id=?", (loose2,)).fetchone()["title"]
+    assert t1 == "notes/2026/06/04/2" and t2 == "notes/2026/06/04/3"   # continue after existing /1, in order
+    assert conn.execute("SELECT title FROM notes WHERE title='notes/daily/2026/06/04/5'").fetchone()  # untouched
+    assert conn.execute("SELECT title FROM notes WHERE title='kb/People/Allan'").fetchone()           # untouched
+    assert note_normalize.redate_batch(conn)["count"] == 0          # idempotent
+
+    # title pass: only the bare dated leaves get a generated title.
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Cardiology Invoice")
+    tres = note_normalize.title_batch(conn, limit=10)
+    assert tres["count"] == 3                                        # /1, /2, /3 (all bare) titled
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"] == "notes/2026/06/04/2 - Cardiology Invoice"
+    assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

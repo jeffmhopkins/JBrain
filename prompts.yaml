@@ -608,6 +608,7 @@ actions:
     NOTE TITLE: {title}
     NOTE BODY:
     {body}
+  generate_note_title: "Give this note a concise 3-6 word title. Filename-friendly: words, spaces and hyphens only — no slashes, brackets, quotes or trailing punctuation. Reply with ONLY the title."
   daylog_summary: "Summarise one day's log lines into a tight paragraph plus 3-6 key bullets. No preamble. Do not invent anything not in the lines. The log lines follow:"
   generate_tags: "Output 3-6 short lowercase topic tags for this note as a single comma-separated line: spaces allowed inside a tag, commas only between tags. No preamble, no labels, no quotes, no '#', no trailing period. Example: running, marathon training, nutrition"
   synthesize: "Summarise the content below: open with a one-sentence overview, then concise bullets. Be faithful to the source and add nothing. No preamble."

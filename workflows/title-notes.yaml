@@ -1,0 +1,18 @@
+# Title bare dated notes — run-only, never scheduled.
+#
+# Wraps the title_notes action: gives each notes/YYYY/MM/DD/N note a generated leaf title
+# (".../2 - cardiology invoice"). One cheap LLM call per note; bounded; idempotent. Run
+# AFTER "Re-date loose notes", from the Workflows page; re-run to drain the backlog.
+key: title-notes
+name: Title dated notes
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 0     # manual only
+
+action:
+  type: title_notes
+  config:
+    limit: 40
+    review: true

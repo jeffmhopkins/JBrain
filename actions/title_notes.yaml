@@ -1,0 +1,28 @@
+# Declarative action: TITLE bare dated notes.
+#
+# For each note already at notes/YYYY/MM/DD/N (a bare number leaf), generates a concise
+# title and renames it to notes/YYYY/MM/DD/N - <title> (e.g. ".../2 - cardiology invoice").
+# One cheap LLM call per note; bounded by limit; idempotent (already-titled notes are
+# skipped), so re-run to drain the backlog. Run redate_notes FIRST.
+#
+# Renames are versioned and rewrite inbound [[links]]; follow a large run with a KB rebuild.
+#
+# config keys:
+#   limit   — max notes to title per run (default 40)
+#   dry_run — preview the old->new plan without applying (default false)
+#   review  — post a summary card (default true)
+type: title_notes
+category: Notes
+config:
+  - { key: limit, label: Max notes per run, type: number, default: 40 }
+  - { key: dry_run, label: Preview only (don't apply), type: review, default: false }
+  - { key: review, label: Post a summary card, type: review, default: true }
+steps:
+  - id: titled
+    do: title_notes
+    with: { limit: "{{ config.limit | default(40) }}", dry_run: "{{ config.dry_run | default(false) }}" }
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "Notes titled"
+      message: "{{ titled.count }} dated note(s) given generated titles{{ ' (preview only)' if titled.dry_run else '' }}."

@@ -6,7 +6,10 @@
     <string name="speak_prompt">Speak your note</string>
     <string name="status_idle">Tap to speak</string>
     <string name="status_saving">Sending…</string>
-    <string name="status_saved">Sent ✓</string>
-    <string name="status_offline">Queued — phone offline ✓</string>
+    <string name="status_saved">Saved to JBrain ✓</string>
+    <string name="status_sent_unconfirmed">Sent ✓ (unconfirmed)</string>
+    <string name="status_phone_error">Phone couldn\'t save: %1$s</string>
+    <string name="status_no_phone">No phone found — queued</string>
+    <string name="status_unreachable">Phone unreachable — queued</string>
     <string name="status_error">No voice input</string>
 </resources>

@@ -60,13 +60,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Phase { IDLE, SAVING, SAVED, OFFLINE, ERROR }
-
 @Composable
 private fun CaptureScreen(autoStart: Boolean) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var phase by remember { mutableStateOf(Phase.IDLE) }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf(context.getString(R.string.status_idle)) }
 
     val speechLauncher = rememberLauncherForActivityResult(StartActivityForResult()) { result ->
         val spoken = result.data
@@ -74,20 +73,33 @@ private fun CaptureScreen(autoStart: Boolean) {
             ?.firstOrNull()
             ?.trim()
         if (spoken.isNullOrEmpty()) {
-            phase = Phase.IDLE
+            status = context.getString(R.string.status_idle)
             return@rememberLauncherForActivityResult
         }
-        phase = Phase.SAVING
+        busy = true
+        status = context.getString(R.string.status_saving)
         scope.launch {
-            if (PhoneRelay.send(context, spoken)) {
-                vibrate(context)
-                phase = Phase.SAVED
-            } else {
-                NoteQueue.enqueue(context, spoken)
-                phase = Phase.OFFLINE
+            // Map each relay outcome to a distinct on-wrist message so a failure is never
+            // silent — you can see exactly which hop broke. Detail also goes to logcat.
+            status = when (val r = PhoneRelay.send(context, spoken)) {
+                is PhoneRelay.Result.Saved -> {
+                    vibrate(context); context.getString(R.string.status_saved)
+                }
+                is PhoneRelay.Result.DeliveredNoAck -> {
+                    vibrate(context); context.getString(R.string.status_sent_unconfirmed)
+                }
+                is PhoneRelay.Result.PhoneError ->
+                    context.getString(R.string.status_phone_error, r.reason)
+                is PhoneRelay.Result.NoPhone -> {
+                    NoteQueue.enqueue(context, spoken); context.getString(R.string.status_no_phone)
+                }
+                is PhoneRelay.Result.SendFailed -> {
+                    NoteQueue.enqueue(context, spoken); context.getString(R.string.status_unreachable)
+                }
             }
-            delay(1500)
-            phase = Phase.IDLE
+            busy = false
+            delay(3500)
+            if (!busy) status = context.getString(R.string.status_idle)
         }
     }
 
@@ -99,7 +111,7 @@ private fun CaptureScreen(autoStart: Boolean) {
         try {
             speechLauncher.launch(intent)
         } catch (e: ActivityNotFoundException) {
-            phase = Phase.ERROR
+            status = context.getString(R.string.status_error)
         }
     }
 
@@ -121,7 +133,7 @@ private fun CaptureScreen(autoStart: Boolean) {
             ) {
                 Button(
                     onClick = { startListening() },
-                    enabled = phase == Phase.IDLE || phase == Phase.ERROR,
+                    enabled = !busy,
                     modifier = Modifier.size(72.dp),
                 ) {
                     Icon(
@@ -132,7 +144,7 @@ private fun CaptureScreen(autoStart: Boolean) {
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = statusFor(phase),
+                    text = status,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colors.onBackground,
                     style = MaterialTheme.typography.caption1,
@@ -141,17 +153,6 @@ private fun CaptureScreen(autoStart: Boolean) {
         }
     }
 }
-
-@Composable
-private fun statusFor(phase: Phase): String = stringResource(
-    when (phase) {
-        Phase.IDLE -> R.string.status_idle
-        Phase.SAVING -> R.string.status_saving
-        Phase.SAVED -> R.string.status_saved
-        Phase.OFFLINE -> R.string.status_offline
-        Phase.ERROR -> R.string.status_error
-    }
-)
 
 private fun vibrate(ctx: Context) {
     val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

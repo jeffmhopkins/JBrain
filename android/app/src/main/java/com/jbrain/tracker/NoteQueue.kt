@@ -37,7 +37,7 @@ object NoteQueue {
                 remaining.put(text)
                 continue
             }
-            if (!NoteClient.createEntry(ctx, text)) {
+            if (NoteClient.createEntry(ctx, text) !is NoteClient.Result.Ok) {
                 stopped = true
                 remaining.put(text)
             }

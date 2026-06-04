@@ -37,7 +37,9 @@ object NoteQueue {
                 remaining.put(text)
                 continue
             }
-            if (!PhoneRelay.send(ctx, text)) {
+            // Keep replaying until one fails to even reach the phone; once handed off,
+            // the phone owns the retry, so we drop our copy to avoid duplicate notes.
+            if (!PhoneRelay.send(ctx, text).handedOff) {
                 stopped = true
                 remaining.put(text)
             }

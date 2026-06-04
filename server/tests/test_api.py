@@ -1427,6 +1427,33 @@ def test_wiki_write_honors_instructions(client, monkeypatch):
     assert any("Mention her PhD" in p and "ADDITIONAL GUIDANCE" in p for p in prompts)
 
 
+def test_write_one_bounded_revise_takes_second_pass_on_improvement(client, monkeypatch):
+    """The §10 bounded revise loop takes a SECOND pass only when the first strictly improved
+    (here: dead links cleared one per pass), and stops — at most write + 2 revises."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    sid = ns.upsert_note(conn, "notes/q", "Quinn studies bees.")
+    conn.commit()
+    drafts = [
+        "# Quinn\nStudies bees with [[kb/Nope/One]] and [[kb/Nope/Two]].[^s1]\n\n## References\n[^s1]: [[notes/q]] — 2026-06-01\n",
+        "# Quinn\nStudies bees with [[kb/Nope/Two]].[^s1]\n\n## References\n[^s1]: [[notes/q]] — 2026-06-01\n",
+        "# Quinn\nStudies bees.[^s1]\n\n## References\n[^s1]: [[notes/q]] — 2026-06-01\n",
+    ]
+    calls = {"n": 0}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def fake(msgs, **k):
+        i = min(calls["n"], len(drafts) - 1)
+        calls["n"] += 1
+        return drafts[i]
+    monkeypatch.setattr(llm, "complete", fake)
+    out = wiki_build.write_one(conn, {"title": "kb/People/Quinn", "domain": "People", "sources": [sid]},
+                               known_titles=["kb/People/Quinn"])
+    assert calls["n"] == 3                                   # write + TWO revise passes
+    assert "[[kb/Nope" not in out["content_md"]              # both dead links cleared
+
+
 def test_rebuild_article_regenerates_in_place(client, monkeypatch):
     """rebuild_article regenerates from sources, preserving the SAME row (slug + version
     history) and inbound links, and carries an open directive into the writer."""

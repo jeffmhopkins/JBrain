@@ -299,9 +299,12 @@ def write_one(conn, art: dict, instructions: str | None = None,
     allowed = {t for t in (known_titles or [])} | {title}
     v = wiki_guides.validate_structure(title, draft)
     bad = _bad_links(conn, draft, allowed)
-    # A dead link is always worth a revise pass (even if the structure lint is clean), so
-    # the model rewrites it as a real link or plain text rather than us mechanically cutting it.
-    if ((v["errors"] or v["warnings"]) and not v["stub"]) or bad:
+    # Bounded revise loop (§10 gate model: fail → a bounded, NON-REGRESSING revise). Up to
+    # two passes; a pass is kept only if it doesn't regress the lint/links, and we only take
+    # a second pass when the first STRICTLY improved — so it converges and can't oscillate.
+    for _ in range(2):
+        if not (((v["errors"] or v["warnings"]) and not v["stub"]) or bad):
+            break
         link_issues = [f"Dead link [[{t}]] — not a real article; link a listed article instead, or write it as plain text"
                        for t in bad]
         issues = "\n".join(f"- {x}" for x in (v["errors"] + v["warnings"] + link_issues))
@@ -312,13 +315,16 @@ def write_one(conn, art: dict, instructions: str | None = None,
         try:
             revised, rtalk = _extract_talk(_strip_fence(
                 llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200)))
-            v2 = wiki_guides.validate_structure(title, revised)
-            bad2 = _bad_links(conn, revised, allowed)
-            # Keep the revision when it doesn't regress the lint AND clears at least as many links.
-            if len(v2["errors"]) <= len(v["errors"]) and len(bad2) <= len(bad):
-                draft, v, talk, bad = revised, v2, (rtalk or talk), bad2
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
+            break
+        v2 = wiki_guides.validate_structure(title, revised)
+        bad2 = _bad_links(conn, revised, allowed)
+        prev, cur = len(v["errors"]) + len(bad), len(v2["errors"]) + len(bad2)
+        if cur <= prev:                                 # non-regressing → adopt the revision
+            draft, v, talk, bad = revised, v2, (rtalk or talk), bad2
+        if cur >= prev:                                 # no strict improvement → stop looping
+            break
 
     # Backstop guarantee: whatever the model left, no dead link survives into the saved
     # article — unwrap it to plain text and note it on the article's talk.
@@ -501,10 +507,13 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     if bad:
         revised = _neutralize_links(revised, set(bad))
     v = wiki_guides.validate_structure(article_title, revised)
-    # One self-critique/revise pass against the lint (mirrors write_one) — so a structural
-    # slip (e.g. a deletion-purge that dropped a required section) gets a chance to recover
-    # instead of silently no-op'ing the whole update.
-    if (v["errors"] or v["warnings"]) and not v["stub"]:
+    # Bounded self-critique/revise loop against the lint (mirrors write_one's §10 gate):
+    # up to two non-regressing passes, second only on strict improvement — so a structural
+    # slip (e.g. a deletion-purge that dropped a required section) gets a couple of chances
+    # to recover instead of silently no-op'ing, without oscillating.
+    for _ in range(2):
+        if not ((v["errors"] or v["warnings"]) and not v["stub"]):
+            break
         issues = "\n".join(f"- {x}" for x in (v["errors"] + v["warnings"]))
         rprompt = (prompts.get("actions.wiki_revise", "")
                    .replace("{issues}", issues).replace("{general_guide}", wiki_guides.guide_text(None))
@@ -513,15 +522,19 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         try:
             r2, _ = _extract_maintain(_strip_fence(
                 llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600)))
-            r2 = r2.strip()
-            b2 = _bad_links(conn, r2, allowed)
-            if b2:
-                r2 = _neutralize_links(r2, set(b2))
-            v2 = wiki_guides.validate_structure(article_title, r2)
-            if r2 and len(v2["errors"]) <= len(v["errors"]):
-                revised, v = r2, v2
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_maintain revise failed for %s: %s", article_title, exc)
+            break
+        r2 = r2.strip()
+        b2 = _bad_links(conn, r2, allowed)
+        if b2:
+            r2 = _neutralize_links(r2, set(b2))
+        v2 = wiki_guides.validate_structure(article_title, r2)
+        prev, cur = len(v["errors"]), len(v2["errors"])
+        if r2 and cur <= prev:
+            revised, v = r2, v2
+        if not r2 or cur >= prev:
+            break
     open_ids = {it["id"] for it in open_items}
     resolved = [{"id": int(r["id"]), "how": str(r.get("how") or "")}
                 for r in (payload.get("resolved") or [])

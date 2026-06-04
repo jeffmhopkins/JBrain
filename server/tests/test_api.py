@@ -1521,6 +1521,29 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 
 
+def test_research_article_proposes_corroborated_reference_links(client, monkeypatch):
+    """research_article proposes an embedding-near Reference page that's corroborated by the
+    neighbourhood and not already linked — propose-only, validated against the candidate set."""
+    from app.db import get_conn
+    from app.services import wiki_build, embeddings, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/Anemia", "# Anemia\nLow red blood cell count.", kind="kb")
+    ns.upsert_note(conn, "kb/People/Sam", "# Sam\nSam is often tired and dizzy.", kind="kb")  # related, doesn't name it
+    conn.commit()
+    monkeypatch.setattr(embeddings, "semantic_search",
+                        lambda c, q, limit=10: [{"id": 1, "title": "kb/Reference/Medicine/Conditions/Anemia",
+                                                 "slug": "x", "distance": 0.3}])
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        '[{"reference_title": "kb/Reference/Medicine/Conditions/Anemia", "why": "symptoms match"}]')
+    res = wiki_build.research_article(conn, "kb/People/Sam")
+    assert res["ok"]
+    assert any(p["target"] == "kb/Reference/Medicine/Conditions/Anemia" for p in res["proposals"])
+    # A hallucinated title (not in the candidate set) is dropped.
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: '[{"reference_title": "kb/Reference/Made/Up"}]')
+    assert wiki_build.research_article(conn, "kb/People/Sam")["proposals"] == []
+
 
 def test_taxonomy_health_flags_orphans_and_flat_reference(client):
     """The read-only report flags un-foldered Reference articles and orphans (no inbound link)."""

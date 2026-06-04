@@ -974,6 +974,58 @@ def merge_articles(conn, sources: list[str], into: str) -> dict:
         kb_lock_release(conn)
 
 
+_RESEARCH_TAU = 0.55
+
+
+def research_article(conn, title: str, mode: str = "propose") -> dict:
+    """Surface EXISTING kb/Reference/* articles related to this article's salient concepts by
+    MEANING (embeddings) — catching relationships check_needed_links misses because the body
+    never names the leaf. Gauntlet-constrained: PROPOSE-ONLY (never auto-writes, never adds
+    prose — the owner's accept/reject is the non-colluding adversary). A candidate must be
+    embedding-near (distance < tau) AND corroborated by the deterministic neighbourhood
+    (shared entity/citation/sibling) — embedding-alone nomination is the sprawl we refuse.
+    Returns {ok, proposals:[{target, why}]}."""
+    from . import notes as notes_svc, embeddings
+    note = notes_svc.get_by_title(conn, title)
+    if not note or note["kind"] != "kb":
+        return {"ok": False, "reason": "no such kb article"}
+    body = note["content_md"] or ""
+    lines = body.splitlines()
+    query = " ".join(([lines[0]] if lines else []) + [ln for ln in lines if ln.startswith("##")]).strip()[:600] \
+        or title.rsplit("/", 1)[-1]
+    nominated: dict[str, float] = {}
+    try:
+        for hit in embeddings.semantic_search(conn, query, 25):
+            t = hit.get("title") or ""
+            if t.startswith("kb/Reference/") and t != title and float(hit.get("distance", 1.0)) < _RESEARCH_TAU:
+                nominated[t] = float(hit.get("distance", 1.0))
+    except Exception:  # noqa: BLE001
+        pass
+    neigh = set(scoped_known_titles(conn, title, _known_titles(conn), budget=100000))
+    linked = {x.lower() for x in wikilinks.extract_links(body)}
+    candidates = [t for t in nominated if t in neigh and t.lower() not in linked]   # corroborated
+    if not candidates:
+        return {"ok": True, "proposals": []}
+    proposals = list(candidates)
+    if llm.has_credentials():                       # adjudicate, fed candidate LEADS (new info)
+        leads = []
+        for t in candidates[:12]:
+            r = conn.execute("SELECT content_md FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                             (t,)).fetchone()
+            head = (r["content_md"].splitlines()[0] if r and r["content_md"] else "")
+            leads.append(f"- {t}: {head[:160]}")
+        prompt = (prompts.get("actions.research_article", "")
+                  .replace("{title}", title).replace("{salient}", query)
+                  .replace("{candidates}", "\n".join(leads)))
+        try:
+            picked = json.loads(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=400)))
+            chosen = {p.get("reference_title") for p in picked if isinstance(p, dict)}
+            proposals = [t for t in candidates if t in chosen]      # validate membership (anti-hallucination)
+        except Exception:  # noqa: BLE001
+            proposals = list(candidates)
+    return {"ok": True, "proposals": [{"target": t} for t in proposals]}
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

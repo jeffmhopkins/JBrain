@@ -225,6 +225,12 @@ def _p_refresh_index(ctx):
     return {"articles": wiki_build.refresh_index(ctx.conn)}
 
 
+def _p_research_article(ctx, title=None, mode="propose"):
+    """Surface related Reference links for an article (propose-only, embedding-nominated)."""
+    from . import wiki_build
+    return wiki_build.research_article(ctx.conn, title, mode)
+
+
 def _p_taxonomy_health(ctx):
     """Read-only KB taxonomy-drift report (orphans, un-foldered Reference); cards if overdue."""
     from . import wiki_build
@@ -1144,6 +1150,7 @@ _PRIMITIVES = {
     "recategorize_article": _p_recategorize_article,
     "merge_articles": _p_merge_articles,
     "refresh_index": _p_refresh_index,
+    "research_article": _p_research_article,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1264,6 +1271,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [{"name": "sources", "type": "list"}, {"name": "into", "type": "str"}], "output": "dict"},
     "refresh_index": {"summary": "Rebuild kb/_index from live articles (no LLM).",
                         "inputs": [], "output": "dict"},
+    "research_article": {"summary": "Propose related Reference links for an article (semantic, corroborated).",
+                        "inputs": [{"name": "title", "type": "str"}, {"name": "mode", "type": "str"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

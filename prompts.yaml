@@ -612,6 +612,25 @@ actions:
 
     CURRENT SOURCES (already cited by this article):
     {sources}
+  research_article: |
+    You are linking a personal knowledge-base article to RELATED REFERENCE pages that
+    ALREADY EXIST. You get the article's salient facts and a list of CANDIDATE Reference
+    articles (title + lead). Pick ONLY the candidates whose subject this article GENUINELY
+    discusses or depends on — not merely "same broad field".
+    HARD RULES:
+    - Choose ONLY from the candidate list. Never invent a title.
+    - Your output is solely WHICH existing Reference articles are worth linking. Add no
+      facts, definitions, or background — nothing but the choice.
+    - If none are genuinely relevant, return [].
+    OUTPUT: a single JSON array and nothing else, e.g.
+    [{"reference_title": "kb/Reference/...", "why": "one short clause"}]
+
+    ARTICLE: {title}
+    SALIENT FACTS:
+    {salient}
+
+    CANDIDATE REFERENCE ARTICLES (title: lead):
+    {candidates}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

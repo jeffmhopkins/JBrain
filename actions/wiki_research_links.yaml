@@ -1,0 +1,18 @@
+# Suggest RELATED Reference links for an article (semantic) — catches first-hop Reference
+# relationships the article doesn't name by leaf. Propose-only: it posts a review card of
+# suggestions for you to approve; it never auto-edits. Requires an Anthropic key + embeddings.
+type: wiki_research_links
+category: Knowledge base
+config:
+  - { key: title, label: "Article title (kb/…)", type: text }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: ra
+    do: research_article
+    with: { title: "{{ config.title }}" }
+  - do: create_review
+    when: "{{ config.review != false and ra.proposals }}"
+    with:
+      title: "Suggested Reference links"
+      message: "{{ ra.proposals | length }} related Reference article(s) suggested for {{ config.title }}."
+      link_title: "{{ config.title }}"

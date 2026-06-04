@@ -1349,6 +1349,34 @@ def test_wiki_update_routes_deletions_by_title(client, monkeypatch):
     assert any("Bob worked at Acme" in p for p in prompts)
 
 
+def test_check_needed_links_links_prose_skips_masked_and_ambiguous(client):
+    """Links a prose mention of an existing article's leaf, but never inside code or a
+    footnote-citation line, never an already-linked target, and never an ambiguous leaf."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/Anemia", "# Anemia\nlow iron.", kind="kb")
+    # Ambiguous leaf "Smith" → two articles → must NOT be linked.
+    ns.upsert_note(conn, "kb/People/HealthFirst/Smith", "# Smith", kind="kb")
+    ns.upsert_note(conn, "kb/People/Dentistry/Smith", "# Smith", kind="kb")
+    ns.upsert_note(conn, "kb/People/Pat",
+        "# Pat\nPat was screened for Anemia by Smith last year.\n`Anemia` here is code.\n\n"
+        "## References\n[^s1]: [[notes/x]] — about Anemia\n", kind="kb")
+    conn.commit()
+
+    res = wiki_build.check_needed_links(conn, "kb/People/Pat", mode="propose")
+    tgts = [p["target"] for a in res["articles"] for p in a["proposals"]]
+    assert "kb/Reference/Medicine/Conditions/Anemia" in tgts          # prose mention proposed
+    assert not any("Smith" in t for t in tgts)                        # ambiguous leaf refused
+
+    wiki_build.check_needed_links(conn, "kb/People/Pat", mode="auto")
+    body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Pat'").fetchone()["content_md"]
+    assert "[[kb/Reference/Medicine/Conditions/Anemia|Anemia]]" in body  # prose linked
+    assert "`Anemia` here is code" in body                              # code span untouched
+    assert "[^s1]: [[notes/x]] — about Anemia" in body                  # footnote line untouched
+
+
 def test_scoped_known_titles_prioritises_relevant_neighbourhood(client):
     """Past the budget, the cross-link candidate set keeps the RELEVANT neighbourhood
     (backlinks + same-folder siblings) instead of a blind alphabetical slice, then tops

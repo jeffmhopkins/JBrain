@@ -713,6 +713,85 @@ def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
         kb_lock_release(conn)
 
 
+# Common short/general leaves we never auto-link (too many false positives as bare words).
+_STOP_LEAVES = {
+    "home", "work", "car", "list", "notes", "note", "care", "team", "group", "family",
+    "house", "office", "school", "money", "health", "food", "travel", "today", "people",
+}
+
+
+def _mask_spans(text: str) -> list[tuple[int, int]]:
+    """Char ranges where a link must NOT be inserted: fenced code, inline code, existing
+    [[wikilinks]], and footnote-definition lines (`[^sN]: …` — citations)."""
+    spans: list[tuple[int, int]] = []
+    for pat, flags in ((r"```.*?```", re.DOTALL), (r"`[^`]+`", 0),
+                       (r"\[\[.*?\]\]", 0), (r"(?m)^\[\^[^\]]+\]:.*$", 0)):
+        spans += [m.span() for m in re.finditer(pat, text, flags)]
+    return spans
+
+
+def check_needed_links(conn, title: str | None = None, mode: str = "propose") -> dict:
+    """Deterministic ADD-link backstop (the complement to flag_dead_links's remove): find
+    mentions in an article that EXACTLY match an existing kb article's leaf name but aren't
+    linked, and link them. Refuses ambiguous leaves (map to ≥2 articles, or in the entity
+    index's ambiguous_terms) and short/common-word leaves; masks code, existing links, and
+    footnote-citation lines. mode='propose' (default) returns proposals for a Review card;
+    mode='auto' writes them (versioned). No See-also, no reciprocal edits. No 600 cap."""
+    from . import notes as notes_svc, entity_index
+    titles = _known_titles(conn)
+    leafmap: dict[str, list[str]] = {}
+    for t in titles:
+        leafmap.setdefault(t.split("/")[-1].strip().lower(), []).append(t)
+    ambiguous = {k for k, v in leafmap.items() if len(v) > 1}
+    try:
+        for amb in entity_index.ambiguous_terms(conn):
+            ambiguous.add(str(amb.get("term", "")).lower())
+    except Exception:  # noqa: BLE001
+        pass
+
+    def linkable(leaf_lower: str, leaf: str) -> bool:
+        if leaf_lower in ambiguous or len(leaf) < 4:
+            return False
+        if " " not in leaf and leaf_lower in _STOP_LEAVES:
+            return False
+        return True
+
+    targets = [title] if title else titles
+    out_articles = []
+    for tt in targets:
+        note = notes_svc.get_by_title(conn, tt)
+        if not note or note["kind"] != "kb":
+            continue
+        body = note["content_md"] or ""
+        spans = _mask_spans(body)
+        linked = {x.lower() for x in wikilinks.extract_links(body)}
+        props = []
+        for leaf_lower, cands in leafmap.items():
+            tgt = cands[0]
+            if tgt == tt or tgt.lower() in linked:
+                continue
+            leaf = tgt.split("/")[-1]
+            if not linkable(leaf_lower, leaf):
+                continue
+            for m in re.finditer(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", body, re.IGNORECASE):
+                if not any(s <= m.start() < e for s, e in spans):
+                    props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
+                    break
+        if mode == "auto" and props:
+            nb = body
+            for p in sorted(props, key=lambda x: -x["at"]):      # right-to-left preserves offsets
+                s, e = p["at"], p["at"] + len(p["surface"])
+                nb = nb[:s] + f"[[{p['target']}|{p['surface']}]]" + nb[e:]
+            notes_svc.upsert_note(conn, tt, nb, kind="kb", source="user",
+                                  version_note="added missing cross-links")
+        out_articles.append({"title": tt,
+                             "proposals": [{"target": p["target"], "surface": p["surface"]} for p in props]})
+    if mode == "auto":
+        conn.commit()
+    return {"ok": True, "articles": out_articles,
+            "count": sum(len(a["proposals"]) for a in out_articles)}
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

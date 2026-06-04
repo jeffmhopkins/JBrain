@@ -1,0 +1,30 @@
+# Declarative action: CHECK FOR NEEDED LINKS in a knowledge-base article (or KB-wide).
+#
+# The deterministic complement to dead-link removal: it scans an article for mentions that
+# EXACTLY match an existing kb article's name but aren't linked yet, and links them. It
+# refuses ambiguous names (that map to two articles), short/common words, and never touches
+# code, existing links, or footnote-citation lines. Default is PROPOSE (a review card you
+# approve); set apply=true to write the links directly (versioned/undoable).
+#
+# config keys:
+#   title  — the article to check (kb/…); leave blank to scan the whole KB
+#   apply  — write links instead of proposing (default false)
+#   review — post a review card (default true)
+type: wiki_check_links
+category: Knowledge base
+config:
+  - { key: title, label: "Article title (kb/…), or blank for all", type: text }
+  - { key: apply, label: "Apply links (vs propose only)", type: review, default: false }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: cl
+    do: check_needed_links
+    with:
+      title: "{{ config.title | default(none) }}"
+      mode: "{{ 'auto' if config.apply else 'propose' }}"
+  - do: create_review
+    when: "{{ config.review != false and cl.count }}"
+    with:
+      title: "{{ 'Cross-links added' if config.apply else 'Suggested cross-links' }}"
+      message: "{{ cl.count }} link(s) {{ 'added across' if config.apply else 'suggested for' }} {{ cl.articles | length }} article(s)."
+      link_title: "{{ config.title | default('kb/_index') }}"

@@ -195,6 +195,12 @@ def _p_rebuild_article(ctx, title=None, instructions=None):
     return wiki_build.rebuild_article(ctx.conn, title, instructions)
 
 
+def _p_check_needed_links(ctx, title=None, mode="propose"):
+    """Deterministically find/add missing cross-links in an article (or KB-wide)."""
+    from . import wiki_build
+    return wiki_build.check_needed_links(ctx.conn, title, mode)
+
+
 def _p_link_owner(ctx):
     """Link the default person to their freshly-written People article."""
     from . import wiki_build
@@ -1102,6 +1108,7 @@ _PRIMITIVES = {
     "record_talk": _p_record_talk,
     "flag_dead_links": _p_flag_dead_links,
     "rebuild_article": _p_rebuild_article,
+    "check_needed_links": _p_check_needed_links,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1208,6 +1215,9 @@ _PRIMITIVE_META: dict[str, dict] = {
     "rebuild_article": {"summary": "Regenerate ONE kb article in place from its source notes (manual).",
                         "inputs": [{"name": "title", "type": "str"},
                                    {"name": "instructions", "type": "str"}], "output": "dict"},
+    "check_needed_links": {"summary": "Deterministically find/add missing kb cross-links (propose|auto).",
+                        "inputs": [{"name": "title", "type": "str"},
+                                   {"name": "mode", "type": "str"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

@@ -446,6 +446,7 @@ actions:
         [^s1]: [[Exact Source Title]] — DATE
     Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
     the article Markdown, starting with "# <name>".
+    {instructions}
 
     GROUNDING — this is strict, especially for Reference. Include ONLY facts the source
     notes actually contain. Do NOT add background, definitions, symptoms, mechanisms,

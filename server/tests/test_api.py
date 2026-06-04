@@ -1299,6 +1299,56 @@ def test_wiki_update_routes_deletions_by_title(client, monkeypatch):
     assert any("Bob worked at Acme" in p for p in prompts)
 
 
+def test_scoped_known_titles_prioritises_relevant_neighbourhood(client):
+    """Past the budget, the cross-link candidate set keeps the RELEVANT neighbourhood
+    (backlinks + same-folder siblings) instead of a blind alphabetical slice, then tops
+    up — so it never offers fewer candidates than the old cap."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    # A sibling under the same folder, and a backlinker — both should survive truncation.
+    ns.upsert_note(conn, "kb/People/Acme/Alice", "# Alice", kind="kb")
+    ns.upsert_note(conn, "kb/People/Acme/Bob", "# Bob", kind="kb")            # sibling of Alice
+    ns.upsert_note(conn, "kb/Zoo/Zelda", "# Zelda\nWorks with [[kb/People/Acme/Alice]].", kind="kb")  # backlink
+    # Filler that would alphabetically crowd out the relevant ones under a tiny budget.
+    fillers = [f"kb/Filler/{c}" for c in "abcd"]
+    for t in fillers:
+        ns.upsert_note(conn, t, f"# {t.split('/')[-1]}", kind="kb")
+    conn.commit()
+
+    allt = wiki_build._known_titles(conn)
+    got = wiki_build.scoped_known_titles(conn, "kb/People/Acme/Alice", allt, budget=3)
+    assert len(got) == 3                                   # respects budget
+    assert "kb/People/Acme/Bob" in got                     # sibling kept
+    assert "kb/Zoo/Zelda" in got                           # backlinker kept (alphabetically last)
+    assert "kb/People/Acme/Alice" not in got               # never itself
+    # Whole-KB ≤ budget → returns everything (drop-in, never worse than today).
+    assert set(wiki_build.scoped_known_titles(conn, "kb/People/Acme/Alice", allt, budget=999)) \
+        == set(t for t in allt if t != "kb/People/Acme/Alice")
+
+
+def test_wiki_write_honors_instructions(client, monkeypatch):
+    """The {instructions} placeholder now reaches the writer (was silently dropped), so
+    rebuild_article can carry open directives into a from-scratch rewrite."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    sid = ns.upsert_note(conn, "notes/z", "Zara is a botanist.")
+    conn.commit()
+    prompts = []
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def fake(msgs, **k):
+        prompts.append(msgs[0]["content"])
+        return "# Zara\nZara is a botanist.[^s1]\n\n## References\n[^s1]: [[notes/z]] — 2026-06-01\n"
+    monkeypatch.setattr(llm, "complete", fake)
+    wiki_build.write_one(conn, {"title": "kb/People/Zara", "domain": "People", "sources": [sid]},
+                         instructions="Mention her PhD if the sources support it.")
+    # The write prompt (first call) carries the guidance; the revise prompt does not.
+    assert any("Mention her PhD" in p and "ADDITIONAL GUIDANCE" in p for p in prompts)
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually

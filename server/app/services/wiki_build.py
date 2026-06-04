@@ -279,13 +279,16 @@ def write_one(conn, art: dict, instructions: str | None = None,
     dguide = wiki_guides.guide_text(domain)
     # Only let the writer cross-link articles that will exist (minus this one), so it
     # can't invent a dead [[kb/People/Someone]] link. Capped to bound prompt size.
-    others = [t for t in (known_titles or []) if t and t != title][:600]
+    others = scoped_known_titles(conn, title, known_titles)
     known_block = "\n".join(others) if others else "(no other articles yet)"
+    # Per-article guidance (e.g. open directives carried in by rebuild_article). Empty for
+    # an ordinary build. Without the placeholder in the prompt this was silently ignored.
+    guidance = f"\nADDITIONAL GUIDANCE — follow this too:\n{instructions.strip()}\n" if (instructions or "").strip() else ""
     prompt = (prompts.get("actions.wiki_write", "")
               .replace("{owner}", owner)
               .replace("{general_guide}", general).replace("{domain_guide}", dguide)
               .replace("{domain}", domain or "").replace("{title}", title)
-              .replace("{known_titles}", known_block)
+              .replace("{known_titles}", known_block).replace("{instructions}", guidance)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
     try:
         draft, talk = _extract_talk(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200)))
@@ -470,7 +473,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
                            for it in open_items) or "(none)"
     new_block = _sources_text(new_srcs) or "(none)"
     removed_block = "\n".join(f"- [[{t}]]" for t in removed_titles) or "(none)"
-    others = [t for t in (known_titles or []) if t and t != article_title][:600]
+    others = scoped_known_titles(conn, article_title, known_titles)
     known_block = "\n".join(others) if others else "(no other articles)"
 
     prompt = (prompts.get("actions.wiki_maintain", "")
@@ -577,7 +580,53 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
 
 def _known_titles(conn) -> list[str]:
     return sorted({r["title"] for r in conn.execute(
-        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()})
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
+
+
+def scoped_known_titles(conn, title: str, all_titles, budget: int = 600) -> list[str]:
+    """Relevant cross-link candidates for `title`, replacing the old blind alphabetical
+    `[:600]` cap. When the whole KB fits in `budget` we return everything (no need to
+    scope). Past it, we PRIORITISE a relevant neighbourhood — articles that link to this
+    one (backlinks), this article's own current link targets, and same-folder siblings —
+    then top up to `budget`, so we never offer FEWER candidates than the old cap, but the
+    ones we keep when truncating are the relevant ones (the alphabetical slice dropped
+    everything after ~'kb/R…' regardless of relevance). Deterministic, no LLM."""
+    others = [t for t in (all_titles or []) if t and t != title]
+    if len(others) <= budget:
+        return others
+    others_set = set(others)
+    keep: set[str] = set()
+    # Backlinks: kb articles that link TO this title (target_title survives soft-delete).
+    for r in conn.execute(
+        "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
+        "WHERE lower(l.target_title)=lower(?) AND s.kind='kb' AND s.deleted_at IS NULL", (title,)):
+        keep.add(r["title"])
+    # This article's own outward kb link targets (co-relevant neighbours it already cites).
+    row = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                       (title,)).fetchone()
+    if row:
+        for r in conn.execute(
+            "SELECT DISTINCT t.title FROM links l JOIN notes t ON t.id=l.target_note_id "
+            "WHERE l.source_note_id=? AND t.kind='kb' AND t.deleted_at IS NULL", (row["id"],)):
+            keep.add(r["title"])
+    # Same-folder siblings (shared kb/<Domain>/<Sub>/ parent prefix).
+    if "/" in title:
+        parent = title.rsplit("/", 1)[0]
+        for r in conn.execute(
+            "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title LIKE ?",
+            (parent + "/%",)):
+            keep.add(r["title"])
+    keep &= others_set
+    keep.discard(title)
+    result = sorted(keep)[:budget]
+    if len(result) < budget:                       # top up with the rest so count >= old cap
+        seen = set(result)
+        for t in others:
+            if t not in seen:
+                result.append(t)
+                if len(result) >= budget:
+                    break
+    return result
 
 
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
@@ -785,7 +834,7 @@ def write_batch(conn, articles: list[dict], instructions: str | None = None, on_
     # that survives (so links resolve when adding to an existing KB, not just full rebuild).
     planned = [str(a.get("title") or "").strip() for a in articles]
     existing = [r["title"] for r in conn.execute(
-        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()]
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()]
     known = sorted({t for t in planned + existing if t})
     valid, quarantined = [], []
     total = len(articles)

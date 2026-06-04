@@ -4,7 +4,7 @@ import { get } from "../api";
 import { leaf, slugify } from "../util";
 
 interface Entity { id: number; type: string; canonical_name: string; note_count: number; article_title: string | null; }
-interface EntityDetail extends Entity { notes: { id: number; title: string; slug: string; created_at: string }[]; }
+interface EntityDetail extends Entity { aliases?: string[]; notes: { id: number; title: string; slug: string; created_at: string }[]; }
 
 const ICON: Record<string, string> = {
   person: "👤", org: "🏢", place: "📍", thing: "📦",
@@ -73,6 +73,7 @@ export default function EntitiesPage() {
         {sel && (
           <div style={{ flex: "1 1 320px" }}>
             <h3 style={{ marginTop: 0 }}>{ICON[sel.type] || "•"} {sel.canonical_name}</h3>
+            {!!sel.aliases?.length && <p className="muted" style={{ fontSize: 12, marginTop: -6 }}>a.k.a. {sel.aliases.join(", ")}</p>}
             {sel.article_title
               ? <p><Link to={`/note/${slugify(sel.article_title)}`} className="wikilink">📖 {leaf(sel.article_title)}</Link></p>
               : <p className="muted" style={{ fontSize: 13 }}>No KB article yet.</p>}

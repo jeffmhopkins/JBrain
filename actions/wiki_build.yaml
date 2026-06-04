@@ -75,6 +75,8 @@ steps:
 
   # 6b. Re-aggregate so each entity now links to its freshly-written article (cheap, no LLM).
   - do: rebuild_entity_index
+  # 6c. Generate disambiguation pages for terms that resolve to multiple articles.
+  - do: write_disambiguation
 
   # 7. Reviews.
   - do: create_review

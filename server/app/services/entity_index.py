@@ -36,6 +36,14 @@ def _distinctive(tok: str) -> bool:
     return len(tok) >= 3            # a real word (likely a surname), not an initial
 
 
+def _acronymish(norm: str) -> bool:
+    return " " not in norm and 2 <= len(norm) <= 6 and norm.isalpha()
+
+
+def _initials(name: str) -> str:
+    return "".join(t[0] for t in _tokens(name) if t)
+
+
 def _collect(conn, limit: int) -> dict:
     """type -> {norm -> {tokens, count, notes:set, raws:Counter}} from note_analysis."""
     rows = conn.execute(
@@ -97,11 +105,26 @@ def _merge_map(clusters: dict) -> dict:
                         ra, rb = find(a), find(b)
                         if ra != rb:
                             parent[rb] = ra
+        # Acronym union: "ttp" ↔ "thrombotic thrombocytopenic purpura" (initials match).
+        def _rep(n):
+            raws = clusters[typ][n]["raws"]
+            return raws.most_common(1)[0][0] if raws else n
+        expansions = [n for n in norms if " " in n]
+        for ac in norms:
+            if not _acronymish(ac):
+                continue
+            for ex in expansions:
+                if _initials(_rep(ex)) == ac:
+                    ra, rb = find(ac), find(ex)
+                    if ra != rb:
+                        parent[rb] = ra
+                    break
         members: dict = defaultdict(list)
         for n in norms:
             members[find(n)].append(n)
         for grp in members.values():
-            canon = max(grp, key=lambda m: (clusters[typ][m]["count"], len(clusters[typ][m]["tokens"])))
+            # Canonical = the most descriptive name (most tokens), then most-mentioned.
+            canon = max(grp, key=lambda m: (len(clusters[typ][m]["tokens"]), clusters[typ][m]["count"]))
             for m in grp:
                 out[typ][m] = canon
     return out
@@ -114,17 +137,22 @@ def rebuild(conn, limit: int = 20000) -> int:
     clusters = _collect(conn, limit)
     mapping = _merge_map(clusters)
 
-    canon: dict = defaultdict(lambda: {"notes": set(), "raws": Counter()})
+    canon: dict = defaultdict(lambda: {"notes": set(), "raws": Counter(), "aliases": {}, "display": None})
     for typ, norms in clusters.items():
         for norm, c in norms.items():
             cn = mapping[typ].get(norm, norm)
             agg = canon[(typ, cn)]
             agg["notes"] |= c["notes"]
             agg["raws"].update(c["raws"])
+            top = c["raws"].most_common(1)[0][0] if c["raws"] else norm
+            if norm == cn:                          # the canonical cluster sets the display name
+                agg["display"] = top
+            else:                                   # a merged variant → an alias
+                agg["aliases"][norm] = top
 
     seen_keys = set()
     for (typ, cn), agg in canon.items():
-        display = agg["raws"].most_common(1)[0][0]
+        display = agg["display"] or agg["raws"].most_common(1)[0][0]
         notes = agg["notes"]
         seen_keys.add((typ, cn))
         conn.execute(
@@ -138,6 +166,9 @@ def rebuild(conn, limit: int = 20000) -> int:
         conn.execute("DELETE FROM entity_mentions WHERE entity_id=?", (eid,))
         conn.executemany("INSERT OR IGNORE INTO entity_mentions (entity_id, note_id) VALUES (?,?)",
                          [(eid, nid) for nid in notes])
+        conn.execute("DELETE FROM entity_aliases WHERE entity_id=?", (eid,))
+        conn.executemany("INSERT OR IGNORE INTO entity_aliases (entity_id, alias_norm, alias_display) VALUES (?,?,?)",
+                         [(eid, an, ad) for an, ad in agg["aliases"].items()])
 
     for r in conn.execute("SELECT id, type, normalized_key FROM entities").fetchall():
         if (r["type"], r["normalized_key"]) not in seen_keys:
@@ -191,8 +222,12 @@ def roster(conn, per_type: int = 40, partners: int = 3) -> str:
         lines.append(f"{label}:")
         for r in rows:
             ps = _partners(conn, r["id"], partners)
+            aka = [a["alias_display"] for a in conn.execute(
+                "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL LIMIT 3",
+                (r["id"],)).fetchall()]
+            name = r["canonical_name"] + (f" (a.k.a. {', '.join(aka)})" if aka else "")
             tail = f"; often with: {', '.join(ps)}" if ps else ""
-            lines.append(f"- {r['canonical_name']} ({r['note_count']} notes{tail})")
+            lines.append(f"- {name} ({r['note_count']} notes{tail})")
     return "\n".join(lines)
 
 
@@ -202,7 +237,9 @@ def index(conn, type: str | None = None, q: str | None = None, limit: int = 500)
     if type:
         sql += " AND type = ?"; args.append(type)
     if q:
-        sql += " AND canonical_name LIKE ?"; args.append(f"%{q}%")
+        sql += (" AND (canonical_name LIKE ? OR id IN "
+                "(SELECT entity_id FROM entity_aliases WHERE alias_display LIKE ? OR alias_norm LIKE ?))")
+        args += [f"%{q}%", f"%{q}%", f"%{normalize(q)}%"]
     sql += " ORDER BY note_count DESC, canonical_name LIMIT ?"; args.append(int(limit))
     return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
@@ -221,11 +258,13 @@ def notes_for(conn, entity_id: int) -> dict | None:
         "WHERE m.entity_id = ? ORDER BY n.created_at DESC",
         (entity_id,),
     ).fetchall()
-    return {**dict(e), "notes": [dict(n) for n in notes]}
+    aliases = [a["alias_display"] for a in conn.execute(
+        "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (entity_id,)).fetchall()]
+    return {**dict(e), "aliases": aliases, "notes": [dict(n) for n in notes]}
 
 
 def note_ids_for_name(conn, name: str) -> list[int]:
-    """Note ids for the canonical entity matching a name (any type), best match first."""
+    """Note ids for the canonical entity matching a name OR alias (any type)."""
     norm = normalize(name)
     if not norm:
         return []
@@ -233,6 +272,54 @@ def note_ids_for_name(conn, name: str) -> list[int]:
         "SELECT id FROM entities WHERE normalized_key=? ORDER BY note_count DESC LIMIT 1", (norm,)
     ).fetchone()
     if not row:
+        row = conn.execute(
+            "SELECT entity_id AS id FROM entity_aliases WHERE alias_norm=? LIMIT 1", (norm,)).fetchone()
+    if not row:
         return []
     return [m["note_id"] for m in conn.execute(
         "SELECT note_id FROM entity_mentions WHERE entity_id=?", (row["id"],)).fetchall()]
+
+
+def ambiguous_terms(conn) -> list[dict]:
+    """Terms (canonical keys or aliases) that map to ≥2 distinct entities — disambiguation
+    candidates. Returns [{term, entities:[{id,type,canonical_name,article_title}]}]."""
+    rows = conn.execute(
+        "SELECT term, COUNT(DISTINCT entity_id) c FROM "
+        "(SELECT normalized_key AS term, id AS entity_id FROM entities "
+        " UNION ALL SELECT alias_norm AS term, entity_id FROM entity_aliases) "
+        "GROUP BY term HAVING c >= 2"
+    ).fetchall()
+    out = []
+    for r in rows:
+        ents = conn.execute(
+            "SELECT id, type, canonical_name, article_title FROM entities WHERE normalized_key=? "
+            "UNION SELECT e.id, e.type, e.canonical_name, e.article_title FROM entities e "
+            "JOIN entity_aliases a ON a.entity_id=e.id WHERE a.alias_norm=?",
+            (r["term"], r["term"]),
+        ).fetchall()
+        out.append({"term": r["term"], "entities": [dict(e) for e in ents]})
+    return out
+
+
+def write_disambiguation_pages(conn) -> int:
+    """Generate protected kb/_disambig/<Term> pages for terms that map to ≥2 entities
+    which each have an article. Regenerated each call (old ones cleared first)."""
+    from . import notes as notes_svc
+    for r in conn.execute(
+        "SELECT id FROM notes WHERE kind='kb' AND title LIKE 'kb/_disambig/%' AND deleted_at IS NULL"
+    ).fetchall():
+        notes_svc.soft_delete(conn, r["id"])
+    n = 0
+    for amb in ambiguous_terms(conn):
+        with_art = [e for e in amb["entities"] if e["article_title"]]
+        if len(with_art) < 2:
+            continue
+        displays = [e["canonical_name"] for e in amb["entities"]]
+        term = min(displays, key=len)              # the short/acronym form reads best as the title
+        lines = [f"# {term}", "", f"**{term}** may refer to:", ""]
+        lines += [f"- [[{e['article_title']}]] — {e['type']}" for e in with_art]
+        notes_svc.upsert_note(conn, f"kb/_disambig/{term}", "\n".join(lines),
+                              kind="kb", source="import", version_note="disambiguation", fire_events=False)
+        n += 1
+    conn.commit()
+    return n

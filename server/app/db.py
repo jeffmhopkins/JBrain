@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 
 def init_db() -> None:
@@ -490,6 +490,17 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               raw_name  TEXT,
               PRIMARY KEY (entity_id, note_id));
             CREATE INDEX IF NOT EXISTS idx_entity_mentions_note ON entity_mentions(note_id);
+        """)
+
+    if current < 33:
+        # Entity aliases (merged variants + acronyms) for alias search & disambiguation.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_aliases (
+              entity_id     INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+              alias_norm    TEXT NOT NULL,
+              alias_display TEXT,
+              PRIMARY KEY (entity_id, alias_norm));
+            CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
         """)
 
 

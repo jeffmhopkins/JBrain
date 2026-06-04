@@ -786,6 +786,41 @@ def test_entity_index(client, monkeypatch):
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
 
+def test_entity_aliases_and_disambiguation(client):
+    """Acronym/variant aliasing (TTP ↔ full name → one entity, alias-searchable) and
+    disambiguation page generation when a term resolves to multiple articles."""
+    import json
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+
+    def mk(t, e):
+        nid = ns.upsert_note(conn, t, "x")
+        conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                     (nid, "h", json.dumps(e)))
+        return nid
+
+    mk("n/1", [{"type": "condition", "name": "TTP"}])
+    mk("n/2", [{"type": "condition", "name": "Thrombotic Thrombocytopenic Purpura"}])
+    conn.commit()
+    ei.rebuild(conn)
+    hit = ei.index(conn, q="TTP")
+    assert hit and hit[0]["canonical_name"] == "Thrombotic Thrombocytopenic Purpura"   # alias search → full name
+    assert len(ei.note_ids_for_name(conn, "TTP")) == 2                                  # acronym resolves to both notes
+
+    mk("n/3", [{"type": "place", "name": "Mercury"}])
+    mk("n/4", [{"type": "concept", "name": "Mercury"}])
+    ns.upsert_note(conn, "kb/Places/Cities/Mercury", "# Mercury\nA town.", kind="kb")
+    ns.upsert_note(conn, "kb/Reference/Science/Mercury", "# Mercury\nThe element.", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+    assert any(t["term"] == "mercury" and len(t["entities"]) >= 2 for t in ei.ambiguous_terms(conn))
+    ei.write_disambiguation_pages(conn)
+    assert conn.execute(
+        "SELECT 1 FROM notes WHERE title LIKE 'kb/_disambig/%' AND deleted_at IS NULL").fetchone()
+
+
 def test_wiki_build(client, monkeypatch):
     """The KB rebuild engine: reset spares protected pages, and the full recipe runs
     end-to-end — old articles wiped, guides + index kept, a lint-passing article saved."""

@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS entity_mentions (
 );
 CREATE INDEX IF NOT EXISTS idx_entity_mentions_note ON entity_mentions(note_id);
 
+-- Alternate names for an entity (merged variants + detected acronyms, e.g. "TTP" for
+-- "Thrombotic Thrombocytopenic Purpura"). Powers alias search and disambiguation.
+CREATE TABLE IF NOT EXISTS entity_aliases (
+  entity_id     INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  alias_norm    TEXT NOT NULL,
+  alias_display TEXT,
+  PRIMARY KEY (entity_id, alias_norm)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
+
 
 
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives

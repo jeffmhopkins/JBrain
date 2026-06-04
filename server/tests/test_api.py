@@ -1202,6 +1202,26 @@ def test_search_includes_entities(client):
     assert all(h["kind"] != "entity" for h in client.get("/api/search?q=Peridex&mode=semantic").json())
 
 
+def test_entity_types_animal_and_work(client):
+    """The 'animal' and 'work' types are indexed, type-filterable, and grouped in the roster."""
+    import json
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    n = ns.upsert_note(conn, "n/pets", "Buddy chased the ball while I watched Inception.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (n, "h", json.dumps([{"type": "animal", "name": "Buddy"},
+                                      {"type": "work", "name": "Inception"}])))
+    conn.commit()
+    ei.rebuild(conn)
+
+    assert [a["canonical_name"] for a in ei.index(conn, type="animal")] == ["Buddy"]
+    assert [w["canonical_name"] for w in ei.index(conn, type="work")] == ["Inception"]
+    roster = ei.roster(conn)
+    assert "Animals:" in roster and "Media:" in roster   # grouped under the new labels
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

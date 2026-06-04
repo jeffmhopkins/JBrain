@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS note_analysis (
 -- stable across rebuilds.
 CREATE TABLE IF NOT EXISTS entities (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  type           TEXT NOT NULL,                       -- person | org | place | thing
+  type           TEXT NOT NULL,                       -- open taxonomy from note_analysis (entity_index._TYPE_LABELS)
   canonical_name TEXT NOT NULL,
   normalized_key TEXT NOT NULL,
   note_count     INTEGER NOT NULL DEFAULT 0,

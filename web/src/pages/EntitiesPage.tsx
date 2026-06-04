@@ -7,11 +7,12 @@ interface Entity { id: number; type: string; canonical_name: string; note_count:
 interface EntityDetail extends Entity { aliases?: string[]; notes: { id: number; title: string; slug: string; created_at: string }[]; }
 
 const ICON: Record<string, string> = {
-  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  person: "👤", animal: "🐾", org: "🏢", place: "📍", thing: "📦", work: "🎬",
   condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
 };
-const TYPES = [["", "All"], ["person", "People"], ["org", "Orgs"], ["place", "Places"],
-  ["thing", "Things"], ["condition", "Conditions"], ["medication", "Meds"], ["procedure", "Procedures"]];
+const TYPES = [["", "All"], ["person", "People"], ["animal", "Animals"], ["org", "Orgs"],
+  ["place", "Places"], ["thing", "Things"], ["work", "Media"], ["condition", "Conditions"],
+  ["medication", "Meds"], ["procedure", "Procedures"], ["event", "Events"], ["concept", "Concepts"]];
 
 // Browse the canonical entity index aggregated from per-note AI analysis. Reached from
 // the analysis-panel chips (?q=&type=) or directly; clicking an entity shows every note

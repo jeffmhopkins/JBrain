@@ -19,8 +19,9 @@ from . import people
 
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
-_TYPE_LABELS = [("person", "People"), ("org", "Organizations"), ("place", "Places"),
-                ("thing", "Things"), ("condition", "Conditions"), ("medication", "Medications"),
+_TYPE_LABELS = [("person", "People"), ("animal", "Animals"), ("org", "Organizations"),
+                ("place", "Places"), ("thing", "Things"), ("work", "Media"),
+                ("condition", "Conditions"), ("medication", "Medications"),
                 ("procedure", "Procedures"), ("event", "Events"), ("concept", "Concepts")]
 # Person mentions that mean "the note-taker" rather than a distinct individual. They are
 # folded into the owner's NAMED entity so a stray "Owner"/"the owner"/"me"/"I" never forks

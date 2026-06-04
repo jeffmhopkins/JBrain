@@ -22,7 +22,7 @@ interface Result {
 
 // Same glyphs as the Entities browser, so a hit reads consistently across the app.
 const ENTITY_ICON: Record<string, string> = {
-  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  person: "👤", animal: "🐾", org: "🏢", place: "📍", thing: "📦", work: "🎬",
   condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
 };
 

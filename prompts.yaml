@@ -644,14 +644,16 @@ actions:
     {
       "gist": "one neutral sentence: what this note is about",
       "facts": ["atomic, self-contained, durable fact", "..."],
-      "entities": [{"type": "person|org|place|thing|condition|medication|procedure|event|concept", "name": "exact name"}],
+      "entities": [{"type": "person|org|place|thing|animal|work|condition|medication|procedure|event|concept", "name": "exact name"}],
       "domain": "Reference|People|Groups|Places|Things|Activities|Unsure",
       "dates": ["YYYY-MM-DD: what happened"]
     }
     Guidance: "facts" are 0-12 standalone statements. "entities" are the specific people,
     organisations, places, and things the note is about (not generic nouns) — INCLUDING a
     person who contributed or is the source of the note (e.g. a recipe from {owner}'s mom
-    → that person is an entity). "domain" is your best single guess for where this belongs
+    → that person is an entity). Use "animal" for a named pet or other specific animal
+    (a household member, NOT a "thing"); "work" for a specific creative work — a book,
+    film, show, song, album, or game. "domain" is your best single guess for where this belongs
     in a knowledge base: "Reference" for general, de-identified knowledge INCLUDING recipes,
     how-to guides and instructions (even hobby topics); "People" if it is about a specific
     person; "Activities" ONLY for {owner}'s OWN ongoing hobby/project (not a general how-to

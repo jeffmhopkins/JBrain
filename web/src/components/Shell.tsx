@@ -171,24 +171,41 @@ export default function Shell({ children }: { children: ReactNode }) {
   // swipe from the box does):
   //   chat:  ↑ from the text box → Lists;  ← → Search;  → → Wiki.
   //   lists: ↓ from the top → chat.
-  // Curated BACK gesture (OS/browser back): a hierarchy, not raw history.
-  //   sub-page → Advanced → Chat;  Search/Wiki opened via the chat swipe → Chat
-  //   (they carry state.backTo);  back from Chat does NOTHING (never exits the PWA).
-  // A same-URL history sentinel makes the OS back fire popstate instead of dropping
-  // out of the app, and we route it ourselves.
-  const locRef = useRef(loc);
-  useEffect(() => { locRef.current = loc; }, [loc]);
+  // BACK = down the navigation tree. Chat is the root; every forward move (tap a card,
+  // open a note, swipe to a tool) pushes onto this stack, and back pops one level toward
+  // Chat — to where you actually came from, not a fixed hierarchy. Revisiting an ancestor
+  // (e.g. the bolt back to Chat) unwinds to it instead of growing the stack. Back from the
+  // root does NOTHING (we never drop out of the PWA). A cold deep-link (a note/tool opened
+  // directly) is seeded under Chat so back still lands somewhere sensible.
+  const stackRef = useRef<string[]>(path === "/chat" ? ["/chat"] : ["/chat", path]);
+  const poppingRef = useRef(false);
+  useEffect(() => {
+    if (poppingRef.current) { poppingRef.current = false; return; }   // a back-pop, not a forward move
+    const st = stackRef.current;
+    if (st[st.length - 1] === path) return;
+    const prior = st.lastIndexOf(path);
+    if (prior >= 0) st.length = prior + 1;   // navigated back to an ancestor → unwind to it
+    else st.push(path);                      // moved away → grow the tree
+  }, [path]);
+
+  function goBack() {
+    const st = stackRef.current;
+    if (st.length <= 1) return;              // at the root (Chat) → never exit the PWA
+    st.pop();
+    poppingRef.current = true;
+    nav(st[st.length - 1]);
+  }
+  // Keep a live handle so the install-once popstate listener always calls the latest goBack.
+  const goBackRef = useRef(goBack);
+  goBackRef.current = goBack;
+
+  // The OS/browser back gesture would otherwise drop out of the PWA. A same-URL history
+  // sentinel makes it fire popstate instead, which we route down the tree via goBack().
   useEffect(() => {
     window.history.pushState(null, "");
     function onPop() {
       window.history.pushState(null, "");   // re-arm for the next back
-      const { pathname, state } = locRef.current;
-      const backTo = (state as { backTo?: string } | null)?.backTo;
-      const target = pathname === "/chat" ? null
-        : backTo ? backTo
-        : pathname === "/advanced" ? "/chat"
-        : "/advanced";
-      if (target) nav(target);
+      goBackRef.current();
     }
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -218,9 +235,8 @@ export default function Shell({ children }: { children: ReactNode }) {
     // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe,
     // started clear of the OS edge gutter so it can't collide with system back).
     if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      // Search/Wiki reached via the chat gesture carry backTo:/chat so the back
-      // gesture returns straight to Chat (vs Advanced when opened from the grid).
-      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki", { state: { backTo: "/chat" } });
+      // Forward navs — the tree records Chat as their parent, so back returns to Chat.
+      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki");
       else if (advHome && !s.edgeStart) nav("/chat");   // shuttle back: Advanced ⇄ Chat
       return;
     }
@@ -235,8 +251,8 @@ export default function Shell({ children }: { children: ReactNode }) {
       <div className="utop">
         {advTool ? (
           <>
-            {/* Back to wherever you came from — the grid, or chat if you deep-linked a note. */}
-            <button className="back" title="Back" onClick={() => nav(-1)}><Icon name="chevron" size={20} /></button>
+            {/* Back down the navigation tree — to wherever you actually came from. */}
+            <button className="back" title="Back" onClick={goBack}><Icon name="chevron" size={20} /></button>
             <span className="tool-title">{toolTitle(path)}</span>
           </>
         ) : (

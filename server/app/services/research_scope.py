@@ -86,14 +86,32 @@ def _placeholders(n: int) -> str:
 
 
 def _semantic_hits(conn, ids: list[int], query: str, k: int) -> list[tuple[int, float]]:
-    """Exact in-process cosine over the in-scope embeddings. NOT vec0 KNN: that is
-    global (no partition key), so a post-filter could return zero useful rows when
-    the scope is a small fraction of the brain (F1). Brute force over the bounded
-    in-scope set is exact → 100% in-scope recall."""
+    """Exact in-process cosine over the in-scope embeddings, scored at CHUNK level and
+    collapsed to each note's best-matching chunk. NOT vec0 KNN: that is global (no
+    partition key), so a post-filter could return zero useful rows when the scope is a
+    small fraction of the brain (F1). Brute force over the bounded in-scope set is exact
+    → 100% in-scope recall.
+
+    Scoring chunks (vec_note_chunks ∩ in-scope note_ids), not the whole-note vector,
+    means a long approved note matches on its relevant passage rather than only the
+    embedder-truncated head — without widening the boundary: only chunks whose note_id
+    is in `ids` are ever considered, and scoped_search re-verifies the collapsed note_id
+    against `allowed`. Any in-scope note that has no chunk vectors yet (e.g. mid-backfill)
+    falls back to its whole-note vec_notes vector, so recall never drops below before."""
+    ph = _placeholders(len(ids))
     rows = conn.execute(
-        "SELECT note_id, embedding FROM vec_notes WHERE note_id IN (%s)" % _placeholders(len(ids)),
+        "SELECT c.note_id AS note_id, v.embedding AS embedding "
+        "FROM vec_note_chunks v JOIN note_chunks c ON c.id = v.chunk_id "
+        "WHERE c.note_id IN (%s)" % ph,
         ids,
     ).fetchall()
+    have = {r["note_id"] for r in rows}
+    missing = [i for i in ids if i not in have]
+    if missing:                                     # whole-note fallback for un-chunked notes
+        rows = list(rows) + conn.execute(
+            "SELECT note_id, embedding FROM vec_notes WHERE note_id IN (%s)" % _placeholders(len(missing)),
+            missing,
+        ).fetchall()
     if not rows:
         return []
     qv = np.asarray(embeddings.embed(query), dtype=np.float32)
@@ -104,8 +122,12 @@ def _semantic_hits(conn, ids: list[int], query: str, k: int) -> list[tuple[int, 
     norms = np.linalg.norm(mat, axis=1)
     norms[norms == 0] = 1.0
     sims = (mat / norms[:, None]) @ qv
-    order = np.argsort(-sims)[:k]
-    return [(note_ids[i], float(sims[i])) for i in order]
+    best: dict[int, float] = {}                     # collapse chunks → best sim per note
+    for nid, s in zip(note_ids, sims):
+        s = float(s)
+        if nid not in best or s > best[nid]:
+            best[nid] = s
+    return sorted(best.items(), key=lambda kv: -kv[1])[:k]
 
 
 def scoped_search(conn, allowed: set[int], query: str, k: int = 6) -> list[dict]:

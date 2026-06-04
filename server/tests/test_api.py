@@ -1597,6 +1597,45 @@ def test_research_scope_boundary(client, monkeypatch):
     assert rs.filter_match_ids(conn, {"prefixes": ["", "/"]}) == set()
 
 
+def test_research_scope_chunked_recall_keeps_boundary(monkeypatch):
+    """A long APPROVED note must be retrievable for a share on a passage buried past
+    the embedder's truncation head (the whole-note vector would miss it) — while the
+    scope boundary still holds: an out-of-scope note that matches better is never
+    returned. Deterministic bag-of-words vectors, no model download."""
+    import hashlib
+    os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "rschunk.db"),
+                      JBRAIN_ACCESS_KEY=TEST_KEY, BRAIN_NAME="Test Brain", JBRAIN_DOMAIN="localhost")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    import app.db as db
+    db._initialized = False
+    db._local.__dict__.clear()
+    db.init_db()
+    from app.services import embeddings, notes as ns, research_scope as rs
+    dim = embeddings.EMBEDDING_DIM
+
+    def fake_embed(text):
+        v = [0.0] * dim
+        for tok in str(text).lower().split():
+            v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+        return v
+    monkeypatch.setattr(embeddings, "embed", fake_embed)
+    monkeypatch.setattr(embeddings, "embed_many", lambda ts: [fake_embed(t) for t in ts])
+
+    conn = db.get_conn()
+    filler = "parking catering badges schedule minutes agenda " * 80
+    buried = " rare condition thrombocytopenic purpura petechiae confusion"
+    approved = ns.upsert_note(conn, "notes/Medical/Long", filler + buried)     # in scope, long
+    outside = ns.upsert_note(conn, "notes/Finance/Leak", "thrombocytopenic purpura petechiae secret")
+    conn.commit()
+
+    allowed = {approved}                                # only the long note is approved
+    hits = rs.scoped_search(conn, allowed, "thrombocytopenic purpura petechiae", k=6)
+    hit_ids = {h["id"] for h in hits}
+    assert approved in hit_ids                          # found despite the buried passage
+    assert outside not in hit_ids and hit_ids <= allowed   # boundary intact
+
+
 def test_research_runner_rag_caps_and_injection(client, monkeypatch):
     """The recipient Q&A runner: feeds the model ONLY in-scope content, logs retrieved
     ids, redirects injections without calling the model, and honors the per-link cap."""

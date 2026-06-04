@@ -27,4 +27,4 @@ steps:
     when: "{{ config.review != false }}"
     with:
       title: "Notes re-dated"
-      message: "{{ redate.count }} note(s) filed under notes/YYYY/MM/DD/N{{ ' (preview only)' if redate.dry_run else '' }}. Run a KB rebuild next."
+      message: "{{ redate.count }} note(s) filed under notes/YYYY/MM/DD/N{{ ' (PREVIEW — nothing applied)' if redate.dry_run else '' }}. Run a KB rebuild next.\n\n{{ redate.preview }}"

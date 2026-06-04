@@ -67,7 +67,8 @@ def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
             notes_svc.upsert_note(conn, p["new"], content or "", note_id=p["id"],
                                   version_note="redate: filed under capture date")
         conn.commit()
-    return {"count": len(plan), "dry_run": dry_run, "sample": plan[:20]}
+    preview = "\n".join(f"{p['old']}  →  {p['new']}" for p in plan[:25])
+    return {"count": len(plan), "dry_run": dry_run, "sample": plan[:20], "preview": preview}
 
 
 _DEFAULT_TITLE_PROMPT = (
@@ -111,4 +112,5 @@ def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
         done.append({"id": r["id"], "old": r["title"], "new": new_title})
     if not dry_run:
         conn.commit()
-    return {"count": len(done), "dry_run": dry_run, "sample": done[:20]}
+    preview = "\n".join(f"{d['old']}  →  {d['new']}" for d in done[:25])
+    return {"count": len(done), "dry_run": dry_run, "sample": done[:20], "preview": preview}

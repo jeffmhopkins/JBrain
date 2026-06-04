@@ -25,4 +25,4 @@ steps:
     when: "{{ config.review != false }}"
     with:
       title: "Notes titled"
-      message: "{{ titled.count }} dated note(s) given generated titles{{ ' (preview only)' if titled.dry_run else '' }}."
+      message: "{{ titled.count }} dated note(s) given generated titles{{ ' (PREVIEW — nothing applied)' if titled.dry_run else '' }}.\n\n{{ titled.preview }}"

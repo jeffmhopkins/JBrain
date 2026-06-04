@@ -5,6 +5,7 @@ import { isDemo, setDemo } from "./demo";
 import Shell from "./components/Shell";
 import ErrorBoundary from "./components/ErrorBoundary";
 import KeyEntry from "./pages/KeyEntry";
+import OwnerOnboarding from "./pages/OwnerOnboarding";
 import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
 import ListsPage from "./pages/ListsPage";
@@ -45,9 +46,17 @@ const AuthCtx = createContext<AuthState>(null!);
 export const useAuth = () => useContext(AuthCtx);
 export const PWA_VERSION = __PWA_VERSION__;
 
+// Did the owner dismiss first-run setup on this device? (They can still set their name
+// in Settings.) Keeps the onboarding gate from reappearing every load after a skip.
+const ownerSetupSkipped = () => {
+  try { return localStorage.getItem("jbrain_owner_setup_skipped") === "1"; }
+  catch { return false; }
+};
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [authed, setAuthed] = useState(false);
+  const [ownerSet, setOwnerSet] = useState(false);
   const [brainName, setBrainName] = useState("JBrain");
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [hasLlm, setHasLlm] = useState(false);
@@ -72,6 +81,7 @@ export default function App() {
     setHasLlm(!!v.has_llm);
     setAppTz(v.app_tz || "");
     setVapidPublicKey(v.vapid_public_key || "");
+    setOwnerSet(!!v.owner_set);
     setAuthed(true);
   }
 
@@ -79,6 +89,7 @@ export default function App() {
     setDemo(true);
     setBrainName("Demo Brain");
     setHasLlm(true);   // demo stubs the analysis calls, so the toggle can show
+    setOwnerSet(true); // no onboarding in the demo
     setAuthed(true);
   }
 
@@ -91,12 +102,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (isDemo()) { setBrainName("Demo Brain"); setAuthed(true); setLoading(false); return; }
+    if (isDemo()) { setBrainName("Demo Brain"); setOwnerSet(true); setAuthed(true); setLoading(false); return; }
     loadInfo().catch(() => {});
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
-        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setVapidPublicKey(v?.vapid_public_key || ""); setAuthed(true); })
+        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setVapidPublicKey(v?.vapid_public_key || ""); setOwnerSet(!!v?.owner_set); setAuthed(true); })
         // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
         // A network error or 5xx (offline, server restarting) must NOT log the
         // user out: stay authed so cached pages still work.
@@ -121,7 +132,8 @@ export default function App() {
         <Route path="/share/:token" element={<SharePage />} />
         <Route path="*" element={
           loading ? <div className="content muted">Loading…</div> :
-          !authed ? <KeyEntry /> : (
+          !authed ? <KeyEntry /> :
+          (!ownerSet && !ownerSetupSkipped()) ? <OwnerOnboarding brainName={brainName} onDone={() => setOwnerSet(true)} /> : (
             <Shell>
               <ErrorBoundary>
               <Routes>

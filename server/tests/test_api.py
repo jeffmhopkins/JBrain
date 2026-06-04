@@ -1053,6 +1053,26 @@ def test_owner_self_reference_folds_into_named_owner(client):
     assert ei.note_ids_for_name(conn, "the owner") == ei.note_ids_for_name(conn, "Jeff")
 
 
+def test_owner_setting_endpoint(client):
+    """GET/PUT /api/people/owner names the default person; verify exposes owner_set."""
+    from app.db import get_conn
+    from app.services import people as ps
+    # Unset by default → placeholder display, owner_set false on verify.
+    assert client.get("/api/auth/verify").json()["owner_set"] is False
+    o = client.get("/api/people/owner").json()
+    assert o["is_set"] is False and o["display"] == "the owner"
+
+    r = client.put("/api/people/owner", json={"name": "Jeff Hopkins"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_set"] is True and body["name"] == "Jeff Hopkins" and body["display"] == "Jeff Hopkins"
+    # It renamed the DEFAULT person — the same value the prompts substitute for {owner}.
+    assert ps.owner_name(get_conn()) == "Jeff Hopkins"
+    assert ps.owner(get_conn())["is_default"] == 1
+    assert client.get("/api/auth/verify").json()["owner_set"] is True
+    assert client.put("/api/people/owner", json={"name": "   "}).status_code == 422
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

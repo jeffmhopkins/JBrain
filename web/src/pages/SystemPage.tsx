@@ -5,6 +5,7 @@ import { enablePush, pushSupported, pushSupportReason } from "../push";
 import { useGeo } from "../hooks";
 import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
+import OwnerSetting from "../components/OwnerSetting";
 
 // "System" card: version + server update (reusing the same endpoints the
 // header UpdateBanner reads), the opt-in location toggle (which previously had
@@ -192,6 +193,8 @@ export default function SystemPage() {
         )}
         {up === "idle" && msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
       </div>
+
+      <OwnerSetting />
 
       <ModelPicker />
 

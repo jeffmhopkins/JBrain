@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser
 from ..db import get_conn, ensure_default_person
 from ..services import trips as trips_svc
+from ..services import people as people_svc
 
 router = APIRouter(prefix="/api/people", tags=["people"], dependencies=[CurrentUser])
 
@@ -33,6 +34,58 @@ def _row(r) -> dict:
 def list_people():
     ensure_default_person(get_conn())
     return [_row(r) for r in get_conn().execute("SELECT * FROM people ORDER BY is_default DESC, name").fetchall()]
+
+
+# ── The owner ────────────────────────────────────────────────────────────────
+# The brain's OWNER is the default person. Their name is the single source the
+# prompts substitute for {owner} — every first-person note ("I", "my") is attributed
+# to it, and it titles their kb/People/<name> page. Surfaced as its own setting (and
+# a first-run onboarding step) so it's a clear, first-class identity rather than a
+# buried People-list edit.
+_OWNER_PLACEHOLDER = {"", "me", "the owner"}
+
+
+def _owner_state(conn) -> dict:
+    o = people_svc.owner(conn)
+    raw = (o["name"] if o else "").strip()
+    return {
+        "id": o["id"] if o else None,
+        "name": raw,                              # the stored name ("Me" until set)
+        "display": people_svc.owner_name(conn),   # what the prompts use ("the owner" if unset)
+        "is_set": raw.lower() not in _OWNER_PLACEHOLDER,
+    }
+
+
+class OwnerIn(BaseModel):
+    name: str
+
+
+@router.get("/owner")
+def get_owner():
+    conn = get_conn()
+    ensure_default_person(conn)
+    return _owner_state(conn)
+
+
+@router.put("/owner")
+def set_owner(body: OwnerIn):
+    """Name the owner (renames the default person). This is what makes the wiki treat
+    first-person notes as this person and stop minting a generic 'Owner' page."""
+    conn = get_conn()
+    ensure_default_person(conn)
+    o = people_svc.owner(conn)
+    name = body.name.strip()[:40]
+    if not name:
+        raise HTTPException(status_code=422, detail="Owner name required")
+    if o["location_key"]:
+        raise HTTPException(status_code=409, detail="Revoke this person's location key before renaming.")
+    if name.lower() != o["name"].lower() and conn.execute(
+            "SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, o["id"])).fetchone():
+        raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
+    conn.execute("UPDATE people SET name = ? WHERE id = ?", (name, o["id"]))
+    conn.commit()
+    _reattribute(conn)
+    return _owner_state(conn)
 
 
 class PersonIn(BaseModel):

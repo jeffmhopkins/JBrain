@@ -316,6 +316,12 @@ export const updatePerson = (id: number, body: Partial<{ name: string; color: st
 export const deletePerson = (id: number) => del(`/api/people/${id}`);
 export const personFromNote = (slug: string) => post<{ id: number; name: string }>("/api/people/from-note", { slug });
 
+// The brain owner = the default person. Their name anchors first-person notes and titles
+// their kb/People/<name> page. is_set is false while it's still the unnamed default.
+export interface Owner { id: number | null; name: string; display: string; is_set: boolean; }
+export const getOwner = () => get<Owner>("/api/people/owner");
+export const setOwner = (name: string) => put<Owner>("/api/people/owner", { name });
+
 // Notes that carry a capture coordinate — the Map's note pins.
 export interface LocatedNote { slug: string; title: string; lat: number; lon: number; location_label: string | null; kind: string; created_at: string; }
 export const getLocatedNotes = (since?: string, until?: string) => {

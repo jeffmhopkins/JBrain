@@ -1130,6 +1130,56 @@ def test_owner_setting_endpoint(client):
     assert client.put("/api/people/owner", json={"name": "   "}).status_code == 422
 
 
+def test_geocode_reverse_forward_and_cache(client, monkeypatch):
+    """Nominatim reverse/forward resolve, and a repeat hits the cache (no second network)."""
+    from app.db import get_conn
+    from app.services import geocode
+    conn = get_conn()
+    monkeypatch.setattr(geocode, "_MIN_INTERVAL", 0)   # don't sleep in tests
+    calls = {"n": 0}
+
+    def fake_get(url):
+        calls["n"] += 1
+        if "/reverse" in url:
+            return {"display_name": "6070 Chapman St, Cocoa, FL 32927", "lat": "28.40", "lon": "-80.78",
+                    "addresstype": "house", "address": {"road": "Chapman St", "city": "Cocoa"}}
+        return [{"display_name": "City Hall, Cocoa, FL", "lat": "28.36", "lon": "-80.74",
+                 "addresstype": "townhall", "importance": 0.5}]
+    monkeypatch.setattr(geocode, "_http_get", fake_get)
+
+    r = geocode.reverse(conn, 28.40011, -80.78022)
+    assert r and "Chapman St" in r["address"] and r["cached"] is False and r["source"] == "nominatim"
+    n = calls["n"]
+    r2 = geocode.reverse(conn, 28.40011, -80.78022)          # same spot → cache hit
+    assert r2["cached"] is True and calls["n"] == n           # no new network call
+
+    f = geocode.forward(conn, "City Hall Cocoa", limit=3)
+    assert f and f[0]["lat"] == 28.36 and f[0]["source"] == "nominatim"
+    nf = calls["n"]
+    geocode.forward(conn, "City Hall Cocoa", limit=3)         # cached
+    assert calls["n"] == nf
+
+
+def test_geocode_tools_read_only(client, monkeypatch):
+    """The reverse/forward tools work and are exposed in BOTH assisted and research mode."""
+    from app.db import get_conn
+    from app.services import geocode, architect
+    conn = get_conn()
+    monkeypatch.setattr(geocode, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(geocode, "_http_get", lambda url: (
+        {"display_name": "1 Infinite Loop, Cupertino, CA", "lat": "37.33", "lon": "-122.03",
+         "addresstype": "house", "address": {}}
+        if "/reverse" in url else
+        [{"display_name": "1 Infinite Loop, Cupertino, CA", "lat": "37.33", "lon": "-122.03", "addresstype": "house"}]))
+
+    out, _ = architect._run_tool(conn, None, "reverse_geocode", {"lat": 37.33, "lon": -122.03}, mode="research")
+    assert "1 Infinite Loop" in out and "Suspected" in out
+    out2, _ = architect._run_tool(conn, None, "forward_geocode", {"query": "1 Infinite Loop"}, mode="research")
+    assert "1 Infinite Loop" in out2
+    assert "reverse_geocode" in architect._mode_tool_names("assisted")
+    assert "forward_geocode" in architect._mode_tool_names("research")
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

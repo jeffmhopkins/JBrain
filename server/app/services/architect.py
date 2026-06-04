@@ -42,7 +42,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "list_trips", "trip_detail", "add_list_item", "read_list",
+                 "entries_at_place", "reverse_geocode", "forward_geocode", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -52,7 +52,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place"],
+                 "entries_at_place", "reverse_geocode", "forward_geocode"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -122,6 +122,13 @@ _TOOL_SCHEMAS = {
         "until": {"type": "string", "description": "Upper bound — the owner's local time (an explicit offset/Z is honored). Optional."},
         "kind": {"type": "string", "enum": ["entry", "kb"], "description": "Optional: restrict to raw entries or synthesized KB."}},
         "required": ["place"]},
+    "reverse_geocode": {"type": "object", "properties": {
+        "lat": {"type": "number", "description": "Latitude. Omit lat AND lon to use the location shared in this conversation."},
+        "lon": {"type": "number", "description": "Longitude."}}},
+    "forward_geocode": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "An address or place name to look up, e.g. '500 Chapman St, Cocoa FL'."},
+        "limit": {"type": "integer", "default": 5, "description": "Max candidates (1-10)."}},
+        "required": ["query"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     "list_tags": {"type": "object", "properties": {}},
     "notes_with_tag": {"type": "object", "properties": {
@@ -848,6 +855,47 @@ def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=Non
     return _untrusted("entries-at-place", f"At {label}:\n" + "\n".join(lines))
 
 
+def _tool_reverse_geocode(conn, conversation_id, lat=None, lon=None) -> str:
+    """A SUSPECTED street address for a coordinate (or the conversation's shared location),
+    via OpenStreetMap. External best-guess — relay it as 'suspected', never as certain. A
+    saved place that contains the point is shown too (it's the authoritative local label)."""
+    from . import geocode
+    if lat is None or lon is None:
+        loc = notes_svc.conversation_location(conn, conversation_id)
+        if not loc or loc["lat"] is None:
+            return "No coordinate: pass lat/lon, or share your location first."
+        lat, lon = loc["lat"], loc["lon"]
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return "lat/lon must be numbers."
+    if not geocode.enabled():
+        return "Address lookup is turned off (no geocoder configured)."
+    local = geotrail.label_point(conn, lat, lon)
+    res = geocode.reverse(conn, lat, lon)
+    if not res:
+        msg = f"No street address found near {lat:.5f}, {lon:.5f}."
+        return _untrusted("address", msg + (f" Locally this is {local}." if local else ""))
+    tail = " (cached)" if res.get("cached") else ""
+    line = f"Suspected address for {lat:.5f}, {lon:.5f}: {res['address']} [OpenStreetMap{tail}]"
+    if local:
+        line += f"\nSaved place at this spot: {local}."
+    return _untrusted("address", line)
+
+
+def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
+    """Ranked SUSPECTED coordinate candidates for an address/place query, via OpenStreetMap."""
+    from . import geocode
+    if not geocode.enabled():
+        return "Address lookup is turned off (no geocoder configured)."
+    cands = geocode.forward(conn, query, limit)
+    if not cands:
+        return _untrusted("address", f"No coordinates found for “{(query or '').strip()}”.")
+    lines = [f"- {c['address']} — {c['lat']:.5f}, {c['lon']:.5f}" + (f" ({c['type']})" if c.get("type") else "")
+             for c in cands]
+    return _untrusted("address", f"Suspected matches for “{query.strip()}” (OpenStreetMap):\n" + "\n".join(lines))
+
+
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     rows = embeddings.semantic_search_attachments(conn, query, limit)
     if not rows:
@@ -1354,6 +1402,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "entries_at_place":
         return _tool_entries_at_place(conn, args["place"], args.get("radius_m", 150),
                                       args.get("since"), args.get("until"), args.get("kind")), None
+    if name == "reverse_geocode":
+        return _tool_reverse_geocode(conn, conversation_id, args.get("lat"), args.get("lon")), None
+    if name == "forward_geocode":
+        return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
     if name == "list_tags":

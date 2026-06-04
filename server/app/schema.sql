@@ -518,6 +518,18 @@ CREATE TABLE IF NOT EXISTS places (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Cached street-address geocoding (Nominatim/OpenStreetMap) — JBrain's first outside
+-- information source. One row per reverse coord-key or forward query, so a given spot or
+-- search is only ever sent to the public geocoder once (also keeps us within Nominatim's
+-- usage policy). Results are SUSPECTED/external, carried with their source.
+CREATE TABLE IF NOT EXISTS geocode_cache (
+  kind         TEXT NOT NULL,            -- 'reverse' | 'forward'
+  key          TEXT NOT NULL,            -- rounded 'lat,lon' (reverse) or 'limit|query' (forward)
+  payload_json TEXT NOT NULL,
+  fetched_at   TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+
 -- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
 -- scheduler (never the ingest path) reads this to fire location triggers.
 CREATE TABLE IF NOT EXISTS location_state (

@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     db_path: str = "/data/brain.db"
 
+    # Street-address geocoding (JBrain's first outside source). Base URL of a Nominatim
+    # (OpenStreetMap) server — the public instance by default. Reverse/forward lookups
+    # send coordinates/queries here (cached, so a spot is sent at most once). Point it at
+    # a self-hosted Nominatim to keep coordinates on your own infra; set blank to disable.
+    geocoder_url: str = Field("https://nominatim.openstreetmap.org",
+                              validation_alias=AliasChoices("GEOCODER_URL", "geocoder_url"))
+
     # Web Push (VAPID). Keys auto-generate on first boot into the DB `meta` table
     # if these are blank, so existing installs gain push with zero config. Set
     # them here only to pin a keypair across machines/restores. `vapid_subject` is

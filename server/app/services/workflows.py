@@ -66,11 +66,36 @@ def _hash(defn: dict) -> str:
     ).hexdigest()
 
 
+# Repo workflows we've retired. ingest no longer seeds them (the YAML is gone); this
+# also removes/disables them from existing instances ONCE, so a deprecated trigger (e.g.
+# the old incremental wiki synthesis, superseded by the wiki_build rebuild) stops firing.
+_RETIRED_KEYS = ("wiki-synthesis", "recite-kb", "example-daily-note")
+
+
+def _retire_workflows(conn) -> None:
+    """One-shot: drop retired repo workflows (cascade-deletes their runs); a user-locked
+    row (one they customised) is only DISABLED, so their edits aren't silently destroyed."""
+    from ..db import get_meta, set_meta
+    marker = "workflows:retired:v1"
+    if get_meta(marker) == "1":
+        return
+    for key in _RETIRED_KEYS:
+        row = conn.execute("SELECT id, locked FROM workflows WHERE key=?", (key,)).fetchone()
+        if not row:
+            continue
+        if row["locked"]:
+            conn.execute("UPDATE workflows SET enabled=0 WHERE id=?", (row["id"],))
+        else:
+            conn.execute("DELETE FROM workflows WHERE id=?", (row["id"],))   # runs cascade
+    set_meta(conn, marker, "1")
+
+
 def ingest_repo_workflows(conn) -> int:
     """Seed/update repo workflows by key. User-locked rows are left untouched."""
     directory = _workflows_dir()
     if not directory:
         return 0
+    _retire_workflows(conn)
     count = 0
     for path in sorted(directory.glob("*.yaml")):
         try:

@@ -786,6 +786,28 @@ def test_entity_index(client, monkeypatch):
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
 
+def test_retired_workflows_removed(client):
+    """Retired repo workflows (e.g. the old incremental wiki synthesis) are dropped from
+    existing instances on ingest; a user-locked one is disabled, not deleted."""
+    from app.db import get_conn
+    from app.services import workflows as wf
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO workflows (key,name,trigger_type,trigger_config,action_type,action_config,enabled,source,locked) "
+        "VALUES ('wiki-synthesis','old','schedule','{}','synthesize_wiki','{}',1,'repo',0)")
+    conn.execute(
+        "INSERT INTO workflows (key,name,trigger_type,trigger_config,action_type,action_config,enabled,source,locked) "
+        "VALUES ('recite-kb','old','schedule','{}','recite_kb','{}',1,'repo',1)")
+    conn.execute("DELETE FROM meta WHERE key='workflows:retired:v1'")
+    conn.commit()
+
+    wf._retire_workflows(conn)
+    conn.commit()
+    keys = {r["key"]: r["enabled"] for r in conn.execute("SELECT key, enabled FROM workflows").fetchall()}
+    assert "wiki-synthesis" not in keys          # unlocked repo row deleted (runs cascade)
+    assert keys.get("recite-kb") == 0            # user-locked row disabled, not destroyed
+
+
 def test_dead_link_detection_and_flagging(client):
     """A kb article that cross-links a non-existent article is caught: surfaced via the
     KB-health endpoint and recorded as a todo on the article's talk. A link to a real

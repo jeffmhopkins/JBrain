@@ -201,6 +201,20 @@ def _p_wiki_maintain(ctx, limit=20):
     return wiki_build.maintain_batch(ctx.conn, int(limit))
 
 
+def _p_wiki_update(ctx, limit=40):
+    """Component 3 (incremental): flow notes changed since the watermark into existing articles."""
+    from . import wiki_build
+    return wiki_build.update_batch(ctx.conn, int(limit))
+
+
+def _p_seed_kb_watermark(ctx):
+    """Reset the incremental-update watermark to now — the full build just covered all
+    history, so incremental should only pick up changes from here on."""
+    from . import wiki_build
+    set_meta(ctx.conn, "kb_incremental:since", wiki_build._now(ctx.conn))
+    return {"since": "now"}
+
+
 def _p_review_open_talk(ctx, limit=20):
     """Open a review 'session' from the build: post a Review card for each article that
     has unresolved talk items needing a human (conflict / question / todo / directive), so
@@ -1061,6 +1075,8 @@ _PRIMITIVES = {
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
+    "wiki_update": _p_wiki_update,
+    "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
@@ -1162,6 +1178,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",
                       "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "wiki_update": {"summary": "Flow notes changed since the watermark into existing articles (incremental).",
+                    "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "seed_kb_watermark": {"summary": "Reset the incremental-update watermark to now (after a full build).",
+                          "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",
                        "inputs": [{"name": "articles", "type": "list", "required": True},
                                   {"name": "valid", "type": "list", "required": True}], "output": "dict"},

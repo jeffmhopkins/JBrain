@@ -494,9 +494,10 @@ actions:
     CURRENT DRAFT:
     {draft}
   wiki_maintain: |
-    Maintain ONE existing knowledge-base article: address its OPEN ITEMS using ONLY the
-    source notes, keeping it faithful, well-structured and current. Output the FULL revised
-    article in Markdown (start with "# <name>"), then a fenced ```maintain block.
+    Update ONE existing knowledge-base article so it's faithful and current: address its
+    OPEN ITEMS, integrate any NEW/CHANGED sources, and purge anything that relied on a
+    REMOVED source — using ONLY the source notes. Output the FULL revised article in
+    Markdown (start with "# <name>"), then a fenced ```maintain block.
 
     The owner is {owner}; first-person in the sources refers to them (resolve by name).
 
@@ -505,8 +506,13 @@ actions:
     - conflict  — sources disagree; reconcile only if the sources now allow, else leave it.
     - question  — answer it in the article if the sources support an answer.
     - todo      — do it if the sources support it.
-    Act ONLY where the SOURCE NOTES support it — never invent. If an item can't be addressed
-    faithfully, leave it open (don't list it as resolved).
+
+    SOURCES MAY HAVE CHANGED since this article was written:
+    - Integrate durable new facts from the NEW/CHANGED SOURCES (cite them).
+    - For each REMOVED SOURCE, delete any claim that depended ONLY on it and drop its
+      footnote; keep claims still supported by another source.
+    - Reconcile existing claims with the current CURRENT SOURCES — fix anything that no
+      longer matches; never invent.
 
     Keep the house + domain style, the @t[...] live-time tokens, footnote citations to the
     EXACT source titles, and the cross-link rule: only [[link]] an article in the EXISTING
@@ -517,7 +523,7 @@ actions:
     ```maintain
     {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note", "body": "..."}]}
     ```
-    List every item id you actually addressed in "resolved"; omit the ids you left open.
+    List every OPEN-ITEM id you actually addressed in "resolved"; omit ids you left open.
     "new" is optional — raise it only for something genuinely worth a later look.
 
     HOUSE STYLE
@@ -534,10 +540,16 @@ actions:
     OPEN ITEMS:
     {items}
 
+    NEW/CHANGED SOURCES TO INTEGRATE:
+    {new_sources}
+
+    REMOVED SOURCES (deleted — purge claims that relied only on these):
+    {removed_sources}
+
     EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
     {known_titles}
 
-    SOURCE NOTES:
+    CURRENT SOURCES (already cited by this article):
     {sources}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY

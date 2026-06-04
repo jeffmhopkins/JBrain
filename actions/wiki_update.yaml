@@ -1,0 +1,44 @@
+# Declarative action: INCREMENTAL KNOWLEDGE-BASE UPDATE (component 3).
+#
+# Keeps the EXISTING knowledge base fresh between full rebuilds. It looks at the notes
+# created / edited / deleted since the last pass (a watermark), routes each to the
+# article(s) it affects — by citation (for edits + deletions) and by entity (for new
+# facts) — and refreshes those articles against their current sources: integrating new
+# facts, reconciling changed ones, and purging claims whose only source was deleted. It
+# NEVER invents. A brand-new subject with no article yet becomes a Review nudge (creating
+# articles is left to the full rebuild, which has the whole-taxonomy view).
+#
+# Additive + reconciling, versioned/undoable. The full rebuild (wiki_build) remains the
+# source of truth; this just keeps things current cheaply. Requires an Anthropic key.
+#
+# config keys:
+#   limit  — max changed notes to process per run (default 40; re-run/schedule drains more)
+#   review — post a review summary + reopen sessions for anything still open (default true)
+type: wiki_update
+category: Knowledge base
+config:
+  - { key: limit, label: Max changed notes per run, type: number, default: 40 }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  # 0. Make sure changed notes are analyzed + the entity index reflects them (for routing).
+  - id: pending
+    do: analyze_pending
+    with: { limit: 200 }
+  - for_each: "{{ pending }}"
+    steps:
+      - do: analyze_note
+        with: { id: "{{ item }}" }
+  - do: rebuild_entity_index
+
+  # 1. Flow the changes into the existing articles.
+  - id: upd
+    do: wiki_update
+    with: { limit: "{{ config.limit | default(40) }}" }
+
+  # 2. Summary card.
+  - do: create_review
+    when: "{{ config.review != false and upd.changes }}"
+    with:
+      title: "Knowledge base updated"
+      message: "{{ upd.changes }} change(s): refreshed {{ upd.changed }} article(s), resolved {{ upd.resolved }} item(s), {{ upd.new_subjects }} new-subject nudge(s)."
+      link_title: "kb/_index"

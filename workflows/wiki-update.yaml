@@ -1,0 +1,23 @@
+# Incremental knowledge-base update — runs daily.
+#
+# Flows the day's note changes (new / edited / deleted) into the EXISTING knowledge base
+# without a full rebuild: routes each change to the articles it affects, refreshes them
+# against current sources, and nudges a Review card for any brand-new subject. Edits are
+# versioned/undoable and a review summary is posted. The full rebuild stays the source of
+# truth; this keeps the KB current between rebuilds.
+#
+# Runs after the nightly analysis (1am) so the day's notes are already analyzed. Requires
+# an Anthropic key; no-ops cleanly without one or when nothing changed.
+key: wiki-update
+name: Knowledge base update (incremental)
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 2 * * *"   # 2am local (server TZ) — after analyze-notes (1am)
+
+action:
+  type: wiki_update
+  config:
+    limit: 40
+    review: true

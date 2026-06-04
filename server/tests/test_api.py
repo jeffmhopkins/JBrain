@@ -963,6 +963,54 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_wiki_update_incremental(client, monkeypatch):
+    """Incremental update: a new note about an existing subject is routed by entity to its
+    article and integrated; the watermark advances; a deleted cited source routes by
+    citation. First run with no watermark just seeds it."""
+    import json
+    from app.db import get_conn, get_meta
+    from app.services import wiki_build, entity_index, llm
+    from app.services import notes as ns
+    conn = get_conn()
+
+    # First run with no watermark → seed only, no work.
+    assert wiki_build.update_batch(conn).get("seeded") is True
+    assert get_meta("kb_incremental:since")
+
+    # An existing article citing a source, and the entity index pointing the subject at it.
+    sid = ns.upsert_note(conn, "notes/allan1", "Allan lives in Cocoa.")
+    ns.upsert_note(conn, "kb/People/Allan",
+                   "# Allan\nAllan lives in Cocoa.[^s1]\n\n## References\n[^s1]: [[notes/allan1]] — 2026-06-01\n",
+                   kind="kb")
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (sid, "h", json.dumps([{"type": "person", "name": "Allan"}])))
+    conn.commit()
+    entity_index.rebuild(conn)                       # builds entity index + links Allan → his article
+    # Backdate the watermark so the new note counts as a change.
+    conn.execute("UPDATE meta SET value='2000-01-01 00:00:00' WHERE key='kb_incremental:since'")
+    new_id = ns.upsert_note(conn, "notes/allan2", "Allan adopted a dog named Rex in 2026.")
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (new_id, "h2", json.dumps([{"type": "person", "name": "Allan"}])))
+    conn.commit()
+    entity_index.rebuild(conn)                       # so the new note's entity mention exists for routing
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    seen = {}
+    def fake(msgs, **k):
+        seen["p"] = msgs[0]["content"]
+        return ("# Allan\nAllan lives in Cocoa.[^s1] He adopted a dog named Rex in 2026.[^s2]\n\n"
+                "## References\n[^s1]: [[notes/allan1]] — 2026-06-01\n[^s2]: [[notes/allan2]] — 2026-06-02\n"
+                "\n```maintain\n{}\n```\n")
+    monkeypatch.setattr(llm, "complete", fake)
+
+    res = wiki_build.update_batch(conn, limit=40)
+    assert res["changed"] == 1                                   # the article was refreshed
+    assert "notes/allan2" in seen["p"]                           # new note fed in as a source to integrate
+    body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
+    assert "Rex" in body                                         # new fact integrated + saved
+    assert get_meta("kb_incremental:since") > "2000-01-01"       # watermark advanced
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually

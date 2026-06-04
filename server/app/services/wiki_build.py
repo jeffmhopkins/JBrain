@@ -413,10 +413,12 @@ def _extract_maintain(text: str):
     return body, (data if isinstance(data, dict) else {})
 
 
-def maintain_one(conn, article_title: str, known_titles: list[str] | None = None) -> dict:
-    """Component 3: address an article's OPEN talk items (directives/conflicts/questions/
-    todos) against its cited sources. Returns the revised article + which items the model
-    resolved (with how) + any new items. Pure — the batch driver applies/records."""
+def maintain_one(conn, article_title: str, known_titles: list[str] | None = None,
+                 extra_source_ids: list[int] | None = None, removed_titles: list[str] | None = None) -> dict:
+    """Component 3: update an article so it's faithful + current — address its OPEN talk
+    items, integrate NEW/CHANGED sources (extra_source_ids), and purge claims that relied
+    on REMOVED (deleted) sources (removed_titles). Returns the revised article + which
+    items the model resolved (with how) + any new items. Pure — the caller applies/records."""
     from . import article_talk
     base = {"title": article_title, "ok": False, "changed": False,
             "content_md": "", "resolved": [], "new": [], "errors": [], "warnings": []}
@@ -428,8 +430,10 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         return base
     open_items = [it for it in article_talk.open_for(conn, article_title)
                   if it["kind"] in ("conflict", "question", "todo", "directive")]
-    if not open_items:
-        return {**base, "ok": True}                         # nothing to maintain
+    extra_source_ids = [int(i) for i in (extra_source_ids or [])]
+    removed_titles = [t for t in (removed_titles or []) if t]
+    if not (open_items or extra_source_ids or removed_titles):
+        return {**base, "ok": True}                         # nothing to do
     if not llm.has_credentials():
         base["errors"] = ["no LLM credentials"]
         return base
@@ -437,7 +441,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     from . import people
     content = note["content_md"] or ""
     domain = wiki_guides.domain_for_title(article_title) or ""
-    # The article's own evidence base: the source notes it already cites.
+    # The article's own evidence base: the source notes it already cites (live ones only).
     cited = [t for t in wikilinks.extract_links(content) if not t.lower().startswith("kb/")]
     ids = []
     for t in cited:
@@ -445,7 +449,11 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         if r:
             ids.append(r["id"])
     srcs = _load_sources(conn, ids)
-    items_text = "\n".join(f"[{it['id']}] ({it['kind']}, by {it['author']}) {it['body']}" for it in open_items)
+    new_srcs = _load_sources(conn, extra_source_ids)
+    items_text = "\n".join(f"[{it['id']}] ({it['kind']}, by {it['author']}) {it['body']}"
+                           for it in open_items) or "(none)"
+    new_block = _sources_text(new_srcs) or "(none)"
+    removed_block = "\n".join(f"- [[{t}]]" for t in removed_titles) or "(none)"
     others = [t for t in (known_titles or []) if t and t != article_title][:600]
     known_block = "\n".join(others) if others else "(no other articles)"
 
@@ -454,7 +462,8 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
               .replace("{general_guide}", wiki_guides.guide_text(None))
               .replace("{domain_guide}", wiki_guides.guide_text(domain)).replace("{domain}", domain)
               .replace("{title}", article_title).replace("{article}", content)
-              .replace("{items}", items_text).replace("{known_titles}", known_block)
+              .replace("{items}", items_text).replace("{new_sources}", new_block)
+              .replace("{removed_sources}", removed_block).replace("{known_titles}", known_block)
               .replace("{sources}", _sources_text(srcs)))
     try:
         revised, payload = _extract_maintain(_strip_fence(
@@ -484,37 +493,162 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
             "errors": v["errors"], "warnings": v["warnings"]}
 
 
+def _known_titles(conn) -> list[str]:
+    return sorted({r["title"] for r in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()})
+
+
+def _apply_maintain(conn, out: dict, version_note: str) -> bool:
+    """Apply a maintain_one result: save the revision (versioned), resolve addressed items
+    (recording HOW), record any new items. Returns True if the article content changed."""
+    from . import article_talk
+    from . import notes as notes_svc
+    if not out["ok"]:
+        return False
+    changed = bool(out["changed"] and out["content_md"])
+    if changed:
+        notes_svc.upsert_note(conn, out["title"], out["content_md"], kind="kb", version_note=version_note)
+    for r in out["resolved"]:
+        article_talk.resolve_with(conn, r["id"], r["how"])
+    if out["new"]:
+        article_talk.record(conn, out["title"], out["new"], author="ai")
+    return changed
+
+
 def maintain_batch(conn, limit: int = 20) -> dict:
     """Run the maintenance pass over articles that have open talk items. Applies a valid
     revision (versioned), resolves the items the model addressed (recording HOW), and
     records any new items. Returns a summary."""
-    from . import article_talk
-    from . import notes as notes_svc
     rows = conn.execute(
         "SELECT DISTINCT t.article_title AS title FROM article_talk t "
         "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive') "
         "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
         "ORDER BY t.article_title LIMIT ?",
         (int(limit),)).fetchall()
-    known = sorted({r["title"] for r in conn.execute(
-        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()})
-    changed = resolved_n = failed = 0
+    known = _known_titles(conn)
+    changed = resolved = failed = 0
     for row in rows:
-        title = row["title"]
-        out = maintain_one(conn, title, known)
+        out = maintain_one(conn, row["title"], known)
         if not out["ok"]:
             failed += 1
             continue
-        if out["changed"] and out["content_md"]:
-            notes_svc.upsert_note(conn, title, out["content_md"], kind="kb", version_note="maintenance pass")
-            changed += 1
-        for r in out["resolved"]:
-            article_talk.resolve_with(conn, r["id"], r["how"])
-            resolved_n += 1
-        if out["new"]:
-            article_talk.record(conn, title, out["new"], author="ai")
+        changed += 1 if _apply_maintain(conn, out, "maintenance pass") else 0
+        resolved += len(out["resolved"])
     conn.commit()
-    return {"articles": len(rows), "changed": changed, "resolved": resolved_n, "failed": failed}
+    return {"articles": len(rows), "changed": changed, "resolved": resolved, "failed": failed}
+
+
+def _articles_citing(conn, note_id: int) -> set[str]:
+    """kb articles that cite a given source note (via the links table)."""
+    rows = conn.execute(
+        "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
+        "WHERE l.target_note_id=? AND s.kind='kb' AND s.deleted_at IS NULL", (note_id,)).fetchall()
+    return {r["title"] for r in rows}
+
+
+def _articles_for_note_entities(conn, note_id: int) -> set[str]:
+    """kb articles whose entities this note mentions (so a new fact routes to its subject)."""
+    rows = conn.execute(
+        "SELECT DISTINCT e.article_title AS t FROM entity_mentions m JOIN entities e ON e.id=m.entity_id "
+        "WHERE m.note_id=? AND e.article_title IS NOT NULL", (note_id,)).fetchall()
+    return {r["t"] for r in rows}
+
+
+_WATERMARK = "kb_incremental:since"
+
+
+def update_batch(conn, limit: int = 40, new_subject_min: int = 2) -> dict:
+    """Incremental update: flow notes changed since the last pass into the EXISTING KB.
+    Routes each change to its articles (cite-based for edits/deletes ∪ entity-based for new
+    facts), refreshes each affected article once, nudges a Review card for brand-new
+    subjects that have no article yet, and advances the watermark. Additive + reconciling;
+    the full rebuild remains the source of truth. Assumes changed notes are already
+    analyzed + the entity index rebuilt (the recipe does that first)."""
+    from ..db import get_meta, set_meta
+    since = get_meta(_WATERMARK)
+    if since is None:
+        # First ever run: start the clock now (the full build already covered history).
+        set_meta(conn, _WATERMARK, _now(conn)); conn.commit()
+        return {"seeded": True, "changes": 0, "articles": 0, "changed": 0}
+    if not llm.has_credentials():
+        # Don't advance the watermark with no key, or changes would be skipped forever.
+        return {"changes": 0, "articles": 0, "changed": 0, "skipped": "no LLM credentials"}
+
+    changes = conn.execute(
+        "SELECT id, title, COALESCE(deleted_at, updated_at) AS changed_at, "
+        "(deleted_at IS NOT NULL) AS deleted FROM notes WHERE "
+        "(kind='daily' OR (kind='entry' AND title NOT LIKE 'notes/daily/%')) "
+        "AND COALESCE(deleted_at, updated_at) > ? ORDER BY changed_at LIMIT ?",
+        (since, max(1, int(limit))),
+    ).fetchall()
+    if not changes:
+        return {"changes": 0, "articles": 0, "changed": 0, "resolved": 0, "new_subjects": 0}
+
+    # Route each change → affected articles, collecting new sources + removed (deleted) titles.
+    affected: dict[str, dict] = {}
+    orphans: list[dict] = []
+    for ch in changes:
+        targets = _articles_citing(conn, ch["id"])
+        if not ch["deleted"]:
+            targets |= _articles_for_note_entities(conn, ch["id"])
+        if not targets:
+            if not ch["deleted"]:
+                orphans.append(dict(ch))                     # a new/edited subject with no article
+            continue
+        for t in targets:
+            slot = affected.setdefault(t, {"new": set(), "removed": set()})
+            if ch["deleted"]:
+                slot["removed"].add(ch["title"])
+            else:
+                slot["new"].add(ch["id"])
+
+    known = _known_titles(conn)
+    changed = resolved = failed = 0
+    for title, slot in affected.items():
+        out = maintain_one(conn, title, known,
+                           extra_source_ids=list(slot["new"]), removed_titles=list(slot["removed"]))
+        if not out["ok"]:
+            failed += 1
+            continue
+        changed += 1 if _apply_maintain(conn, out, "incremental update") else 0
+        resolved += len(out["resolved"])
+
+    # Nudge: brand-new subjects with no article yet (creation is deferred to the full rebuild).
+    nudged = _nudge_new_subjects(conn, orphans, new_subject_min)
+
+    set_meta(conn, _WATERMARK, changes[-1]["changed_at"])    # advance past everything processed
+    conn.commit()
+    return {"changes": len(changes), "articles": len(affected), "changed": changed,
+            "resolved": resolved, "failed": failed, "new_subjects": nudged}
+
+
+def _nudge_new_subjects(conn, orphans: list[dict], min_notes: int) -> int:
+    """One Review card per recurring subject (≥ min_notes notes) that changed but has no
+    article, so the owner can fold it in at the next rebuild. De-duped against pending cards."""
+    from . import reviews as reviews_svc
+    tally: dict[tuple, int] = {}
+    for ch in orphans:
+        for r in conn.execute(
+            "SELECT e.type, e.canonical_name FROM entity_mentions m JOIN entities e ON e.id=m.entity_id "
+            "WHERE m.note_id=? AND e.article_title IS NULL", (ch["id"],)).fetchall():
+            key = (r["type"], r["canonical_name"])
+            tally[key] = tally.get(key, 0) + 1
+    posted = 0
+    for (typ, name), c in tally.items():
+        if c < int(min_notes):
+            continue
+        title = f"New subject: {name}"
+        if conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'", (title,)).fetchone():
+            continue
+        reviews_svc.create_review_item(
+            conn, None, title=title,
+            message=f"{c} note(s) mention {name} ({typ}) but it has no article yet — add it on the next rebuild.")
+        posted += 1
+    return posted
+
+
+def _now(conn) -> str:
+    return conn.execute("SELECT datetime('now') AS n").fetchone()["n"]
 
 
 def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:

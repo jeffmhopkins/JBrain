@@ -533,8 +533,16 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 4px; cursor: pointer; color: var(--text); }
 .entity-row:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
 /* AI talk panel */
-.talk-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 4px 0; }
+.talk-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 4px 0;
+  min-width: 0; overflow-wrap: anywhere; }            /* match .msg: long tokens wrap, item can shrink */
+.talk-text { flex: 1; min-width: 0; }                 /* shrinkable text bubble (replaces inline flex:1) */
 .talk-resolve { flex: 0 0 auto; padding: 0 6px; line-height: 1.4; }
+/* Add-directive row: select + input share row 1; Add drops full-width below — deterministic on
+   narrow phones, never overflows. font-size:16px on the input stops iOS Safari auto-zoom on focus. */
+.talk-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.talk-add .modal-select { flex: 1 1 7rem; width: auto; min-width: 0; }
+.talk-add input { flex: 1 1 12ch; min-width: 0; font-size: 16px; }
+.talk-add button { flex: 1 0 100%; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 /* Wikipedia-style citations: superscript markers + a References list (remark-gfm
    footnotes). The auto heading reads "Footnotes" — relabel it to "References". */

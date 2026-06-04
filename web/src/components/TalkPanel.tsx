@@ -40,17 +40,17 @@ export default function TalkPanel({ slug }: { slug: string }) {
       {open.map((t) => (
         <div key={t.id} className="talk-item">
           <span title={t.kind}>{KIND_ICON[t.kind] || "•"}</span>
-          <span style={{ flex: 1 }}>{t.body}{t.author === "user" && <em className="muted"> — you</em>}</span>
+          <span className="talk-text">{t.body}{t.author === "user" && <em className="muted"> — you</em>}</span>
         </div>
       ))}
       {open.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No open items.</p>}
 
-      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-        <select className="modal-select" value={kind} onChange={(e) => setKind(e.target.value)} style={{ flex: "0 0 auto" }}>
+      <div className="talk-add">
+        <select className="modal-select" value={kind} onChange={(e) => setKind(e.target.value)}>
           {ADD_KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
         <input className="modal-input" placeholder="Add a note for the next pass…" value={body}
-               onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} style={{ flex: 1 }} />
+               onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
         <button className="ghost" onClick={add}>Add</button>
       </div>
 
@@ -60,7 +60,7 @@ export default function TalkPanel({ slug }: { slug: string }) {
           {done.map((t) => (
             <div key={t.id} className="talk-item muted">
               <span>{KIND_ICON[t.kind] || "•"}</span>
-              <span style={{ flex: 1 }}>
+              <span className="talk-text">
                 <span style={{ textDecoration: "line-through" }}>{t.body}</span>
                 {t.resolution && <em style={{ display: "block", textDecoration: "none" }}>→ {t.resolution}</em>}
               </span>

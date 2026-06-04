@@ -1,0 +1,22 @@
+# Spin a child article OFF a parent: write the child from the given source notes, then
+# re-write the parent from its remaining sources. Owner-triggered. Requires an Anthropic key.
+type: wiki_split_article
+category: Knowledge base
+config:
+  - { key: parent, label: "Parent article (kb/…)", type: text }
+  - { key: child, label: "New child title (kb/…)", type: text }
+  - { key: child_sources, label: "Source note titles for the child (comma-separated)", type: textarea }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: sp
+    do: split_article
+    with:
+      parent: "{{ config.parent }}"
+      child: "{{ config.child }}"
+      child_sources: "{{ (config.child_sources or '') | replace(' ', '') | split(',') }}"
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ 'Article split' if sp.ok else 'Split failed' }}"
+      message: "{{ (config.child + ' split from ' + config.parent) if sp.ok else sp.reason }}"
+      link_title: "{{ config.child if sp.ok else config.parent }}"

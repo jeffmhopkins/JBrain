@@ -1,4 +1,4 @@
-# Declarative action: REBUILD the knowledge base from scratch (component 2).
+# Declarative action: REORGANIZE the knowledge base from scratch (rare, manual) (component 2).
 #
 # Backfill per-note analysis -> reset the KB -> survey the corpus -> outline the
 # entity-first taxonomy -> write the index -> write every article (draft + one

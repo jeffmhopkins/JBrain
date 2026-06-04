@@ -1520,6 +1520,26 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
     owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 
+def test_split_article_spins_off_child(client, monkeypatch):
+    """split_article writes a child from the given source notes and re-writes the parent."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/p1", "Marathon training: ran 20 miles.")
+    ns.upsert_note(conn, "notes/p2", "Marathon nutrition: carb loading helps.")
+    ns.upsert_note(conn, "kb/Activities/Marathon",
+        "# Marathon\nTraining and nutrition.[^s1][^s2]\n\n## References\n[^s1]: [[notes/p1]] — 2026-06-01\n[^s2]: [[notes/p2]] — 2026-06-01\n",
+        kind="kb")
+    conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "# Topic\nMarathon preparation centers on training volume, nutrition, and steady recovery.[^s1]\n\n## References\n[^s1]: [[notes/p1]] — 2026-06-01\n")
+    res = wiki_build.split_article(conn, "kb/Activities/Marathon", "kb/Activities/Marathon/Nutrition", ["notes/p2"])
+    assert res["ok"], res
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/Activities/Marathon/Nutrition' AND kind='kb' AND deleted_at IS NULL").fetchone()
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/Activities/Marathon' AND kind='kb' AND deleted_at IS NULL").fetchone()
+
 
 def test_research_article_proposes_corroborated_reference_links(client, monkeypatch):
     """research_article proposes an embedding-near Reference page that's corroborated by the

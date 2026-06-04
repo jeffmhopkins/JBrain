@@ -1,4 +1,4 @@
-# Knowledge-base REBUILD — run-only, never scheduled.
+# Knowledge-base REORGANIZE (rare, manual; maintenance now keeps the KB current) — run-only, never scheduled.
 #
 # This wraps the destructive wiki_build action (it soft-deletes and rebuilds the whole
 # kb/ layer). It is shipped DISABLED so the scheduler never fires it; you run it on
@@ -8,7 +8,7 @@
 # The reset is soft (undoable) and spares the protected kb/_* guides + index. Review
 # cards summarise what was built and flag any article that failed structure checks.
 key: wiki-build
-name: Knowledge base rebuild
+name: Reorganize knowledge base
 enabled: false
 
 trigger:

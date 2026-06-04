@@ -225,6 +225,12 @@ def _p_refresh_index(ctx):
     return {"articles": wiki_build.refresh_index(ctx.conn)}
 
 
+def _p_split_article(ctx, parent=None, child=None, child_sources=None):
+    """Spin a child article off a parent from given source notes (explicit partition)."""
+    from . import wiki_build
+    return wiki_build.split_article(ctx.conn, parent, child, child_sources or [])
+
+
 def _p_research_article(ctx, title=None, mode="propose"):
     """Surface related Reference links for an article (propose-only, embedding-nominated)."""
     from . import wiki_build
@@ -1151,6 +1157,7 @@ _PRIMITIVES = {
     "merge_articles": _p_merge_articles,
     "refresh_index": _p_refresh_index,
     "research_article": _p_research_article,
+    "split_article": _p_split_article,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1273,6 +1280,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [], "output": "dict"},
     "research_article": {"summary": "Propose related Reference links for an article (semantic, corroborated).",
                         "inputs": [{"name": "title", "type": "str"}, {"name": "mode", "type": "str"}], "output": "dict"},
+    "split_article": {"summary": "Spin a child article off a parent from given source notes.",
+                        "inputs": [{"name": "parent", "type": "str"}, {"name": "child", "type": "str"},
+                                   {"name": "child_sources", "type": "list"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

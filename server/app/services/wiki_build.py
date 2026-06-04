@@ -1026,6 +1026,65 @@ def research_article(conn, title: str, mode: str = "propose") -> dict:
     return {"ok": True, "proposals": [{"target": t} for t in proposals]}
 
 
+def split_article(conn, parent: str, child: str, child_sources: list[str]) -> dict:
+    """Spin a child article OFF a parent: write `child` from the given source notes, then
+    re-write the parent from its REMAINING sources. Explicit partition (the owner or a
+    restructure hint says which notes go to the child) — deterministic, no auto-partition.
+    Inverse-pair hysteresis blocks splitting a pair a recent merge produced. Under the lock."""
+    from . import notes as notes_svc, entity_index, article_talk
+    parent, child = (parent or "").strip(), (child or "").strip()
+    pnote = notes_svc.get_by_title(conn, parent)
+    if not pnote or pnote["kind"] != "kb":
+        return {"ok": False, "reason": "no such parent kb article"}
+    if not child.startswith("kb/") or child.lower().startswith("kb/_") or notes_svc.get_by_title(conn, child):
+        return {"ok": False, "reason": "child must be a new kb/… title"}
+    pair = "|".join(sorted([parent, child]))
+    if _structure_recent(conn, "merge", pair):
+        article_talk.add(conn, parent, "todo", f"Split of {child} blocked — recently merged; review by hand.")
+        return {"ok": False, "reason": "blocked by hysteresis (recently merged)"}
+    child_ids: set[int] = set()
+    for t in (child_sources or []):
+        r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (t,)).fetchone()
+        if r:
+            child_ids.add(int(r["id"]))
+    if not child_ids:
+        return {"ok": False, "reason": "no child source notes resolved"}
+    parent_ids: set[int] = set()
+    for x in wikilinks.extract_links(pnote["content_md"] or ""):
+        if not x.lower().startswith("kb/"):
+            r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (x,)).fetchone()
+            if r:
+                parent_ids.add(int(r["id"]))
+    parent_ids |= {int(i) for i in entity_index.note_ids_for_name(conn, parent.rsplit("/", 1)[-1])}
+    remaining = sorted(parent_ids - child_ids)
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "reason": "KB busy — try again shortly"}
+    try:
+        cout = write_one(conn, {"title": child, "domain": wiki_guides.domain_for_title(child),
+                                "scope": "", "sources": sorted(child_ids)}, None, known_titles=_known_titles(conn))
+        if not (cout.get("ok") and cout.get("content_md")):
+            conn.commit()
+            return {"ok": False, "reason": "; ".join(cout.get("errors") or []) or "child draft failed the lint"}
+        notes_svc.upsert_note(conn, child, cout["content_md"], kind="kb", source="split",
+                              version_note=f"split from {parent}")
+        if cout.get("talk"):
+            article_talk.record(conn, child, cout["talk"])
+        if remaining:                                  # trim the parent to its remaining sources
+            pout = write_one(conn, {"title": parent, "domain": wiki_guides.domain_for_title(parent),
+                                    "scope": "", "sources": remaining}, None, known_titles=_known_titles(conn))
+            if pout.get("ok") and pout.get("content_md"):
+                notes_svc.upsert_note(conn, parent, pout["content_md"], note_id=pnote["id"], kind="kb",
+                                      source="split", version_note=f"trimmed — split out {child}")
+        _structure_log(conn, "split", pair)
+        entity_index.rebuild(conn)
+        flag_dead_links(conn)
+        refresh_index(conn)
+        conn.commit()
+        return {"ok": True, "parent": parent, "child": child}
+    finally:
+        kb_lock_release(conn)
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

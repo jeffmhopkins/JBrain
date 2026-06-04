@@ -493,6 +493,48 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
             "errors": v["errors"], "warnings": v["warnings"]}
 
 
+def _cited_source_len(conn, content: str) -> int:
+    """Total length of the source notes a (kb) article cites — the grounding it can claim."""
+    total = 0
+    for t in wikilinks.extract_links(content):
+        if t.lower().startswith("kb/"):
+            continue
+        r = conn.execute("SELECT content_md FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                         (t,)).fetchone()
+        if r:
+            total += len(r["content_md"] or "")
+    return total
+
+
+def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> dict:
+    """Flag Reference articles whose body far outweighs their cited sources — the signature
+    of the model padding with general 'common knowledge' from training instead of your
+    notes. Records a todo (the worklist for an approved external fill) and returns counts.
+    Forward-looking: the GROUNDING rule keeps new articles honest; this audits what's there."""
+    from . import article_talk
+    rows = conn.execute(
+        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "AND title LIKE 'kb/Reference/%'").fetchall()
+    scanned = flagged = 0
+    for r in rows:
+        if wiki_guides.is_protected(r["title"]):
+            continue
+        scanned += 1
+        body = r["content_md"] or ""
+        core = re.split(r"\n##\s+References", body, maxsplit=1)[0]
+        blen = len(re.sub(r"\s+", " ", core).strip())
+        if blen < min_body:
+            continue                                        # a stub is fine — that's the goal
+        slen = _cited_source_len(conn, body)
+        if slen == 0 or blen / slen > ratio:
+            article_talk.record(conn, r["title"], [{"kind": "todo",
+                "body": "External reference needed (Grokipedia) — the general content here isn't "
+                        "grounded in your notes; awaiting an approved external fill."}], author="ai")
+            flagged += 1
+    conn.commit()
+    return {"scanned": scanned, "flagged": flagged}
+
+
 def _known_titles(conn) -> list[str]:
     return sorted({r["title"] for r in conn.execute(
         "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()})

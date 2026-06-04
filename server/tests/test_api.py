@@ -963,6 +963,31 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_flag_ungrounded_reference(client):
+    """A Reference article whose body dwarfs its cited sources (LLM 'common knowledge'
+    padding) is flagged with a todo; a thin, well-grounded one is not."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/ttp", "Summer has TTP.")
+    conn.commit()
+    padded = ("# Thrombotic Thrombocytopenic Purpura\n"
+              + "TTP is a rare blood disorder marked by clotting in small vessels. " * 30
+              + "[^s1]\n\n## References\n[^s1]: [[notes/ttp]] — 2026-06-01\n")
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura", padded, kind="kb")
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/Anemia",
+                   "# Anemia\nA condition Summer was screened for.[^s1]\n\n## References\n[^s1]: [[notes/ttp]] — 2026-06-01\n",
+                   kind="kb")
+    conn.commit()
+
+    res = wiki_build.flag_ungrounded_reference(conn)
+    assert res["flagged"] == 1
+    ttp = article_talk.open_for(conn, "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura")
+    assert any("Grokipedia" in t["body"] for t in ttp)                       # padded → flagged
+    assert not article_talk.open_for(conn, "kb/Reference/Medicine/Conditions/Anemia")  # stub → clean
+
+
 def test_wiki_update_incremental(client, monkeypatch):
     """Incremental update: a new note about an existing subject is routed by entity to its
     article and integrated; the watermark advances; a deleted cited source routes by

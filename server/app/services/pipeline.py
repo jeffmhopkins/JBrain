@@ -207,6 +207,12 @@ def _p_wiki_update(ctx, limit=40):
     return wiki_build.update_batch(ctx.conn, int(limit))
 
 
+def _p_flag_ungrounded_reference(ctx):
+    """Flag Reference articles padded with LLM 'common knowledge' instead of the notes."""
+    from . import wiki_build
+    return wiki_build.flag_ungrounded_reference(ctx.conn)
+
+
 def _p_seed_kb_watermark(ctx):
     """Reset the incremental-update watermark to now — the full build just covered all
     history, so incremental should only pick up changes from here on."""
@@ -1076,6 +1082,7 @@ _PRIMITIVES = {
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
+    "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
@@ -1180,6 +1187,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                       "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_update": {"summary": "Flow notes changed since the watermark into existing articles (incremental).",
                     "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
+                                  "inputs": [], "output": "dict"},
     "seed_kb_watermark": {"summary": "Reset the incremental-update watermark to now (after a full build).",
                           "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",

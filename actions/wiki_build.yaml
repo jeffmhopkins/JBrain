@@ -85,7 +85,9 @@ steps:
   # 6d. Flag any dangling cross-links (now that every article is saved + links reconciled).
   - id: deadlinks
     do: flag_dead_links
-  # 6e. Reset the incremental-update watermark — this build just covered all history.
+  # 6e. Flag Reference articles padded with general "common knowledge" instead of your notes.
+  - do: flag_ungrounded_reference
+  # 6f. Reset the incremental-update watermark — this build just covered all history.
   - do: seed_kb_watermark
 
   # 7. Reviews — summary card, quarantine card, then open a review SESSION: one card per

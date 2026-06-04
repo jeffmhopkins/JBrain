@@ -265,8 +265,14 @@ actions:
         People or Groups article. If a fact is about a particular person, it belongs in
         THAT person's article, not here. Keep this layer general.
       - Cite the source notes the knowledge came from.
+      - GROUNDED ONLY: write only what your notes contain — never fill in general facts from
+        your own training. If the notes just mention a topic, a one-line STUB is the correct
+        article; do not pad it into a full encyclopedia entry. The shapes below are a target
+        ONLY for sections your sources actually support; leave the rest out. When a topic
+        deserves general background you don't have, keep the stub and flag it for an approved
+        external fill (a talk todo: "External reference needed (Grokipedia): <topic>").
 
-      Use the shape that fits the subject:
+      Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
         Treatment, Prognosis. (A person's own diagnosis history stays in their People article.)
       - MEDICATION: lead = what it is and what it treats; sections Uses, Dosage forms,
@@ -427,6 +433,14 @@ actions:
         [^s1]: [[Exact Source Title]] — DATE
     Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
     the article Markdown, starting with "# <name>".
+
+    GROUNDING — this is strict, especially for Reference. Include ONLY facts the source
+    notes actually contain. Do NOT add background, definitions, symptoms, mechanisms,
+    history, dosages or any "common knowledge" from your own training — even if you know it
+    and it would make the entry look complete. If the notes touch a topic only lightly,
+    write a SHORT STUB; a stub is the correct, faithful result, not a failure. When a
+    Reference topic clearly deserves general background the notes don't provide, keep it a
+    stub and add a talk todo: "External reference needed (Grokipedia): <topic>". Never pad.
 
     CROSS-LINKS — never invent a dead link. You may write [[...]] ONLY for: (a) the exact
     source-note titles below (for citations), and (b) an article in the EXISTING ARTICLES

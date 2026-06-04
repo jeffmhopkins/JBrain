@@ -1222,6 +1222,26 @@ def test_entity_types_animal_and_work(client):
     assert "Animals:" in roster and "Media:" in roster   # grouped under the new labels
 
 
+def test_pet_routes_to_people_domain(client, monkeypatch):
+    """create_article files an 'animal' (pet) entity under kb/People, not kb/Things."""
+    import json
+    from app.db import get_conn
+    from app.services import wiki_build, entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    for i in range(2):
+        nid = ns.upsert_note(conn, f"n/buddy{i}", f"Buddy the dog had a vet visit, note {i}.")
+        conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                     (nid, f"h{i}", json.dumps([{"type": "animal", "name": "Buddy"}])))
+    conn.commit()
+    ei.rebuild(conn)
+    # Stub the LLM write so the test is deterministic + offline.
+    monkeypatch.setattr(wiki_build, "write_one",
+                        lambda *a, **k: {"ok": True, "content_md": "# Buddy\nA dog.", "talk": []})
+    res = wiki_build.create_article(conn, "Buddy", etype="animal", min_notes=2)
+    assert res["ok"] and res.get("created") and res["title"] == "kb/People/Buddy"
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

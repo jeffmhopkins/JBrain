@@ -805,7 +805,8 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
             "count": sum(len(a["proposals"]) for a in out_articles)}
 
 
-_TYPE_DOMAIN = {"person": "People", "org": "Groups", "place": "Places", "thing": "Things",
+_TYPE_DOMAIN = {"person": "People", "animal": "People", "org": "Groups", "place": "Places",
+                "thing": "Things", "work": "Things",
                 "condition": "Reference", "medication": "Reference", "procedure": "Reference",
                 "concept": "Reference", "event": "Reference"}
 _REF_SUB = {"condition": "Medicine/Conditions", "medication": "Medicine/Medications",

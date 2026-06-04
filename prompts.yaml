@@ -376,7 +376,7 @@ actions:
 
     Every article title is "kb/<Domain>/<Name>", using these domains:
     - Reference — general, de-identified knowledge (concepts, how-things-work, conditions, medications, procedures); never about a specific person
-    - People — one article per individual
+    - People — one article per individual (pets/animals count too — a pet is a household member, never a Thing)
     - Groups — organisations, household, teams, clubs
     - Places — durable knowledge about a location
     - Things — tracked assets/possessions (home, vehicles, devices, accounts)
@@ -388,6 +388,12 @@ actions:
 
     The entity roster's medications, conditions, procedures, events and concepts are
     Reference content — give each recurring one its own Reference article.
+
+    The roster's animals are PETS / household members → give each its own kb/People/<Name>
+    profile (linking its vet visits, medications and care notes), and include it as a member
+    of the household Groups article; NEVER file a pet under Things. The roster's works (books,
+    films, shows, songs, games) go under Things (kb/Things/Media/<Name>) unless a note studies
+    the topic itself as Reference.
 
     Rules: one subject per article. A specific person/org/place/thing gets its own
     article; general knowledge goes under Reference and must NOT name a person (those
@@ -429,7 +435,8 @@ actions:
     that ties People together: a household/family, an employer, a club, a team. Use the
     ENTITY ROSTER below: people who co-occur frequently or share a surname are almost
     certainly a household — make a kb/Groups/<Family name> (household) article and assign
-    the shared notes to it, while each member still gets their own People article. Make a
+    the shared notes to it, while each member still gets their own People article. Pets are
+    household members too — list them in the household article alongside the people. Make a
     Groups article for a recurring shared workplace/organisation too. Make a People
     article for each recurring person, a Places article for each recurring place, etc.
 
@@ -656,7 +663,7 @@ actions:
     film, show, song, album, or game. "domain" is your best single guess for where this belongs
     in a knowledge base: "Reference" for general, de-identified knowledge INCLUDING recipes,
     how-to guides and instructions (even hobby topics); "People" if it is about a specific
-    person; "Activities" ONLY for {owner}'s OWN ongoing hobby/project (not a general how-to
+    person or pet (a household member); "Activities" ONLY for {owner}'s OWN ongoing hobby/project (not a general how-to
     or someone else's contribution); "Unsure" when genuinely unclear.
     Time: PRESERVE any @t[...] live token verbatim in the gist/facts (it stays current
     when re-read — never replace it with a number). Put fixed dated events in "dates" as

@@ -32,3 +32,20 @@ def resolve(conn, source: str):
             if src == p["name"].lower() or src in _aliases(p):
                 return p
     return next((p for p in people if p["is_default"]), people[0])
+
+
+def owner(conn):
+    """The default person — the note-taker. Every note is authored by them, so a note's
+    first-person voice ('I', 'my truck') refers to this person."""
+    people = conn.execute("SELECT * FROM people ORDER BY id").fetchall()
+    if not people:
+        return None
+    return next((p for p in people if p["is_default"]), people[0])
+
+
+def owner_name(conn) -> str:
+    """The owner's display name (for prompts), or 'the owner' if unset/placeholder."""
+    o = owner(conn)
+    name = (o["name"] if o else "").strip()
+    return name if name and name.lower() != "me" else "the owner"
+

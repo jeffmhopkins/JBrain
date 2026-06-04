@@ -786,6 +786,30 @@ def test_entity_index(client, monkeypatch):
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
 
+def test_owner_first_person(client, monkeypatch):
+    """The note-taker's identity is fed to the analyzer so 'my truck' resolves to the owner
+    by name; the placeholder 'Me' is never leaked into prompts."""
+    from app.db import get_conn
+    from app.services import people, note_analysis as na, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    assert people.owner_name(conn) == "the owner"            # default seed name is not exposed
+    conn.execute("UPDATE people SET name='Jeff' WHERE is_default=1"); conn.commit()
+    assert people.owner_name(conn) == "Jeff"
+
+    nid = ns.upsert_note(conn, "notes/t", "here's my truck's keyless entry code: 1234"); conn.commit()
+    seen = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+
+    def fake(msgs, **k):
+        seen["p"] = msgs[0]["content"]
+        return '{"gist":"truck code","facts":["Jeff truck code 1234"],"entities":[{"type":"person","name":"Jeff"}],"domain":"People","dates":[]}'
+    monkeypatch.setattr(llm, "complete", fake)
+    na.analyze(conn, nid, force=True)
+    assert "Jeff" in seen["p"] and "first-person" in seen["p"].lower()   # owner woven into the prompt
+
+
 def test_article_talk(client, monkeypatch):
     """Writer-emitted talk is parsed out of the article + recorded; the slug endpoints
     list/add/resolve; open items are what maintenance will read."""

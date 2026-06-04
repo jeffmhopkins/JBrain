@@ -143,7 +143,9 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
     from . import entity_index
     extra = f"\nAdditional guidance: {instructions}\n" if instructions else ""
     roster = entity_index.roster(conn) or "(none yet)"
+    from . import people
     prompt = (prompts.get("actions.wiki_outline", "")
+              .replace("{owner}", people.owner_name(conn))
               .replace("{survey}", _survey_text(digest))
               .replace("{roster}", roster)
               .replace("{instructions}", extra))
@@ -225,9 +227,12 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
         base["errors"] = ["no LLM credentials"]
         return base
 
+    from . import people
+    owner = people.owner_name(conn)
     general = wiki_guides.guide_text(None)
     dguide = wiki_guides.guide_text(domain)
     prompt = (prompts.get("actions.wiki_write", "")
+              .replace("{owner}", owner)
               .replace("{general_guide}", general).replace("{domain_guide}", dguide)
               .replace("{domain}", domain or "").replace("{title}", title)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))

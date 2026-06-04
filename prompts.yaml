@@ -664,9 +664,15 @@ actions:
     Guidance: "facts" are 0-12 standalone statements. "entities" are the specific people,
     organisations, places, and things the note is about (not generic nouns) — INCLUDING a
     person who contributed or is the source of the note (e.g. a recipe from {owner}'s mom
-    → that person is an entity). Use "animal" for a named pet or other specific animal
-    (a household member, NOT a "thing"); "work" for a specific creative work — a book,
-    film, show, song, album, or game. "domain" is your best single guess for where this belongs
+    → that person is an entity).
+    ENTITY TYPE — pick the most specific type, not "thing", whenever one fits:
+    - "animal" for ANY specific creature — a pet or named animal (dog, cat, fish, bird,
+      horse, rat, …). A pet is a household MEMBER; NEVER tag a pet/animal as "thing".
+      E.g. "Boss is a black lab" → {"type": "animal", "name": "Boss"}; "Bella the boxer",
+      "the cats Cleaver and Bones", "Summer's pet rat" are all "animal".
+    - "work" for a specific creative work — a book, film, show, song, album, or game.
+    - "thing" is the LAST resort: only an inanimate object/possession that fits no other type.
+    "domain" is your best single guess for where this belongs
     in a knowledge base: "Reference" for general, de-identified knowledge INCLUDING recipes,
     how-to guides and instructions (even hobby topics); "People" if it is about a specific
     person or pet (a household member); "Activities" ONLY for {owner}'s OWN ongoing hobby/project (not a general how-to

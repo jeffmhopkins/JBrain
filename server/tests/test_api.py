@@ -860,6 +860,29 @@ def test_write_one_never_saves_dead_link(client, monkeypatch):
     assert any(t["kind"] == "todo" and "Ghost" in t["body"] for t in out["talk"])
 
 
+def test_disambig_pages_reset_and_scanned(client):
+    """Disambiguation pages are derived build artifacts: reset wipes them (unlike the
+    static guides), and their cross-links ARE scanned for dead links."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Real", "# Real", kind="kb")
+    ns.upsert_note(conn, "kb/_disambig/TTP", "# TTP\n- [[kb/People/Real]]\n- [[kb/People/Gone]]", kind="kb")
+    ns.upsert_note(conn, "kb/_Style Guide", "# guide\n- [[kb/People/AlsoGone]]", kind="kb")
+    conn.commit()
+
+    dl = wiki_build.dead_links(conn)
+    assert any(d["source_title"] == "kb/_disambig/TTP" and d["target_title"] == "kb/People/Gone" for d in dl)
+    assert not any(d["source_title"] == "kb/_Style Guide" for d in dl)   # static guides skipped
+
+    wiki_build.reset(conn)
+    live = {r["title"] for r in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall()}
+    assert "kb/_disambig/TTP" not in live      # derived → wiped
+    assert "kb/_Style Guide" in live           # static guide → spared
+
+
 def test_owner_first_person(client, monkeypatch):
     """The note-taker's identity is fed to the analyzer so 'my truck' resolves to the owner
     by name; the placeholder 'Me' is never leaked into prompts."""

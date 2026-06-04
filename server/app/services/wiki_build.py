@@ -47,14 +47,16 @@ def _extract_talk(text: str):
 def reset(conn) -> dict:
     """Soft-delete all kb/ articles except protected kb/_* pages (guides, index), and
     clear the synthesis watermark + per-entry evaluated markers. Undoable (soft delete +
-    versioning). Returns {deleted, kept}."""
+    versioning). Returns {deleted, kept}. Disambiguation pages (kb/_disambig/*) are DERIVED
+    build artifacts, not static guides, so they're cleared here too (and regenerated)."""
     from . import notes as notes_svc
     rows = conn.execute(
         "SELECT id, title FROM notes WHERE kind = 'kb' AND deleted_at IS NULL"
     ).fetchall()
     deleted = kept = 0
     for r in rows:
-        if wiki_guides.is_protected(r["title"]):
+        derived = r["title"].startswith("kb/_disambig/")
+        if wiki_guides.is_protected(r["title"]) and not derived:
             kept += 1
             continue
         notes_svc.soft_delete(conn, r["id"])
@@ -313,11 +315,15 @@ def write_one(conn, art: dict, instructions: str | None = None,
 
 def dead_links(conn) -> list[dict]:
     """Dangling [[links]] from a kb article to a target that doesn't exist — surfaced so
-    they can be fixed instead of silently rotting. Excludes protected kb/_* pages."""
+    they can be fixed instead of silently rotting. Covers real articles AND the DERIVED
+    nav pages that link out (kb/_index, kb/_disambig/*); only the static guides are skipped
+    (they carry no article cross-links)."""
     rows = conn.execute(
         "SELECT s.title AS source_title, s.slug AS source_slug, l.target_title "
         "FROM links l JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL "
-        "WHERE l.target_note_id IS NULL AND s.kind='kb' AND s.title NOT LIKE 'kb/\\_%' ESCAPE '\\' "
+        "WHERE l.target_note_id IS NULL AND s.kind='kb' AND ("
+        "  s.title NOT LIKE 'kb/\\_%' ESCAPE '\\' "
+        "  OR s.title = 'kb/_index' OR s.title LIKE 'kb/\\_disambig/%' ESCAPE '\\') "
         "ORDER BY s.title, l.target_title",
     ).fetchall()
     return [dict(r) for r in rows]

@@ -62,19 +62,25 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
           echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
-      - name: Build release APK
+      - name: Build release APKs
+        # Builds the phone APK (which embeds the watch app) and the standalone watch
+        # APK. Both come out of one build, signed with the same key — required for the
+        # watch→phone relay to work. Install both from the same run.
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease :wear:assembleRelease --no-daemon --stacktrace
 
-      - name: Stage APK
+      - name: Stage APKs
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           cp app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/out/jbrain-tracker.apk"
+          cp wear/build/outputs/apk/release/*.apk "$RUNNER_TEMP/out/jbrain-watch.apk"
 
-      - name: Upload APK
+      - name: Upload APKs
+        # One artifact with both files: jbrain-tracker.apk (sideload to the phone) and
+        # jbrain-watch.apk (sideload to the watch over ADB Wi-Fi — see android/README.md).
         uses: actions/upload-artifact@v4
         with:
-          name: jbrain-tracker-apk
-          path: ${{ runner.temp }}/out/jbrain-tracker.apk
+          name: jbrain-apks
+          path: ${{ runner.temp }}/out/*.apk
           if-no-files-found: error

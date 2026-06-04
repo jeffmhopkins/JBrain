@@ -88,11 +88,11 @@ def test_entry_mode_creates_unique_notes(client):
 
 
 def test_entry_mode_dated_titles_no_first_line_convention(client):
-    # No title -> dated bucket notes/daily/YYYY/MM/DD/<n>; the WHOLE text is the
+    # No title -> standard flat dated tree notes/YYYY/MM/DD/NN; the WHOLE text is the
     # body (first line is NOT consumed as a title).
     c = client.post("/api/notes/entry", json={"text": "buy a tent\nfor camping"}).json()
     import re
-    assert re.match(r"^notes/daily/\d{4}/\d{2}/\d{2}/01$", c["title"]), c["title"]   # two-digit numbering
+    assert re.match(r"^notes/\d{4}/\d{2}/\d{2}/01$", c["title"]), c["title"]   # two-digit numbering
     assert client.get(f"/api/notes/{c['slug']}").json()["content_md"] == "buy a tent\nfor camping"
     # Second same-day entry increments the counter.
     d = client.post("/api/notes/entry", json={"text": "another thought"}).json()

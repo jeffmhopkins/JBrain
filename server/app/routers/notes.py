@@ -226,10 +226,10 @@ def create_entry(body: EntryIn):
         # "assisted notes can go somewhere else". The first line is NOT a title.
         title = notes_svc._unique_title(conn, notes_svc.root_title(explicit, "notes"))
     else:
-        # Pure Entry capture: no title. File chronologically under the date tree
-        # as notes/daily/YYYY/MM/DD/<n>; the whole text is the body. Day boundary
+        # Pure Entry capture: no title. File chronologically under the standard flat
+        # dated tree as notes/YYYY/MM/DD/NN; the whole text is the body. Day boundary
         # is the app timezone (same TZ the scheduler uses for midnight).
-        title = notes_svc.next_daily_title(conn, clock.today_local())
+        title = notes_svc.next_dated_title(conn, clock.today_local())
     try:
         note_id = notes_svc.upsert_note(
             conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,

@@ -46,18 +46,6 @@ def _day_of(conn, title: str, created_at: str | None) -> str:
     return s.replace("-", "/")
 
 
-def _max_flat_n(conn, day: str) -> int:
-    """Highest existing N under notes/<day>/ — counting soft-deleted rows too, since
-    notes.title is UNIQUE, so we never reissue a number."""
-    prefix = f"notes/{day}/"
-    n = 0
-    for r in conn.execute("SELECT title FROM notes WHERE title LIKE ?", (prefix + "%",)).fetchall():
-        head = r["title"][len(prefix):].split(" - ", 1)[0]
-        if head.isdigit():
-            n = max(n, int(head))
-    return n
-
-
 def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
     """Move loose entry notes — plus the PWA daily captures and day-summary rollups — into
     notes/YYYY/MM/DD/N (by capture day, in created order). Returns the plan + count; with
@@ -74,7 +62,7 @@ def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
     for r in rows:
         day = _day_of(conn, r["title"], r["created_at"])
         if day not in next_n:
-            next_n[day] = _max_flat_n(conn, day) + 1
+            next_n[day] = notes_svc.max_dated_n(conn, day) + 1
         plan.append({"id": r["id"], "old": r["title"], "new": f"notes/{day}/{next_n[day]:02d}"})
         next_n[day] += 1
 

@@ -141,25 +141,33 @@ def _unique_title(conn, base: str, exclude_id: int | None = None) -> str:
     return title
 
 
-def next_daily_title(conn, day) -> str:
-    """The next dated-capture title: notes/daily/YYYY/MM/DD/<n>.
+def max_dated_n(conn, day_path: str) -> int:
+    """Highest leading number already used under notes/<day_path>/ (day_path is the
+    slashed date, e.g. '2026/06/04').
 
-    `n` is MAX(existing trailing integer for that day) + 1. It counts ALL rows,
-    including soft-deleted ones, because `notes.title` is UNIQUE across every row
-    — reissuing a deleted note's number would hit that constraint. So numbering is
-    gap-tolerant (a deleted /3 is never reused). Single-writer SQLite means no
-    retry loop is needed; `day` is a date in the caller's local timezone."""
-    prefix = f"notes/daily/{day:%Y/%m/%d}"
-    rows = conn.execute(
-        "SELECT title FROM notes WHERE title LIKE ?",
-        (prefix + "/%",),
-    ).fetchall()
+    Reads the leading integer of each leaf, so it counts both bare ('NN') and titled
+    ('NN - cardiology invoice') notes, and counts ALL rows including soft-deleted ones
+    — `notes.title` is UNIQUE across every row, so reissuing a deleted note's number
+    would hit that constraint. Numbering is therefore gap-tolerant (a deleted /3 is
+    never reused). 0 when the day is empty."""
+    prefix = f"notes/{day_path}/"
     n = 0
-    for r in rows:
-        tail = r["title"][len(prefix) + 1:]
-        if tail.isdigit():
-            n = max(n, int(tail))
-    return f"{prefix}/{n + 1:02d}"      # zero-padded to ≥2 digits so the day's notes sort right
+    for r in conn.execute("SELECT title FROM notes WHERE title LIKE ?", (prefix + "%",)).fetchall():
+        head = r["title"][len(prefix):].split(" - ", 1)[0]
+        if head.isdigit():
+            n = max(n, int(head))
+    return n
+
+
+def next_dated_title(conn, day) -> str:
+    """The next entry-capture title in the flat dated tree: notes/YYYY/MM/DD/NN.
+
+    This is the standard location every 'Make entry' capture lands in. NN is the day's
+    highest existing leading number + 1, zero-padded to ≥2 digits so a day's notes sort
+    right (.../01 … /10). Single-writer SQLite means no retry loop is needed; `day` is a
+    date in the caller's local timezone."""
+    day_path = f"{day:%Y/%m/%d}"
+    return f"notes/{day_path}/{max_dated_n(conn, day_path) + 1:02d}"
 
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:

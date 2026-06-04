@@ -455,10 +455,12 @@ actions:
     Reference topic clearly deserves general background the notes don't provide, keep it a
     stub and add a talk todo: "External reference needed (Grokipedia): <topic>". Never pad.
 
-    CROSS-LINKS — never invent a dead link. You may write [[...]] ONLY for: (a) the exact
-    source-note titles below (for citations), and (b) an article in the EXISTING ARTICLES
-    list below. If you'd mention any other subject (a person/place/thing without its own
-    article), write it as plain text — do NOT wrap it in [[ ]]. Never guess a title.
+    CROSS-LINKS — link everything that has a home, invent nothing. You may write [[...]]
+    ONLY for: (a) the exact source-note titles below (for citations), and (b) an article in
+    the EXISTING ARTICLES list below — and when a mention DOES match an EXISTING ARTICLES
+    title (a person/group/place/thing/concept), you MUST link it, not leave it plain. Any
+    other subject (no article yet) stays plain text — do NOT wrap it in [[ ]]. Never guess a
+    title.
 
     AUTHOR: the source notes are written by the owner, {owner}, in the first person. "I",
     "me", "my", "we"/"our" (the household) refer to {owner} and their family — resolve them
@@ -502,9 +504,11 @@ actions:
     the same sources, and follow the guides. Output ONLY the corrected article Markdown,
     starting with "# <name>".
 
-    CROSS-LINKS — never invent a dead link. Use [[...]] ONLY for the article's cited
-    source notes or a title in the EXISTING ARTICLES list below. Any other subject must be
-    plain text, never wrapped in [[ ]]. Fix every "Dead link" issue this way.
+    CROSS-LINKS — never invent a dead link, but link every mention that HAS a home. Use
+    [[...]] ONLY for the article's cited source notes or a title in the EXISTING ARTICLES
+    list below — and when a mention matches an EXISTING ARTICLES title, you MUST link it.
+    Any other subject must be plain text, never wrapped in [[ ]]. Fix every "Dead link"
+    issue this way.
 
     ISSUES TO FIX:
     {issues}
@@ -540,18 +544,45 @@ actions:
       footnote; keep claims still supported by another source.
     - Reconcile existing claims with the current CURRENT SOURCES — fix anything that no
       longer matches; never invent.
+    - SUPERSEDE, don't accumulate: when a newer source updates a fact already in the
+      article (a moved address, changed job/status, new figure), REPLACE the old claim
+      with the current one and cite the newer source — never leave the stale value and the
+      new one both standing as if current. Prefer the most recent source on conflict; keep
+      a superseded value only if the article is explicitly a timeline/history.
+    - If a new source finally supplies the anchor for a value the article froze as a number
+      (e.g. an age, now that a birthdate is known), convert it to the live @t[...] token.
 
-    Keep the house + domain style, the @t[...] live-time tokens, footnote citations to the
-    EXACT source titles, and the cross-link rule: only [[link]] an article in the EXISTING
-    ARTICLES list or a cited source — never invent a link. If little changes, return the
-    article essentially as-is.
+    LINK EVERYTHING: for every person, group, place, thing, or concept this article mentions
+    whose EXACT title is in the EXISTING ARTICLES list, you MUST wrap that mention in
+    [[that title]] — linking is mandatory when a target article exists, not optional. Use
+    plain text only for a subject that has no article. Still never INVENT a link: [[...]] is
+    allowed ONLY for an EXISTING ARTICLES title or a cited source; if unsure a title exists,
+    leave it plain.
+
+    STAY CONCISE — this is a summary-style encyclopedia entry, NOT a diary or changelog. On
+    every pass, as you add, also TRIM: merge redundant sentences, collapse a run of similar
+    events into a summary, and drop superseded or low-value detail. Removing stale or trivial
+    content is faithful — faithfulness means every REMAINING claim traces to a source, not
+    that every past claim is kept. Fold a new fact into the existing prose; never append a
+    dated "update:" line or narrate the edit. Evergreen: no "today"/"yesterday" — use dates
+    or @t[...]. Keep the house + domain style and EXACT-title footnote citations. If nothing
+    of substance changed, return the article essentially as-is.
+
+    You cannot create, split, merge, or rename articles here. If this article has outgrown
+    one subject (a section has grown large and self-contained), or it overlaps/duplicates
+    another EXISTING ARTICLE, or it's a thin stub that belongs folded into a related page —
+    do NOT attempt it. Instead RECORD a "new" entry of kind "note" (a logged hint for the
+    next full rebuild, which can branch and reconsolidate), e.g. "Split <section> into
+    kb/<Parent>/<Subtopic>" or "Overlaps [[kb/...]] — merge at rebuild". Keep this article
+    tight in the meantime. ("note" is logged, not re-worked each run, so it won't nag.)
 
     After the article, append EXACTLY one fenced block (valid JSON):
     ```maintain
     {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note", "body": "..."}]}
     ```
     List every OPEN-ITEM id you actually addressed in "resolved"; omit ids you left open.
-    "new" is optional — raise it only for something genuinely worth a later look.
+    "new" is optional — raise it for something genuinely worth a later look, including a
+    split/fold/merge hint as a "note" per above.
 
     HOUSE STYLE
     {general_guide}

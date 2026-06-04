@@ -140,6 +140,26 @@ def test_entry_via_person_location_key(client):
     assert client.get("/api/notes", headers=hdr).status_code == 401
 
 
+def test_protected_underscore_notes_hidden_from_list_and_graph(client):
+    # A normal entry and a protected/system page (a path segment starts with '_').
+    visible = client.post("/api/notes/entry", json={"text": "ordinary", "title": "Ordinary"}).json()
+    hidden = client.post("/api/notes/entry", json={"text": "system", "title": "_scratch"}).json()
+    assert hidden["title"].split("/")[-1].startswith("_"), hidden["title"]
+
+    # The notes list (Wiki / entry list) hides it by default…
+    titles = {n["title"] for n in client.get("/api/notes").json()}
+    assert visible["title"] in titles
+    assert hidden["title"] not in titles
+    # …but include_hidden surfaces it, and it's still directly reachable by slug.
+    assert hidden["title"] in {n["title"] for n in client.get("/api/notes?include_hidden=true").json()}
+    assert client.get(f"/api/notes/{hidden['slug']}").status_code == 200
+
+    # The graph hides it as a node too.
+    graph_titles = {n["title"] for n in client.get("/api/graph").json()["nodes"]}
+    assert visible["title"] in graph_titles
+    assert hidden["title"] not in graph_titles
+
+
 def test_research_mode_is_read_only(client):
     # Research mode must not expose write tools.
     from app.services import architect

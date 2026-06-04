@@ -42,8 +42,9 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
 export default function AdvancedHome() {
   const nav = useNavigate();
 
-  // Advanced is the last stop of the chat mode carousel; a horizontal swipe
-  // returns to chat at the neighbouring mode (right → Research, left wraps → Entry).
+  // The carousel is just two stops: Chat ⇄ Advanced. A horizontal swipe here returns to
+  // chat WITHOUT changing the mode — entry/assisted/research are one window and switch only
+  // via the mode button (swipe direction must not pick a mode).
   const start = useRef<{ x: number; y: number } | null>(null);
   function onTouchStart(e: TouchEvent) { const t = e.touches[0]; start.current = { x: t.clientX, y: t.clientY }; }
   function onTouchEnd(e: TouchEvent) {
@@ -52,7 +53,6 @@ export default function AdvancedHome() {
     const t = e.changedTouches[0];
     const dx = t.clientX - s.x, dy = t.clientY - s.y;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    sessionStorage.setItem("jbrain_mode", dx > 0 ? "research" : "entry");   // matches Chat's per-session mode
     nav("/chat");
   }
 

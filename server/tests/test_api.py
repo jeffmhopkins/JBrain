@@ -1262,6 +1262,43 @@ def test_wiki_update_incremental(client, monkeypatch):
     assert get_meta("kb_incremental:since") > "2000-01-01"       # watermark advanced
 
 
+def test_wiki_update_routes_deletions_by_title(client, monkeypatch):
+    """Regression: a deleted source must still route to the article(s) that cited it.
+    soft_delete nulls links.target_note_id, so the id-based lookup finds nothing — routing
+    has to fall back to the surviving target_title, or the 'purge claims whose only source
+    was deleted' path never fires for an incremental update."""
+    from app.db import get_conn, get_meta, set_meta
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+
+    sid = ns.upsert_note(conn, "notes/src_del", "Bob worked at Acme until 2025.")
+    ns.upsert_note(conn, "kb/People/Bob",
+                   "# Bob\nBob worked at Acme until 2025.[^s1]\n\n## References\n[^s1]: [[notes/src_del]] — 2026-06-01\n",
+                   kind="kb")
+    conn.commit()
+    ns.soft_delete(conn, sid); conn.commit()
+
+    # The bug: the id-based citation lookup can't see a deleted note (target_note_id nulled)…
+    assert wiki_build._articles_citing(conn, sid) == set()
+    # …but the title-based lookup still routes the deletion to the citing article.
+    assert "kb/People/Bob" in wiki_build._articles_citing_title(conn, "notes/src_del")
+
+    # End-to-end: the deletion is the only change, so it must drive a refresh of that article.
+    # Pre-fix, routing found no targets and the article was never revisited (no LLM call).
+    set_meta(conn, "kb_incremental:since", "2000-01-01 00:00:00.000"); conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    prompts = []
+    def fake(msgs, **k):
+        prompts.append(msgs[0]["content"])
+        return "# Bob\nBob is a person noted in the journal.\n\n## References\n(none)\n\n```maintain\n{}\n```\n"
+    monkeypatch.setattr(llm, "complete", fake)
+
+    wiki_build.update_batch(conn, limit=40)
+    # The deletion routed to Bob's article and drove a refresh (pre-fix: no targets → never called).
+    assert any("Bob worked at Acme" in p for p in prompts)
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually

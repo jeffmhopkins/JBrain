@@ -35,6 +35,15 @@ steps:
     do: wiki_update
     with: { limit: "{{ config.limit | default(40) }}" }
 
+  # 1b. Reconcile cross-article state after the changes (cheap, no LLM): refresh the
+  #     disambiguation pages against the re-aggregated entities, then sweep any [[link]]
+  #     that went dead because a target note was deleted/renamed. Mirrors the full build's
+  #     post-write passes so the KB doesn't drift between rebuilds. No changes → skipped.
+  - do: write_disambiguation
+    when: "{{ upd.changes }}"
+  - do: flag_dead_links
+    when: "{{ upd.changes }}"
+
   # 2. Summary card.
   - do: create_review
     when: "{{ config.review != false and upd.changes }}"

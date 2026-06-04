@@ -633,6 +633,17 @@ def _articles_citing(conn, note_id: int) -> set[str]:
     return {r["title"] for r in rows}
 
 
+def _articles_citing_title(conn, title: str) -> set[str]:
+    """kb articles that cite a note by TITLE. Used for DELETED sources: soft_delete nulls
+    links.target_note_id (so the id-based lookup finds nothing), but it leaves target_title
+    intact — so we match on that to still route a deletion to the articles that cited it
+    and let them purge claims whose only source just disappeared."""
+    rows = conn.execute(
+        "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
+        "WHERE lower(l.target_title)=lower(?) AND s.kind='kb' AND s.deleted_at IS NULL", (title,)).fetchall()
+    return {r["title"] for r in rows}
+
+
 def _articles_for_note_entities(conn, note_id: int) -> set[str]:
     """kb articles whose entities this note mentions (so a new fact routes to its subject)."""
     rows = conn.execute(
@@ -681,9 +692,12 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
     change_targets: list[tuple] = []                         # (changed_at, {titles})  in order
     orphans: list[dict] = []
     for ch in changes:
-        targets = _articles_citing(conn, ch["id"])
-        if not ch["deleted"]:
-            targets |= _articles_for_note_entities(conn, ch["id"])
+        if ch["deleted"]:
+            # soft_delete nulled this note's incoming links' target_note_id, so route the
+            # deletion by surviving target_title instead (id-based lookup would find nothing).
+            targets = _articles_citing_title(conn, ch["title"])
+        else:
+            targets = _articles_citing(conn, ch["id"]) | _articles_for_note_entities(conn, ch["id"])
         change_targets.append((ch["changed_at"], targets))
         if not targets:
             if not ch["deleted"]:

@@ -24,6 +24,14 @@ steps:
     do: wiki_maintain
     with: { limit: "{{ config.limit | default(20) }}" }
 
+  # 1b. Safety reconciliation after edits (cheap, no LLM): refresh disambiguation pages,
+  #     then sweep any cross-link that has gone dead. Mirrors the full build's post-write
+  #     passes so maintenance can't leave the KB inconsistent. Only runs if it changed something.
+  - do: write_disambiguation
+    when: "{{ maint.changed }}"
+  - do: flag_dead_links
+    when: "{{ maint.changed }}"
+
   # 2. Summary card of what the pass did.
   - do: create_review
     when: "{{ config.review != false }}"

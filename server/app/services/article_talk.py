@@ -16,8 +16,10 @@ or resolve entries from the article's panel.
 """
 from __future__ import annotations
 
-_KINDS = {"decision", "conflict", "question", "todo", "directive", "note"}
-# Kinds that represent unfinished work — what maintenance should act on.
+_KINDS = {"decision", "conflict", "question", "todo", "directive", "note", "restructure"}
+# Kinds that represent unfinished work — what maintenance should act on. `restructure`
+# (split/merge/fold hints) is deliberately NOT here: a per-article maintain pass can't do
+# it, so it's logged for a later structural pass / Reorganize and never re-worked (no nag).
 OPEN_KINDS = {"conflict", "question", "todo", "directive"}
 
 

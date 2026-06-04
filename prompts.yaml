@@ -571,21 +571,21 @@ actions:
     or @t[...]. Keep the house + domain style and EXACT-title footnote citations. If nothing
     of substance changed, return the article essentially as-is.
 
-    You cannot create, split, merge, or rename articles here. If this article has outgrown
-    one subject (a section has grown large and self-contained), or it overlaps/duplicates
-    another EXISTING ARTICLE, or it's a thin stub that belongs folded into a related page —
-    do NOT attempt it. Instead RECORD a "new" entry of kind "note" (a logged hint for the
-    next full rebuild, which can branch and reconsolidate), e.g. "Split <section> into
-    kb/<Parent>/<Subtopic>" or "Overlaps [[kb/...]] — merge at rebuild". Keep this article
-    tight in the meantime. ("note" is logged, not re-worked each run, so it won't nag.)
+    This per-article pass does not create, split, merge, or rename articles. If this article
+    has outgrown one subject (a section grew large and self-contained), overlaps/duplicates
+    another EXISTING ARTICLE, or is a thin stub that belongs folded into a related page — do
+    NOT attempt it here. Instead RECORD a "restructure" entry whose body names the operation,
+    so a later structural pass (or a Reorganize) can act on it — e.g. "split <section> into
+    kb/<Parent>/<Subtopic>" or "overlaps [[kb/...]] — merge". Keep this article tight in the
+    meantime. (A "restructure" item is logged, never re-worked by maintenance, so it won't nag.)
 
     After the article, append EXACTLY one fenced block (valid JSON):
     ```maintain
-    {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note", "body": "..."}]}
+    {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note|restructure", "body": "..."}]}
     ```
     List every OPEN-ITEM id you actually addressed in "resolved"; omit ids you left open.
     "new" is optional — raise it for something genuinely worth a later look, including a
-    split/fold/merge hint as a "note" per above.
+    split/fold/merge hint as a "restructure" per above.
 
     HOUSE STYLE
     {general_guide}

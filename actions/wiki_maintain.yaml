@@ -43,3 +43,6 @@ steps:
   # 3. Re-open a review session for whatever is STILL open (couldn't be settled from sources).
   - do: review_open_talk
     when: "{{ config.review != false }}"
+
+  # 4. Read-only taxonomy-health check — cards a "Reorganize recommended" only when overdue.
+  - do: taxonomy_health

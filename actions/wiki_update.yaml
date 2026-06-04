@@ -6,7 +6,7 @@
 # facts) — and refreshes those articles against their current sources: integrating new
 # facts, reconciling changed ones, and purging claims whose only source was deleted. It
 # NEVER invents. A brand-new subject with no article yet becomes a Review nudge (creating
-# articles is left to the full rebuild, which has the whole-taxonomy view).
+# articles is handled by maintenance — create_article folds new subjects in).
 #
 # Additive + reconciling, versioned/undoable. The full rebuild (wiki_build) remains the
 # source of truth; this just keeps things current cheaply. Requires an Anthropic key.

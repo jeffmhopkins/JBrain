@@ -223,9 +223,16 @@ def _p_wiki_outline(ctx, digest, instructions=None):
 
 def _p_wiki_write_batch(ctx, articles, instructions=None):
     """Write every planned article (draft + one revise pass + structure lint); returns
-    {valid, quarantined, count, bad}."""
+    {valid, quarantined, count, bad}. Reports each article to the run modal as it's written."""
     from . import wiki_build
-    return wiki_build.write_batch(ctx.conn, list(articles or []), instructions)
+
+    def on_article(i, n, title):
+        if ctx.on_step:
+            try:
+                ctx.on_step(f"wiki_write:{i}/{n}:{title}")
+            except Exception:  # noqa: BLE001 — progress must never break the build
+                pass
+    return wiki_build.write_batch(ctx.conn, list(articles or []), instructions, on_article=on_article)
 
 
 def _p_validate_structure(ctx, title, content_md):

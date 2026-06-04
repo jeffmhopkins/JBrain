@@ -353,9 +353,11 @@ def flag_dead_links(conn) -> dict:
     return {"dead_links": len(items), "articles": len(by_src), "fixed": fixed}
 
 
-def write_batch(conn, articles: list[dict], instructions: str | None = None) -> dict:
+def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:
     """Write every article; split valid (saved by the recipe) vs quarantined (failed
-    the structure lint — surfaced, not saved). Mirrors validate_citations' shape."""
+    the structure lint — surfaced, not saved). Mirrors validate_citations' shape.
+    `on_article(index, total, title)` is called before each write so the run modal can
+    show which article is currently being written."""
     # The titles writers may cross-link: every planned article PLUS any live kb article
     # that survives (so links resolve when adding to an existing KB, not just full rebuild).
     planned = [str(a.get("title") or "").strip() for a in articles]
@@ -363,7 +365,10 @@ def write_batch(conn, articles: list[dict], instructions: str | None = None) -> 
         "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()]
     known = sorted({t for t in planned + existing if t})
     valid, quarantined = [], []
-    for art in articles:
+    total = len(articles)
+    for i, art in enumerate(articles, 1):
+        if on_article:
+            on_article(i, total, str(art.get("title") or "").strip())
         d = write_one(conn, art, instructions, known_titles=known)
         (valid if d["ok"] and d["content_md"] else quarantined).append(d)
     # A human-readable reason per dropped article, so the review card explains WHY each

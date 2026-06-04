@@ -248,11 +248,23 @@ export default function WorkflowsPage() {
       {watch && (() => {
         const lv = live[watch.id] || { events: [], status: "running", detail: "" };
         const isRunning = lv.status === "running" || running[watch.id];
-        // Collapse consecutive identical steps (e.g. 30× "Saving note") into one row with a count.
-        const groups: { name: string; count: number }[] = [];
-        for (const name of lv.events) {
+        // Collapse consecutive identical steps (e.g. 30× "Saving note") into one row with a
+        // count. Per-article writes arrive as "wiki_write:i/n:title" — fold them into one
+        // "Writing articles" row that shows the article currently being written.
+        const groups: { name: string; count: number; detail?: string }[] = [];
+        for (const ev of lv.events) {
+          let name = ev, detail: string | undefined;
+          if (ev.startsWith("wiki_write:")) {
+            const rest = ev.slice("wiki_write:".length);
+            const sep = rest.indexOf(":");
+            const prog = sep >= 0 ? rest.slice(0, sep) : "";
+            const title = sep >= 0 ? rest.slice(sep + 1) : rest;
+            name = "wiki_write_batch";
+            detail = `${title}${prog ? ` (${prog})` : ""}`;
+          }
           const last = groups[groups.length - 1];
-          if (last && last.name === name) last.count++; else groups.push({ name, count: 1 });
+          if (last && last.name === name) { last.count++; if (detail) last.detail = detail; }
+          else groups.push({ name, count: 1, detail });
         }
         return (
           <Modal
@@ -270,7 +282,9 @@ export default function WorkflowsPage() {
                 return (
                   <li key={i} className={stepRunning ? "running" : "done"}>
                     <span className="watch-ico">{stepRunning ? "⏳" : "✓"}</span>
-                    {prettyStep(g.name)}{g.count > 1 ? ` ×${g.count}` : ""}
+                    {prettyStep(g.name)}
+                    {g.name === "wiki_write_batch" && g.detail ? ` — ${g.detail}`
+                      : g.count > 1 ? ` ×${g.count}` : ""}
                   </li>
                 );
               })}

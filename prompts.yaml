@@ -393,11 +393,16 @@ actions:
     kb/Reference/Finance/<Name>, kb/Reference/Technology/<Name>. Group sibling subjects
     under shared parents so Reference reads like a real, navigable category tree.
 
-    SUB-CATEGORISE within a domain instead of letting it sprawl flat: when a domain would
-    hold many articles, fold them under a subcategory — kb/<Domain>/<Subcategory>/<Name>.
-    Reference especially must be foldered by subject (kb/Reference/Medicine/..., kb/
-    Reference/Finance/..., kb/Reference/Technology/...), never a flat pile. The domain is
-    always the first path segment.
+    SUB-CATEGORISE in EVERY domain — don't let any domain sprawl as a flat pile. The rule:
+    whenever THREE OR MORE articles share a parent subject, group them under a subcategory
+    kb/<Domain>/<Subcategory>/<Name>, and nest further when it still helps. Examples:
+    - 3+ facilities in one health system → kb/Places/Health First/<Facility>
+    - 3+ doctors at one practice → kb/People/<Practice>/<Doctor>
+    - 3+ vehicles → kb/Things/Vehicles/<Vehicle>; 3+ accounts → kb/Things/Accounts/<Name>
+    - Reference always: kb/Reference/Medicine/Conditions/..., .../Medications/..., kb/
+      Reference/Finance/..., kb/Reference/Technology/...
+    Below the 3-article threshold a flat kb/<Domain>/<Name> is fine (except Reference,
+    which is ALWAYS foldered). The domain is always the first path segment.
 
     POPULATE GROUPS — don't leave it empty. Create a Groups article for each collective
     that ties People together: a household/family, an employer, a club, a team. Use the

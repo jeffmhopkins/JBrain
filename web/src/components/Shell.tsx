@@ -130,6 +130,7 @@ const TOOL_TITLES: Record<string, string> = {
   "/shares": "Shares",
   "/search": "Search",
   "/graph": "Graph",
+  "/entities": "Entities",
   "/map": "Map",
   "/people": "Users",
   "/prompts": "Prompts",

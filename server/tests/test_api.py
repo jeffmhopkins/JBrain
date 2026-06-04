@@ -808,6 +808,10 @@ def test_dead_link_detection_and_flagging(client):
     wiki_build.flag_dead_links(conn)
     todos = [t for t in article_talk.open_for(conn, "kb/People/Allan") if t["kind"] == "todo"]
     assert any("kb/People/Ghost" in t["body"] for t in todos)
+    # The dead link is stripped from the body (kept as plain text); the real link stays.
+    body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
+    assert "[[kb/People/Ghost]]" not in body and "Ghost" in body
+    assert "[[kb/People/Bob]]" in body
 
 
 def test_write_one_never_saves_dead_link(client, monkeypatch):

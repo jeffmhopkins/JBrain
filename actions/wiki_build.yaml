@@ -95,4 +95,4 @@ steps:
     when: "{{ built.quarantined }}"
     with:
       title: "Some articles need a look"
-      message: "{{ built.bad }} article(s) failed structure checks and were NOT saved: {{ built.quarantined | map(attribute='title') | join(', ') }}."
+      message: "{{ built.bad }} article(s) failed structure checks and were NOT saved. Reasons: {{ built.report }}"

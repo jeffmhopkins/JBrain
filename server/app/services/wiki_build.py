@@ -324,19 +324,33 @@ def dead_links(conn) -> list[dict]:
 
 
 def flag_dead_links(conn) -> dict:
-    """Record each article's dead links as a 'todo' on its talk so the next maintenance
-    pass (or the owner) fixes them. Returns the totals for the build summary."""
+    """Neutralize + flag dead cross-links in saved articles. Runs AFTER every article is
+    saved, so it has ground truth: any [[link]] whose target still doesn't exist — e.g. the
+    target article was planned but quarantined — is unwrapped to plain text and recorded as
+    a todo on the source article's talk. This is the final guarantee that no dead link
+    survives in a published article (the write-time backstop can't catch a link to a
+    target that was legitimately planned but then failed to save)."""
     from . import article_talk
+    from . import notes as notes_svc
     items = dead_links(conn)
-    by_src: dict[str, list[str]] = {}
+    by_src: dict[str, set[str]] = {}
     for it in items:
-        by_src.setdefault(it["source_title"], []).append(it["target_title"])
+        by_src.setdefault(it["source_title"], set()).add(it["target_title"])
+    fixed = 0
     for src, targets in by_src.items():
+        row = conn.execute(
+            "SELECT content_md FROM notes WHERE title=? AND kind='kb' AND deleted_at IS NULL",
+            (src,)).fetchone()
+        if row:
+            new = _neutralize_links(row["content_md"] or "", set(targets))
+            if new != (row["content_md"] or ""):
+                notes_svc.upsert_note(conn, src, new, kind="kb", version_note="unlinked dead references")
+                fixed += 1
         article_talk.record(conn, src, [
-            {"kind": "todo", "body": f"Dead link [[{t}]] — no such article/note; fix the target or unlink it."}
-            for t in targets], author="ai")
+            {"kind": "todo", "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
+            for t in sorted(targets)], author="ai")
     conn.commit()
-    return {"dead_links": len(items), "articles": len(by_src)}
+    return {"dead_links": len(items), "articles": len(by_src), "fixed": fixed}
 
 
 def write_batch(conn, articles: list[dict], instructions: str | None = None) -> dict:
@@ -352,5 +366,10 @@ def write_batch(conn, articles: list[dict], instructions: str | None = None) -> 
     for art in articles:
         d = write_one(conn, art, instructions, known_titles=known)
         (valid if d["ok"] and d["content_md"] else quarantined).append(d)
+    # A human-readable reason per dropped article, so the review card explains WHY each
+    # was quarantined (e.g. "no source notes resolved") — not just that it was.
+    report = " | ".join(
+        f"{d['title']} — {'; '.join(d['errors']) or ('stub' if d['stub'] else 'empty draft')}"
+        for d in quarantined)
     return {"valid": valid, "quarantined": quarantined,
-            "count": len(articles), "bad": len(quarantined)}
+            "count": len(articles), "bad": len(quarantined), "report": report}

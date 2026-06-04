@@ -1427,6 +1427,39 @@ def test_wiki_write_honors_instructions(client, monkeypatch):
     assert any("Mention her PhD" in p and "ADDITIONAL GUIDANCE" in p for p in prompts)
 
 
+def test_create_article_dedups_and_gates_thin_subjects(client, monkeypatch):
+    """create_article spawns a recurring new subject, FOLDS a near-duplicate instead of
+    spawning a second, and refuses a one-note subject (no thin stubs)."""
+    import json
+    from app.db import get_conn
+    from app.services import wiki_build, entity_index, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    for i in (1, 2):
+        nid = ns.upsert_note(conn, f"notes/mar{i}", "Marlow is a bush pilot in Alaska.")
+        conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                     (nid, f"h{i}", json.dumps([{"type": "person", "name": "Marlow"}])))
+    conn.commit()
+    entity_index.rebuild(conn)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "# Marlow\nMarlow is a bush pilot in Alaska.[^s1]\n\n## References\n[^s1]: [[notes/mar1]] — 2026-06-01\n")
+
+    res = wiki_build.create_article(conn, "Marlow", etype="person")
+    assert res["ok"] and res.get("created") and res["title"] == "kb/People/Marlow", res
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/People/Marlow' AND kind='kb' AND deleted_at IS NULL").fetchone()
+
+    res2 = wiki_build.create_article(conn, "marlow", etype="person")     # near-dup → fold
+    assert res2["ok"] and res2.get("folded") and res2["title"] == "kb/People/Marlow"
+
+    nid3 = ns.upsert_note(conn, "notes/once", "Saw a Quokka once.")
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (nid3, "hq", json.dumps([{"type": "thing", "name": "Quokka"}])))
+    conn.commit(); entity_index.rebuild(conn)
+    res3 = wiki_build.create_article(conn, "Quokka", etype="thing", min_notes=2)
+    assert not res3["ok"] and "note" in res3["reason"]                   # one note → not spawned
+
+
 def test_write_one_bounded_revise_takes_second_pass_on_improvement(client, monkeypatch):
     """The §10 bounded revise loop takes a SECOND pass only when the first strictly improved
     (here: dead links cleared one per pass), and stops — at most write + 2 revises."""

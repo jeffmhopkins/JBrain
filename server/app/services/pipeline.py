@@ -201,6 +201,12 @@ def _p_check_needed_links(ctx, title=None, mode="propose"):
     return wiki_build.check_needed_links(ctx.conn, title, mode)
 
 
+def _p_create_article(ctx, subject=None, etype=None, min_notes=2):
+    """Create ONE new-subject kb article from its notes (dedup before spawn)."""
+    from . import wiki_build
+    return wiki_build.create_article(ctx.conn, subject, etype, int(min_notes))
+
+
 def _p_link_owner(ctx):
     """Link the default person to their freshly-written People article."""
     from . import wiki_build
@@ -1109,6 +1115,7 @@ _PRIMITIVES = {
     "flag_dead_links": _p_flag_dead_links,
     "rebuild_article": _p_rebuild_article,
     "check_needed_links": _p_check_needed_links,
+    "create_article": _p_create_article,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1218,6 +1225,9 @@ _PRIMITIVE_META: dict[str, dict] = {
     "check_needed_links": {"summary": "Deterministically find/add missing kb cross-links (propose|auto).",
                         "inputs": [{"name": "title", "type": "str"},
                                    {"name": "mode", "type": "str"}], "output": "dict"},
+    "create_article": {"summary": "Create ONE new-subject kb article from its notes (dedup before spawn).",
+                        "inputs": [{"name": "subject", "type": "str"}, {"name": "etype", "type": "str"},
+                                   {"name": "min_notes", "type": "int"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

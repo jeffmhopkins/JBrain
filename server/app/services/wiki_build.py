@@ -805,6 +805,62 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
             "count": sum(len(a["proposals"]) for a in out_articles)}
 
 
+_TYPE_DOMAIN = {"person": "People", "org": "Groups", "place": "Places", "thing": "Things",
+                "condition": "Reference", "medication": "Reference", "procedure": "Reference",
+                "concept": "Reference", "event": "Reference"}
+_REF_SUB = {"condition": "Medicine/Conditions", "medication": "Medicine/Medications",
+            "procedure": "Medicine/Procedures", "event": "Events"}
+
+
+def create_article(conn, subject: str, etype: str | None = None, min_notes: int = 2) -> dict:
+    """Create ONE new-subject kb article from its notes — what the incremental loop used to
+    defer to the full rebuild. DEDUP BEFORE SPAWN: if the subject's canonical entity already
+    has an article, or an existing kb leaf normalises-equal, route there (fold) instead of
+    minting a near-duplicate. Spawns only a subject with ≥ min_notes notes (else fold, don't
+    stub). Picks kb/<Domain>/<Name> (Reference is foldered), writes from sources, relinks.
+    Runs under the KB write lock. Returns {ok, created?|folded?, title?, reason?}."""
+    from . import notes as notes_svc, entity_index, article_talk
+    subject = (subject or "").strip()
+    norm = entity_index.normalize(subject)
+    if not norm:
+        return {"ok": False, "reason": "empty subject"}
+    ent = conn.execute("SELECT id, type, canonical_name, article_title FROM entities "
+                       "WHERE normalized_key=? ORDER BY note_count DESC LIMIT 1", (norm,)).fetchone()
+    if ent and ent["article_title"]:
+        return {"ok": True, "folded": True, "title": ent["article_title"], "reason": "article already exists"}
+    for r in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL"):
+        if entity_index.normalize(r["title"].split("/")[-1]) == norm:
+            return {"ok": True, "folded": True, "title": r["title"], "reason": "near-duplicate title exists"}
+    ids = entity_index.note_ids_for_name(conn, subject)
+    if len(ids) < int(min_notes):
+        return {"ok": False, "reason": f"only {len(ids)} note(s) — fold into a related article, don't spawn a stub"}
+    name = (ent["canonical_name"] if ent else subject).strip().replace("/", " ").strip()
+    typ = (etype or (ent["type"] if ent else "") or "").lower()
+    domain = _TYPE_DOMAIN.get(typ, "Reference")
+    title = (f"kb/Reference/{_REF_SUB.get(typ, 'Concepts')}/{name}" if domain == "Reference"
+             else f"kb/{domain}/{name}")
+    if conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (title,)).fetchone():
+        return {"ok": True, "folded": True, "title": title, "reason": "title already exists"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "reason": "KB busy — try again shortly"}
+    try:
+        art = {"title": title, "domain": domain, "scope": "", "sources": sorted(ids)}
+        out = write_one(conn, art, None, known_titles=_known_titles(conn))
+        if out.get("ok") and out.get("content_md"):
+            notes_svc.upsert_note(conn, title, out["content_md"], kind="kb",
+                                  source="create", version_note="created from sources")
+            if out.get("talk"):
+                article_talk.record(conn, title, out["talk"])
+            entity_index.rebuild(conn)            # point the entity at its new article
+            flag_dead_links(conn)
+            conn.commit()
+            return {"ok": True, "created": True, "title": title}
+        conn.commit()
+        return {"ok": False, "title": title, "reason": "; ".join(out.get("errors") or []) or "structure lint failed"}
+    finally:
+        kb_lock_release(conn)
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

@@ -1,0 +1,39 @@
+# Declarative action: CREATE ONE new-subject knowledge-base article from its notes.
+#
+# Mints an article for a subject your notes cover but the KB doesn't have yet — what the
+# incremental loop previously deferred to a full rebuild. DEDUPS BEFORE SPAWNING: if the
+# subject already has an article (or a near-duplicate title exists) it folds/routes there
+# instead of making a second page, and it won't spawn a thin stub for a one-off mention
+# (needs >= min_notes notes). Writes from the source notes, then re-links. Runs under the
+# KB write lock. Owner-triggered. Requires an Anthropic key.
+#
+# config keys:
+#   subject   — the subject to create an article for (a person/place/thing/concept name)
+#   etype     — optional entity type hint (person|org|place|thing|condition|medication|procedure|concept|event)
+#   min_notes — minimum notes mentioning it before spawning (default 2)
+#   review    — post a review card (default true)
+type: wiki_create_article
+category: Knowledge base
+config:
+  - { key: subject, label: "Subject (name)", type: text }
+  - { key: etype, label: "Type hint (optional)", type: text }
+  - { key: min_notes, label: "Min notes to spawn", type: number, default: 2 }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: ca
+    do: create_article
+    with:
+      subject: "{{ config.subject }}"
+      etype: "{{ config.etype | default(none) }}"
+      min_notes: "{{ config.min_notes | default(2) }}"
+  - do: create_review
+    when: "{{ config.review != false and ca.created }}"
+    with:
+      title: "Article created"
+      message: "Created {{ ca.title }} from its notes."
+      link_title: "{{ ca.title }}"
+  - do: create_review
+    when: "{{ config.review != false and not ca.ok }}"
+    with:
+      title: "Could not create article"
+      message: "{{ config.subject }}: {{ ca.reason }}"

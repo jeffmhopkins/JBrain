@@ -115,6 +115,47 @@ def note_analysis(slug: str):
     return na.get(conn, row["id"]) or {}
 
 
+class TalkIn(BaseModel):
+    kind: str = "note"
+    body: str
+
+
+def _note_title(conn, slug: str) -> str:
+    row = conn.execute("SELECT title FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return row["title"]
+
+
+@router.get("/{slug}/talk")
+def get_talk(slug: str):
+    """The article's 'talk' entries (decisions/conflicts/questions/directives) — the
+    maintenance memory beside the article."""
+    conn = get_conn()
+    from ..services import article_talk
+    return article_talk.list_for(conn, _note_title(conn, slug))
+
+
+@router.post("/{slug}/talk")
+def add_talk(slug: str, body: TalkIn):
+    """Add an owner note/directive/question to an article's talk."""
+    conn = get_conn()
+    from ..services import article_talk
+    tid = article_talk.add(conn, _note_title(conn, slug), body.kind, body.body, author="user")
+    conn.commit()
+    return {"id": tid}
+
+
+@router.post("/{slug}/talk/{talk_id}/resolve")
+def resolve_talk(slug: str, talk_id: int):
+    conn = get_conn()
+    from ..services import article_talk
+    _note_title(conn, slug)  # 404 if the note's gone
+    article_talk.resolve(conn, talk_id)
+    conn.commit()
+    return {"ok": True}
+
+
 @router.post("")
 def create_or_update(body: NoteIn):
     conn = get_conn()

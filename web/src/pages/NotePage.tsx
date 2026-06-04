@@ -9,6 +9,7 @@ import { fmtTs, expandTimeTokensMarked } from "../time";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Attachments from "../components/Attachments";
 import AiAnalysisPanel from "../components/AiAnalysisPanel";
+import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
 import ListEditor from "../components/ListEditor";
@@ -152,6 +153,7 @@ export default function NotePage() {
       <Attachments slug={note.slug} onNoteChanged={reload} />
 
       {note.kind !== "kb" && <AiAnalysisPanel slug={note.slug} />}
+      {note.kind === "kb" && !note.title.includes("/_") && <TalkPanel slug={note.slug} />}
 
       <h3 style={{ marginTop: 20 }}>Backlinks</h3>
       {note.backlinks.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No notes link here yet.</p>}

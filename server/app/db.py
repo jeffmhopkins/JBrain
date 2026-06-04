@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 
 def init_db() -> None:
@@ -501,6 +501,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               alias_display TEXT,
               PRIMARY KEY (entity_id, alias_norm));
             CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
+        """)
+
+    if current < 34:
+        # Per-article "talk" memory (decisions/conflicts/questions/directives) for KB maintenance.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS article_talk (
+              id            INTEGER PRIMARY KEY AUTOINCREMENT,
+              article_title TEXT NOT NULL,
+              kind          TEXT NOT NULL,
+              body          TEXT NOT NULL,
+              author        TEXT NOT NULL DEFAULT 'ai',
+              created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+              resolved_at   TEXT);
+            CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
         """)
 
 

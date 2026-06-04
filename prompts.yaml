@@ -423,6 +423,15 @@ actions:
     drifting value AND its anchor (e.g. a birthdate), encode it as a token rather than
     copying the stale number.
 
+    TALK (optional): if you made a notable choice (a merge, an exclusion), found the
+    sources in CONFLICT, or have an open question worth revisiting later, append AFTER the
+    article a fenced block:
+    ```talk
+    [{"kind": "decision|conflict|question|todo", "body": "one concise sentence"}]
+    ```
+    Keep it to genuinely useful entries; omit the block entirely if there's nothing worth
+    noting. It is recorded separately and stripped from the article.
+
     HOUSE STYLE
     {general_guide}
 

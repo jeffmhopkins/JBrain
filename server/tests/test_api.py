@@ -786,6 +786,38 @@ def test_entity_index(client, monkeypatch):
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
 
+def test_article_talk(client, monkeypatch):
+    """Writer-emitted talk is parsed out of the article + recorded; the slug endpoints
+    list/add/resolve; open items are what maintenance will read."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src", "Allan's address; sources disagree on the year.")
+    conn.commit()
+    sid = conn.execute("SELECT id FROM notes WHERE title='notes/src'").fetchone()["id"]
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        "# Allan\nAllan lives in Portland.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n"
+        '\n```talk\n[{"kind":"conflict","body":"Sources disagree on the move year."}]\n```\n'))
+    out = wiki_build.write_one(conn, {"title": "kb/People/Allan", "domain": "People", "scope": "x", "sources": [sid]})
+    assert "```talk" not in out["content_md"]                      # block stripped from the article
+    assert out["talk"] and out["talk"][0]["kind"] == "conflict"
+    article_talk.record(conn, "kb/People/Allan", out["talk"]); conn.commit()
+
+    ns.upsert_note(conn, "kb/People/Allan", out["content_md"], kind="kb"); conn.commit()
+    slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Allan'").fetchone()["slug"]
+    talk = client.get(f"/api/notes/{slug}/talk").json()
+    assert any(t["kind"] == "conflict" for t in talk)
+
+    add = client.post(f"/api/notes/{slug}/talk", json={"kind": "directive", "body": "Keep her maiden name out."}).json()
+    assert client.post(f"/api/notes/{slug}/talk/{add['id']}/resolve").json()["ok"]
+    after = client.get(f"/api/notes/{slug}/talk").json()
+    assert next(t for t in after if t["id"] == add["id"])["resolved_at"]      # resolved
+    assert len(article_talk.open_for(conn, "kb/People/Allan")) == 1            # the conflict remains open
+
+
 def test_entity_aliases_and_disambiguation(client):
     """Acronym/variant aliasing (TTP ↔ full name → one entity, alias-searchable) and
     disambiguation page generation when a term resolves to multiple articles."""

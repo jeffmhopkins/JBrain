@@ -167,6 +167,22 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
 
+-- Per-article "talk" — the Wikipedia-Talk-style memory that makes KB maintenance
+-- stateful: decisions, source conflicts, open questions/TODOs, and user directives.
+-- Lives beside the article (keyed by title, stable across rebuilds), NOT in its body.
+-- The writer records noteworthy entries; the maintenance loop reads open ones and
+-- resolves/adds. Authored by 'ai' or 'user'.
+CREATE TABLE IF NOT EXISTS article_talk (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_title TEXT NOT NULL,
+  kind          TEXT NOT NULL,        -- decision | conflict | question | todo | directive | note
+  body          TEXT NOT NULL,
+  author        TEXT NOT NULL DEFAULT 'ai',   -- ai | user
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
+
 
 
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives

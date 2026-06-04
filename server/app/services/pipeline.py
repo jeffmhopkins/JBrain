@@ -177,6 +177,12 @@ def _p_write_disambiguation(ctx):
     return {"pages": entity_index.write_disambiguation_pages(ctx.conn)}
 
 
+def _p_record_talk(ctx, article_title, entries):
+    """Record the article writer's talk entries (decisions/conflicts/questions)."""
+    from . import article_talk
+    return {"added": article_talk.record(ctx.conn, str(article_title), list(entries or []), author="ai")}
+
+
 def _p_kb_reset(ctx):
     """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
     synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
@@ -983,6 +989,7 @@ _PRIMITIVES = {
     "analyze_note": _p_analyze_note,
     "rebuild_entity_index": _p_rebuild_entity_index,
     "write_disambiguation": _p_write_disambiguation,
+    "record_talk": _p_record_talk,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
@@ -1072,6 +1079,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                              "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "write_disambiguation": {"summary": "Generate kb/_disambig pages for terms mapping to multiple articles.",
                              "inputs": [], "output": "dict"},
+    "record_talk": {"summary": "Record an article's writer talk entries (decisions/conflicts/questions).",
+                    "inputs": [{"name": "article_title", "type": "str", "required": True},
+                               {"name": "entries", "type": "list"}], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",

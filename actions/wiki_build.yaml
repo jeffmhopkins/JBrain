@@ -72,6 +72,9 @@ steps:
     steps:
       - do: write_note
         with: { title: "{{ item.title }}", content_md: "{{ item.content_md }}", kind: kb }
+      - do: record_talk
+        when: "{{ item.talk }}"
+        with: { article_title: "{{ item.title }}", entries: "{{ item.talk }}" }
 
   # 6b. Re-aggregate so each entity now links to its freshly-written article (cheap, no LLM).
   - do: rebuild_entity_index

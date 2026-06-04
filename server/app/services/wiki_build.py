@@ -26,6 +26,22 @@ from . import llm, prompts, wiki_guides
 log = logging.getLogger("jbrain")
 
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
+_TALK_RE = re.compile(r"\n?```talk\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
+
+
+def _extract_talk(text: str):
+    """Pull a trailing ```talk JSON block out of the writer's output. Returns
+    (article_without_block, [entries])."""
+    m = _TALK_RE.search(text or "")
+    if not m:
+        return text, []
+    body = text[:m.start()] + text[m.end():]
+    try:
+        data = json.loads(m.group(1))
+        entries = [e for e in data if isinstance(e, dict) and e.get("body")] if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        entries = []
+    return body, entries
 
 
 def reset(conn) -> dict:
@@ -201,7 +217,7 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
     scope = str(art.get("scope") or "")
     srcs = _load_sources(conn, art.get("sources") or [])
     base = {"title": title, "domain": domain, "content_md": "", "ok": False,
-            "errors": [], "warnings": [], "stub": False}
+            "errors": [], "warnings": [], "stub": False, "talk": []}
     if not srcs:
         base["errors"] = ["no source notes resolved"]
         return base
@@ -216,7 +232,7 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
               .replace("{domain}", domain or "").replace("{title}", title)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
     try:
-        draft = _strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200))
+        draft, talk = _extract_talk(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200)))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"write failed: {exc}"]
         return base
@@ -229,14 +245,15 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
                    .replace("{domain_guide}", dguide).replace("{domain}", domain or "")
                    .replace("{draft}", draft))
         try:
-            revised = _strip_fence(llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200))
+            revised, rtalk = _extract_talk(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200)))
             v2 = wiki_guides.validate_structure(title, revised)
             if len(v2["errors"]) <= len(v["errors"]):   # keep the revision only if no worse
-                draft, v = revised, v2
+                draft, v, talk = revised, v2, (rtalk or talk)
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
 
-    return {"title": title, "domain": domain, "content_md": draft,
+    return {"title": title, "domain": domain, "content_md": draft, "talk": talk,
             "ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}
 
 

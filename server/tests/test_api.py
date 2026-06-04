@@ -975,41 +975,49 @@ def test_article_talk(client, monkeypatch):
 
 def test_note_normalize_redate_and_title(client, monkeypatch):
     """redate files loose entry notes under notes/YYYY/MM/DD/N (continuing the day's
-    numbering, skipping kb/ + daily/ + already-dated), idempotently; title adds a generated
-    leaf to bare dated notes only."""
+    numbering, skipping kb/ + already-dated), folds the PWA notes/daily/ capture tree
+    (raw captures + day-summary rollups) into it by TITLE day, idempotently; title adds a
+    generated leaf to bare dated notes only."""
     from app.db import get_conn
     from app.services import note_normalize, llm
     from app.services import notes as ns
     conn = get_conn()
 
-    def mk(title, created):
-        nid = ns.upsert_note(conn, title, "body of " + title)
+    def mk(title, created, **kw):
+        nid = ns.upsert_note(conn, title, "body of " + title, **kw)
         conn.execute("UPDATE notes SET created_at=? WHERE id=?", (created, nid))
         return nid
 
     loose1 = mk("Cardiology invoice", "2026-06-04 09:00:00.000")
     loose2 = mk("Grocery list", "2026-06-04 10:00:00.000")
     mk("notes/2026/06/04/1", "2026-06-04 08:00:00.000")          # already dated → max N on the day = 1
-    mk("notes/daily/2026/06/04/5", "2026-06-04 07:00:00.000")    # PWA daily capture → must be left alone
+    cap = mk("notes/daily/2026/06/04/5", "2026-06-04 07:00:00.000")    # PWA daily capture → folded in
+    # A day-summary rollup (kind='daily'), rolled up just after midnight onto the NEXT day:
+    summ = mk("notes/daily/2026/06/03", "2026-06-04 02:00:00.000", kind="daily")
     ns.upsert_note(conn, "kb/People/Allan", "# Allan", kind="kb")  # kb layer → never touched
     conn.commit()
 
     res = note_normalize.redate_batch(conn)
-    assert res["count"] == 2
+    assert res["count"] == 4
+    # capture filed by its TITLE day (06/04), continuing after the existing /1
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (cap,)).fetchone()["title"] == "notes/2026/06/04/02"
     t1 = conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"]
     t2 = conn.execute("SELECT title FROM notes WHERE id=?", (loose2,)).fetchone()["title"]
-    assert t1 == "notes/2026/06/04/02" and t2 == "notes/2026/06/04/03"   # continue after existing /1, two-digit
-    assert conn.execute("SELECT title FROM notes WHERE title='notes/daily/2026/06/04/5'").fetchone()  # untouched
+    assert t1 == "notes/2026/06/04/03" and t2 == "notes/2026/06/04/04"   # continue after existing /1, two-digit
+    # summary filed under its TITLE day (06/03), NOT its post-midnight created_at; kind kept
+    srow = conn.execute("SELECT title, kind FROM notes WHERE id=?", (summ,)).fetchone()
+    assert srow["title"] == "notes/2026/06/03/01" and srow["kind"] == "daily"
     assert conn.execute("SELECT title FROM notes WHERE title='kb/People/Allan'").fetchone()           # untouched
     assert note_normalize.redate_batch(conn)["count"] == 0          # idempotent
 
-    # title pass: only the bare dated leaves get a generated title.
+    # title pass: only the bare dated leaves get a generated title (moved daily summary too).
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "model_for", lambda *a: "m")
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "Cardiology Invoice")
     tres = note_normalize.title_batch(conn, limit=10)
-    assert tres["count"] == 3                                        # /1, /2, /3 (all bare) titled
-    assert conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"] == "notes/2026/06/04/02 - Cardiology Invoice"
+    assert tres["count"] == 5                                        # 06/03/01 + 06/04/{1,02,03,04}
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (loose1,)).fetchone()["title"] == "notes/2026/06/04/03 - Cardiology Invoice"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (summ,)).fetchone()["title"] == "notes/2026/06/03/01 - Cardiology Invoice"
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
 
 

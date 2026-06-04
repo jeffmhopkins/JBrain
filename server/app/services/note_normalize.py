@@ -5,9 +5,16 @@
   title_batch()   — give each bare dated note a generated leaf title, so
                     notes/2026/06/04/2  ->  notes/2026/06/04/2 - cardiology invoice. LLM.
 
+This also collapses the PWA's own notes/daily/ capture tree into the unified dated tree:
+the raw captures (notes/daily/YYYY/MM/DD/N) and the day's summary rollup (kind='daily',
+notes/daily/YYYY/MM/DD) are both refiled under notes/YYYY/MM/DD/N — by their title day, not
+created_at, since a summary can roll up after midnight onto the next day. The summary keeps
+kind='daily'. New PWA captures keep landing under notes/daily/…; this owner-run pass sweeps
+them into place periodically.
+
 Both rename via notes.upsert_note (versioned; inbound [[links]] are rewritten), skip the
-kb/ layer + protected pages + the PWA's own notes/daily/ capture tree, and are idempotent
-(an already-conforming note is left alone), so they're safe to re-run.
+kb/ layer + protected pages, and are idempotent (an already-conforming note is left alone),
+so they're safe to re-run.
 """
 from __future__ import annotations
 
@@ -19,11 +26,20 @@ from . import notes as notes_svc
 # Flat dated leaf: notes/YYYY/MM/DD/N, optionally "N - title".
 _DATED = re.compile(r"^notes/\d{4}/\d{2}/\d{2}/\d+( - .+)?$")
 _BARE_DATED = re.compile(r"^notes/\d{4}/\d{2}/\d{2}/\d+$")
+# PWA daily capture/rollup: notes/daily/YYYY/MM/DD optionally /N (raw capture).
+_DAILY = re.compile(r"^notes/daily/(\d{4})/(\d{2})/(\d{2})(?:/\d+)?$")
 _TITLE_MAX = 60
 
 
-def _day_of(conn, created_at: str | None) -> str:
-    """The note's capture day as YYYY/MM/DD (from created_at; today if missing)."""
+def _day_of(conn, title: str, created_at: str | None) -> str:
+    """The note's capture day as YYYY/MM/DD.
+
+    For a PWA daily note (notes/daily/YYYY/MM/DD[/N]) the day comes from the TITLE path —
+    its created_at can fall on the next day (a summary rolled up just after midnight). For
+    any other loose note it's the created_at day (today if missing)."""
+    m = _DAILY.match(title or "")
+    if m:
+        return "/".join(m.groups())
     s = (created_at or "")[:10]
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
         s = conn.execute("SELECT strftime('%Y-%m-%d','now') AS d").fetchone()["d"]
@@ -43,11 +59,12 @@ def _max_flat_n(conn, day: str) -> int:
 
 
 def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
-    """Move loose entry notes into notes/YYYY/MM/DD/N (by created_at, in order). Returns the
-    plan + count; with dry_run it only previews."""
+    """Move loose entry notes — plus the PWA daily captures and day-summary rollups — into
+    notes/YYYY/MM/DD/N (by capture day, in created order). Returns the plan + count; with
+    dry_run it only previews."""
     cands = conn.execute(
-        "SELECT id, title, created_at FROM notes WHERE kind='entry' AND deleted_at IS NULL "
-        "AND title NOT LIKE 'notes/daily/%' AND title NOT LIKE 'kb/%' "
+        "SELECT id, title, created_at FROM notes WHERE kind IN ('entry','daily') AND deleted_at IS NULL "
+        "AND title NOT LIKE 'kb/%' "
         "ORDER BY created_at, id").fetchall()
     rows = [r for r in cands if not _DATED.match(r["title"]) and not wiki_guides.is_protected(r["title"])]
     rows = rows[:max(1, int(limit))]
@@ -55,7 +72,7 @@ def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
     next_n: dict[str, int] = {}
     plan = []
     for r in rows:
-        day = _day_of(conn, r["created_at"])
+        day = _day_of(conn, r["title"], r["created_at"])
         if day not in next_n:
             next_n[day] = _max_flat_n(conn, day) + 1
         plan.append({"id": r["id"], "old": r["title"], "new": f"notes/{day}/{next_n[day]:02d}"})
@@ -97,7 +114,7 @@ def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
     if not llm.has_credentials():
         return {"count": 0, "skipped": "no LLM credentials"}
     cands = conn.execute(
-        "SELECT id, title, content_md FROM notes WHERE kind='entry' AND deleted_at IS NULL "
+        "SELECT id, title, content_md FROM notes WHERE kind IN ('entry','daily') AND deleted_at IS NULL "
         "AND title LIKE 'notes/%/%/%/%' ORDER BY created_at, id").fetchall()
     rows = [r for r in cands if _BARE_DATED.match(r["title"])][:max(1, int(limit))]
     done = []

@@ -1,9 +1,12 @@
 # Declarative action: RE-DATE loose notes into the flat dated tree.
 #
 # Files every entry note that doesn't already follow notes/YYYY/MM/DD/N under that scheme,
-# numbered per day by capture order (created_at). Deterministic — no LLM. It SKIPS the
-# kb/ layer, protected pages, and the PWA's own notes/daily/ capture tree, and is
-# idempotent (already-dated notes are left alone), so it's safe to re-run.
+# numbered per day by capture order (created_at). Deterministic — no LLM. This also folds
+# the PWA's own notes/daily/ capture tree into the unified dated tree: the raw captures
+# (notes/daily/YYYY/MM/DD/N) and the day's summary rollup (kind='daily',
+# notes/daily/YYYY/MM/DD) are refiled under notes/YYYY/MM/DD/N by their title day. It SKIPS
+# the kb/ layer and protected pages, and is idempotent (already-dated notes are left
+# alone), so it's safe to re-run.
 #
 # Renames are versioned and rewrite inbound [[links]]. NOTE: because a bulk rename bumps
 # updated_at + the analysis hash, follow this with a full knowledge-base REBUILD rather

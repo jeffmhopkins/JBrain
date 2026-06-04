@@ -5,15 +5,26 @@ import { Icon } from "../components/Icon";
 
 type Mode = "hybrid" | "keyword" | "semantic";
 interface Result {
-  kind: "note" | "attachment";
-  title: string;
-  slug: string;
+  kind: "note" | "attachment" | "entity";
+  title?: string;
+  slug?: string;
   score: number;
   distance?: number;   // vector distance, present on semantic hits
   filename?: string;
   snippet?: string;
   attachments?: number;   // count of files on a note hit (deterministic clip badge)
+  // entity hits (name/alias match over the canonical entity index):
+  name?: string;
+  entity_type?: string;
+  note_count?: number;
+  article_title?: string | null;
 }
+
+// Same glyphs as the Entities browser, so a hit reads consistently across the app.
+const ENTITY_ICON: Record<string, string> = {
+  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
+};
 
 // Embeddings are unit-normalised, so the vec0 L2 distance maps to cosine
 // similarity: sim = 1 - d²/2. Clamp and show as a 0–100% relevance weight.
@@ -90,10 +101,18 @@ export default function SearchPage() {
         {searched && results.length === 0 && <p className="muted">No results.</p>}
         {results.map((r) => {
           const w = weightOf(r);
+          // Entities link to their browse view (notes + KB article); notes/attachments to the note.
+          const to = r.kind === "entity"
+            ? `/entities?q=${encodeURIComponent(r.name || "")}`
+            : `/note/${r.slug}`;
+          const title = r.kind === "entity" ? r.name : r.title;
           return (
-            <Link key={`${r.kind}:${r.slug}:${r.filename ?? ""}`} to={`/note/${r.slug}`} className="list-item">
+            <Link key={`${r.kind}:${r.slug ?? r.name}:${r.filename ?? ""}`} to={to} className="list-item">
               <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
-                <div style={{ fontWeight: 600 }}>{r.title}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {r.kind === "entity" && <span style={{ marginRight: 6 }}>{ENTITY_ICON[r.entity_type || ""] || "•"}</span>}
+                  {title}
+                </div>
                 {r.kind === "note" && !!r.attachments && (
                   <span className="muted" style={{ fontSize: 12 }} title={`${r.attachments} attachment${r.attachments === 1 ? "" : "s"}`}>
                     <Icon name="clip" size={12} />{r.attachments > 1 ? ` ${r.attachments}` : ""}
@@ -101,6 +120,12 @@ export default function SearchPage() {
                 )}
                 {w != null && <span className="search-weight">{w}%</span>}
               </div>
+              {r.kind === "entity" && (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  entity · {r.entity_type}{r.note_count != null ? ` · ${r.note_count} note${r.note_count === 1 ? "" : "s"}` : ""}
+                  {r.article_title ? " · has a KB article" : ""}
+                </div>
+              )}
               {r.kind === "attachment" && (
                 <div className="muted" style={{ fontSize: 12 }}>
                   <Icon name="clip" size={13} /> in {r.filename}{r.snippet ? ` — ${r.snippet}` : ""}

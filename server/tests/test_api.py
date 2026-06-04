@@ -1180,6 +1180,28 @@ def test_geocode_tools_read_only(client, monkeypatch):
     assert "forward_geocode" in architect._mode_tool_names("research")
 
 
+def test_search_includes_entities(client):
+    """Hybrid/keyword search surfaces matching canonical entities (not pure semantic)."""
+    import json
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "n/peridex", "Allan started a new medication.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "person", "name": "Allan Peridex"}])))
+    conn.commit()
+    ei.rebuild(conn)
+
+    hits = client.get("/api/search?q=Peridex&mode=hybrid").json()
+    ent = [h for h in hits if h["kind"] == "entity"]
+    assert ent and ent[0]["name"] == "Allan Peridex" and ent[0]["entity_type"] == "person"
+    assert ent[0]["note_count"] == 1
+    # Keyword mode includes entities too; pure semantic does not (no embedding).
+    assert any(h["kind"] == "entity" for h in client.get("/api/search?q=Peridex&mode=keyword").json())
+    assert all(h["kind"] != "entity" for h in client.get("/api/search?q=Peridex&mode=semantic").json())
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

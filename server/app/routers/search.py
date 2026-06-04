@@ -1,9 +1,10 @@
-"""Hybrid search over notes AND attachments: FTS5 keyword + sqlite-vec semantic."""
+"""Hybrid search over notes, attachments AND canonical entities: FTS5 keyword +
+sqlite-vec semantic (entities by name/alias)."""
 from fastapi import APIRouter
 
 from ..auth import CurrentUser
 from ..db import get_conn
-from ..services import embeddings
+from ..services import embeddings, entity_index
 
 router = APIRouter(prefix="/api/search", tags=["search"], dependencies=[CurrentUser])
 
@@ -53,6 +54,19 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
                     "kind": "attachment", "attachment_id": r["attachment_id"],
                     "note_id": r["note_id"], "filename": r["filename"],
                     "title": r["title"], "slug": r["slug"],
+                }, i)
+        except Exception:
+            pass
+
+        # Canonical entities by name/alias (people, orgs, places, things…). They carry no
+        # embedding, so they ride the keyword/hybrid half only — a name match surfaces the
+        # entity alongside the notes that mention it.
+        try:
+            for i, r in enumerate(entity_index.index(conn, q=q, limit=limit)):
+                bump(f"entity:{r['id']}", {
+                    "kind": "entity", "id": r["id"], "name": r["canonical_name"],
+                    "entity_type": r["type"], "note_count": r["note_count"],
+                    "article_title": r["article_title"],
                 }, i)
         except Exception:
             pass

@@ -17,7 +17,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
       { to: "/search", label: "Search", sub: "Full-text & semantic", icon: "search" },
       { to: "/graph", label: "Graph", sub: "Connections", icon: "graph" },
       { to: "/map", label: "Map", sub: "Location trail & heatmap", icon: "pin" },
-      { to: "/people", label: "People", sub: "Trail attribution & colours", icon: "people" },
+      { to: "/people", label: "Users", sub: "Trail attribution & colours", icon: "people" },
       { to: "/inbox", label: "Inbox", sub: "Captured items to file", icon: "list" },
     ],
   },

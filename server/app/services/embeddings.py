@@ -182,10 +182,19 @@ def delete_entity_embedding(conn, entity_id: int) -> None:
     conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
 
 
-def semantic_search_entities(conn, query: str, limit: int = 10) -> list[dict]:
-    """Canonical entities most similar in meaning to the query (vec_entities). Entities are
-    embedded from their name + type + aliases + KB-article lead, so a descriptive query
-    ('my dog') can surface a named entity ('Buddy'). Returns rows with distance."""
+# bge-small cosine distance: ~0 identical, ~0.6–0.9 related, ≳1.0 unrelated. The entity
+# index is small, so a top-k vector search ALWAYS returns its nearest rows even when nothing
+# is actually on topic — without a floor, a "dog" query surfaces a "CT scan" entity. Keep
+# only reasonably-similar hits so embedding top-k can't inject junk into the ranking.
+ENTITY_SIM_MAX_DISTANCE = 0.9
+
+
+def semantic_search_entities(conn, query: str, limit: int = 10,
+                             max_distance: float = ENTITY_SIM_MAX_DISTANCE) -> list[dict]:
+    """Canonical entities most similar in meaning to the query (vec_entities), filtered to a
+    relevance floor. Entities are embedded from their name + type + aliases + KB-article
+    lead, so a descriptive query ('my dog') can surface a named entity ('Buddy'). Returns
+    rows with distance, nearest first, dropping anything farther than `max_distance`."""
     qvec = embed(query)
     rows = conn.execute(
         "SELECT e.id, e.type, e.canonical_name, e.note_count, e.article_title, v.distance "
@@ -193,7 +202,7 @@ def semantic_search_entities(conn, query: str, limit: int = 10) -> list[dict]:
         "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
         (sqlite_vec.serialize_float32(qvec), max(1, int(limit))),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in rows if r["distance"] <= max_distance]
 
 
 def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:

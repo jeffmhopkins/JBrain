@@ -1289,6 +1289,9 @@ def test_entity_embeddings_and_entities_mode(client):
         "SELECT 1 FROM entities WHERE embed_hash IS NULL").fetchone()
 
     assert any(h["id"] == eid for h in embeddings.semantic_search_entities(conn, "Zebulon Thornquist", 5))
+    # Relevance floor: a strict max_distance drops everything; a loose one keeps the match.
+    assert embeddings.semantic_search_entities(conn, "Zebulon Thornquist", 5, max_distance=-1) == []
+    assert embeddings.semantic_search_entities(conn, "Zebulon Thornquist", 5, max_distance=9.9)
     res = client.get("/api/search?q=Zebulon&mode=entities").json()
     assert res and all(h["kind"] == "entity" for h in res)            # scope returns only entities
     sem = client.get("/api/search?q=Zebulon Thornquist&mode=semantic").json()

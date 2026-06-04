@@ -470,6 +470,10 @@ actions:
     the same sources, and follow the guides. Output ONLY the corrected article Markdown,
     starting with "# <name>".
 
+    CROSS-LINKS — never invent a dead link. Use [[...]] ONLY for the article's cited
+    source notes or a title in the EXISTING ARTICLES list below. Any other subject must be
+    plain text, never wrapped in [[ ]]. Fix every "Dead link" issue this way.
+
     ISSUES TO FIX:
     {issues}
 
@@ -478,6 +482,9 @@ actions:
 
     DOMAIN GUIDE — {domain}
     {domain_guide}
+
+    EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
+    {known_titles}
 
     CURRENT DRAFT:
     {draft}

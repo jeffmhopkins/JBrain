@@ -810,6 +810,30 @@ def test_dead_link_detection_and_flagging(client):
     assert any("kb/People/Ghost" in t["body"] for t in todos)
 
 
+def test_write_one_never_saves_dead_link(client, monkeypatch):
+    """write_one guarantees no dead link survives: when the model keeps inventing one, the
+    revise pass runs and a mechanical backstop unwraps it to plain text + notes it on talk."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src", "Allan knows several people."); conn.commit()
+    sid = conn.execute("SELECT id FROM notes WHERE title='notes/src'").fetchone()["id"]
+    ns.upsert_note(conn, "kb/People/Bob", "# Bob\nReal article.", kind="kb"); conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    # The model stubbornly links a real article (Bob) AND a non-existent one (Ghost), twice.
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        "# Allan\nAllan knows [[kb/People/Bob]] and [[kb/People/Ghost|his cousin]].[^s1]\n\n"
+        "## References\n[^s1]: [[notes/src]] — 2026-06-01\n"))
+    out = wiki_build.write_one(conn, {"title": "kb/People/Allan", "domain": "People", "scope": "x",
+                                      "sources": [sid]}, known_titles=["kb/People/Bob"])
+    assert "[[kb/People/Ghost" not in out["content_md"]        # dead link gone
+    assert "his cousin" in out["content_md"]                   # display text preserved as plain text
+    assert "[[kb/People/Bob]]" in out["content_md"]            # the real link kept
+    assert any(t["kind"] == "todo" and "Ghost" in t["body"] for t in out["talk"])
+
+
 def test_owner_first_person(client, monkeypatch):
     """The note-taker's identity is fed to the analyzer so 'my truck' resolves to the owner
     by name; the placeholder 'Me' is never leaked into prompts."""

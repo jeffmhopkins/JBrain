@@ -21,7 +21,7 @@ import json
 import logging
 import re
 
-from . import llm, prompts, wiki_guides
+from . import llm, prompts, wiki_guides, wikilinks
 
 log = logging.getLogger("jbrain")
 
@@ -210,6 +210,32 @@ def _strip_fence(text: str) -> str:
     return (m.group(1) if m else (text or "")).strip()
 
 
+def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
+    """[[targets]] in `content` that point nowhere — neither an allowed article title nor
+    an existing live note. These are the dead links we refuse to save."""
+    bad = []
+    for t in wikilinks.extract_links(content):
+        if t in allowed:
+            continue
+        if conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                        (t,)).fetchone():
+            continue
+        bad.append(t)
+    return bad
+
+
+def _neutralize_links(content: str, bad: set[str]) -> str:
+    """Unwrap dead [[links]] into plain text (display text, else the title leaf) so a bad
+    link can never reach a saved article. Non-bad links are left untouched."""
+    def repl(m):
+        target = m.group(1).strip()
+        if target not in bad:
+            return m.group(0)
+        inner = m.group(0)[2:-2]
+        return inner.split("|", 1)[1].strip() if "|" in inner else target.split("/")[-1]
+    return wikilinks.WIKILINK_RE.sub(repl, content)
+
+
 def write_one(conn, art: dict, instructions: str | None = None,
               known_titles: list[str] | None = None) -> dict:
     """Write one article from its raw sources + the domain guide, then ONE
@@ -249,21 +275,37 @@ def write_one(conn, art: dict, instructions: str | None = None,
         base["errors"] = [f"write failed: {exc}"]
         return base
 
+    allowed = {t for t in (known_titles or [])} | {title}
     v = wiki_guides.validate_structure(title, draft)
-    if (v["errors"] or v["warnings"]) and not v["stub"]:
-        issues = "\n".join(f"- {x}" for x in (v["errors"] + v["warnings"]))
+    bad = _bad_links(conn, draft, allowed)
+    # A dead link is always worth a revise pass (even if the structure lint is clean), so
+    # the model rewrites it as a real link or plain text rather than us mechanically cutting it.
+    if ((v["errors"] or v["warnings"]) and not v["stub"]) or bad:
+        link_issues = [f"Dead link [[{t}]] — not a real article; link a listed article instead, or write it as plain text"
+                       for t in bad]
+        issues = "\n".join(f"- {x}" for x in (v["errors"] + v["warnings"] + link_issues))
         rprompt = (prompts.get("actions.wiki_revise", "")
                    .replace("{issues}", issues).replace("{general_guide}", general)
                    .replace("{domain_guide}", dguide).replace("{domain}", domain or "")
-                   .replace("{draft}", draft))
+                   .replace("{known_titles}", known_block).replace("{draft}", draft))
         try:
             revised, rtalk = _extract_talk(_strip_fence(
                 llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200)))
             v2 = wiki_guides.validate_structure(title, revised)
-            if len(v2["errors"]) <= len(v["errors"]):   # keep the revision only if no worse
-                draft, v, talk = revised, v2, (rtalk or talk)
+            bad2 = _bad_links(conn, revised, allowed)
+            # Keep the revision when it doesn't regress the lint AND clears at least as many links.
+            if len(v2["errors"]) <= len(v["errors"]) and len(bad2) <= len(bad):
+                draft, v, talk, bad = revised, v2, (rtalk or talk), bad2
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
+
+    # Backstop guarantee: whatever the model left, no dead link survives into the saved
+    # article — unwrap it to plain text and note it on the article's talk.
+    if bad:
+        draft = _neutralize_links(draft, set(bad))
+        talk = list(talk) + [{"kind": "todo",
+                              "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
+                             for t in bad]
 
     return {"title": title, "domain": domain, "content_md": draft, "talk": talk,
             "ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}

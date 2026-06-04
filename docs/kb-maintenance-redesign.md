@@ -1,264 +1,275 @@
-# KB Maintenance & Manual Rebuild — Build Spec
+# KB Maintenance & Manual Rebuild — Build Spec (v2, gauntlet-revised)
 
-Status: **DRAFT for approval** (no code yet). Synthesizes a multi-agent + adversarial
-review. Grounding citations are `file:line` against the tree at the time of writing.
+Status: **READY FOR APPROVAL.** v1 went through a feasibility gauntlet and a
+design-coherence red-team; this v2 folds in every finding. Grounding citations are
+`file:line` against the tree at writing.
 
 ## 0. Goal & position
 
-Make the knowledge base **maintenance-owned**: the destructive full rebuild
-(`wiki_build`, `actions/wiki_build.yaml:12-13` "DESTRUCTIVE … DISABLED, run-only") runs
-**once as a bootstrap and is never scheduled**. A looping **scrub** keeps the *whole*
-wiki correct from the last run; per-article tools handle targeted fixes.
+Make the KB **maintenance-owned**: the destructive full rebuild (`wiki_build`,
+`actions/wiki_build.yaml:12-13`) runs **once as a bootstrap, never on a schedule**. A
+**scrub** (a bounded batch the scheduler re-invokes each tick) keeps the *whole* wiki
+current from the last run; per-article tools handle targeted fixes.
 
-Four standing intents the design must serve, on every write:
-1. **Link everything** that has an article (not merely "don't dangle").
-2. **No duplicated data** (dedup within an article; detect/merge duplicate articles).
-3. **Clean & concise** (summary style, supersede stale facts, trim — not a diary).
-4. **Self-sufficient maintenance** (no reliance on a recurring rebuild).
+Four intents, stated **honestly** (the gauntlet corrected v1's overclaims):
+1. **Link everything reachable** — every write MUST link a mention whose article is in its
+   *relevant candidate set* (graph-neighborhood + leaf/alias text scan), plus a
+   reciprocity pass so new articles get linked *from* their neighbors. This is strong
+   local linking, **not** a global guarantee (see §9.3).
+2. **No duplicate *articles*** — detect/merge near-duplicate articles; dedup orphans
+   *before* spawning. (Cross-*article* duplication of the same *fact* is a known partial
+   limit — §9.4.)
+3. **Clean & concise** — summary style, supersede stale facts, trim (the kept `cb6de74`
+   prompt rules).
+4. **Self-sufficient maintenance** — no reliance on a recurring rebuild; the scrub
+   terminates and stays quiet on a no-op night.
 
-**Honest limit (agreed):** per-article, context-blind operations *cannot* reconstruct
-the outline's whole-corpus taxonomy partition. So the full rebuild is **demoted, not
-deleted** — kept as a **manual, owner-invoked "Reorganize"** for global re-clustering
-only. The scrub becomes the source of truth; "Reorganize" is the rare human-triggered
-eraser for structural divergence.
+**Honest limit (the one compromise):** per-article, context-blind ops cannot reconstruct
+the outline's whole-corpus taxonomy partition. The full rebuild is **demoted, not
+deleted** — kept as a manual, owner-invoked **"Reorganize."** A read-only
+`taxonomy_health` report (§1.10) tells the owner *when* a Reorganize is overdue, so
+lock-in is monitored, not silent.
 
 ---
 
-## 1. New primitives (the agreed missing tools)
+## 1. New primitives
 
-All are `pipeline.py` primitives (registered in `_PRIMITIVES`, ~`:1086`) unless noted.
-Each reuses existing engine functions; the genuinely new logic is called out.
+Registered in `pipeline.py` `_PRIMITIVES` (~`:1086`) unless noted. Each new primitive
+returns `{ok: bool, …}`; the scrub uses `ok` for watermark-hold logic (§2).
 
 ### 1.1 `scoped_known_titles(conn, title, budget=400) -> list[(title, scope)]`  ⟵ ENABLER
-Replaces the silent `[:600]` **alphabetical** slice in `write_one` (`wiki_build.py:282`)
-and `maintain_one` (`:473`). Returns a *relevant* candidate set with one-line scopes:
-- **backlinks** — kb articles linking to `title` (`links` table, target=this).
-- **co-citers** — kb articles citing any of this article's source notes.
-- **entity-neighbors** — articles for entities mentioned in this article
-  (`entity_index` mentions → `article_title`).
-- **domain/parent siblings** — same `kb/<Domain>/<Sub>/…` prefix.
-Deduped, capped at `budget`, each annotated with its scope (the one-line gist stored at
-outline time). **`check_needed_links` does NOT use this cap** — deterministic matching
-scans the full title/alias map.
+Replaces the silent **alphabetical `[:600]`** slice (`wiki_build.py:282`, `:473`) with a
+*relevant* set: **backlinks** (links→this) ∪ **co-citers** (articles citing this
+article's source notes) ∪ **entity-neighbors** (articles for entities this article
+mentions) ∪ **domain/prefix siblings**, deduped, capped at `budget`.
+- **Scope text:** derived on the fly from each candidate's **lead sentence** (first line of
+  `content_md`) — outline `scope` is ephemeral and **not persisted** (feasibility finding
+  #10), so we do NOT depend on stored scope and add **no schema column**.
+- This is a **1-graph-hop neighborhood** query (§9.3). `check_needed_links` does NOT use
+  this cap — deterministic matching scans the full leaf/alias map.
 
-> Why first: intent #1 ("link everything") is now *mandatory* in the prompts (commit
-> `cb6de74`) but **unsatisfiable past 600 articles** with an alphabetical slice. This is
-> the highest-leverage fix and a prerequisite for everything below.
+### 1.2 `rebuild_article(title, instructions=None)`  ⟵ "Rebuild this article" (Tool 1)
+**Regenerate in place — never a literal wipe. Runs under the §4 lock, in ONE transaction**
+(capture→soft_delete→write→commit; a crash can't half-delete):
+1. Capture **sources = prior-citations ∪ entity-index** (`extract_links` non-`kb/`→ids,
+   the `maintain_one` pattern `wiki_build.py:461-466`; ∪ `note_ids_for_name(leaf)` `:305`).
+   **Search is review-suggestion only, never a seed.**
+2. Stash pre-wipe `content_md` + open-directive bodies (undo basis).
+3. Carry **OPEN `directive`/`conflict` items** into `write_one`'s `instructions` (requires
+   the §5 `{instructions}` prompt fix).
+4. `notes.soft_delete(id)` (NOT `reset()`).
+5. `write_one(art, instructions, known_titles=scoped_known_titles(...))`.
+6. **On `ok`:** `upsert_note(kind=kb)` revives the *same row* (slug + version history kept;
+   inbound links re-resolve via `resolve_dangling_links`, `notes.py:401` — verified).
+   **On quarantine:** auto-restore the prior version **AND record an open `todo`
+   ("rebuild quarantined — manual review") + bump an attempt counter** (F8) so a chronically
+   failing article surfaces instead of silently reverting to stale content.
+7. **Reciprocity pass (F3):** run `check_needed_links(mode=propose)` over the article AND
+   its `scoped_known_titles` neighbors, so existing neighbors get a proposed inbound link
+   to the rebuilt article (not just one-way).
+8. Post: `rebuild_entity_index`; `write_disambiguation`; `flag_dead_links` (last).
+- Talk ledger is title-keyed and **preserved**. Owner-triggered (per-article button).
 
-### 1.2 `rebuild_article(title, instructions=None)`  ⟵ "Rebuild this article" button (Tool 1)
-**Regenerate in place — never a literal wipe.** One transaction (see §4 lock):
-1. Read live article; capture **sources = prior-citations ∪ entity-index**
-   (`wikilinks.extract_links` non-`kb/` → note ids, the `maintain_one` pattern
-   `wiki_build.py:461-466`) ∪ `entity_index.note_ids_for_name(leaf)` (`:305`). **Search
-   is review-suggestion only, never a seed** (else the article sprawls past "1-hop",
-   `prompts.yaml:396-404`).
-2. Stash pre-wipe `content_md` + open-directive bodies in `meta` (undo basis).
-3. Carry **OPEN `directive`/`conflict` items** into `write_one`'s `instructions` so they
-   aren't dropped. (Requires the §5 prompt fix — `wiki_write` ignores `instructions`
-   today.)
-4. `notes.soft_delete(id)` the single article (NOT `wiki_build.reset()`).
-5. `write_one(conn, art, instructions, known_titles=scoped_known_titles(...))` where
-   `art={title,domain,scope,sources}`.
-6. **On `ok`:** `upsert_note(kind=kb)` — revives the *same row* (same slug + version
-   history; inbound links re-resolve via `resolve_dangling_links`, `notes.py:401`).
-   **On quarantine (`ok=False`):** **auto-restore the prior version** (do NOT leave a
-   hole — single-article quarantine = data loss otherwise).
-7. Post-passes: `record_talk`; `rebuild_entity_index`; `write_disambiguation`;
-   `flag_dead_links`.
-- **Talk ledger (`article_talk`) is title-keyed and survives** — never cleared.
-- **Run-only / owner-triggered** (per-article button), like `wiki_build`.
-- Known limitation: only *this* article is rewritten, so reciprocal links depend on
-  surviving inbound links; in a large KB it can be a partial island until others are
-  re-linked (mitigated by `check_needed_links`).
-
-### 1.3 `create_article(subject)`  ⟵ load-bearing for self-sufficiency
-Outline-for-one. Replaces the "add it on the next rebuild" nudge (`wiki_build.py:768`):
-- Input: an orphan subject (entity or note-cluster) from the scrub's change window.
-- **Fold-or-spawn gate** (ports outline intent C1): if the subject has `< new_subject_min`
-  notes OR a clear best-fit existing article, **fold the fact into that article** instead
-  of spawning (reuses the `_nudge_new_subjects` min-notes gate `:761`).
-- Else: choose `kb/<Domain>/<Sub>/<Name>` (domain from `note_analysis`; sub from existing
-  siblings), sources via `note_ids_for_name`, `write_one`, save, `relink`.
+### 1.3 `create_article(subject)`  ⟵ load-bearing; **dedup BEFORE spawn (F1)**
+Replaces the "add it on the next rebuild" nudge (`wiki_build.py:768`). Order matters:
+1. **Collapse the orphan set first:** within the change window, dedup orphans by
+   `entity_index.normalize` + the merge map (`entity_index.py:114-127`) so "TTP" and
+   "Thrombotic Thrombocytopenic Purpura" become one subject, not two articles.
+2. **Collision check vs existing KB:** if a leaf-normalized scan (the `check_needed_links`
+   basis) finds an existing title equal to the subject → **fold/route to that article or
+   `merge`, do NOT spawn.**
+3. **Fold-or-spawn gate:** `< new_subject_min` notes or a clear best-fit existing article →
+   fold the fact in; else choose `kb/<Domain>/<Sub>/<Name>`, sources via
+   `note_ids_for_name`, `write_one`, save, reciprocity pass (§1.2 step 7), `relink`.
 
 ### 1.4 `merge_articles(titles, into)`
-Union sources → `write_one` under `into` → `soft_delete` the others →
-**rewrite inbound `[[old]] → [[into]]`** via the existing `_rename_inbound_links`
-(`notes.py`) path. 🔴 **Never rely on `flag_dead_links`** — `_neutralize_links`
-(`wiki_build.py:233`) *unwraps* every inbound link to plain text, silently losing the
-connection. Hysteresis: refuse to merge a title that was `split` within the last K scrubs.
+Union sources → `write_one` under `into` → `soft_delete` others → **rewrite inbound
+`[[old]]→[[into]]` via `_rename_inbound_links` (`notes.py:66`, verified)**. 🔴 Never rely
+on `flag_dead_links` (`_neutralize_links` `:233` *unwraps* inbound links to plain text).
+**Hysteresis keyed on the inverse pair (F6):** `merge(A1,A2→A)` is blocked only if
+`split(A→A1,A2)` happened within **K=3** scrub runs — not any merge touching A1/A2. A
+**second** blocked attempt escalates to a Review card.
 
 ### 1.5 `split_article(title)`
-LLM proposes a partition `{keep_title, [child_title → source_ids]}` from the article +
-its cited sources → `write_one` each → rewrite cross-links → `refresh_index`. Hysteresis:
-refuse to split a title merged within the last K scrubs (anti-oscillation).
+LLM proposes `{keep, [child→source_ids]}` → `write_one` each → rewrite cross-links →
+`refresh_index`. Same inverse-pair hysteresis (K=3) + second-block→Review-card.
 
 ### 1.6 `recategorize_article(title, new_title)`
-Rename/move = `upsert_note` to the new title + `_rename_inbound_links` + `refresh_index` +
-`relink`. Triggered by a **no-LLM SQL sibling count** crossing the 3-article threshold
-(ports the outline sub-categorize rule C2). Accepted limit: the *subcategory name* is a
-judgment that can drift run-to-run.
+Rename/move via `upsert_note(new title)` + `_rename_inbound_links` + `refresh_index` +
+`relink`. Triggered by a no-LLM SQL sibling-count crossing the 3-article threshold (ports
+outline rule C2, `prompts.yaml:415-424`). **Limit (F7):** only *adds* subcategories; does
+**not** collapse an over-split tree or re-domain a mis-filed article, and the subcategory
+*name* can drift run-to-run → that's what `taxonomy_health` (§1.10) watches.
 
 ### 1.7 `check_needed_links(title=None, mode="propose")`  ⟵ "Check for needed links" (Tool 2)
-Deterministic backstop (the *add-link* complement to `flag_dead_links`):
-- Build a leaf/alias→title map (`entity_index._link_articles` basis `:218-230` + aliases).
-- Scan body for known leaves on **word boundaries**, **masking exclusion zones**:
-  existing `[[…]]`, code fences/inline backticks, and **footnote-definition lines**
-  `[^sN]: [[…]]` (citations — linking there breaks `citation_issues`, `pipeline.py:401`).
-- 🔴 **Refuse** any leaf in `entity_index.ambiguous_terms` (`:322`) — link to its
-  `kb/_disambig/<Term>` page if present, else flag — and refuse single-token
-  common-word/unconfirmed-proper-noun leaves ("Smith", "Park", "Running").
-- `mode=propose` (default): a Review card listing proposed links (read-only, schedulable
-  like `kb_audit`). `mode=auto`: one **versioned** write per article, **owner-triggered
-  only**.
-- **No reciprocal/See-also edits** — backlinks are derived (`notes.py:408`).
-- Not subject to the 600 cap (deterministic) — can fix links the writer couldn't reach.
+Deterministic *add-link* backstop. Leaf/alias→title map (`_link_articles` basis `:218-230`
++ aliases). Scan body on word boundaries, **masking** existing `[[…]]`, code
+fences/inline backticks, and footnote-definition lines `[^sN]:` (linking there breaks
+`citation_issues`, `pipeline.py:401`). 🔴 **Refuse** any leaf in
+`entity_index.ambiguous_terms` (`:322`) — link to its `_disambig` page if present, else
+flag — and refuse single-token common-word leaves.
+- **Default `mode=propose`** (review card, schedulable like `kb_audit`); **`mode=auto`** is
+  owner-triggered, one **versioned** write/article, **validates each target is live in the
+  same transaction under the §4 lock** (F4). No reciprocal/See-also edits (backlinks are
+  derived, `notes.py:408`). Not subject to the 600 cap.
 
 ### 1.8 `refresh_index()`
-`build_index_md` over all live non-`_` kb titles → upsert `kb/_index`. No LLM. Wired into
-every structural op (create/merge/split/recategorize) and the scrub.
+`build_index_md` over live non-`_` kb titles → upsert `kb/_index` (verified standalone:
+`build_index_md` needs only an articles list, `wiki_build.py:108`). No LLM. Wired into
+every structural op + the scrub.
 
 ### 1.9 `relink` (composition, not new)
-`rebuild_entity_index` + `flag_dead_links` + `write_disambiguation` — already coded; just
-fire after structural ops so entity→article, dead links, and disambig stay consistent.
+`rebuild_entity_index` + `write_disambiguation` + `flag_dead_links` — already coded, fired
+after structural ops.
+
+### 1.10 `taxonomy_health() -> report`  ⟵ NEW (F7), read-only, no LLM, schedulable
+Surfaces drift so "rare manual Reorganize" becomes *triggered*, not guessed: orphan-prefix
+subcategories, articles whose domain disagrees with their entity type, subcategory-name
+churn over recent runs, sibling counts thrashing the threshold. Past thresholds it posts a
+single Review card "Reorganize recommended: <reasons>." Same SQL machinery as the
+recategorize trigger, in read-only mode.
 
 ---
 
-## 2. The scrub cycle (`actions/wiki_scrub.yaml`, replaces scheduled reliance)
+## 2. The scrub cycle (`actions/wiki_scrub.yaml`)
 
-Watermark-driven, **no `reset`**, brings the whole wiki current since the last run:
+**No self-loop** — the action engine has no `while/until` construct (feasibility finding
+#6). The scrub is **one bounded batch per run; the scheduler re-invokes it each tick** and
+the watermark + the open `restructure`/orphan queues carry the backlog across runs (this
+is exactly how `update_batch` already drains). A multi-day backlog drains over N ticks; a
+quiet night is a no-op.
 
+Per-run steps:
 ```
-0. analyze_pending(200) → analyze_note (loop)        # backfill analysis (as wiki_update)
-1. rebuild_entity_index                               # routing basis (no LLM)
-2. wiki_update(limit per run)                         # changes → EXISTING articles
-3. create_article for each orphan subject ≥ min       # G1 (replaces the nudge)
-4. consume recorded restructure items: split_article / merge_articles   # G2/G3
-5. recategorize_article for sibling-threshold crossings (SQL-triggered)  # G4
-6. refresh_index ; rebuild_entity_index ; write_disambiguation ; flag_dead_links
-7. advance watermark only over the leading all-success prefix
+0. analyze_pending(200) → analyze_note (loop)              # backfill analysis
+1. rebuild_entity_index                                     # routing basis, no LLM
+2. wiki_update(limit)                                       # changes → existing articles
+3. create_article for orphans (deduped per §1.3) ≥ min
+4. consume actionable `restructure` items: split / merge
+5. recategorize for SQL sibling-threshold crossings
+6. write_disambiguation ; check_needed_links(mode=propose) ; refresh_index ;
+   flag_dead_links   ← runs ONCE, LAST, after all structural ops settle (F4)
+7. advance watermark over the leading ALL-SUCCESS prefix
+8. taxonomy_health() (cheap; posts a card only past thresholds)
 ```
 
-**Coverage guarantees:**
-- **Keep the per-run `max_articles` cap; LOOP the recipe** until `changes==0` and no
-  orphans/restructure items remain. A multi-day backlog drains in bounded passes; cost
-  per transaction stays small. (No "raise the cap to infinity" — that breaks affordability
-  + atomicity.)
-- **Watermark = "deferred ≠ skipped"** discipline is preserved from `update_batch`
-  (`wiki_build.py:736-742`). 🔴 **New rule:** a `create_article`/`split`/`merge` *failure*
-  must add the triggering change to `bad_articles` so the watermark holds — else an
-  uncovered subject is skipped forever.
-- **Restructure items are consumed once and resolved** (not re-burned every run).
-
-Scheduling: the scrub replaces today's `wiki-update` + `wiki-maintain` schedules (or runs
-nightly as one job). `wiki-build` stays **disabled/manual**.
+**Termination & anti-livelock (F2):**
+- The loop/queue is defined over **ACTIONABLE** items only. A `restructure` item blocked by
+  hysteresis (§1.4/1.5) is **resolved-as-deferred** (`resolve_with` "blocked until run N"),
+  so it leaves the open set rather than re-presenting forever.
+- A **per-subject attempt counter**: any `create`/`split`/`merge` that fails or is blocked
+  **twice** is parked to a Review card (human), not re-burned.
+- 🔴 Watermark holds: a `create_article`/`split`/`merge` whose `ok=False` adds its
+  triggering change to `bad_articles` (mirrors `update_batch` `:737-742`) so an uncovered
+  subject is never skipped.
 
 ---
 
 ## 3. Data model
 
-- **`article_talk`**: add a kind **`restructure`** whose `body` is JSON
-  `{op:"split"|"merge"|"fold", target?, rationale}`. It is **consumed only by the scrub
-  (step 4)** and is **excluded from `maintain_batch`'s open-item set** (which stays
-  `conflict|question|todo|directive`) so maintenance never tries (and fails) to "address"
-  it. Resolved via `resolve_with` once executed.
-- **Hysteresis**: a lightweight `kb_structure_log(title, op, at)` (or reuse `decision`
-  talk entries) so merge/split can check "was the inverse done within K runs."
+- **`article_talk`**: add kind **`restructure`** to `_KINDS` (`article_talk.py:19`) and the
+  `schema.sql` kind comment. Do **NOT** add it to `OPEN_KINDS` (`:21`); `maintain_batch`'s
+  `WHERE kind IN ('conflict','question','todo','directive')` (`wiki_build.py:611`) then
+  skips it automatically (verified). Body is JSON `{op:"split"|"merge"|"fold", target?,
+  rationale}` — `record` stringifies fine (`:56`).
+- **`kb_structure_log(title, op, inverse_pair_key, at, attempts)`** — small new table for
+  inverse-pair hysteresis (§1.4/1.5) and the attempt counters (§2). (Or fold into
+  `article_talk` `decision` entries; a dedicated table is cleaner.)
 - **Watermark**: unchanged (`meta['kb_incremental:since']`).
 
 ---
 
-## 4. Concurrency & locking  🔴
+## 4. Concurrency & locking  🔴 (feasibility finding #9)
 
-Manual ops (`rebuild_article`, `Reorganize`), the scrub, and any nightly job **must be
-mutually exclusive** — they all mutate `kb/` + `article_talk` on separate connections.
-Failure mode (verified): if the nightly update runs between `rebuild_article`'s
-soft-delete and revive, a note edit that should route to the article is dropped and the
-watermark advances past it (lost until a manual rebuild).
-
-Mechanism: a single **`meta['kb_write_lock']`** advisory flag (claimed atomically, TTL'd,
-released in a `finally`), checked at the top of every KB-mutating action. SQLite is
-single-writer so statements can't corrupt mid-flight, but transactions interleave — the
-lock prevents the logical race. `rebuild_article`'s capture→delete→write is additionally
-wrapped in **one transaction**.
+A plain `meta` flag is **not atomic across connections** (scheduler thread vs manual-run
+thread use different connections — verified race). Use a **dedicated lock table**:
+`CREATE TABLE IF NOT EXISTS kb_locks (key TEXT PRIMARY KEY, held_at TEXT, ttl_ms INTEGER)`
+claimed by `INSERT … ON CONFLICT DO NOTHING` + `rowcount` check (the atomic claim pattern;
+TTL reclaims a dead holder), released in a `finally`. Every KB-mutating action
+(`rebuild_article`, scrub, Reorganize, `check_needed_links` auto) takes the lock first.
+`rebuild_article` additionally wraps capture→delete→write in **one transaction**.
 
 ---
 
 ## 5. Prompt changes
 
-**De-reliance (remove "at rebuild" assumptions):**
-- `wiki_maintain` (`prompts.yaml:571-585`, the `cb6de74` hints): keep the per-article
-  restraint, but (a) change destination from *"the next full rebuild"* → *"the next
-  scrub"*; (b) emit a structured `restructure` item (`{op,target}`) instead of a
-  free-text `note`; (c) delete the literal "merge at rebuild" / "at next rebuild" phrasing.
-- `wiki_outline` (`:393`, `:415-424`): the "prefer few solid articles / fold count-of-1"
-  and "3+ → subcategory" rules move into `create_article` (fold gate) and the scrub
-  (SQL-triggered recategorize) respectively; the outline prompt keeps them **only** for
-  the manual Reorganize.
+**Fix the latent bug (feasibility #2):** add a `{instructions}` placeholder to `wiki_write`
+(`prompts.yaml:442`) and the `.replace()` in `write_one` (`:284-289`) — without it
+`rebuild_article` can't honor directives.
+
+**De-reliance (kill "at rebuild"):**
+- `wiki_maintain` `cb6de74` hints (`:571-585`): keep per-article restraint, but emit a
+  structured `restructure` item (`{op,target}`) "**for the next scrub**", and delete the
+  "merge at rebuild" / "at next rebuild" phrasing.
+- `wiki_outline` (`:393`, `:415-424`): the fold-count-of-1 + 3+-subcategory rules move into
+  `create_article` (§1.3) and the scrub recategorize (§1.6); the outline keeps them only
+  for the manual Reorganize.
 - Code/comments: `wiki_build.py:768` "add it on the next rebuild" → "folded in by
   maintenance"; `kb/_index` "Rebuilt whenever the KB is rebuilt" (`:116`) → "maintained
   continuously by the scrub"; `actions/wiki_update.yaml` "full rebuild remains the source
   of truth" → the scrub is.
 
-**Fix the latent bug:** add a `{instructions}` placeholder to the `wiki_write` prompt
-(`:442`) so `write_one(instructions=…)` (`:257`) actually reaches the model — required for
-`rebuild_article` to honor open directives.
-
-**Keep (correct for a maintenance-owned wiki):** the `cb6de74` LINK-EVERYTHING,
-STAY-CONCISE, and SUPERSEDE additions.
+**Keep:** the `cb6de74` LINK-EVERYTHING / STAY-CONCISE / SUPERSEDE additions.
 
 ---
 
 ## 6. Demote the full rebuild to manual "Reorganize"
-
-- Keep `wiki_build` disabled/run-only; rename its surface to **"Reorganize knowledge base"**
-  and document it as a rare, human-triggered global re-cluster — not a maintenance step.
-- It remains the only operation that re-partitions the taxonomy (R1/R3: per-article ops
-  can't).
+Keep `wiki_build` disabled/run-only; surface it as **"Reorganize knowledge base"**, a rare
+human-triggered global re-cluster. It remains the only op that re-partitions the taxonomy.
 
 ---
 
 ## 7. Phasing
 
-- **Phase 1 (self-contained, high value):** `scoped_known_titles` (kill the 600 cap) +
-  `rebuild_article` (regenerate-in-place) + `check_needed_links` + the `{instructions}`
-  prompt fix + the prompt de-reliance edits + the KB write lock.
-- **Phase 2 (self-sufficiency):** `create_article` + the looping scrub cycle + the
-  `restructure` kind + watermark-holds-on-create-failure.
-- **Phase 3 (structure):** `merge_articles` / `split_article` / `recategorize_article`
-  with inbound-link rewrite + hysteresis; demote rebuild → Reorganize.
+- **Phase 1** (self-contained): `scoped_known_titles` (kill the 600 cap, lead-sentence
+  scope) + `rebuild_article` (in-place, one transaction, quarantine→open-item) +
+  `check_needed_links` + the `{instructions}` prompt fix + prompt de-reliance + the **lock
+  table** (§4). Prereqs from feasibility: `{instructions}`, lock table.
+- **Phase 2** (self-sufficiency): `create_article` (dedup-before-spawn) + the scrub
+  (scheduler-driven bounded batch) + the `restructure` kind + watermark-holds-on-failure +
+  attempt counters + `taxonomy_health`.
+- **Phase 3** (structure): `merge`/`split`/`recategorize` with `_rename_inbound_links`
+  rewrite + inverse-pair hysteresis (K=3) + second-block→Review; demote rebuild→Reorganize.
 
 ---
 
 ## 8. Testing
 
-- `scoped_known_titles`: returns relevant set; never silently truncates a linkable target
-  the way the alphabetical cap did.
-- `rebuild_article`: preserves talk + version history + inbound links; restores prior
-  version on quarantine; sources = citations ∪ entity-index (search excluded); honors an
-  open directive via instructions.
-- `check_needed_links`: links an unambiguous match; refuses ambiguous + common-word leaf;
-  never edits code/quote/footnote zones; propose vs auto.
-- `create_article`: folds a count-of-1 subject; spawns a recurring one; watermark holds on
-  failure.
-- `merge_articles`/`split_article`: inbound `[[old]]→[[into]]` rewritten (NOT unwrapped);
-  hysteresis blocks immediate re-inverse.
-- scrub loop: drains a backlog across bounded passes; nothing skipped; restructure item
-  consumed once.
+- `scoped_known_titles`: returns the neighborhood set (backlinks/co-citers/entity/sibling),
+  lead-sentence scope, no alphabetical truncation of an in-neighborhood target.
+- `rebuild_article`: preserves talk + version history + inbound links; **quarantine →
+  prior restored AND open todo recorded**; sources = citations ∪ entity-index (search
+  excluded); honors a directive via `{instructions}`; reciprocity pass proposes an inbound
+  link from a neighbor.
+- `create_article`: **two same-subject orphans collapse to one article (F1)**; folds a
+  count-of-1; spawns a recurring subject; watermark holds on failure.
+- `check_needed_links`: links an unambiguous match; refuses ambiguous + common-word; never
+  edits code/quote/footnote zones; auto validates target live.
+- `merge`/`split`: inbound `[[old]]→[[into]]` rewritten (NOT unwrapped); inverse-pair
+  hysteresis blocks the inverse but allows a non-inverse move; second block → card.
+- scrub: drains a backlog across ticks; a hysteresis-blocked item is resolved-deferred and
+  does not re-present; `flag_dead_links` runs once, last; no add/remove link flip-flop.
 
 ---
 
 ## 9. Accepted limitations / open decisions
 
-1. **Taxonomy lock-in**: maintenance can't globally re-partition; the manual Reorganize is
-   the only eraser. (Accepted — that's the one compromise.)
-2. **Subcategory naming drift** (recategorize names wander run-to-run). Bounded by SQL
-   trigger; names are a judgment.
-3. **Backwards-dated notes** (clock skew / imports with old `updated_at`) land below the
-   watermark and are never seen by the scrub — only a Reorganize or `rebuild_article`
-   catches them.
-4. **Compounding transcription drift** (maintenance edits prior text, not raw notes) — the
-   antidote is periodic per-article `rebuild_article`, optionally auto-triggered by a
-   drift heuristic (article-vs-source divergence, like `flag_ungrounded_reference`).
-5. **`rebuild_article` reciprocity/island** in a large KB until `check_needed_links` runs.
-6. **`K` (hysteresis window)** and `new_subject_min`, `scoped budget` are tunable knobs to
-   settle during Phase 2/3.
+1. **Taxonomy lock-in** — maintenance can't globally re-partition; manual Reorganize is the
+   eraser, with `taxonomy_health` (§1.10) as the "when overdue" signal.
+2. **Subcategory naming drift** — `recategorize` names wander; bounded by SQL trigger +
+   `taxonomy_health`.
+3. **Linking is neighborhood + leaf-scan, not global (F3)** — two related articles that
+   share no backlink/citation/entity/prefix *and* never name each other's leaf won't auto-
+   link. Reciprocity passes cover the common cases; the global guarantee is explicitly out
+   of scope (and would require an embedding-similarity pass — a possible future addition).
+4. **Cross-article *fact* duplication (F5)** — per-article maintenance can't see other
+   articles' bodies, so the same fact restated in 3 articles can drift to 3 values under
+   per-article SUPERSEDE. Mitigation: prefer a single canonical home + links; optionally a
+   read-only "shared-fact divergence" report keyed on co-cited notes (deferred).
+5. **Backwards-dated notes** below the watermark are never seen by the scrub — only
+   Reorganize / `rebuild_article` catches them.
+6. **Compounding transcription drift** — antidote is periodic `rebuild_article`, optionally
+   auto-triggered by a divergence heuristic (like `flag_ungrounded_reference`).
+7. **Tunables to settle in Phase 2/3:** `K` (hysteresis, default 3), `new_subject_min`,
+   `scoped budget` (default 400), attempt-counter park threshold (default 2),
+   `taxonomy_health` thresholds.

@@ -4,9 +4,10 @@ import android.content.Context
 import org.json.JSONArray
 
 /**
- * Tiny offline buffer. If a capture can't reach JBrain (no Wi-Fi, server down), the
- * transcript is kept here and replayed on the next app/tile launch instead of being
- * lost. Backed by SharedPreferences — a few short strings, no schema needed.
+ * Tiny offline buffer. If a capture can't reach the phone (out of Bluetooth/Wi-Fi
+ * range, phone off), the transcript is kept here and replayed on the next app/tile
+ * launch instead of being lost. Backed by SharedPreferences — a few short strings, no
+ * schema needed.
  */
 object NoteQueue {
     private const val PREFS = "jbrain_queue"
@@ -36,7 +37,9 @@ object NoteQueue {
                 remaining.put(text)
                 continue
             }
-            if (!NoteClient.createEntry(text)) {
+            // Keep replaying until one fails to even reach the phone; once handed off,
+            // the phone owns the retry, so we drop our copy to avoid duplicate notes.
+            if (!PhoneRelay.send(ctx, text).handedOff) {
                 stopped = true
                 remaining.put(text)
             }

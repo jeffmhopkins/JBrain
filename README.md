@@ -96,8 +96,9 @@ There are no usernames or passwords. A single high-entropy **access key** (the
 - It's generated at install (or by the server on first run, printed to the logs
   and saved to `/data/access-key.txt`).
 - You **paste it once** into the PWA on first run; it's stored on that device and
-  sent as `Authorization: Bearer <key>` over HTTPS with every request. The watch
-  uses the same key.
+  sent as `Authorization: Bearer <key>` over HTTPS with every request. The phone
+  app uses the same key; the watch holds no key — it relays dictations to the phone,
+  which forwards them.
 - The server stores only a SHA-256 hash and compares in constant time.
 - **Rotate** the key by editing `JBRAIN_ACCESS_KEY` in `.env` and restarting; old
   devices simply re-paste the new key.

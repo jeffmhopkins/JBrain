@@ -345,10 +345,11 @@ def upsert_note(
         elif not is_loc:
             conn.execute("UPDATE places SET note_slug = NULL WHERE note_slug = ?", (old_slug,))
 
-    # "On every new entry" hook — fires for human/architect-created entry notes
-    # only (not kb/workflow/restore writes), so workflows can enrich them.
+    # "On every new entry" hook — fires for human-authored entry notes only (typed
+    # `user`, dictated from the `watch`, or `architect`-created), not kb/workflow/
+    # restore writes, so workflows can enrich them (auto-title, auto-tag, …).
     effective_kind = kind if kind is not None else (existing["kind"] if existing else "entry")
-    if created and effective_kind == "entry" and source in ("user", "architect"):
+    if created and effective_kind == "entry" and source in ("user", "architect", "watch"):
         if fire_events:
             _fire_entry_created(conn, note_id, title)
         else:  # defer to the caller's flush_entry_events() after it commits

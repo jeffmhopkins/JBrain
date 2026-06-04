@@ -78,6 +78,7 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
     var status by remember { mutableStateOf("") }
     var queued by remember { mutableStateOf(FixQueue.size(ctx)) }
     var keySet by remember { mutableStateOf(Settings.key(ctx).isNotBlank()) }
+    var relays by remember { mutableStateOf(RelayLog.recent(ctx)) }
 
     fun hasNotif(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -96,10 +97,15 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         return true
     }
 
-    // Keep the queued-fixes count live so you can watch the buffer drain after a sync.
+    // Keep the queued-fixes count and the watch-relay log live so you can watch the
+    // buffer drain and see notes arrive from the watch in real time.
     LaunchedEffect(Unit) {
-        while (true) { queued = FixQueue.size(ctx); delay(3000) }
+        while (true) { queued = FixQueue.size(ctx); relays = RelayLog.recent(ctx); delay(3000) }
     }
+
+    // Drain any watch-relayed notes that couldn't be forwarded earlier (e.g. the phone
+    // was offline or unconfigured when the watch sent them).
+    LaunchedEffect(Unit) { NoteQueue.flush(ctx) }
 
     fun turnOn() {
         Tracking.setEnabled(ctx, true)
@@ -245,6 +251,26 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         }
         if (queued > 0) {
             Text("$queued fix(es) queued to send.", style = MaterialTheme.typography.bodySmall)
+        }
+
+        // Watch relay activity: every note the watch sent and whether it reached JBrain.
+        // This is the place to look first when a wrist dictation seems to vanish.
+        Spacer(Modifier.height(4.dp))
+        Text("Watch notes", style = MaterialTheme.typography.titleMedium)
+        if (relays.isEmpty()) {
+            Text(
+                "Nothing received from the watch yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            relays.forEach { e ->
+                Text(
+                    if (e.ok) "✓ ${e.time} — ${e.text}" else "✗ ${e.time} — ${e.detail}: ${e.text}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (e.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                )
+            }
         }
 
         Spacer(Modifier.height(8.dp))

@@ -1,6 +1,5 @@
 package com.jbrain.watch
 
-import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -13,10 +12,7 @@ import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
-import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,13 +60,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Phase { IDLE, SAVING, SAVED, OFFLINE, ERROR }
-
 @Composable
 private fun CaptureScreen(autoStart: Boolean) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var phase by remember { mutableStateOf(Phase.IDLE) }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf(context.getString(R.string.status_idle)) }
 
     val speechLauncher = rememberLauncherForActivityResult(StartActivityForResult()) { result ->
         val spoken = result.data
@@ -78,20 +73,33 @@ private fun CaptureScreen(autoStart: Boolean) {
             ?.firstOrNull()
             ?.trim()
         if (spoken.isNullOrEmpty()) {
-            phase = Phase.IDLE
+            status = context.getString(R.string.status_idle)
             return@rememberLauncherForActivityResult
         }
-        phase = Phase.SAVING
+        busy = true
+        status = context.getString(R.string.status_saving)
         scope.launch {
-            if (NoteClient.createEntry(spoken)) {
-                vibrate(context)
-                phase = Phase.SAVED
-            } else {
-                NoteQueue.enqueue(context, spoken)
-                phase = Phase.OFFLINE
+            // Map each relay outcome to a distinct on-wrist message so a failure is never
+            // silent — you can see exactly which hop broke. Detail also goes to logcat.
+            status = when (val r = PhoneRelay.send(context, spoken)) {
+                is PhoneRelay.Result.Saved -> {
+                    vibrate(context); context.getString(R.string.status_saved)
+                }
+                is PhoneRelay.Result.DeliveredNoAck -> {
+                    vibrate(context); context.getString(R.string.status_sent_unconfirmed)
+                }
+                is PhoneRelay.Result.PhoneError ->
+                    context.getString(R.string.status_phone_error, r.reason)
+                is PhoneRelay.Result.NoPhone -> {
+                    NoteQueue.enqueue(context, spoken); context.getString(R.string.status_no_phone)
+                }
+                is PhoneRelay.Result.SendFailed -> {
+                    NoteQueue.enqueue(context, spoken); context.getString(R.string.status_unreachable)
+                }
             }
-            delay(1500)
-            phase = Phase.IDLE
+            busy = false
+            delay(3500)
+            if (!busy) status = context.getString(R.string.status_idle)
         }
     }
 
@@ -103,41 +111,12 @@ private fun CaptureScreen(autoStart: Boolean) {
         try {
             speechLauncher.launch(intent)
         } catch (e: ActivityNotFoundException) {
-            phase = Phase.ERROR
+            status = context.getString(R.string.status_error)
         }
     }
 
-    // Background location trail toggle. Background location needs a two-step grant
-    // (foreground first, then "Allow all the time" separately on Android 10+).
-    var tracking by remember { mutableStateOf(Tracking.isEnabled(context)) }
-    val bgLauncher = rememberLauncherForActivityResult(RequestPermission()) { _ ->
-        if (Tracking.hasBackground(context)) { Tracking.setEnabled(context, true); tracking = true }
-    }
-    val fgLauncher = rememberLauncherForActivityResult(RequestMultiplePermissions()) { _ ->
-        if (!Tracking.hasForeground(context)) return@rememberLauncherForActivityResult
-        if (Tracking.hasBackground(context)) { Tracking.setEnabled(context, true); tracking = true }
-        else bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-    }
-    fun toggleTracking() {
-        if (tracking) { Tracking.setEnabled(context, false); tracking = false; return }
-        when {
-            !Tracking.hasForeground(context) -> {
-                val perms = mutableListOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                fgLauncher.launch(perms.toTypedArray())
-            }
-            !Tracking.hasBackground(context) -> bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-            else -> { Tracking.setEnabled(context, true); tracking = true }
-        }
-    }
-
-    // On open: replay anything queued from a previous offline capture, then (if we
-    // were launched from the Tile) jump straight into dictation.
+    // On open: replay anything queued while the phone was unreachable, then (if we were
+    // launched from the Tile) jump straight into dictation.
     LaunchedEffect(Unit) {
         NoteQueue.flush(context)
         if (autoStart) startListening()
@@ -154,7 +133,7 @@ private fun CaptureScreen(autoStart: Boolean) {
             ) {
                 Button(
                     onClick = { startListening() },
-                    enabled = phase == Phase.IDLE || phase == Phase.ERROR,
+                    enabled = !busy,
                     modifier = Modifier.size(72.dp),
                 ) {
                     Icon(
@@ -165,36 +144,15 @@ private fun CaptureScreen(autoStart: Boolean) {
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = statusFor(phase),
+                    text = status,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colors.onBackground,
                     style = MaterialTheme.typography.caption1,
-                )
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = if (tracking) "Location: on — tap to stop" else "Track my location",
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colors.primary,
-                    style = MaterialTheme.typography.caption2,
-                    modifier = Modifier
-                        .clickable { toggleTracking() }
-                        .padding(6.dp),
                 )
             }
         }
     }
 }
-
-@Composable
-private fun statusFor(phase: Phase): String = stringResource(
-    when (phase) {
-        Phase.IDLE -> R.string.status_idle
-        Phase.SAVING -> R.string.status_saving
-        Phase.SAVED -> R.string.status_saved
-        Phase.OFFLINE -> R.string.status_offline
-        Phase.ERROR -> R.string.status_error
-    }
-)
 
 private fun vibrate(ctx: Context) {
     val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

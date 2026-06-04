@@ -272,7 +272,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .tag-create, .tag-update, .tag-link { color: var(--text); }
 .tag-delete { color: var(--danger); }
 .danger-hover:hover { color: var(--danger); }
-.badge-user, .badge-architect, .badge-restore, .badge-import { background: var(--bg-elev-2); color: var(--text-dim); }
+.badge-user, .badge-architect, .badge-restore, .badge-import, .badge-watch { background: var(--bg-elev-2); color: var(--text-dim); }
 
 /* Banners: flat dark with a thin accent edge instead of bright fills. */
 .offline-banner, .update-banner, .version-banner, .demo-banner {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Advertises to paired watches that this phone runs the JBrain note relay. The watch
+     app (com.jbrain.watch, same applicationId) queries this capability before sending a
+     dictated note, so it only ever relays to a phone that can actually forward it. -->
+<resources>
+    <string-array name="android_wear_capabilities">
+        <item>jbrain_note_relay</item>
+    </string-array>
+</resources>

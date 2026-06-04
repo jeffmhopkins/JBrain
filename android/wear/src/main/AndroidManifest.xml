@@ -3,19 +3,9 @@
 
     <uses-feature android:name="android.hardware.type.watch" />
 
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Haptic confirmation on a successful capture. No INTERNET, no location: the watch
+         only talks to the paired phone over the Wear Data Layer. -->
     <uses-permission android:name="android.permission.VIBRATE" />
-
-    <!-- Background location trail: coarse+fine while in use, BACKGROUND to keep
-         going when the app is closed, a foreground service to stay alive, and a
-         boot receiver to resume after a reboot. -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -29,11 +19,11 @@
             android:name="com.google.android.wearable"
             android:required="true" />
 
-        <!-- This is a standalone Wear app: it talks to JBrain directly over Wi-Fi /
-             cellular and does not require a paired phone companion. -->
+        <!-- Not standalone: dictations are relayed to the JBrain phone app, which holds
+             the server key and forwards them. The watch needs the phone reachable. -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
-            android:value="true" />
+            android:value="false" />
 
         <activity
             android:name=".MainActivity"
@@ -60,20 +50,6 @@
                 android:name="androidx.wear.tiles.PREVIEW"
                 android:resource="@drawable/ic_mic" />
         </service>
-
-        <!-- Background location trail: a foreground service (type=location) that
-             posts fixes to /api/locations, and a receiver to resume it after boot. -->
-        <service
-            android:name=".LocationService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-        <receiver
-            android:name=".BootReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
 
     </application>
 </manifest>

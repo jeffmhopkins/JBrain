@@ -116,7 +116,8 @@ def require_location_writer(request: Request):
       - the full access key  → returns None (source taken from the request body), or
       - a per-person LOCATION KEY → returns that person row (the caller forces the
         fix's source to this person).
-    A location key grants ONLY this; it can't read the trail or reach any other route.
+    A location key grants only location ingest here (plus dictation capture, via
+    require_capture_writer) — it can't read the trail or reach any other route.
     """
     ip = _client_ip(request)
     now = time.monotonic()
@@ -145,3 +146,19 @@ def require_location_writer(request: Request):
 
 
 LocationWriter = Depends(require_location_writer)
+
+
+def require_capture_writer(request: Request):
+    """Dependency for device DICTATION capture (a watch note relayed by the phone).
+    Authorizes EITHER:
+      - the full access key  → returns None, or
+      - a per-person LOCATION KEY → returns that person row, so the note can be
+        attributed to them.
+    This lets a family phone configured with only its scoped setup-code key drop a
+    dictated note, without ever putting the master key on the device. The validation
+    (and failure throttle) is identical to the location writer.
+    """
+    return require_location_writer(request)
+
+
+CaptureWriter = Depends(require_capture_writer)

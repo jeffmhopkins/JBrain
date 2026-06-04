@@ -53,7 +53,8 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 
 
 @router.get("")
-def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200):
+def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
+               include_hidden: bool = False):
     conn = get_conn()
     clauses = ["deleted_at IS NULL"]
     params: list = []
@@ -63,6 +64,10 @@ def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200):
     if kind:
         clauses.append("kind = ?")
         params.append(kind)
+    # Hide protected/system pages (any path segment starts with '_', e.g. kb/_index)
+    # from the notes list by default; pass include_hidden=true to see them.
+    if not include_hidden:
+        clauses.append(f"NOT {notes_svc.protected_title_sql('title')}")
     params.append(limit)
     rows = conn.execute(
         "SELECT id, title, slug, kind, updated_at FROM notes "

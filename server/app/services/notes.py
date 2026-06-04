@@ -99,6 +99,15 @@ def slugify(title: str) -> str:
 # "notes/", the synthesized encyclopedia under "kb/". Keeping them in separate
 # title roots means an entry and its KB article never collide (and the "/"-path
 # tree groups them automatically).
+def protected_title_sql(col: str = "title") -> str:
+    """SQL predicate matching a 'protected'/system note — any path segment starts with
+    '_' (kb/_index, _scratch, kb/People/_Guide). The SQL twin of wiki_guides.is_protected,
+    used to hide these from the notes list and graph (they stay directly reachable by
+    slug). The '_' is backslash-escaped so LIKE matches a literal underscore, not its
+    single-char wildcard. `col` is always a trusted, hard-coded column name."""
+    return rf"({col} LIKE '\_%' ESCAPE '\' OR {col} LIKE '%/\_%' ESCAPE '\')"
+
+
 def root_title(title: str, root: str) -> str:
     """Place `title` under the given root ('notes' or 'kb') without doubling or
     cross-prefixing. 'Jeff'->'notes/Jeff'; 'kb/Jeff' under 'kb' stays 'kb/Jeff';

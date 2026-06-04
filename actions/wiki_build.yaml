@@ -36,7 +36,10 @@ steps:
       - do: analyze_note
         with: { id: "{{ item }}" }
 
-  # 1. Reset (soft-delete kb/ except protected kb/_*); skipped if reset is turned off.
+  # 1a. Rebuild the canonical entity index from the (now fresh) analyses.
+  - do: rebuild_entity_index
+
+  # 1b. Reset (soft-delete kb/ except protected kb/_*); skipped if reset is turned off.
   - id: reset
     do: kb_reset
     when: "{{ config.reset != false }}"
@@ -69,6 +72,9 @@ steps:
     steps:
       - do: write_note
         with: { title: "{{ item.title }}", content_md: "{{ item.content_md }}", kind: kb }
+
+  # 6b. Re-aggregate so each entity now links to its freshly-written article (cheap, no LLM).
+  - do: rebuild_entity_index
 
   # 7. Reviews.
   - do: create_review

@@ -371,14 +371,19 @@ actions:
     always the first path segment.
 
     POPULATE GROUPS — don't leave it empty. Create a Groups article for each collective
-    that ties People together: a household/family, an employer, a club, a team. If
-    several people are related, make a kb/Groups/<Family name> (household) article, assign
-    the notes about the family as a unit to it, and still give each member their own
-    People article. Likewise make a Groups article for a shared workplace or organisation.
+    that ties People together: a household/family, an employer, a club, a team. Use the
+    ENTITY ROSTER below: people who co-occur frequently or share a surname are almost
+    certainly a household — make a kb/Groups/<Family name> (household) article and assign
+    the shared notes to it, while each member still gets their own People article. Make a
+    Groups article for a recurring shared workplace/organisation too. Make a People
+    article for each recurring person, a Places article for each recurring place, etc.
 
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
     {instructions}
+    ENTITY ROSTER (recurring entities across the notes, with co-occurrence):
+    {roster}
+
     NOTES SURVEY:
     {survey}
   wiki_write: |

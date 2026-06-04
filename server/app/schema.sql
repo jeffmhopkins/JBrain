@@ -134,6 +134,30 @@ CREATE TABLE IF NOT EXISTS note_analysis (
   analyzed_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Canonical entity index, AGGREGATED from note_analysis entities (a derived index,
+-- like FTS). One row per real-world person/org/place/thing, with name variants merged
+-- conservatively. Feeds the KB outline (recurring entities + co-occurrence -> articles
+-- & Groups clustering) and a browse view. Upserted by (type, normalized_key) so ids are
+-- stable across rebuilds.
+CREATE TABLE IF NOT EXISTS entities (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  type           TEXT NOT NULL,                       -- person | org | place | thing
+  canonical_name TEXT NOT NULL,
+  normalized_key TEXT NOT NULL,
+  note_count     INTEGER NOT NULL DEFAULT 0,
+  article_title  TEXT,                                -- the kb article for this entity, if one exists
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(type, normalized_key)
+);
+CREATE TABLE IF NOT EXISTS entity_mentions (
+  entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  note_id   INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  raw_name  TEXT,
+  PRIMARY KEY (entity_id, note_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_note ON entity_mentions(note_id);
+
+
 
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives
 -- in one consistency domain and is trivially searchable. note_id is nullable so

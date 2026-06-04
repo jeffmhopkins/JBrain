@@ -528,6 +528,10 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .watch-ico { width: 16px; flex: none; }
 .watch-steps li.running .watch-ico { animation: pulse 1.2s ease-in-out infinite; }
 .watch-detail { margin-top: 10px; white-space: pre-wrap; }
+/* Entity browse rows */
+.entity-row { display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 4px; cursor: pointer; color: var(--text); }
+.entity-row:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 /* Wikipedia-style citations: superscript markers + a References list (remark-gfm
    footnotes). The auto heading reads "Footnotes" — relabel it to "References". */

@@ -748,6 +748,44 @@ def test_upsert_revives_soft_deleted_title(client):
     assert conn.execute("SELECT COUNT(*) FROM notes WHERE lower(title)='kb/topic x'").fetchone()[0] == 1
 
 
+def test_entity_index(client, monkeypatch):
+    """Canonical entity index: conservative variant merge, the browse endpoints, and the
+    assignment safety net (an article named for an entity picks up ALL its notes)."""
+    import json
+    from app.db import get_conn
+    from app.services import entity_index as ei, llm, wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+
+    def mk(title, ents):
+        nid = ns.upsert_note(conn, title, "x")
+        conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                     (nid, "h", json.dumps(ents)))
+        return nid
+
+    a = mk("notes/a", [{"type": "person", "name": "Summer E. Hopkins"},
+                       {"type": "person", "name": "Jeffrey Hopkins"}])
+    b = mk("notes/b", [{"type": "person", "name": "Summer Hopkins"}])     # → merges into the above
+    mk("notes/c", [{"type": "person", "name": "John Smith"}])             # → stays separate
+    conn.commit()
+
+    ei.rebuild(conn)
+    counts = {r["canonical_name"]: r["note_count"]
+              for r in conn.execute("SELECT canonical_name, note_count FROM entities").fetchall()}
+    assert counts["Summer E. Hopkins"] == 2 and "John Smith" in counts   # variant merged, distinct kept
+
+    lst = client.get("/api/entities?type=person").json()
+    eid = next(e["id"] for e in lst if e["canonical_name"] == "Summer E. Hopkins")
+    detail = client.get(f"/api/entities/{eid}").json()
+    assert len(detail["notes"]) == 2
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete",
+        lambda *a, **k: '[{"title":"kb/People/Summer E. Hopkins","domain":"People","scope":"x","sources":[]}]')
+    out = wiki_build.outline(conn, [{"id": a, "title": "notes/a", "gist": "g", "domain": "People", "entities": []}])
+    assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
+
+
 def test_wiki_build(client, monkeypatch):
     """The KB rebuild engine: reset spares protected pages, and the full recipe runs
     end-to-end — old articles wiped, guides + index kept, a lint-passing article saved."""

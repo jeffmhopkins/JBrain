@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { get } from "../api";
 import { expandTimeTokens } from "../time";
 
@@ -53,9 +54,10 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
       {!!a.entities?.length && (
         <div className="backlink-row" style={{ marginTop: 6 }}>
           {a.entities.map((e, i) => (
-            <span key={i} className="backlink-chip" title={e.type}>
+            <Link key={i} className="backlink-chip" title={`See all notes about ${e.name}`}
+                  to={`/entities?type=${encodeURIComponent(e.type)}&q=${encodeURIComponent(e.name)}`}>
               {ENTITY_ICON[e.type] || "•"} {e.name}
-            </span>
+            </Link>
           ))}
         </div>
       )}

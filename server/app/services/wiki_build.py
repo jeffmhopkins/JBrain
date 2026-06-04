@@ -117,12 +117,19 @@ def _isint(x) -> bool:
 
 
 def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
-    """Survey → taxonomy. Returns {articles: [{title, domain, scope, sources}], index_md}."""
+    """Survey → taxonomy. Returns {articles: [{title, domain, scope, sources}], index_md}.
+    The canonical entity roster (recurring people/orgs/places + co-occurrence) is fed in
+    alongside the per-note survey so the outline reliably makes one article per entity and
+    clusters co-occurring people into Groups; entity mentions then backfill each article's
+    sources so no note about an entity is missed."""
     if not llm.has_credentials() or not digest:
         return {"articles": [], "index_md": ""}
+    from . import entity_index
     extra = f"\nAdditional guidance: {instructions}\n" if instructions else ""
+    roster = entity_index.roster(conn) or "(none yet)"
     prompt = (prompts.get("actions.wiki_outline", "")
               .replace("{survey}", _survey_text(digest))
+              .replace("{roster}", roster)
               .replace("{instructions}", extra))
     try:
         text = llm.complete([{"role": "user", "content": prompt}], max_tokens=4000)
@@ -145,6 +152,14 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
         sources = [int(x) for x in (a.get("sources") or []) if _isint(x)]
         articles.append({"title": title, "domain": domain,
                          "scope": str(a.get("scope") or "").strip(), "sources": sources})
+
+    # Assignment safety net: if an article's name matches a canonical entity, make sure
+    # EVERY note that mentions that entity is in its sources — catching any the LLM missed.
+    for art in articles:
+        leaf = art["title"].split("/")[-1]
+        ids = entity_index.note_ids_for_name(conn, leaf)
+        if ids:
+            art["sources"] = sorted(set(art["sources"]) | set(ids))
     return {"articles": articles, "index_md": build_index_md(articles)}
 
 

@@ -37,6 +37,9 @@ steps:
           id: "{{ item }}"
           force: "{{ config.force != false }}"
 
+  # Refresh the canonical entity index so the browse view + next build stay current.
+  - do: rebuild_entity_index
+
   - do: create_review
     when: "{{ config.review != false and pending }}"
     with:

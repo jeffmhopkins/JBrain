@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 def init_db() -> None:
@@ -470,6 +470,26 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               dates_json    TEXT NOT NULL DEFAULT '[]',
               model         TEXT,
               analyzed_at   TEXT NOT NULL DEFAULT (datetime('now')));
+        """)
+
+    if current < 32:
+        # Canonical entity index aggregated from note_analysis (people/orgs/places/things).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entities (
+              id             INTEGER PRIMARY KEY AUTOINCREMENT,
+              type           TEXT NOT NULL,
+              canonical_name TEXT NOT NULL,
+              normalized_key TEXT NOT NULL,
+              note_count     INTEGER NOT NULL DEFAULT 0,
+              article_title  TEXT,
+              updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+              UNIQUE(type, normalized_key));
+            CREATE TABLE IF NOT EXISTS entity_mentions (
+              entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+              note_id   INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              raw_name  TEXT,
+              PRIMARY KEY (entity_id, note_id));
+            CREATE INDEX IF NOT EXISTS idx_entity_mentions_note ON entity_mentions(note_id);
         """)
 
 

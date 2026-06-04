@@ -165,6 +165,12 @@ def _p_analyze_note(ctx, id, force=False):
     return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id), force=bool(force)))}
 
 
+def _p_rebuild_entity_index(ctx, limit=20000):
+    """(Re)aggregate the canonical entity index from note_analysis. Returns the count."""
+    from . import entity_index
+    return {"entities": entity_index.rebuild(ctx.conn, int(limit))}
+
+
 def _p_kb_reset(ctx):
     """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
     synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
@@ -969,6 +975,7 @@ _PRIMITIVES = {
     "semantic_search": _p_semantic_search,
     "analyze_pending": _p_analyze_pending,
     "analyze_note": _p_analyze_note,
+    "rebuild_entity_index": _p_rebuild_entity_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
@@ -1054,6 +1061,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",
                      "inputs": [{"name": "id", "type": "int", "required": True}, {"name": "force", "type": "bool"}], "output": "dict"},
+    "rebuild_entity_index": {"summary": "Aggregate the canonical entity index from note_analysis.",
+                             "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",

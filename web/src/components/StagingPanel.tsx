@@ -37,7 +37,7 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
   const applyAll = () => run(() => post("/api/staging/apply-all"), "apply all");
 
   if (actions.length === 0) {
-    return <p className="muted" style={{ fontSize: 13 }}>No pending proposals.</p>;
+    return null;   // nothing staged → show nothing, not an empty-state line
   }
 
   return (

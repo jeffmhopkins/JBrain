@@ -6,8 +6,12 @@ import { leaf, slugify } from "../util";
 interface Entity { id: number; type: string; canonical_name: string; note_count: number; article_title: string | null; }
 interface EntityDetail extends Entity { notes: { id: number; title: string; slug: string; created_at: string }[]; }
 
-const ICON: Record<string, string> = { person: "👤", org: "🏢", place: "📍", thing: "📦" };
-const TYPES = [["", "All"], ["person", "People"], ["org", "Orgs"], ["place", "Places"], ["thing", "Things"]];
+const ICON: Record<string, string> = {
+  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
+};
+const TYPES = [["", "All"], ["person", "People"], ["org", "Orgs"], ["place", "Places"],
+  ["thing", "Things"], ["condition", "Conditions"], ["medication", "Meds"], ["procedure", "Procedures"]];
 
 // Browse the canonical entity index aggregated from per-note AI analysis. Reached from
 // the analysis-panel chips (?q=&type=) or directly; clicking an entity shows every note

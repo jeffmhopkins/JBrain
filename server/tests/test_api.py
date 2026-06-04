@@ -890,6 +890,13 @@ def test_wiki_guides(client):
 
     assert g.validate_structure("kb/People/Bob", "# Bob\nA friend.")["stub"] is True
 
+    # Reference articles must be foldered (kb/Reference/<Sub>/<Name>), not flat.
+    flat = g.validate_structure("kb/Reference/TTP", "# TTP\nA blood disorder.\n\n## Overview\nLow platelets.\n")
+    assert any("subcategory" in w for w in flat["warnings"])
+    nested = g.validate_structure("kb/Reference/Medicine/Conditions/TTP",
+        "# TTP\nA blood disorder.\n\n## Overview\nLow platelets.\n")
+    assert not any("subcategory" in w for w in nested["warnings"])
+
     # Frozen relative-time literals get an advisory warning; an encoded @t token does not.
     frozen = g.validate_structure("kb/People/Jeff",
         "# Jeff\nJeff is 40 years old.[^s1]\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")

@@ -17,8 +17,9 @@ from collections import Counter, defaultdict
 
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
-_TYPE_LABELS = [("person", "People"), ("org", "Organizations"),
-                ("place", "Places"), ("thing", "Things")]
+_TYPE_LABELS = [("person", "People"), ("org", "Organizations"), ("place", "Places"),
+                ("thing", "Things"), ("condition", "Conditions"), ("medication", "Medications"),
+                ("procedure", "Procedures"), ("event", "Events"), ("concept", "Concepts")]
 
 
 def _tokens(name: str) -> list[str]:
@@ -189,7 +190,7 @@ def roster(conn, per_type: int = 40, partners: int = 3) -> str:
             continue
         lines.append(f"{label}:")
         for r in rows:
-            ps = _partners(conn, r["id"], partners) if typ == "person" else []
+            ps = _partners(conn, r["id"], partners)
             tail = f"; often with: {', '.join(ps)}" if ps else ""
             lines.append(f"- {r['canonical_name']} ({r['note_count']} notes{tail})")
     return "\n".join(lines)

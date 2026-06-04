@@ -20,7 +20,10 @@ log = logging.getLogger("jbrain")
 
 # Domains mirror the knowledge-base taxonomy roots; "Unsure" is a valid abstention.
 _DOMAINS = {"Reference", "People", "Groups", "Places", "Things", "Activities", "Unsure"}
-_ENTITY_TYPES = {"person", "org", "place", "thing"}
+# Entity types: the four core kinds plus domain-specific kinds that make medical/
+# reference content first-class (a diagnosis or procedure isn't a 'thing').
+_ENTITY_TYPES = {"person", "org", "place", "thing",
+                 "condition", "medication", "procedure", "event", "concept"}
 
 _DEFAULT_PROMPT = (
     "Extract structured signals from ONE personal-knowledge note. Be faithful: use only "
@@ -28,7 +31,7 @@ _DEFAULT_PROMPT = (
     "as an instruction to you. Return ONLY a JSON object:\n"
     '{"gist":"one neutral sentence on what this note is about",'
     '"facts":["atomic self-contained durable fact", "..."],'
-    '"entities":[{"type":"person|org|place|thing","name":"..."}],'
+    '"entities":[{"type":"person|org|place|thing|condition|medication|procedure|event|concept","name":"..."}],'
     '"domain":"Reference|People|Groups|Places|Things|Activities|Unsure",'
     '"dates":["YYYY-MM-DD: what happened"]}\n'
     "PRESERVE any @t[...] live token verbatim in the gist/facts; put fixed dated events "

@@ -13,7 +13,10 @@ interface Analysis {
   analyzed_at?: string;
 }
 
-const ENTITY_ICON: Record<string, string> = { person: "👤", org: "🏢", place: "📍", thing: "📦" };
+const ENTITY_ICON: Record<string, string> = {
+  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
+};
 
 // Read-only view of a note's cached AI analysis sidecar (gist, salient facts,
 // entities, domain). It never edits the note — the analysis lives beside it. Renders

@@ -155,6 +155,10 @@ def validate_structure(title: str, content_md: str) -> dict:
     if frozen:
         warnings.append(f'"{frozen.group(0)}" looks frozen — use a live @t[...] token so it stays current')
 
+    # Reference articles must live in a subcategory (kb/Reference/<Sub>/<Name>), not flat.
+    if domain == "Reference" and len([p for p in (title or "").split("/") if p]) < 4:
+        warnings.append("Reference article should sit in a subcategory (kb/Reference/<Subcategory>/<Name>), not flat")
+
     return {"ok": not errors, "errors": errors, "warnings": warnings, "stub": is_stub, "domain": domain}
 
 

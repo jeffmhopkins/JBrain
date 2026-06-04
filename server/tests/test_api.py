@@ -1459,6 +1459,22 @@ def test_create_article_dedups_and_gates_thin_subjects(client, monkeypatch):
     res3 = wiki_build.create_article(conn, "Quokka", etype="thing", min_notes=2)
     assert not res3["ok"] and "note" in res3["reason"]                   # one note → not spawned
 
+def test_taxonomy_health_flags_orphans_and_flat_reference(client):
+    """The read-only report flags un-foldered Reference articles and orphans (no inbound link)."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/Anemia", "# Anemia", kind="kb")
+    ns.upsert_note(conn, "kb/People/Doc", "# Doc\nTreats [[kb/Reference/Medicine/Conditions/Anemia]].", kind="kb")
+    ns.upsert_note(conn, "kb/Reference/Gravity", "# Gravity", kind="kb")     # un-foldered Reference
+    conn.commit()
+    rep = wiki_build.taxonomy_health(conn)
+    assert "kb/Reference/Gravity" in rep["flat_reference_titles"]
+    assert "kb/Reference/Medicine/Conditions/Anemia" not in rep["flat_reference_titles"]
+    assert "kb/Reference/Medicine/Conditions/Anemia" not in rep["orphan_titles"]  # linked by Doc
+    assert "kb/People/Doc" in rep["orphan_titles"]                                 # nothing links to Doc
+
 
 def test_write_one_bounded_revise_takes_second_pass_on_improvement(client, monkeypatch):
     """The §10 bounded revise loop takes a SECOND pass only when the first strictly improved

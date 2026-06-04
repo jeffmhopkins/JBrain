@@ -207,6 +207,12 @@ def _p_create_article(ctx, subject=None, etype=None, min_notes=2):
     return wiki_build.create_article(ctx.conn, subject, etype, int(min_notes))
 
 
+def _p_taxonomy_health(ctx):
+    """Read-only KB taxonomy-drift report (orphans, un-foldered Reference); cards if overdue."""
+    from . import wiki_build
+    return wiki_build.taxonomy_health(ctx.conn)
+
+
 def _p_link_owner(ctx):
     """Link the default person to their freshly-written People article."""
     from . import wiki_build
@@ -1116,6 +1122,7 @@ _PRIMITIVES = {
     "rebuild_article": _p_rebuild_article,
     "check_needed_links": _p_check_needed_links,
     "create_article": _p_create_article,
+    "taxonomy_health": _p_taxonomy_health,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1228,6 +1235,8 @@ _PRIMITIVE_META: dict[str, dict] = {
     "create_article": {"summary": "Create ONE new-subject kb article from its notes (dedup before spawn).",
                         "inputs": [{"name": "subject", "type": "str"}, {"name": "etype", "type": "str"},
                                    {"name": "min_notes", "type": "int"}], "output": "dict"},
+    "taxonomy_health": {"summary": "Read-only KB taxonomy-drift report (orphans, un-foldered Reference).",
+                        "inputs": [], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

@@ -1,0 +1,18 @@
+# Declarative action: KB TAXONOMY HEALTH report (read-only, no LLM).
+#
+# Surfaces drift that means a manual "Reorganize" is overdue: orphan articles (nothing but
+# the index links them) and Reference articles that aren't foldered into a subcategory.
+# Posts a single "Reorganize recommended" review card past thresholds. Safe to schedule —
+# it never writes to the KB.
+type: wiki_taxonomy_health
+category: Knowledge base
+config: []
+steps:
+  - id: th
+    do: taxonomy_health
+  - do: create_review
+    when: "{{ th.orphans or th.flat_reference }}"
+    with:
+      title: "KB taxonomy health"
+      message: "{{ th.articles }} article(s): {{ th.orphans }} orphan(s), {{ th.flat_reference }} un-foldered Reference."
+      link_title: "kb/_index"

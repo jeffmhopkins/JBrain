@@ -1029,6 +1029,41 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
             "created": subj["created"], "new_subjects": subj["created"] + subj["nudged"]}
 
 
+def taxonomy_health(conn) -> dict:
+    """Read-only KB taxonomy-drift report (no LLM) — turns "rare manual Reorganize" from a
+    guess into a triggered decision. Surfaces ORPHAN articles (nothing but the index links
+    them) and un-foldered Reference articles (kb/Reference/<Name> — the guide says Reference
+    is always foldered). Posts a single "Reorganize recommended" Review card past thresholds.
+    Returns the counts + a sample of titles."""
+    from . import reviews as reviews_svc
+    arts = [r["title"] for r in conn.execute(
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'")]
+    orphans = []
+    for t in arts:
+        inbound = conn.execute(
+            r"SELECT 1 FROM links l JOIN notes s ON s.id=l.source_note_id "
+            r"WHERE lower(l.target_title)=lower(?) AND s.kind='kb' AND s.deleted_at IS NULL "
+            r"AND s.title NOT LIKE 'kb/\_%' ESCAPE '\' LIMIT 1", (t,)).fetchone()
+        if not inbound:
+            orphans.append(t)
+    flat_ref = [t for t in arts if t.startswith("kb/Reference/") and t.count("/") == 2]
+    report = {"articles": len(arts), "orphans": len(orphans), "flat_reference": len(flat_ref),
+              "orphan_titles": orphans[:20], "flat_reference_titles": flat_ref[:20]}
+    reasons = []
+    if len(orphans) >= 5:
+        reasons.append(f"{len(orphans)} orphan article(s) (nothing links to them)")
+    if flat_ref:
+        reasons.append(f"{len(flat_ref)} un-foldered Reference article(s)")
+    if reasons:
+        card = "Reorganize recommended"
+        if not conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'", (card,)).fetchone():
+            reviews_svc.create_review_item(conn, None, title=card,
+                                           message="; ".join(reasons) + ". Run a Reorganize when convenient.")
+            report["carded"] = True
+    conn.commit()
+    return report
+
+
 def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
     """Recurring subjects (≥ min_notes notes) that changed but have no article yet: CREATE
     them (create_article dedups/folds + refuses thin stubs). A creation that fails the lint

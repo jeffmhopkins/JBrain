@@ -160,6 +160,33 @@ def test_protected_underscore_notes_hidden_from_list_and_graph(client):
     assert hidden["title"] not in graph_titles
 
 
+
+def test_assisted_kb_maintenance_tools(client):
+    """The new assisted-mode KB tools: add_directive applies + is undoable/logged, read_talk
+    surfaces it, taxonomy_health is read-only (no card), and the write tool is fail-closed in
+    research mode."""
+    from app.db import get_conn
+    from app.services import architect, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Allan", "# Allan\nA pilot.", kind="kb")
+    conn.commit()
+    out, _ = architect._run_tool(conn, None, "kb_add_directive",
+                                 {"title": "kb/People/Allan", "directive": "Always note his ratings."}, "assisted")
+    assert "directive" in out.lower()
+    assert any(t["kind"] == "directive" and "ratings" in t["body"]
+               for t in article_talk.open_for(conn, "kb/People/Allan"))
+    out2, _ = architect._run_tool(conn, None, "kb_read_talk", {"title": "kb/People/Allan"}, "assisted")
+    assert "ratings" in out2
+    before = conn.execute("SELECT COUNT(*) c FROM review_items").fetchone()["c"]
+    architect._run_tool(conn, None, "kb_taxonomy_health", {}, "assisted")
+    assert conn.execute("SELECT COUNT(*) c FROM review_items").fetchone()["c"] == before   # read-only, no card
+    msg, _ = architect._run_tool(conn, None, "kb_add_directive",
+                                 {"title": "kb/People/Allan", "directive": "x"}, "research")
+    assert "not available" in msg.lower()                       # write tool fail-closed in research mode
+
+
+
 def test_research_mode_is_read_only(client):
     # Research mode must not expose write tools.
     from app.services import architect

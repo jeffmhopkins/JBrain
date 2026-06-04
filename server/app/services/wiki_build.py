@@ -1254,12 +1254,13 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
             "created": subj["created"], "new_subjects": subj["created"] + subj["nudged"]}
 
 
-def taxonomy_health(conn) -> dict:
+def taxonomy_health(conn, post_card: bool = True) -> dict:
     """Read-only KB taxonomy-drift report (no LLM) — turns "rare manual Reorganize" from a
     guess into a triggered decision. Surfaces ORPHAN articles (nothing but the index links
     them) and un-foldered Reference articles (kb/Reference/<Name> — the guide says Reference
-    is always foldered). Posts a single "Reorganize recommended" Review card past thresholds.
-    Returns the counts + a sample of titles."""
+    is always foldered). Posts a single "Reorganize recommended" Review card past thresholds
+    (skip with post_card=False — e.g. when a chat tool just wants the report). Returns the
+    counts + a sample of titles."""
     from . import reviews as reviews_svc
     arts = [r["title"] for r in conn.execute(
         r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'")]
@@ -1279,13 +1280,14 @@ def taxonomy_health(conn) -> dict:
         reasons.append(f"{len(orphans)} orphan article(s) (nothing links to them)")
     if flat_ref:
         reasons.append(f"{len(flat_ref)} un-foldered Reference article(s)")
-    if reasons:
+    if reasons and post_card:
         card = "Reorganize recommended"
         if not conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'", (card,)).fetchone():
             reviews_svc.create_review_item(conn, None, title=card,
                                            message="; ".join(reasons) + ". Run a Reorganize when convenient.")
             report["carded"] = True
-    conn.commit()
+        conn.commit()
+    report["reasons"] = reasons
     return report
 
 

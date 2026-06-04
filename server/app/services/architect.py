@@ -47,7 +47,9 @@ _DEFAULT_MODE_TOOLS = {
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
-                 "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences", "propose_actions"],
+                 "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
+                 "kb_taxonomy_health", "kb_needed_links", "kb_research_links",
+                 "kb_read_talk", "kb_add_directive", "propose_actions"],
     "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
@@ -241,6 +243,20 @@ _TOOL_SCHEMAS = {
         "auto_apply": {"type": "boolean", "default": False, "description": "Write pattern articles directly instead of staging for review."}}},
     "kb_audit": {"type": "object", "properties": {
         "limit": {"type": "integer", "default": 1000, "description": "Max KB articles to scan."}}},
+    "kb_taxonomy_health": {"type": "object", "properties": {}},
+    "kb_needed_links": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The KB article (exact kb/… title) to check for missing cross-links."}},
+        "required": ["title"]},
+    "kb_research_links": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The KB article (exact kb/… title) to find related Reference links for."}},
+        "required": ["title"]},
+    "kb_read_talk": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The KB article (exact kb/… title) whose open AI-talk items to read."}},
+        "required": ["title"]},
+    "kb_add_directive": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The KB article (exact kb/… title) to add the directive to."},
+        "directive": {"type": "string", "description": "The standing instruction maintenance should apply (e.g. 'always note PR splits')."}},
+        "required": ["title", "directive"]},
 }
 
 
@@ -1118,6 +1134,80 @@ def _tool_kb_audit(conn, conversation_id, limit=1000):
             + "\n".join(lines) + more), None
 
 
+def _tool_kb_taxonomy_health(conn, conversation_id):
+    """Read-only KB health report (orphans + un-foldered Reference). Writes nothing."""
+    from . import wiki_build
+    try:
+        rep = wiki_build.taxonomy_health(conn, post_card=False)
+    except Exception as e:  # noqa: BLE001
+        return f"Taxonomy health check failed: {e}", None
+    if not rep.get("reasons"):
+        return f"KB taxonomy looks healthy across {rep['articles']} article(s) — no Reorganize needed.", None
+    out = [f"KB taxonomy ({rep['articles']} article(s)): " + "; ".join(rep["reasons"]) + "."]
+    if rep.get("orphan_titles"):
+        out.append("Orphans (nothing links to them): " + ", ".join(rep["orphan_titles"][:8]))
+    if rep.get("flat_reference_titles"):
+        out.append("Un-foldered Reference: " + ", ".join(rep["flat_reference_titles"][:8]))
+    return "\n".join(out), None
+
+
+def _tool_kb_needed_links(conn, conversation_id, title):
+    """Suggest missing cross-links for a KB article. Read-only (proposes, never writes)."""
+    from . import wiki_build
+    try:
+        res = wiki_build.check_needed_links(conn, title, "propose")
+    except Exception as e:  # noqa: BLE001
+        return f"Link check failed: {e}", None
+    props = [p for a in res["articles"] for p in a["proposals"]]
+    if not props:
+        return f"No missing cross-links found in {title}.", None
+    lines = [f"- link “{p['surface']}” → [[{p['target']}]]" for p in props[:30]]
+    return (f"Suggested cross-links for {title} (not applied — run the Check-links action to add them):\n"
+            + "\n".join(lines)), None
+
+
+def _tool_kb_research_links(conn, conversation_id, title):
+    """Suggest RELATED Reference articles to link from a KB article, by meaning. Read-only."""
+    from . import wiki_build
+    try:
+        res = wiki_build.research_article(conn, title)
+    except Exception as e:  # noqa: BLE001
+        return f"Research-links failed: {e}", None
+    if not res.get("ok"):
+        return res.get("reason", "could not research that article"), None
+    props = res.get("proposals") or []
+    if not props:
+        return f"No related Reference articles found for {title}.", None
+    return (f"Related Reference articles to consider linking from {title}:\n"
+            + "\n".join(f"- [[{p['target']}]]" for p in props)), None
+
+
+def _tool_kb_read_talk(conn, conversation_id, title):
+    """Read the OPEN AI-talk items (owner directives, conflicts, questions, todos) on a KB article."""
+    from . import article_talk
+    items = article_talk.open_for(conn, title)
+    if not items:
+        return f"No open items on {title}.", None
+    return (f"Open items on {title}:\n"
+            + "\n".join(f"- [{t['kind']}] {t['body']}" for t in items)), None
+
+
+def _tool_kb_add_directive(conn, conversation_id, title, directive):
+    """Add a standing directive to a KB article's talk; maintenance applies it next pass.
+    Additive + undoable (it only appends a talk row)."""
+    from . import article_talk
+    from . import notes as notes_svc
+    note = notes_svc.get_by_title(conn, title)
+    if not note or note["kind"] != "kb":
+        return f"No KB article titled {title}.", None
+    directive = (directive or "").strip()
+    if not directive:
+        return "A directive body is required.", None
+    article_talk.add(conn, title, "directive", directive)
+    conn.commit()
+    return f"Added a standing directive to {title}: “{directive}”. Maintenance will apply it on its next pass.", None
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -1464,6 +1554,16 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
     if name == "kb_audit":
         return _tool_kb_audit(conn, conversation_id, args.get("limit", 1000))
+    if name == "kb_taxonomy_health":
+        return _tool_kb_taxonomy_health(conn, conversation_id)
+    if name == "kb_needed_links":
+        return _tool_kb_needed_links(conn, conversation_id, args["title"])
+    if name == "kb_research_links":
+        return _tool_kb_research_links(conn, conversation_id, args["title"])
+    if name == "kb_read_talk":
+        return _tool_kb_read_talk(conn, conversation_id, args["title"])
+    if name == "kb_add_directive":
+        return _tool_kb_add_directive(conn, conversation_id, args["title"], args.get("directive", ""))
     return f"Unknown tool: {name}", None
 
 

@@ -229,6 +229,14 @@ actions:
       Voice: neutral, concise, summary style. State facts plainly. Never invent — every
       claim must trace to a source note. Prefer durable facts over fleeting chatter.
 
+      Dates & time — establish every time value as static or dynamic. A STATIC fact is a
+      fixed point in history: write it as a literal ISO date ("diagnosed 2026-06-01"). A
+      DYNAMIC value drifts as today advances (ages, tenures, countdowns): write it as a
+      live token so it stays current when re-read — @t[age:YYYY-MM-DD] (years since a
+      date), @t[since:YYYY-MM-DDTHH:MM] (elapsed), @t[until:YYYY-MM-DDTHH:MM] (countdown).
+      "Jeff is @t[age:1986-03-15] years old" renders today's age forever; a literal "40"
+      would rot. Preserve any @t[...] token you read from a source.
+
       Citations (house footnote style): attach a source as a marker [^s1] in the text and
       define it under "## References":
           [^s1]: [[Source Note Title]] — 2026-06-01
@@ -368,6 +376,14 @@ actions:
         [^s1]: [[Exact Source Title]] — DATE
     Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
     the article Markdown, starting with "# <name>".
+
+    DATES & TIME — this article is evergreen, so a value that DRIFTS must be written as a
+    live token, never a frozen number: @t[age:YYYY-MM-DD] for an age/years-since-a-date,
+    @t[since:YYYY-MM-DDTHH:MM] for elapsed time, @t[until:YYYY-MM-DDTHH:MM] for a
+    countdown. Use a literal ISO date for fixed historical facts ("diagnosed 2026-06-01").
+    PRESERVE verbatim any @t[...] token you see in a source; and when a source states a
+    drifting value AND its anchor (e.g. a birthdate), encode it as a token rather than
+    copying the stale number.
 
     HOUSE STYLE
     {general_guide}

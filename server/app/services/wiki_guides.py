@@ -37,6 +37,11 @@ _H1_RE = re.compile(r"(?m)^#\s.*$")
 _SECTION_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 _FIRST_SECTION_RE = re.compile(r"(?m)^##\s")
 _FN_MARK_RE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
+# Relative-time values that should be live @t[...] tokens, not frozen numbers. A
+# correctly-encoded age ("@t[age:1986-03-15] years old") has no digit before "years",
+# so it won't match — only literals like "40 years old" / "3 months ago" / "aged 40" do.
+_REL_TIME_RE = re.compile(
+    r"\b(\d{1,3}\s+years?\s+old|aged\s+\d{1,3}|\d+\s+(?:years?|months?|weeks?|days?)\s+ago)\b", re.I)
 
 
 def guide_key(domain: str | None) -> str:
@@ -145,6 +150,10 @@ def validate_structure(title: str, content_md: str) -> dict:
         present = any(any(t.strip().lower().startswith(p) for p in rec) for t in _links(body))
         if not present:
             warnings.append(f"consider linking {', '.join(spec['recommend_link_prefixes'])}")
+
+    frozen = _REL_TIME_RE.search(body)
+    if frozen:
+        warnings.append(f'"{frozen.group(0)}" looks frozen — use a live @t[...] token so it stays current')
 
     return {"ok": not errors, "errors": errors, "warnings": warnings, "stub": is_stub, "domain": domain}
 

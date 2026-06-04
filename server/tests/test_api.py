@@ -778,6 +778,32 @@ def test_wiki_build(client, monkeypatch):
     assert wiki_guides.validate_structure("kb/People/Allan", art)["ok"]
 
 
+def test_wiki_build_preserves_time_tokens(client, monkeypatch):
+    """The writer reads RAW sources so live @t[...] tokens survive into the evergreen
+    article instead of being frozen into a rotting literal."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/jeff", "Jeff born @t[age:1986-03-15].")
+    conn.commit()
+    jid = conn.execute("SELECT id FROM notes WHERE title='notes/jeff'").fetchone()["id"]
+
+    seen = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+
+    def fake(messages, **k):
+        seen["prompt"] = messages[0]["content"]
+        return ("# Jeff\nJeff is @t[age:1986-03-15] years old.[^s1]\n\n"
+                "## References\n[^s1]: [[notes/jeff]] — 2026-06-03\n")
+    monkeypatch.setattr(llm, "complete", fake)
+
+    out = wiki_build.write_one(conn, {"title": "kb/People/Jeff", "domain": "People",
+                                      "scope": "me", "sources": [jid]})
+    assert "@t[age:1986-03-15]" in seen["prompt"]          # raw token reached the writer, not frozen
+    assert "@t[age:1986-03-15]" in out["content_md"] and out["ok"]
+
+
 def test_wiki_guides(client):
     """The KB guide backbone: protected-page detection, domain mapping, spec-driven
     structure lint (lead, citations, the Reference PII firewall, stub exemption), and
@@ -805,6 +831,14 @@ def test_wiki_guides(client):
     assert any("lead" in e for e in r["errors"]) and any("no definition" in e for e in r["errors"])
 
     assert g.validate_structure("kb/People/Bob", "# Bob\nA friend.")["stub"] is True
+
+    # Frozen relative-time literals get an advisory warning; an encoded @t token does not.
+    frozen = g.validate_structure("kb/People/Jeff",
+        "# Jeff\nJeff is 40 years old.[^s1]\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
+    assert any("looks frozen" in w for w in frozen["warnings"])
+    dynamic = g.validate_structure("kb/People/Jeff",
+        "# Jeff\nJeff is @t[age:1986-03-15] years old.[^s1]\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
+    assert not any("looks frozen" in w for w in dynamic["warnings"])
 
     conn = get_conn()
     assert g.seed_guides(conn) == 7      # general + 6 domains

@@ -517,6 +517,9 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md pre { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; }
 .md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .wikilink { color: var(--accent); border-bottom: 1px dashed var(--accent); }
+/* Dynamic (live) time values — @t[...] tokens rendered against today. Dotted
+   underline + help cursor signal "this updates over time"; the tooltip names the anchor. */
+.dyn-date { border-bottom: 1px dotted var(--text-dim); cursor: help; }
 /* Wikipedia-style citations: superscript markers + a References list (remark-gfm
    footnotes). The auto heading reads "Footnotes" — relabel it to "References". */
 .md sup a, .md [data-footnote-ref] { color: var(--accent); text-decoration: none; font-size: 0.7em; padding: 0 1px; }

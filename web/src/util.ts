@@ -37,6 +37,12 @@ export function stripSummarySentinels(md: string): string {
 // external links open in a new tab. Reused by NotePage and the version viewer.
 export function makeLinkRenderer(navigate: NavigateFunction) {
   return ({ href, children }: any) => {
+    if (href?.startsWith("#dyn:")) {
+      // A dynamic (live) time value — render as a marked span with the anchor tooltip,
+      // not a link. The carrier comes from expandTimeTokensMarked.
+      const tip = (() => { try { return decodeURIComponent(href.slice(5)); } catch { return "Live value"; } })();
+      return createElement("span", { className: "dyn-date", title: tip }, children);
+    }
     if (href?.startsWith("/note/")) {
       return createElement(
         "a",

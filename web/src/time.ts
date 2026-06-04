@@ -84,3 +84,24 @@ export function expandTimeTokens(md: string, appTz?: string, nowMs?: number): st
     return Math.abs(delta) < 60 ? "just now" : (delta < 0 ? `${humanize(delta)} ago` : `in ${humanize(delta)}`);
   });
 }
+
+function dynTooltip(kind: string, arg: string): string {
+  const a = String(arg).trim();
+  if (kind === "age") return `Live value — age from ${a}; updates over time`;
+  if (kind === "until") return `Live value — countdown to ${a}; updates over time`;
+  return `Live value — elapsed since ${a}; updates over time`;
+}
+
+// Display-only: expand @t[...] tokens AND wrap each DYNAMIC value in a #dyn: link
+// carrier so the markdown link renderer can mark it (dotted underline + tooltip with
+// the anchor). Kept SEPARATE from expandTimeTokens — which stays the byte-for-byte
+// twin of clock.py — by reusing it per-token, so a frozen number stays plain and only
+// live values get marked. Run BEFORE renderWikiLinks (it only touches [[...]]).
+export function expandTimeTokensMarked(md: string, appTz?: string, nowMs?: number): string {
+  if (!md || !md.includes("@t[")) return md;
+  return md.replace(TOKEN_RE, (whole, kind, arg) => {
+    const value = expandTimeTokens(whole, appTz, nowMs);   // reuse the twin
+    if (value === whole) return whole;                     // unparseable → leave token verbatim
+    return `[${value}](#dyn:${encodeURIComponent(dynTooltip(kind, String(arg)))})`;
+  });
+}

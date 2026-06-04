@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
-import { fmtTs, expandTimeTokens } from "../time";
+import { fmtTs, expandTimeTokensMarked } from "../time";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Attachments from "../components/Attachments";
 import AiAnalysisPanel from "../components/AiAnalysisPanel";
@@ -336,7 +336,7 @@ export default function NotePage() {
               }
               return <li className={cls || undefined} {...props}>{children}</li>;
             },
-          }}>{renderWikiLinks(expandTimeTokens(stripSummarySentinels(note.content_md), appTz))}</ReactMarkdown>
+          }}>{renderWikiLinks(expandTimeTokensMarked(stripSummarySentinels(note.content_md), appTz))}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

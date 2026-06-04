@@ -21,7 +21,7 @@ import json
 import logging
 import re
 
-from . import clock, llm, prompts, wiki_guides
+from . import llm, prompts, wiki_guides
 
 log = logging.getLogger("jbrain")
 
@@ -160,9 +160,11 @@ def _load_sources(conn, ids: list[int]) -> list[dict]:
     ).fetchall()
     out = []
     for r in rows:
-        body = clock.expand_tokens(r["content_md"] or "", snapshot=True)
+        # Pass RAW content (do NOT expand @t[...] tokens): the writer must see the live
+        # tokens so it can carry them through into the evergreen article — expanding
+        # here would freeze "Jeff is @t[age:1986-03-15]" into a literal that rots.
         out.append({"title": r["title"], "date": (r["created_at"] or "")[:10],
-                    "content": body[:2000]})
+                    "content": (r["content_md"] or "")[:2000]})
     return out
 
 

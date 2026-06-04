@@ -786,6 +786,30 @@ def test_entity_index(client, monkeypatch):
     assert set(out["articles"][0]["sources"]) == {a, b}   # entity mentions backfilled despite empty LLM sources
 
 
+def test_dead_link_detection_and_flagging(client):
+    """A kb article that cross-links a non-existent article is caught: surfaced via the
+    KB-health endpoint and recorded as a todo on the article's talk. A link to a real
+    article is NOT flagged."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Allan", "# Allan\nKnows [[kb/People/Ghost]] and [[kb/People/Bob]].", kind="kb")
+    ns.upsert_note(conn, "kb/People/Bob", "# Bob\nA friend.", kind="kb")
+    conn.commit()
+
+    dead = wiki_build.dead_links(conn)
+    targets = {d["target_title"] for d in dead}
+    assert "kb/People/Ghost" in targets and "kb/People/Bob" not in targets   # only the missing one
+
+    res = client.get("/api/notes/kb/dead-links").json()
+    assert res["count"] >= 1 and any(i["target_title"] == "kb/People/Ghost" for i in res["items"])
+
+    wiki_build.flag_dead_links(conn)
+    todos = [t for t in article_talk.open_for(conn, "kb/People/Allan") if t["kind"] == "todo"]
+    assert any("kb/People/Ghost" in t["body"] for t in todos)
+
+
 def test_owner_first_person(client, monkeypatch):
     """The note-taker's identity is fed to the analyzer so 'my truck' resolves to the owner
     by name; the placeholder 'Me' is never leaked into prompts."""

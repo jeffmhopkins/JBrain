@@ -210,10 +210,12 @@ def _strip_fence(text: str) -> str:
     return (m.group(1) if m else (text or "")).strip()
 
 
-def write_one(conn, art: dict, instructions: str | None = None) -> dict:
+def write_one(conn, art: dict, instructions: str | None = None,
+              known_titles: list[str] | None = None) -> dict:
     """Write one article from its raw sources + the domain guide, then ONE
-    self-critique/revise pass against the structure lint. Returns
-    {title, domain, content_md, ok, errors, warnings, stub}."""
+    self-critique/revise pass against the structure lint. `known_titles` is the set of
+    articles that will exist, so cross-links target real pages instead of inventing dead
+    ones. Returns {title, domain, content_md, ok, errors, warnings, stub, talk}."""
     title = str(art.get("title") or "").strip()
     domain = art.get("domain") or wiki_guides.domain_for_title(title)
     scope = str(art.get("scope") or "")
@@ -231,10 +233,15 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
     owner = people.owner_name(conn)
     general = wiki_guides.guide_text(None)
     dguide = wiki_guides.guide_text(domain)
+    # Only let the writer cross-link articles that will exist (minus this one), so it
+    # can't invent a dead [[kb/People/Someone]] link. Capped to bound prompt size.
+    others = [t for t in (known_titles or []) if t and t != title][:600]
+    known_block = "\n".join(others) if others else "(no other articles yet)"
     prompt = (prompts.get("actions.wiki_write", "")
               .replace("{owner}", owner)
               .replace("{general_guide}", general).replace("{domain_guide}", dguide)
               .replace("{domain}", domain or "").replace("{title}", title)
+              .replace("{known_titles}", known_block)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
     try:
         draft, talk = _extract_talk(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200)))
@@ -262,12 +269,46 @@ def write_one(conn, art: dict, instructions: str | None = None) -> dict:
             "ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}
 
 
+def dead_links(conn) -> list[dict]:
+    """Dangling [[links]] from a kb article to a target that doesn't exist — surfaced so
+    they can be fixed instead of silently rotting. Excludes protected kb/_* pages."""
+    rows = conn.execute(
+        "SELECT s.title AS source_title, s.slug AS source_slug, l.target_title "
+        "FROM links l JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL "
+        "WHERE l.target_note_id IS NULL AND s.kind='kb' AND s.title NOT LIKE 'kb/\\_%' ESCAPE '\\' "
+        "ORDER BY s.title, l.target_title",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def flag_dead_links(conn) -> dict:
+    """Record each article's dead links as a 'todo' on its talk so the next maintenance
+    pass (or the owner) fixes them. Returns the totals for the build summary."""
+    from . import article_talk
+    items = dead_links(conn)
+    by_src: dict[str, list[str]] = {}
+    for it in items:
+        by_src.setdefault(it["source_title"], []).append(it["target_title"])
+    for src, targets in by_src.items():
+        article_talk.record(conn, src, [
+            {"kind": "todo", "body": f"Dead link [[{t}]] — no such article/note; fix the target or unlink it."}
+            for t in targets], author="ai")
+    conn.commit()
+    return {"dead_links": len(items), "articles": len(by_src)}
+
+
 def write_batch(conn, articles: list[dict], instructions: str | None = None) -> dict:
     """Write every article; split valid (saved by the recipe) vs quarantined (failed
     the structure lint — surfaced, not saved). Mirrors validate_citations' shape."""
+    # The titles writers may cross-link: every planned article PLUS any live kb article
+    # that survives (so links resolve when adding to an existing KB, not just full rebuild).
+    planned = [str(a.get("title") or "").strip() for a in articles]
+    existing = [r["title"] for r in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()]
+    known = sorted({t for t in planned + existing if t})
     valid, quarantined = [], []
     for art in articles:
-        d = write_one(conn, art, instructions)
+        d = write_one(conn, art, instructions, known_titles=known)
         (valid if d["ok"] and d["content_md"] else quarantined).append(d)
     return {"valid": valid, "quarantined": quarantined,
             "count": len(articles), "bad": len(quarantined)}

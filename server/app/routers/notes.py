@@ -156,6 +156,14 @@ def resolve_talk(slug: str, talk_id: int):
     return {"ok": True}
 
 
+@router.get("/kb/dead-links")
+def kb_dead_links():
+    """KB health: dangling cross-links from articles (target doesn't exist)."""
+    from ..services import wiki_build
+    items = wiki_build.dead_links(get_conn())
+    return {"count": len(items), "items": items}
+
+
 @router.post("")
 def create_or_update(body: NoteIn):
     conn = get_conn()

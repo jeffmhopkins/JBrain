@@ -183,6 +183,12 @@ def _p_record_talk(ctx, article_title, entries):
     return {"added": article_talk.record(ctx.conn, str(article_title), list(entries or []), author="ai")}
 
 
+def _p_flag_dead_links(ctx):
+    """Flag dangling kb cross-links as todos on each article's talk."""
+    from . import wiki_build
+    return wiki_build.flag_dead_links(ctx.conn)
+
+
 def _p_kb_reset(ctx):
     """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
     synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
@@ -990,6 +996,7 @@ _PRIMITIVES = {
     "rebuild_entity_index": _p_rebuild_entity_index,
     "write_disambiguation": _p_write_disambiguation,
     "record_talk": _p_record_talk,
+    "flag_dead_links": _p_flag_dead_links,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
@@ -1082,6 +1089,8 @@ _PRIMITIVE_META: dict[str, dict] = {
     "record_talk": {"summary": "Record an article's writer talk entries (decisions/conflicts/questions).",
                     "inputs": [{"name": "article_title", "type": "str", "required": True},
                                {"name": "entries", "type": "list"}], "output": "dict"},
+    "flag_dead_links": {"summary": "Flag dangling kb cross-links as todos on each article's talk.",
+                        "inputs": [], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",

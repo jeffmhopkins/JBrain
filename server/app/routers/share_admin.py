@@ -302,19 +302,25 @@ def guided_accept(sid: int):
         "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
     if not s:
         raise HTTPException(status_code=404, detail="No submitted guided response found.")
-    vn = f"guided intake from {s['name'] or 'a recipient'}"
+    who = s["name"] or "a recipient"
+    vn = f"guided intake from {who}"
+    # Provenance: record WHO contributed so the analyzer treats them as a person entity
+    # (a recipe "from mom" links mom into People) and the source is never lost.
+    doc = s["document_md"] or ""
+    if s["name"] and "_Contributed by" not in doc:
+        doc = doc.rstrip() + f"\n\n---\n_Contributed by {s['name']} via guided intake._\n"
     if s["note_id"]:
         # Legacy link that pre-created its note: update it in place.
         note = conn.execute("SELECT title FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
         if note is None:
             raise HTTPException(status_code=409, detail="The destination note no longer exists.")
-        notes_svc.upsert_note(conn, note["title"], s["document_md"] or "", note_id=s["note_id"],
+        notes_svc.upsert_note(conn, note["title"], doc, note_id=s["note_id"],
                               source="shared", version_note=vn)
         note_id = s["note_id"]
     else:
         # No page existed until now — create it from the spec's destination title.
         title = notes_svc.root_title(s["dest_title"] or f"Intake — {s['goal']}", "notes")
-        note_id = notes_svc.upsert_note(conn, title, s["document_md"] or "", create_only=True,
+        note_id = notes_svc.upsert_note(conn, title, doc, create_only=True,
                                         source="shared", version_note=vn)
         conn.execute("UPDATE share_links SET note_id=? WHERE id=?", (note_id, s["share_link_id"]))
     note = conn.execute("SELECT slug FROM notes WHERE id=?", (note_id,)).fetchone()

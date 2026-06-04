@@ -371,7 +371,11 @@ actions:
     - Groups — organisations, household, teams, clubs
     - Places — durable knowledge about a location
     - Things — tracked assets/possessions (home, vehicles, devices, accounts)
-    - Activities — hobbies and projects
+    - Activities — {owner}'s OWN ongoing hobbies/projects (NOT general how-to or recipes)
+
+    Recipes, how-to guides and instructions are general knowledge → Reference (e.g.
+    kb/Reference/Cooking/<Dish>), even when they came from a family member. The person who
+    contributed it is a People entity, not the reason to file the knowledge under Activities.
 
     The entity roster's medications, conditions, procedures, events and concepts are
     Reference content — give each recurring one its own Reference article.
@@ -419,6 +423,11 @@ actions:
     Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
     the article Markdown, starting with "# <name>".
 
+    CROSS-LINKS — never invent a dead link. You may write [[...]] ONLY for: (a) the exact
+    source-note titles below (for citations), and (b) an article in the EXISTING ARTICLES
+    list below. If you'd mention any other subject (a person/place/thing without its own
+    article), write it as plain text — do NOT wrap it in [[ ]]. Never guess a title.
+
     AUTHOR: the source notes are written by the owner, {owner}, in the first person. "I",
     "me", "my", "we"/"our" (the household) refer to {owner} and their family — resolve them
     to {owner} by name. A first-person fact ("my truck's code is 1234") is a fact about
@@ -450,6 +459,9 @@ actions:
 
     ARTICLE: {title}
     SCOPE: {scope}
+
+    EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
+    {known_titles}
 
     SOURCE NOTES:
     {sources}
@@ -487,10 +499,13 @@ actions:
       "dates": ["YYYY-MM-DD: what happened"]
     }
     Guidance: "facts" are 0-12 standalone statements. "entities" are the specific people,
-    organisations, places, and things the note is about (not generic nouns). "domain" is
-    your best single guess for where this belongs in a knowledge base — "Reference" only
-    for general, de-identified knowledge; if it is about a specific person use "People";
-    use "Unsure" when genuinely unclear.
+    organisations, places, and things the note is about (not generic nouns) — INCLUDING a
+    person who contributed or is the source of the note (e.g. a recipe from {owner}'s mom
+    → that person is an entity). "domain" is your best single guess for where this belongs
+    in a knowledge base: "Reference" for general, de-identified knowledge INCLUDING recipes,
+    how-to guides and instructions (even hobby topics); "People" if it is about a specific
+    person; "Activities" ONLY for {owner}'s OWN ongoing hobby/project (not a general how-to
+    or someone else's contribution); "Unsure" when genuinely unclear.
     Time: PRESERVE any @t[...] live token verbatim in the gist/facts (it stays current
     when re-read — never replace it with a number). Put fixed dated events in "dates" as
     literal ISO dates.

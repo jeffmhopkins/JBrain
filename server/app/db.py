@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 
 def init_db() -> None:
@@ -91,6 +91,10 @@ def init_db() -> None:
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_note_chunks USING vec0("
             f"chunk_id INTEGER PRIMARY KEY, embedding float[{dim}])"
+        )
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_entities USING vec0("
+            f"entity_id INTEGER PRIMARY KEY, embedding float[{dim}])"
         )
 
         _run_migrations(conn)
@@ -520,6 +524,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 35:
         # How a talk item was addressed (set by the Component-3 maintenance pass).
         _add_column(conn, "article_talk", "resolution", "TEXT")
+
+    if current < 36:
+        # Cache key for an entity's semantic embedding (skip re-embedding when unchanged).
+        _add_column(conn, "entities", "embed_hash", "TEXT")
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:

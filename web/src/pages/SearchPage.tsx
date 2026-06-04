@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { get } from "../api";
 import { Icon } from "../components/Icon";
 
-type Mode = "hybrid" | "keyword" | "semantic";
+type Mode = "hybrid" | "keyword" | "semantic" | "entities";
 interface Result {
   kind: "note" | "attachment" | "entity";
   title?: string;
@@ -33,7 +33,7 @@ function weightPct(distance: number): number {
   return Math.round(Math.max(0, Math.min(1, sim)) * 100);
 }
 
-const MODES: Mode[] = ["hybrid", "keyword", "semantic"];
+const MODES: Mode[] = ["hybrid", "keyword", "semantic", "entities"];
 
 export default function SearchPage() {
   // Seed from the URL so the search survives navigating into a note and back
@@ -90,7 +90,7 @@ export default function SearchPage() {
       <form onSubmit={onSubmit}>
         <input placeholder="Search by keyword or meaning…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
         <div className="row" style={{ marginTop: 10 }}>
-          {(["hybrid", "keyword", "semantic"] as Mode[]).map((m) => (
+          {MODES.map((m) => (
             <button type="button" key={m} className={mode === m ? "primary" : "ghost"} onClick={() => setMode(m)}>
               {m}
             </button>

@@ -171,6 +171,31 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
     return list(best.values())
 
 
+def store_entity_vector(conn, entity_id: int, vec: list[float]) -> None:
+    """Replace one canonical entity's semantic vector (vec_entities)."""
+    conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
+    conn.execute("INSERT INTO vec_entities (entity_id, embedding) VALUES (?, ?)",
+                 (entity_id, sqlite_vec.serialize_float32(vec)))
+
+
+def delete_entity_embedding(conn, entity_id: int) -> None:
+    conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
+
+
+def semantic_search_entities(conn, query: str, limit: int = 10) -> list[dict]:
+    """Canonical entities most similar in meaning to the query (vec_entities). Entities are
+    embedded from their name + type + aliases + KB-article lead, so a descriptive query
+    ('my dog') can surface a named entity ('Buddy'). Returns rows with distance."""
+    qvec = embed(query)
+    rows = conn.execute(
+        "SELECT e.id, e.type, e.canonical_name, e.note_count, e.article_title, v.distance "
+        "FROM vec_entities v JOIN entities e ON e.id = v.entity_id "
+        "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
+        (sqlite_vec.serialize_float32(qvec), max(1, int(limit))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:
     """Return notes most similar in meaning to the query, collapsed to each note's
     BEST-matching chunk. Searching chunks (not the whole-note vector) means a long

@@ -1224,9 +1224,9 @@ def test_search_includes_entities(client):
     ent = [h for h in hits if h["kind"] == "entity"]
     assert ent and ent[0]["name"] == "Allan Peridex" and ent[0]["entity_type"] == "person"
     assert ent[0]["note_count"] == 1
-    # Keyword mode includes entities too; pure semantic does not (no embedding).
+    # Keyword (name match) AND semantic (entity embedding) modes both surface entities now.
     assert any(h["kind"] == "entity" for h in client.get("/api/search?q=Peridex&mode=keyword").json())
-    assert all(h["kind"] != "entity" for h in client.get("/api/search?q=Peridex&mode=semantic").json())
+    assert any(h["kind"] == "entity" for h in client.get("/api/search?q=Allan Peridex&mode=semantic").json())
 
 
 def test_entity_types_animal_and_work(client):
@@ -1267,6 +1267,32 @@ def test_pet_routes_to_people_domain(client, monkeypatch):
                         lambda *a, **k: {"ok": True, "content_md": "# Buddy\nA dog.", "talk": []})
     res = wiki_build.create_article(conn, "Buddy", etype="animal", min_notes=2)
     assert res["ok"] and res.get("created") and res["title"] == "kb/People/Buddy"
+
+
+def test_entity_embeddings_and_entities_mode(client):
+    """Entities get a semantic vector on rebuild; semantic search + the 'entities' scope use it."""
+    import json
+    from app.db import get_conn
+    from app.services import entity_index as ei, embeddings
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "n/zeb", "Zebulon Thornquist is a person I met once.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "person", "name": "Zebulon Thornquist"}])))
+    conn.commit()
+    ei.rebuild(conn)
+
+    eid = conn.execute("SELECT id FROM entities WHERE canonical_name='Zebulon Thornquist'").fetchone()["id"]
+    assert conn.execute("SELECT 1 FROM vec_entities WHERE entity_id=?", (eid,)).fetchone()  # embedded
+    assert conn.execute("SELECT embed_hash FROM entities WHERE id=?", (eid,)).fetchone()["embed_hash"]
+    assert ei.rebuild(conn) and not conn.execute(   # unchanged → no re-embed needed (hash cache)
+        "SELECT 1 FROM entities WHERE embed_hash IS NULL").fetchone()
+
+    assert any(h["id"] == eid for h in embeddings.semantic_search_entities(conn, "Zebulon Thornquist", 5))
+    res = client.get("/api/search?q=Zebulon&mode=entities").json()
+    assert res and all(h["kind"] == "entity" for h in res)            # scope returns only entities
+    sem = client.get("/api/search?q=Zebulon Thornquist&mode=semantic").json()
+    assert any(h["kind"] == "entity" for h in sem)                    # semantic mode now reaches entities
 
 
 def test_gauntlet_fixes(client, monkeypatch):

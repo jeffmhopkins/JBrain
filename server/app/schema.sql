@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS entities (
   normalized_key TEXT NOT NULL,
   note_count     INTEGER NOT NULL DEFAULT 0,
   article_title  TEXT,                                -- the kb article for this entity, if one exists
+  embed_hash     TEXT,                                -- cache key for the entity's semantic embedding
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(type, normalized_key)
 );

@@ -28,7 +28,12 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
     if not q.strip():
         return []
 
-    if mode in ("hybrid", "keyword"):
+    # 'entities' is a SCOPE (entities only); hybrid/keyword/semantic are ranking methods.
+    entity_only = mode == "entities"
+    do_keyword = mode in ("hybrid", "keyword", "entities")
+    do_semantic = mode in ("hybrid", "semantic", "entities")
+
+    if do_keyword and not entity_only:
         try:
             for i, r in enumerate(conn.execute(
                 "SELECT f.note_id, n.title, n.slug, bm25(notes_fts) AS rank "
@@ -58,9 +63,10 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
         except Exception:
             pass
 
-        # Canonical entities by name/alias (people, orgs, places, things…). They carry no
-        # embedding, so they ride the keyword/hybrid half only — a name match surfaces the
-        # entity alongside the notes that mention it.
+    # Canonical entities (people, orgs, places, things, pets…) by NAME/alias (keyword) and
+    # by MEANING (their embedding). Both fuse into the same ranking with notes/attachments;
+    # in 'entities' scope they're all that's returned.
+    if do_keyword:
         try:
             for i, r in enumerate(entity_index.index(conn, q=q, limit=limit)):
                 bump(f"entity:{r['id']}", {
@@ -71,7 +77,7 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
         except Exception:
             pass
 
-    if mode in ("hybrid", "semantic"):
+    if do_semantic and not entity_only:
         for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
             bump(f"note:{r['id']}", {
                 "kind": "note", "id": r["id"], "title": r["title"], "slug": r["slug"],
@@ -84,6 +90,17 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
                 "title": r["title"], "slug": r["slug"], "snippet": r["snippet"],
                 "distance": r["distance"],
             }, i)
+
+    if do_semantic:
+        try:
+            for i, r in enumerate(embeddings.semantic_search_entities(conn, q, limit)):
+                bump(f"entity:{r['id']}", {
+                    "kind": "entity", "id": r["id"], "name": r["canonical_name"],
+                    "entity_type": r["type"], "note_count": r["note_count"],
+                    "article_title": r["article_title"], "distance": r["distance"],
+                }, i)
+        except Exception:
+            pass
 
     # Mark note hits that CARRY attachments, so the card shows a clip deterministically
     # — not only when the attachment's own text happened to match (one batched query).

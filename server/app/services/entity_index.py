@@ -11,11 +11,12 @@ entity ids stay stable across rebuilds.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
 
-from . import people
+from . import embeddings, people
 
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
@@ -203,11 +204,72 @@ def rebuild(conn, limit: int = 20000) -> int:
 
     for r in conn.execute("SELECT id, type, normalized_key FROM entities").fetchall():
         if (r["type"], r["normalized_key"]) not in seen_keys:
+            embeddings.delete_entity_embedding(conn, r["id"])
             conn.execute("DELETE FROM entities WHERE id=?", (r["id"],))   # mentions cascade
 
     _link_articles(conn)
+    _sync_embeddings(conn)
     conn.commit()
     return len(seen_keys)
+
+
+_LABEL = dict(_TYPE_LABELS)
+
+
+def _entity_embed_text(name: str, typ: str, aliases: list[str], lead: str) -> str:
+    """The string an entity is embedded from: its name, human type, aliases, and (when it
+    has one) its KB article's lead sentence — so a descriptive query can reach it."""
+    parts = [name]
+    label = _LABEL.get(typ, typ)
+    if label:
+        parts.append(f"({label})")
+    if aliases:
+        parts.append("a.k.a. " + ", ".join(aliases[:4]))
+    if lead:
+        parts.append(lead)
+    return " — ".join(parts)[:500]
+
+
+def _article_leads(conn) -> dict:
+    """{kb article title -> its lead sentence} (first non-heading line), for embed context."""
+    out: dict = {}
+    for a in conn.execute(
+        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL"
+    ).fetchall():
+        for line in (a["content_md"] or "").splitlines():
+            s = line.strip().lstrip("#").strip()
+            if s:
+                out[a["title"]] = s[:200]
+                break
+    return out
+
+
+def _sync_embeddings(conn) -> None:
+    """Refresh each entity's semantic vector, skipping entities whose embed text is
+    unchanged (entities.embed_hash). Batched; only changed entities hit the embedder."""
+    leads = _article_leads(conn)
+    aliases: dict = {}
+    for a in conn.execute(
+        "SELECT entity_id, alias_display FROM entity_aliases WHERE alias_display IS NOT NULL"
+    ).fetchall():
+        aliases.setdefault(a["entity_id"], []).append(a["alias_display"])
+    pending = []   # (id, hash)
+    texts = []
+    for r in conn.execute(
+        "SELECT id, type, canonical_name, article_title, embed_hash FROM entities"
+    ).fetchall():
+        text = _entity_embed_text(r["canonical_name"], r["type"], aliases.get(r["id"], []),
+                                  leads.get(r["article_title"] or "", ""))
+        h = hashlib.sha1(text.encode("utf-8")).hexdigest()
+        if h != (r["embed_hash"] or ""):
+            pending.append((r["id"], h))
+            texts.append(text)
+    if not pending:
+        return
+    vecs = embeddings.embed_many(texts)
+    for (eid, h), vec in zip(pending, vecs):
+        embeddings.store_entity_vector(conn, eid, vec)
+        conn.execute("UPDATE entities SET embed_hash=? WHERE id=?", (h, eid))
 
 
 def _link_articles(conn) -> None:

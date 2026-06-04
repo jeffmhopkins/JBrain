@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 def init_db() -> None:
@@ -455,6 +455,21 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               text        TEXT NOT NULL,
               created_at  TEXT NOT NULL DEFAULT (datetime('now')));
             CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);
+        """)
+
+    if current < 31:
+        # Per-note AI analysis sidecar (structured signals feeding the KB pipeline).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS note_analysis (
+              note_id       INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+              content_hash  TEXT NOT NULL,
+              gist          TEXT NOT NULL DEFAULT '',
+              facts_json    TEXT NOT NULL DEFAULT '[]',
+              entities_json TEXT NOT NULL DEFAULT '[]',
+              domain        TEXT,
+              dates_json    TEXT NOT NULL DEFAULT '[]',
+              model         TEXT,
+              analyzed_at   TEXT NOT NULL DEFAULT (datetime('now')));
         """)
 
 

@@ -1,0 +1,21 @@
+# Nightly per-note AI analysis.
+#
+# Just after midnight (so the day's consolidation has run first), refresh the
+# structured-signal sidecar for any entry/daily notes that are new or changed. This
+# is the cached "careful first read" of each note that the knowledge-base build and
+# maintenance read from, so they never have to re-parse raw captures every run.
+#
+# Cheap-model, bounded, hash-guarded (only changed notes cost a call). No-ops
+# without an LLM key. Touches no note bodies — the analysis is a sidecar.
+key: analyze-notes
+name: Note analysis
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 1 * * *"   # 1am local (server TZ) — after the midnight daily consolidation
+
+action:
+  type: analyze_notes
+  config:
+    batch_limit: 80

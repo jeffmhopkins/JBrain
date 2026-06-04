@@ -1,0 +1,35 @@
+# Declarative action: refresh the per-note AI analysis sidecar (structured signals
+# — gist, salient facts, entities, domain guess) for entry/daily notes whose
+# analysis is missing or stale. Computed once by a cheap model and cached keyed by
+# content hash, so a note is only re-analyzed when it actually changes.
+#
+# This NEVER touches the note body — the analysis lives beside the note (the
+# note_analysis table) and feeds the knowledge-base pipeline + a read-only panel in
+# the note view. Runs nightly (before synthesis) and is backfilled at the start of a
+# KB rebuild. No-ops cleanly without an LLM key.
+#
+# config keys:
+#   batch_limit — max notes per run (default 80)
+#   review      — set true to post a review card (default off; this is housekeeping)
+type: analyze_notes
+category: Knowledge base
+config:
+  - { key: batch_limit, label: Max notes per run, type: number, default: 80 }
+  - { key: review, label: Post a review card, type: review, default: false }
+steps:
+  - id: pending
+    do: analyze_pending
+    with: { limit: "{{ config.batch_limit | default(80) }}" }
+    stop_when_empty: "no notes need analysis"
+
+  - id: done
+    for_each: "{{ pending }}"
+    steps:
+      - do: analyze_note
+        with: { id: "{{ item }}" }
+
+  - do: create_review
+    when: "{{ config.review != false and pending }}"
+    with:
+      title: "Note analysis refreshed"
+      message: "Refreshed AI analysis for {{ pending | length }} note(s)."

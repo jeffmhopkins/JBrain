@@ -150,6 +150,19 @@ def _p_semantic_search(ctx, query, limit=8):
     return embeddings.semantic_search(ctx.conn, query, int(limit))
 
 
+def _p_analyze_pending(ctx, limit=60):
+    """Ids of entry/daily notes whose AI analysis is missing or stale."""
+    from . import note_analysis
+    return note_analysis.pending_ids(ctx.conn, int(limit))
+
+
+def _p_analyze_note(ctx, id):
+    """(Re)compute one note's analysis sidecar (no-op if unchanged). Returns whether
+    a fresh analysis was stored."""
+    from . import note_analysis
+    return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id)))}
+
+
 def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
     sql = "SELECT id, title, slug, content_md, created_at FROM notes WHERE deleted_at IS NULL"
     params: list = []
@@ -918,6 +931,8 @@ _PRIMITIVES = {
     "write_note": _p_write_note,
     "create_review": _p_create_review,
     "semantic_search": _p_semantic_search,
+    "analyze_pending": _p_analyze_pending,
+    "analyze_note": _p_analyze_note,
     "query_notes": _p_query_notes,
     "query_entry_changes": _p_query_entry_changes,
     "get_meta": _p_get_meta,
@@ -994,6 +1009,10 @@ _PRIMITIVE_META: dict[str, dict] = {
     "discover_stays": {"summary": "Find unlabeled spots the trail shows you revisiting across several days (place candidates).",
                        "inputs": [{"name": "min_days", "type": "int"}, {"name": "days_back", "type": "int"},
                                   {"name": "min_minutes", "type": "int"}], "output": "object"},
+    "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale.",
+                        "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
+    "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged).",
+                     "inputs": [{"name": "id", "type": "int", "required": True}], "output": "dict"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

@@ -101,6 +101,20 @@ def get_note(slug: str):
     return note
 
 
+@router.get("/{slug}/analysis")
+def note_analysis(slug: str):
+    """The read-only AI analysis sidecar for a note (gist, salient facts, entities,
+    domain). {} when none has been computed yet. Never mutates the note."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found")
+    from ..services import note_analysis as na
+    return na.get(conn, row["id"]) or {}
+
+
 @router.post("")
 def create_or_update(body: NoteIn):
     conn = get_conn()

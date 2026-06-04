@@ -674,6 +674,43 @@ def test_navigation_tools(client):
         assert {"read_notes", "list_tags", "notes_with_tag", "related_notes"} <= names
 
 
+def test_note_analysis_sidecar(client, monkeypatch):
+    """The per-note AI analysis sidecar: pending detection, hash-guarded re-run,
+    structured decode, and the read-only endpoint — without mutating the note."""
+    from app.db import get_conn
+    from app.services import note_analysis as na, llm
+    conn = get_conn()
+    client.post("/api/notes/entry", json={"text": "Met Dr. Patel at Riverside Clinic; Allan started 50mg on 2026-06-01.",
+                                           "title": "Clinic visit"})
+    row = conn.execute("SELECT id, slug, content_md FROM notes WHERE title = 'notes/Clinic visit'").fetchone()
+    nid, slug, body_before = row["id"], row["slug"], row["content_md"]
+
+    assert nid in na.pending_ids(conn, 50)            # no analysis yet → pending
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        '{"gist":"A clinic visit and a med change for Allan.",'
+        '"facts":["Allan started a 50mg medication on 2026-06-01."],'
+        '"entities":[{"type":"person","name":"Allan"},{"type":"org","name":"Riverside Clinic"}],'
+        '"domain":"People","dates":["2026-06-01: Allan started a medication"]}'))
+
+    assert na.analyze(conn, nid) is True
+    conn.commit()
+    assert na.analyze(conn, nid) is False             # unchanged → hash no-op, no LLM re-spend
+    assert nid not in na.pending_ids(conn, 50)        # no longer pending
+
+    a = na.get(conn, nid)
+    assert a["domain"] == "People"
+    assert "Allan" in [e["name"] for e in a["entities"]]
+    assert a["facts"] and "50mg" in a["facts"][0]
+
+    # The note body itself is untouched — analysis is a sidecar.
+    assert conn.execute("SELECT content_md FROM notes WHERE id = ?", (nid,)).fetchone()["content_md"] == body_before
+
+    # Read-only endpoint surfaces it; kb notes are excluded from analysis entirely.
+    r = client.get(f"/api/notes/{slug}/analysis").json()
+    assert r["gist"].startswith("A clinic visit") and r["domain"] == "People"
+
+
 def test_geo_distance_resolves_place_geofence(client):
     """A saved place keeps its coords in the geofence table, not on its loc/ note, so
     geo_distance must resolve it by place name AND by the loc/ note title — otherwise a

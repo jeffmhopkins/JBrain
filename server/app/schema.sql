@@ -118,6 +118,23 @@ CREATE TABLE IF NOT EXISTS note_chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);
 
+-- Cached per-note AI analysis (structured signals: gist, salient facts, entities,
+-- domain guess). A SIDECAR — it never mutates the note body, so the raw note stays
+-- the source of truth. Keyed by content_hash so it's recomputed only when the note
+-- actually changes. Feeds the KB pipeline + a read-only panel in the note view.
+CREATE TABLE IF NOT EXISTS note_analysis (
+  note_id       INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+  content_hash  TEXT NOT NULL,
+  gist          TEXT NOT NULL DEFAULT '',
+  facts_json    TEXT NOT NULL DEFAULT '[]',
+  entities_json TEXT NOT NULL DEFAULT '[]',
+  domain        TEXT,
+  dates_json    TEXT NOT NULL DEFAULT '[]',
+  model         TEXT,
+  analyzed_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives
 -- in one consistency domain and is trivially searchable. note_id is nullable so
 -- an attachment can exist before being linked to an entry.

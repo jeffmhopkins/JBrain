@@ -963,6 +963,38 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
+    """Component 3: the maintenance pass revises an article to satisfy a directive, applies
+    it (versioned), and resolves the talk item WITH a note of how — only items it actually
+    addressed are closed; the rest stay open."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src", "Allan moved to Cocoa in 2019; some notes say 2020.")
+    conn.commit()
+    ns.upsert_note(conn, "kb/People/Allan",
+                   "# Allan\nAllan lives in Cocoa.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n",
+                   kind="kb")
+    conn.commit()
+    d1 = article_talk.add(conn, "kb/People/Allan", "directive", "Add the year he moved to Cocoa.")
+    d2 = article_talk.add(conn, "kb/People/Allan", "question", "What's his exact street address?")
+    conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        "# Allan\nAllan moved to Cocoa in 2019.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n"
+        f'\n```maintain\n{{"resolved": [{{"id": {d1}, "how": "Added the 2019 move year from the source."}}]}}\n```\n'))
+
+    res = wiki_build.maintain_batch(conn, limit=10)
+    assert res["changed"] == 1 and res["resolved"] == 1
+    body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
+    assert "2019" in body                                              # directive applied + saved
+    talk = {t["id"]: t for t in article_talk.list_for(conn, "kb/People/Allan")}
+    assert talk[d1]["resolved_at"] and "2019" in talk[d1]["resolution"]  # resolved WITH how
+    assert not talk[d2]["resolved_at"]                                 # the unanswerable question stays open
+
+
 def test_review_open_talk_opens_session(client):
     """The build's review step posts a Review card per article with unresolved talk items,
     so they're worked through the inbox instead of ticked off in the panel."""

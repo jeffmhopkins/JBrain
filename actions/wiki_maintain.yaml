@@ -1,0 +1,37 @@
+# Declarative action: KNOWLEDGE-BASE MAINTENANCE (component 3).
+#
+# The stateful counterpart to the full rebuild (wiki_build). Instead of rewriting the KB
+# from scratch, it walks the articles that have OPEN talk items — the owner's directives
+# and the conflicts/questions/todos the writer raised — and addresses each against the
+# article's own cited sources: applies directives, reconciles conflicts, answers
+# questions. It NEVER invents; an item it can't settle faithfully is left open.
+#
+# Each changed article is saved (versioned, undoable) and the items it resolved are
+# closed WITH a note of how (shown in the article's AI-talk log). Anything still open
+# becomes a Review card so you can finish it by hand. Requires an Anthropic key.
+#
+# config keys:
+#   limit  — max articles to maintain per run (default 20; re-run to drain more)
+#   review — post review cards (default true)
+type: wiki_maintain
+category: Knowledge base
+config:
+  - { key: limit, label: Max articles per run, type: number, default: 20 }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  # 1. Address open talk items on each article that has them.
+  - id: maint
+    do: wiki_maintain
+    with: { limit: "{{ config.limit | default(20) }}" }
+
+  # 2. Summary card of what the pass did.
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "Knowledge base maintenance"
+      message: "Maintained {{ maint.articles }} article(s): updated {{ maint.changed }}, resolved {{ maint.resolved }} open item(s)."
+      link_title: "kb/_index"
+
+  # 3. Re-open a review session for whatever is STILL open (couldn't be settled from sources).
+  - do: review_open_talk
+    when: "{{ config.review != false }}"

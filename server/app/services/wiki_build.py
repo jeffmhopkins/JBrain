@@ -396,6 +396,127 @@ def link_owner(conn) -> dict:
     return {"linked": target["title"], "person": o["name"]}
 
 
+_MAINTAIN_RE = re.compile(r"\n?```maintain\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
+
+
+def _extract_maintain(text: str):
+    """Pull the trailing ```maintain JSON block out of the maintenance output.
+    Returns (article_without_block, {resolved:[...], new:[...]})."""
+    m = _MAINTAIN_RE.search(text or "")
+    if not m:
+        return text, {}
+    body = text[:m.start()] + text[m.end():]
+    try:
+        data = json.loads(m.group(1))
+    except Exception:  # noqa: BLE001
+        data = {}
+    return body, (data if isinstance(data, dict) else {})
+
+
+def maintain_one(conn, article_title: str, known_titles: list[str] | None = None) -> dict:
+    """Component 3: address an article's OPEN talk items (directives/conflicts/questions/
+    todos) against its cited sources. Returns the revised article + which items the model
+    resolved (with how) + any new items. Pure — the batch driver applies/records."""
+    from . import article_talk
+    base = {"title": article_title, "ok": False, "changed": False,
+            "content_md": "", "resolved": [], "new": [], "errors": [], "warnings": []}
+    note = conn.execute(
+        "SELECT content_md FROM notes WHERE title=? AND kind='kb' AND deleted_at IS NULL",
+        (article_title,)).fetchone()
+    if not note:
+        base["errors"] = ["no such article"]
+        return base
+    open_items = [it for it in article_talk.open_for(conn, article_title)
+                  if it["kind"] in ("conflict", "question", "todo", "directive")]
+    if not open_items:
+        return {**base, "ok": True}                         # nothing to maintain
+    if not llm.has_credentials():
+        base["errors"] = ["no LLM credentials"]
+        return base
+
+    from . import people
+    content = note["content_md"] or ""
+    domain = wiki_guides.domain_for_title(article_title) or ""
+    # The article's own evidence base: the source notes it already cites.
+    cited = [t for t in wikilinks.extract_links(content) if not t.lower().startswith("kb/")]
+    ids = []
+    for t in cited:
+        r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (t,)).fetchone()
+        if r:
+            ids.append(r["id"])
+    srcs = _load_sources(conn, ids)
+    items_text = "\n".join(f"[{it['id']}] ({it['kind']}, by {it['author']}) {it['body']}" for it in open_items)
+    others = [t for t in (known_titles or []) if t and t != article_title][:600]
+    known_block = "\n".join(others) if others else "(no other articles)"
+
+    prompt = (prompts.get("actions.wiki_maintain", "")
+              .replace("{owner}", people.owner_name(conn))
+              .replace("{general_guide}", wiki_guides.guide_text(None))
+              .replace("{domain_guide}", wiki_guides.guide_text(domain)).replace("{domain}", domain)
+              .replace("{title}", article_title).replace("{article}", content)
+              .replace("{items}", items_text).replace("{known_titles}", known_block)
+              .replace("{sources}", _sources_text(srcs)))
+    try:
+        revised, payload = _extract_maintain(_strip_fence(
+            llm.complete([{"role": "user", "content": prompt}], max_tokens=2600)))
+    except Exception as exc:  # noqa: BLE001
+        base["errors"] = [f"maintain failed: {exc}"]
+        return base
+
+    revised = revised.strip()
+    if not revised:
+        base["errors"] = ["empty revision"]
+        return base
+    # Same dead-link guarantee as the writer: never save a dead link.
+    allowed = {t for t in (known_titles or [])} | {article_title}
+    bad = _bad_links(conn, revised, allowed)
+    if bad:
+        revised = _neutralize_links(revised, set(bad))
+    v = wiki_guides.validate_structure(article_title, revised)
+    open_ids = {it["id"] for it in open_items}
+    resolved = [{"id": int(r["id"]), "how": str(r.get("how") or "")}
+                for r in (payload.get("resolved") or [])
+                if isinstance(r, dict) and _isint(r.get("id")) and int(r["id"]) in open_ids]
+    new = [{"kind": str(n.get("kind") or "note"), "body": str(n.get("body") or "").strip()}
+           for n in (payload.get("new") or []) if isinstance(n, dict) and str(n.get("body") or "").strip()]
+    return {"title": article_title, "ok": v["ok"], "changed": revised != content.strip(),
+            "content_md": revised, "resolved": resolved, "new": new,
+            "errors": v["errors"], "warnings": v["warnings"]}
+
+
+def maintain_batch(conn, limit: int = 20) -> dict:
+    """Run the maintenance pass over articles that have open talk items. Applies a valid
+    revision (versioned), resolves the items the model addressed (recording HOW), and
+    records any new items. Returns a summary."""
+    from . import article_talk
+    from . import notes as notes_svc
+    rows = conn.execute(
+        "SELECT DISTINCT t.article_title AS title FROM article_talk t "
+        "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive') "
+        "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
+        "ORDER BY t.article_title LIMIT ?",
+        (int(limit),)).fetchall()
+    known = sorted({r["title"] for r in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/_%'").fetchall()})
+    changed = resolved_n = failed = 0
+    for row in rows:
+        title = row["title"]
+        out = maintain_one(conn, title, known)
+        if not out["ok"]:
+            failed += 1
+            continue
+        if out["changed"] and out["content_md"]:
+            notes_svc.upsert_note(conn, title, out["content_md"], kind="kb", version_note="maintenance pass")
+            changed += 1
+        for r in out["resolved"]:
+            article_talk.resolve_with(conn, r["id"], r["how"])
+            resolved_n += 1
+        if out["new"]:
+            article_talk.record(conn, title, out["new"], author="ai")
+    conn.commit()
+    return {"articles": len(rows), "changed": changed, "resolved": resolved_n, "failed": failed}
+
+
 def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:
     """Write every article; split valid (saved by the recipe) vs quarantined (failed
     the structure lint — surfaced, not saved). Mirrors validate_citations' shape.

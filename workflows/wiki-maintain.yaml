@@ -1,0 +1,23 @@
+# Knowledge-base MAINTENANCE — run-only, never scheduled (for now).
+#
+# Wraps the wiki_maintain action: it addresses the OPEN talk items on existing articles
+# (the owner's directives + the conflicts/questions the writer raised) against each
+# article's sources, rather than rebuilding the whole KB. Edits are versioned/undoable;
+# items it settles are closed with a note of how, and anything left open becomes a Review
+# card. Run it from the Workflows page with "Run now"; re-run to drain more.
+#
+# interval_seconds: 0 makes schedule_due() return False, so it never auto-fires — you
+# decide when the AI edits your articles.
+key: wiki-maintain
+name: Knowledge base maintenance
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 0
+
+action:
+  type: wiki_maintain
+  config:
+    limit: 20
+    review: true

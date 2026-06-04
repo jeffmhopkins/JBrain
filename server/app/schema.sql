@@ -179,7 +179,8 @@ CREATE TABLE IF NOT EXISTS article_talk (
   body          TEXT NOT NULL,
   author        TEXT NOT NULL DEFAULT 'ai',   -- ai | user
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at   TEXT
+  resolved_at   TEXT,
+  resolution    TEXT                  -- how it was addressed (set by the maintenance pass)
 );
 CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
 

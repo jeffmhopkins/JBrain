@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 
 def init_db() -> None:
@@ -516,6 +516,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               resolved_at   TEXT);
             CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
         """)
+
+    if current < 35:
+        # How a talk item was addressed (set by the Component-3 maintenance pass).
+        _add_column(conn, "article_talk", "resolution", "TEXT")
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:

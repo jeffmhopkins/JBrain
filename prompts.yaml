@@ -493,6 +493,52 @@ actions:
 
     CURRENT DRAFT:
     {draft}
+  wiki_maintain: |
+    Maintain ONE existing knowledge-base article: address its OPEN ITEMS using ONLY the
+    source notes, keeping it faithful, well-structured and current. Output the FULL revised
+    article in Markdown (start with "# <name>"), then a fenced ```maintain block.
+
+    The owner is {owner}; first-person in the sources refers to them (resolve by name).
+
+    Work each OPEN ITEM:
+    - directive — a standing instruction from the owner; APPLY it.
+    - conflict  — sources disagree; reconcile only if the sources now allow, else leave it.
+    - question  — answer it in the article if the sources support an answer.
+    - todo      — do it if the sources support it.
+    Act ONLY where the SOURCE NOTES support it — never invent. If an item can't be addressed
+    faithfully, leave it open (don't list it as resolved).
+
+    Keep the house + domain style, the @t[...] live-time tokens, footnote citations to the
+    EXACT source titles, and the cross-link rule: only [[link]] an article in the EXISTING
+    ARTICLES list or a cited source — never invent a link. If little changes, return the
+    article essentially as-is.
+
+    After the article, append EXACTLY one fenced block (valid JSON):
+    ```maintain
+    {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note", "body": "..."}]}
+    ```
+    List every item id you actually addressed in "resolved"; omit the ids you left open.
+    "new" is optional — raise it only for something genuinely worth a later look.
+
+    HOUSE STYLE
+    {general_guide}
+
+    DOMAIN GUIDE — {domain}
+    {domain_guide}
+
+    ARTICLE: {title}
+
+    CURRENT ARTICLE:
+    {article}
+
+    OPEN ITEMS:
+    {items}
+
+    EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
+    {known_titles}
+
+    SOURCE NOTES:
+    {sources}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

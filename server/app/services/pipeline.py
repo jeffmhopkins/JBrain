@@ -195,6 +195,12 @@ def _p_link_owner(ctx):
     return wiki_build.link_owner(ctx.conn)
 
 
+def _p_wiki_maintain(ctx, limit=20):
+    """Component 3: address open talk items on existing articles against their sources."""
+    from . import wiki_build
+    return wiki_build.maintain_batch(ctx.conn, int(limit))
+
+
 def _p_review_open_talk(ctx, limit=20):
     """Open a review 'session' from the build: post a Review card for each article that
     has unresolved talk items needing a human (conflict / question / todo / directive), so
@@ -1054,6 +1060,7 @@ _PRIMITIVES = {
     "flag_dead_links": _p_flag_dead_links,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
+    "wiki_maintain": _p_wiki_maintain,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
@@ -1153,6 +1160,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",
+                      "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",
                        "inputs": [{"name": "articles", "type": "list", "required": True},
                                   {"name": "valid", "type": "list", "required": True}], "output": "dict"},

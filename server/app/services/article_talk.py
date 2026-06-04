@@ -58,11 +58,18 @@ def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
 def list_for(conn, article_title: str) -> list[dict]:
     """All talk for an article — open items first, then most-recent."""
     rows = conn.execute(
-        "SELECT id, kind, body, author, created_at, resolved_at FROM article_talk "
+        "SELECT id, kind, body, author, created_at, resolved_at, resolution FROM article_talk "
         "WHERE article_title=? ORDER BY (resolved_at IS NULL) DESC, created_at DESC",
         (article_title,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
+    """Resolve an item AND record how it was addressed (the maintenance pass uses this)."""
+    conn.execute(
+        "UPDATE article_talk SET resolved_at=datetime('now'), resolution=? WHERE id=? AND resolved_at IS NULL",
+        ((how or "").strip()[:500] or None, talk_id))
 
 
 def open_for(conn, article_title: str) -> list[dict]:

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 
-interface Talk { id: number; kind: string; body: string; author: string; created_at: string; resolved_at: string | null; }
+interface Talk { id: number; kind: string; body: string; author: string; created_at: string; resolved_at: string | null; resolution?: string | null; }
 
 const KIND_ICON: Record<string, string> = {
   decision: "🧠", conflict: "⚠️", question: "❓", todo: "☑️", directive: "📌", note: "📝",
@@ -58,8 +58,12 @@ export default function TalkPanel({ slug }: { slug: string }) {
         <details style={{ marginTop: 8 }}>
           <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>{done.length} resolved</summary>
           {done.map((t) => (
-            <div key={t.id} className="talk-item muted" style={{ textDecoration: "line-through" }}>
-              <span>{KIND_ICON[t.kind] || "•"}</span><span style={{ flex: 1 }}>{t.body}</span>
+            <div key={t.id} className="talk-item muted">
+              <span>{KIND_ICON[t.kind] || "•"}</span>
+              <span style={{ flex: 1 }}>
+                <span style={{ textDecoration: "line-through" }}>{t.body}</span>
+                {t.resolution && <em style={{ display: "block", textDecoration: "none" }}>→ {t.resolution}</em>}
+              </span>
             </div>
           ))}
         </details>

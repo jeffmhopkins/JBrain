@@ -674,6 +674,24 @@ def test_navigation_tools(client):
         assert {"read_notes", "list_tags", "notes_with_tag", "related_notes"} <= names
 
 
+def test_note_analysis_preserves_time_tokens(client, monkeypatch):
+    """Analysis reads RAW content so live @t[...] tokens reach the analyzer (and its
+    facts) intact rather than being frozen — the hash-keyed sidecar would never refresh
+    a frozen value, so it must stay a live token."""
+    from app.db import get_conn
+    from app.services import note_analysis as na, llm
+    conn = get_conn()
+    client.post("/api/notes/entry", json={"text": "Jeff born @t[age:1986-03-15].", "title": "Jeff bday"})
+    nid = conn.execute("SELECT id FROM notes WHERE title='notes/Jeff bday'").fetchone()["id"]
+    seen = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete",
+        lambda messages, **k: seen.update(p=messages[0]["content"]) or
+        '{"gist":"x","facts":[],"entities":[],"domain":"People","dates":[]}')
+    na.analyze(conn, nid)
+    assert "@t[age:1986-03-15]" in seen["p"]      # raw token reached the analyzer, not "40 (as of …)"
+
+
 def test_note_analysis_sidecar(client, monkeypatch):
     """The per-note AI analysis sidecar: pending detection, hash-guarded re-run,
     structured decode, and the read-only endpoint — without mutating the note."""

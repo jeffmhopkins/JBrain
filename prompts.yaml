@@ -430,6 +430,9 @@ actions:
     your best single guess for where this belongs in a knowledge base — "Reference" only
     for general, de-identified knowledge; if it is about a specific person use "People";
     use "Unsure" when genuinely unclear.
+    Time: PRESERVE any @t[...] live token verbatim in the gist/facts (it stays current
+    when re-read — never replace it with a number). Put fixed dated events in "dates" as
+    literal ISO dates.
     NOTE TITLE: {title}
     NOTE BODY:
     {body}

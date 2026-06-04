@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 
-from . import clock, llm, prompts
+from . import llm, prompts
 
 log = logging.getLogger("jbrain")
 
@@ -31,6 +31,8 @@ _DEFAULT_PROMPT = (
     '"entities":[{"type":"person|org|place|thing","name":"..."}],'
     '"domain":"Reference|People|Groups|Places|Things|Activities|Unsure",'
     '"dates":["YYYY-MM-DD: what happened"]}\n'
+    "PRESERVE any @t[...] live token verbatim in the gist/facts; put fixed dated events "
+    "in dates as literal ISO dates.\n"
     "NOTE TITLE: {title}\nNOTE BODY:\n{body}"
 )
 
@@ -91,8 +93,10 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
             return False                      # already current — never re-spend the LLM
     if not llm.has_credentials():
         return False
-    # Snapshot @t[...] tokens so a fact is recorded as a dated value, not a live token.
-    body = clock.expand_tokens(row["content_md"] or "", snapshot=True)
+    # RAW content — do NOT expand @t[...] tokens. Keep live tokens intact so an extracted
+    # fact stays current (the analysis is hash-keyed, so a frozen value would never be
+    # recomputed) and the panel can render it live, consistent with how articles treat time.
+    body = row["content_md"] or ""
     template = prompts.get("actions.note_analysis", _DEFAULT_PROMPT)
     prompt = template.replace("{title}", row["title"]).replace("{body}", body[:6000])
     try:

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { get } from "../api";
+import { expandTimeTokens } from "../time";
 
 interface Entity { type: string; name: string; }
 interface Analysis {
@@ -41,11 +42,11 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
         Auto-extracted, read-only. The note itself is unchanged.
       </p>
 
-      {a.gist && <p style={{ fontSize: 13, fontStyle: "italic", margin: "6px 0" }}>{a.gist}</p>}
+      {a.gist && <p style={{ fontSize: 13, fontStyle: "italic", margin: "6px 0" }}>{expandTimeTokens(a.gist)}</p>}
 
       {!!a.facts?.length && (
         <ul style={{ fontSize: 13, paddingLeft: 18, margin: "6px 0" }}>
-          {a.facts.map((f, i) => <li key={i}>{f}</li>)}
+          {a.facts.map((f, i) => <li key={i}>{expandTimeTokens(f)}</li>)}
         </ul>
       )}
 

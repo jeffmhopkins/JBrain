@@ -520,6 +520,15 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 /* Dynamic (live) time values — @t[...] tokens rendered against today. Dotted
    underline + help cursor signal "this updates over time"; the tooltip names the anchor. */
 .dyn-date { border-bottom: 1px dotted var(--text-dim); cursor: help; }
+/* Live "watch" modal — streaming step trace of a workflow run. */
+.watch-steps { list-style: none; margin: 10px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
+.watch-steps li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 14px; }
+.watch-steps li.done { color: var(--text-dim); }
+.watch-steps li.running { color: var(--text); font-weight: 500; }
+.watch-ico { width: 16px; flex: none; }
+.watch-steps li.running .watch-ico { animation: pulse 1.2s ease-in-out infinite; }
+.watch-detail { margin-top: 10px; white-space: pre-wrap; }
+@keyframes pulse { 50% { opacity: 0.35; } }
 /* Wikipedia-style citations: superscript markers + a References list (remark-gfm
    footnotes). The auto heading reads "Footnotes" — relabel it to "References". */
 .md sup a, .md [data-footnote-ref] { color: var(--accent); text-decoration: none; font-size: 0.7em; padding: 0 1px; }

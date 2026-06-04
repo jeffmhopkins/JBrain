@@ -43,6 +43,18 @@ function byCategory<T>(list: T[], catOf: (x: T) => string): [string, T[]][] {
     .map((c) => [c, map.get(c)!] as [string, T[]]);
 }
 
+// Friendly labels for the live watch modal; unknown steps are humanized.
+const STEP_LABELS: Record<string, string> = {
+  analyze_pending: "Finding notes to analyze", analyze_note: "Analyzing note",
+  kb_reset: "Clearing old knowledge base", corpus_digest: "Surveying notes",
+  wiki_outline: "Designing the taxonomy", wiki_write_batch: "Writing articles",
+  validate_structure: "Checking structure", write_note: "Saving note",
+  create_review: "Posting review", call_action: "Running sub-action",
+  query_entry_changes: "Finding changed entries", wiki_plan: "Planning updates",
+  validate_citations: "Checking citations", set_meta: "Updating watermark",
+};
+const prettyStep = (n: string) => STEP_LABELS[n] || n.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+
 export default function WorkflowsPage() {
   const { appTz } = useAuth();
   const [items, setItems] = useState<Workflow[]>([]);
@@ -52,6 +64,9 @@ export default function WorkflowsPage() {
   const [result, setResult] = useState<Record<number, { status: string; detail: string }>>({});
   const [error, setError] = useState("");
   const [actionTypes, setActionTypes] = useState<ActionType[]>([]);
+  // Live step trace per workflow (for the watch modal) + which run we're watching.
+  const [live, setLive] = useState<Record<number, { events: string[]; status: string; detail: string }>>({});
+  const [watch, setWatch] = useState<{ id: number; name: string } | null>(null);
 
   async function load() {
     try { setItems(await get("/api/workflows")); } catch { /* ignore */ }
@@ -71,6 +86,8 @@ export default function WorkflowsPage() {
     setRunning((m) => ({ ...m, [w.id]: true }));
     setResult((m) => { const n = { ...m }; delete n[w.id]; return n; });
     setError("");
+    setLive((m) => ({ ...m, [w.id]: { events: [], status: "running", detail: "" } }));
+    setWatch({ id: w.id, name: w.name });          // open the live watch modal
     try {
       await post(`/api/workflows/${w.id}/run`);   // kicks off in the background
       pollRun(w.id);
@@ -88,8 +105,9 @@ export default function WorkflowsPage() {
     const tick = async () => {
       if (!mounted.current) { polling.current.delete(id); return; }
       try {
-        const s = await get<{ status: string; detail: string }>(`/api/workflows/${id}/run-status`);
-        if (s.status === "running") { setTimeout(tick, 1500); return; }
+        const s = await get<{ status: string; detail: string; events?: string[] }>(`/api/workflows/${id}/run-status`);
+        setLive((m) => ({ ...m, [id]: { events: s.events || [], status: s.status, detail: s.detail || "" } }));
+        if (s.status === "running") { setTimeout(tick, 800); return; }
         polling.current.delete(id);
         if (!mounted.current) return;
         setResult((m) => ({ ...m, [id]: { status: s.status, detail: s.detail || "" } }));
@@ -221,6 +239,42 @@ export default function WorkflowsPage() {
           ))}
         </div>
       ))}
+
+      {watch && (() => {
+        const lv = live[watch.id] || { events: [], status: "running", detail: "" };
+        const isRunning = lv.status === "running" || running[watch.id];
+        // Collapse consecutive identical steps (e.g. 30× "Saving note") into one row with a count.
+        const groups: { name: string; count: number }[] = [];
+        for (const name of lv.events) {
+          const last = groups[groups.length - 1];
+          if (last && last.name === name) last.count++; else groups.push({ name, count: 1 });
+        }
+        return (
+          <Modal
+            title={`Running: ${watch.name}`}
+            size="compact"
+            onClose={() => setWatch(null)}
+            footer={<button className="ghost" onClick={() => setWatch(null)}>{isRunning ? "Run in background" : "Close"}</button>}
+          >
+            <div className={"run-status " + (isRunning ? "running" : lv.status === "ok" ? "ok" : "err")}>
+              {isRunning ? "Running…" : lv.status === "ok" ? "✓ Completed" : "✕ Failed"}
+            </div>
+            <ol className="watch-steps">
+              {groups.map((g, i) => {
+                const stepRunning = isRunning && i === groups.length - 1;
+                return (
+                  <li key={i} className={stepRunning ? "running" : "done"}>
+                    <span className="watch-ico">{stepRunning ? "⏳" : "✓"}</span>
+                    {prettyStep(g.name)}{g.count > 1 ? ` ×${g.count}` : ""}
+                  </li>
+                );
+              })}
+              {groups.length === 0 && <li className="muted">Starting…</li>}
+            </ol>
+            {!isRunning && lv.detail && <p className="muted watch-detail">{lv.detail}</p>}
+          </Modal>
+        );
+      })()}
 
       {editing && (
         <Modal

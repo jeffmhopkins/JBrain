@@ -372,12 +372,52 @@ def start_manual_run(conn, wf_id: int) -> dict:
     return {"running": True, "run_id": run_id}
 
 
+# Live per-run step progress, for the "watch" modal. In-memory (NOT the DB) because
+# the run's connection holds the pipeline's uncommitted writes — committing progress
+# mid-run would persist partial work. Keyed by run_id; last few runs retained.
+_RUN_PROGRESS: dict[int, dict] = {}
+_RUN_PROGRESS_LOCK = threading.Lock()
+_RUN_PROGRESS_MAX = 30
+
+
+def _progress_init(run_id: int) -> None:
+    with _RUN_PROGRESS_LOCK:
+        _RUN_PROGRESS[run_id] = {"events": [], "status": "running", "detail": ""}
+        for old in sorted(_RUN_PROGRESS)[:-_RUN_PROGRESS_MAX]:   # evict the oldest
+            _RUN_PROGRESS.pop(old, None)
+
+
+def _progress_step(run_id: int, name: str) -> None:
+    with _RUN_PROGRESS_LOCK:
+        p = _RUN_PROGRESS.get(run_id)
+        if p is not None:
+            p["events"].append({"name": name, "at": datetime.now(timezone.utc).isoformat()})
+            if len(p["events"]) > 1000:
+                p["events"] = p["events"][-1000:]
+
+
+def _progress_finish(run_id: int, status: str, detail: str) -> None:
+    with _RUN_PROGRESS_LOCK:
+        p = _RUN_PROGRESS.get(run_id)
+        if p is not None:
+            p["status"], p["detail"] = status, detail or ""
+
+
+def run_progress(run_id: int) -> dict | None:
+    """Snapshot of a run's live step progress, or None if not tracked (e.g. after a
+    restart, or a scheduled — non-manual — run)."""
+    with _RUN_PROGRESS_LOCK:
+        p = _RUN_PROGRESS.get(run_id)
+        return {"events": list(p["events"]), "status": p["status"], "detail": p["detail"]} if p else None
+
+
 def _execute_manual_run(wf_id: int, run_id: int) -> None:
     """Background worker: run the pipeline on its OWN connection, then update the
     pre-created run row + the workflow's last_status."""
     from ..db import get_conn
     from . import pipeline
     conn = get_conn()  # this thread's own sqlite connection
+    _progress_init(run_id)
     status, detail = "error", "workflow not found"
     wf = conn.execute("SELECT * FROM workflows WHERE id=?", (wf_id,)).fetchone()
     if wf is not None:
@@ -387,12 +427,14 @@ def _execute_manual_run(wf_id: int, run_id: int) -> None:
             if recipe is None:
                 status, detail = "error", f"unknown action '{wf['action_type']}'"
             else:
-                detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], None)
+                detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], None,
+                                               on_step=lambda n: _progress_step(run_id, n))
                 status = "ok"
                 conn.commit()          # persist the pipeline's writes
         except Exception as exc:        # noqa: BLE001 — record any failure
             conn.rollback()             # discard partial pipeline writes
             status, detail = "error", str(exc)
+    _progress_finish(run_id, status, detail)
     try:
         conn.execute("UPDATE workflows SET last_run_at=datetime('now'), last_status=? WHERE id=?", (status, wf_id))
         conn.execute("UPDATE workflow_runs SET status=?, detail=? WHERE id=?", (status, (detail or "")[:1000], run_id))

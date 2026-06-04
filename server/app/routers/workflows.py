@@ -122,7 +122,12 @@ def run_status(wf_id: int):
         "WHERE workflow_id = ? ORDER BY id DESC LIMIT 1",
         (wf_id,),
     ).fetchone()
-    return dict(row) if row else {"status": "none", "detail": ""}
+    if not row:
+        return {"status": "none", "detail": "", "events": []}
+    d = dict(row)
+    prog = wf_svc.run_progress(row["id"])          # live step trace for the watch modal
+    d["events"] = [e["name"] for e in prog["events"]] if prog else []
+    return d
 
 
 @router.post("/sync")

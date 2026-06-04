@@ -95,12 +95,13 @@ _MAX_STEPS = 1000       # total steps executed per top-level run (runaway backst
 
 
 class _Ctx:
-    def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None):
+    def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None, on_step=None):
         self.conn = conn
         self.workflow_id = workflow_id
         self.trigger = trigger or {}
         self.call_stack = call_stack or []          # action types currently on the stack
         self.depth = depth                          # call_action nesting depth
+        self.on_step = on_step                      # optional progress callback(step_name)
         # Shared, mutable across nested call_action sub-runs so the step cap is
         # global (a [remaining] one-element list passed by reference).
         self.budget = budget if budget is not None else [_MAX_STEPS]
@@ -690,7 +691,8 @@ def _p_call_action(ctx, action, config=None, trigger=None):
         raise RuntimeError(f"call_action: cycle through '{target}'")
 
     sub = _Ctx(ctx.conn, ctx.workflow_id, trigger or {},
-               call_stack=ctx.call_stack + [target], depth=ctx.depth + 1, budget=ctx.budget)
+               call_stack=ctx.call_stack + [target], depth=ctx.depth + 1, budget=ctx.budget,
+               on_step=ctx.on_step)
     scope = {"config": config or {}, "trigger": trigger or {}, "today": _today(), "prompts": _PromptsProxy()}
     trace: list = []
     stopped = None
@@ -1180,6 +1182,11 @@ def _run_steps(ctx, steps, scope, trace):
         if prim is None:
             raise RuntimeError(f"unknown primitive '{step.get('do')}'")
         args = {k: _render_value(v, scope) for k, v in (step.get("with") or {}).items()}
+        if ctx.on_step:                       # live "watch" progress (best-effort)
+            try:
+                ctx.on_step(step.get("do"))
+            except Exception:  # noqa: BLE001
+                pass
         out = prim(ctx, **args)
         if step.get("id"):
             scope[step["id"]] = out
@@ -1190,8 +1197,8 @@ def _run_steps(ctx, steps, scope, trace):
             raise _Stop(str(swe))
 
 
-def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None) -> str:
-    ctx = _Ctx(conn, workflow_id, context)
+def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None, *, on_step=None) -> str:
+    ctx = _Ctx(conn, workflow_id, context, on_step=on_step)
     scope = {
         "config": cfg or {},
         "trigger": context or {},

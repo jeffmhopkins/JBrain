@@ -3064,6 +3064,24 @@ def test_primitive_meta_pinned_to_primitives():
             assert inp["name"] in params, f"{name}: input {inp['name']} not a real param"
 
 
+def test_workflow_run_progress(client):
+    """The live 'watch' progress buffer: pipeline on_step events accumulate per run and
+    surface (ordered) for the modal; finish records the terminal status."""
+    from app.services import pipeline
+    from app.services import workflows as wf
+
+    wf._progress_init(99001)
+    pipeline.run_pipeline(None, {"type": "x", "steps": []}, {}, None, None,
+                          on_step=lambda n: wf._progress_step(99001, n))  # accepts on_step; no steps → no events
+    wf._progress_step(99001, "corpus_digest")
+    wf._progress_step(99001, "wiki_outline")
+    p = wf.run_progress(99001)
+    assert [e["name"] for e in p["events"]] == ["corpus_digest", "wiki_outline"] and p["status"] == "running"
+    wf._progress_finish(99001, "ok", "built 3 articles")
+    assert wf.run_progress(99001)["status"] == "ok"
+    assert wf.run_progress(987654) is None        # untracked run
+
+
 def test_action_defs_api(client):
     client.post("/api/action-defs/sync")  # seed the table from repo (lifespan does this in prod)
     defs = {d["type"]: d for d in client.get("/api/action-defs").json()}

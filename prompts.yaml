@@ -337,6 +337,65 @@ actions:
       ```spec
       recommended_sections: [Key facts]
       ```
+  wiki_outline: |
+    You are organising a personal knowledge base into an encyclopedia. Below is a survey
+    of the owner's notes (id, domain guess, one-line gist, key entities). Design the set
+    of ARTICLES that should exist — then assign each note to the article it belongs to.
+
+    Every article title is "kb/<Domain>/<Name>", using these domains:
+    - Reference — general, de-identified knowledge (concepts, how-things-work); never about a specific person
+    - People — one article per individual
+    - Groups — organisations, household, teams, clubs
+    - Places — durable knowledge about a location
+    - Things — tracked assets/possessions (home, vehicles, devices, accounts)
+    - Activities — hobbies and projects
+
+    Rules: one subject per article. A specific person/org/place/thing gets its own
+    article; general knowledge goes under Reference and must NOT name a person (those
+    facts belong in that person's People article). Group related notes — do not make one
+    article per note. Prefer a few solid articles over many thin stubs. Use each note id
+    at most once, in its best-fit article.
+
+    Return ONLY a JSON array; each element:
+    {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
+    {instructions}
+    NOTES SURVEY:
+    {survey}
+  wiki_write: |
+    Write ONE knowledge-base article in Markdown, following the guides below exactly. Be
+    faithful: use ONLY the source notes — invent nothing. Cite facts with footnotes: a
+    marker like [^s1] in the text, defined under a "## References" section as
+        [^s1]: [[Exact Source Title]] — DATE
+    Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
+    the article Markdown, starting with "# <name>".
+
+    HOUSE STYLE
+    {general_guide}
+
+    DOMAIN GUIDE — {domain}
+    {domain_guide}
+
+    ARTICLE: {title}
+    SCOPE: {scope}
+
+    SOURCE NOTES:
+    {sources}
+  wiki_revise: |
+    Revise the article below to fix the listed issues. Keep every fact correct, cite only
+    the same sources, and follow the guides. Output ONLY the corrected article Markdown,
+    starting with "# <name>".
+
+    ISSUES TO FIX:
+    {issues}
+
+    HOUSE STYLE
+    {general_guide}
+
+    DOMAIN GUIDE — {domain}
+    {domain_guide}
+
+    CURRENT DRAFT:
+    {draft}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

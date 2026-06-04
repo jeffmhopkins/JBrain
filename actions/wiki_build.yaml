@@ -1,0 +1,84 @@
+# Declarative action: REBUILD the knowledge base from scratch (component 2).
+#
+# Backfill per-note analysis -> reset the KB -> survey the corpus -> outline the
+# entity-first taxonomy -> write the index -> write every article (draft + one
+# self-critique/revise pass + structure lint) -> save the ones that pass -> review.
+#
+# Fully automatic, no per-article gate. The reset SOFT-deletes every kb/ article
+# except protected kb/_* pages (the guides + index), and is undoable (versioned).
+# Articles that fail the structure lint are quarantined (surfaced, not saved), never
+# silently dropped. Requires an Anthropic key; no-ops cleanly without one.
+#
+# DESTRUCTIVE by design — wired to a DISABLED, run-only workflow so it never fires on
+# a schedule. It runs only when you trigger it from the Workflows page.
+#
+# config keys:
+#   reset         — soft-delete existing kb/ before building (default true)
+#   analyze_limit — max notes to (re)analyze first, to enrich the survey (default 400)
+#   digest_limit  — max notes to survey (default 3000)
+#   instructions  — extra guidance for the outline + writer
+#   review        — post review cards (default true)
+type: wiki_build
+category: Knowledge base
+config:
+  - { key: reset, label: Wipe & rebuild (vs add to existing), type: review, default: true }
+  - { key: analyze_limit, label: Max notes to analyze first, type: number, default: 400 }
+  - { key: digest_limit, label: Max notes to survey, type: number, default: 3000 }
+  - { key: instructions, label: Extra guidance, type: textarea }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  # 0. Backfill analysis so the survey is rich (bounded; hash-guarded — only stale notes cost a call).
+  - id: pending
+    do: analyze_pending
+    with: { limit: "{{ config.analyze_limit | default(400) }}" }
+  - for_each: "{{ pending }}"
+    steps:
+      - do: analyze_note
+        with: { id: "{{ item }}" }
+
+  # 1. Reset (soft-delete kb/ except protected kb/_*); skipped if reset is turned off.
+  - id: reset
+    do: kb_reset
+    when: "{{ config.reset != false }}"
+
+  # 2. Survey the corpus.
+  - id: digest
+    do: corpus_digest
+    with: { limit: "{{ config.digest_limit | default(3000) }}" }
+    stop_when_empty: "no notes to build a knowledge base from"
+
+  # 3. Outline the taxonomy + assign sources.
+  - id: outline
+    do: wiki_outline
+    with: { digest: "{{ digest }}", instructions: "{{ config.instructions | default(none) }}" }
+  - stop_when: "{{ not outline.articles }}"
+    stop_message: "the outline produced no articles"
+
+  # 4. Write/refresh the index map (protected page).
+  - do: write_note
+    with: { title: "kb/_index", content_md: "{{ outline.index_md }}", kind: kb }
+
+  # 5. Write every article (draft + revise + lint).
+  - id: built
+    do: wiki_write_batch
+    with: { articles: "{{ outline.articles }}", instructions: "{{ config.instructions | default(none) }}" }
+
+  # 6. Save the ones that passed the structure lint.
+  - id: save
+    for_each: "{{ built.valid }}"
+    steps:
+      - do: write_note
+        with: { title: "{{ item.title }}", content_md: "{{ item.content_md }}", kind: kb }
+
+  # 7. Reviews.
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "Knowledge base rebuilt"
+      message: "Built {{ built.valid | length }} article(s) from {{ digest | length }} notes. Browse via kb/_index."
+      link_title: "kb/_index"
+  - do: create_review
+    when: "{{ built.quarantined }}"
+    with:
+      title: "Some articles need a look"
+      message: "{{ built.bad }} article(s) failed structure checks and were NOT saved: {{ built.quarantined | map(attribute='title') | join(', ') }}."

@@ -1,0 +1,22 @@
+# Knowledge-base REBUILD — run-only, never scheduled.
+#
+# This wraps the destructive wiki_build action (it soft-deletes and rebuilds the whole
+# kb/ layer). It is shipped DISABLED so the scheduler never fires it; you run it on
+# demand with "Run now" on the Workflows page. Manual runs ignore the enabled flag, so
+# the button still works while the schedule never will.
+#
+# The reset is soft (undoable) and spares the protected kb/_* guides + index. Review
+# cards summarise what was built and flag any article that failed structure checks.
+key: wiki-build
+name: Knowledge base rebuild
+enabled: false
+
+trigger:
+  type: schedule
+  interval_seconds: 31536000   # 1 year — but enabled:false means it never auto-fires
+
+action:
+  type: wiki_build
+  config:
+    reset: true
+    review: true

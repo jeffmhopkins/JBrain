@@ -711,6 +711,73 @@ def test_note_analysis_sidecar(client, monkeypatch):
     assert r["gist"].startswith("A clinic visit") and r["domain"] == "People"
 
 
+def test_upsert_revives_soft_deleted_title(client):
+    """Recreating a soft-deleted title revives the same row (no slug collision, history
+    continuous) — what makes repeat KB rebuilds idempotent."""
+    from app.db import get_conn
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "kb/Topic X", "# Topic X\nv1", kind="kb")
+    slug = conn.execute("SELECT slug FROM notes WHERE id=?", (nid,)).fetchone()["slug"]
+    ns.soft_delete(conn, nid); conn.commit()
+
+    nid2 = ns.upsert_note(conn, "kb/Topic X", "# Topic X\nv2", kind="kb"); conn.commit()
+    assert nid2 == nid                                            # same row revived, not duplicated
+    row = conn.execute("SELECT slug, deleted_at, content_md FROM notes WHERE id=?", (nid,)).fetchone()
+    assert row["deleted_at"] is None and row["slug"] == slug and "v2" in row["content_md"]
+    assert conn.execute("SELECT COUNT(*) FROM notes WHERE lower(title)='kb/topic x'").fetchone()[0] == 1
+
+
+def test_wiki_build(client, monkeypatch):
+    """The KB rebuild engine: reset spares protected pages, and the full recipe runs
+    end-to-end — old articles wiped, guides + index kept, a lint-passing article saved."""
+    from app.db import get_conn
+    from app.services import pipeline, llm, wiki_guides, wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    wiki_guides.seed_guides(conn)
+    client.post("/api/action-defs/sync")     # seed the wiki_build recipe (lifespan does this in prod)
+
+    ns.upsert_note(conn, "kb/OldTopic", "# OldTopic\nlegacy article", kind="kb")
+    ns.upsert_note(conn, "notes/daily/2026/06/01", "Allan is my brother, lives in Portland.")
+    conn.commit()
+    allan_id = conn.execute(
+        "SELECT id FROM notes WHERE title = 'notes/daily/2026/06/01'").fetchone()["id"]
+
+    # reset() soft-deletes real articles but spares the protected guides.
+    r = wiki_build.reset(conn); conn.commit()
+    assert r["deleted"] >= 1 and r["kept"] >= 7
+    assert conn.execute("SELECT deleted_at FROM notes WHERE title='kb/OldTopic'").fetchone()["deleted_at"]
+    assert conn.execute("SELECT deleted_at FROM notes WHERE title='kb/People/_Guide'").fetchone()["deleted_at"] is None
+    ns.upsert_note(conn, "kb/OldTopic", "# OldTopic\nlegacy", kind="kb"); conn.commit()  # re-add for the recipe path
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+
+    def fake(messages, **k):
+        p = messages[0]["content"]
+        if "organising a personal knowledge base" in p:
+            return f'[{{"title":"kb/People/Allan","domain":"People","scope":"My brother","sources":[{allan_id}]}}]'
+        if "Write ONE knowledge-base article" in p:
+            return ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
+                    "## Key facts\n- Relationship: brother\n\n## References\n"
+                    "[^s1]: [[notes/daily/2026/06/01]] — 2026-06-01\n")
+        return "{}"   # note_analysis backfill etc. → empty signals, harmless
+    monkeypatch.setattr(llm, "complete", fake)
+
+    recipe = pipeline.get_action_def("wiki_build")
+    pipeline.run_pipeline(conn, recipe, {"reset": True, "analyze_limit": 10, "review": True}, None, None)
+    conn.commit()
+
+    live = {row["title"] for row in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall()}
+    assert "kb/People/Allan" in live          # built from its source
+    assert "kb/_index" in live                # the org map
+    assert "kb/People/_Guide" in live         # protected guide survived the rebuild
+    assert "kb/OldTopic" not in live          # legacy article wiped by the rebuild
+    art = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
+    assert wiki_guides.validate_structure("kb/People/Allan", art)["ok"]
+
+
 def test_wiki_guides(client):
     """The KB guide backbone: protected-page detection, domain mapping, spec-driven
     structure lint (lead, citations, the Reference PII firewall, stub exemption), and

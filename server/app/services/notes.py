@@ -254,6 +254,17 @@ def upsert_note(
         if existing and (create_only or (kind is not None and existing["kind"] != kind)):
             title = _unique_title(conn, title)
             existing = None
+        elif existing is None and not create_only:
+            # Revive a soft-deleted note of the same title rather than INSERT a new row
+            # (whose generated slug would collide with the dead one's). Makes rebuilds —
+            # which soft-delete then recreate the same article titles — idempotent, and
+            # keeps each article's version history continuous across rebuilds.
+            dead = conn.execute(
+                "SELECT * FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1", (title,),
+            ).fetchone()
+            if dead and (kind is None or dead["kind"] == kind):
+                existing = dead
 
     has_location = lat is not None or lon is not None or location_label is not None
 
@@ -266,7 +277,7 @@ def upsert_note(
             renamed_from = existing["title"]   # rewrite inbound [[links]] after the write
             slug = _unique_slug(conn, title, exclude_id=note_id)
         conn.execute(
-            "UPDATE notes SET title = ?, slug = ?, content_md = ?, "
+            "UPDATE notes SET title = ?, slug = ?, content_md = ?, deleted_at = NULL, "
             "updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
             (title, slug, content_md, note_id),
         )

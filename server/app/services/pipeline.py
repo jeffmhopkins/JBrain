@@ -163,6 +163,39 @@ def _p_analyze_note(ctx, id):
     return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id)))}
 
 
+def _p_kb_reset(ctx):
+    """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
+    synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
+    from . import wiki_build
+    return wiki_build.reset(ctx.conn)
+
+
+def _p_corpus_digest(ctx, limit=3000):
+    """Compact survey (gist/domain/entities per note) the outline reads."""
+    from . import wiki_build
+    return wiki_build.corpus_digest(ctx.conn, int(limit))
+
+
+def _p_wiki_outline(ctx, digest, instructions=None):
+    """Survey -> entity-first taxonomy: {articles:[{title,domain,scope,sources}], index_md}."""
+    from . import wiki_build
+    return wiki_build.outline(ctx.conn, list(digest or []), instructions)
+
+
+def _p_wiki_write_batch(ctx, articles, instructions=None):
+    """Write every planned article (draft + one revise pass + structure lint); returns
+    {valid, quarantined, count, bad}."""
+    from . import wiki_build
+    return wiki_build.write_batch(ctx.conn, list(articles or []), instructions)
+
+
+def _p_validate_structure(ctx, title, content_md):
+    """Lint one article against its domain guide's spec (lead, citations, PII firewall,
+    required sections). Returns {ok, errors, warnings, stub, domain}."""
+    from . import wiki_guides
+    return wiki_guides.validate_structure(title, content_md or "")
+
+
 def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
     sql = "SELECT id, title, slug, content_md, created_at FROM notes WHERE deleted_at IS NULL"
     params: list = []
@@ -933,6 +966,11 @@ _PRIMITIVES = {
     "semantic_search": _p_semantic_search,
     "analyze_pending": _p_analyze_pending,
     "analyze_note": _p_analyze_note,
+    "kb_reset": _p_kb_reset,
+    "corpus_digest": _p_corpus_digest,
+    "wiki_outline": _p_wiki_outline,
+    "wiki_write_batch": _p_wiki_write_batch,
+    "validate_structure": _p_validate_structure,
     "query_notes": _p_query_notes,
     "query_entry_changes": _p_query_entry_changes,
     "get_meta": _p_get_meta,
@@ -1013,6 +1051,19 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged).",
                      "inputs": [{"name": "id", "type": "int", "required": True}], "output": "dict"},
+    "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
+                 "inputs": [], "output": "dict"},
+    "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",
+                      "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
+    "wiki_outline": {"summary": "Survey -> entity-first taxonomy (articles + assigned sources + index).",
+                     "inputs": [{"name": "digest", "type": "list", "required": True},
+                                {"name": "instructions", "type": "str"}], "output": "dict"},
+    "wiki_write_batch": {"summary": "Write every planned article (draft + revise + lint); valid vs quarantined.",
+                         "inputs": [{"name": "articles", "type": "list", "required": True},
+                                    {"name": "instructions", "type": "str"}], "output": "dict"},
+    "validate_structure": {"summary": "Lint one article against its domain guide's spec.",
+                           "inputs": [{"name": "title", "type": "str", "required": True},
+                                      {"name": "content_md", "type": "str"}], "output": "dict"},
     "query_notes": {"summary": "List notes by kind / since id.",
                     "inputs": [{"name": "kind", "type": "str"}, {"name": "since_id", "type": "int"},
                                {"name": "limit", "type": "int"}], "output": "list"},

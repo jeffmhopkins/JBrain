@@ -189,6 +189,19 @@ def _p_flag_dead_links(ctx):
     return wiki_build.flag_dead_links(ctx.conn)
 
 
+def _p_write_kb_index(ctx, articles, valid):
+    """(Re)write the protected kb/_index map from the articles that were actually SAVED, so
+    it never links to a quarantined (unsaved) article — the one dead-link source the
+    prevention passes skip, because kb/_* pages are protected."""
+    from . import wiki_build
+    from . import notes as ns
+    saved = {str(d.get("title", "")).lower() for d in (valid or [])}
+    kept = [a for a in (articles or []) if str(a.get("title", "")).lower() in saved]
+    ns.upsert_note(ctx.conn, "kb/_index", wiki_build.build_index_md(kept), kind="kb")
+    ctx.conn.commit()
+    return {"articles": len(kept)}
+
+
 def _p_kb_reset(ctx):
     """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
     synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
@@ -997,6 +1010,7 @@ _PRIMITIVES = {
     "write_disambiguation": _p_write_disambiguation,
     "record_talk": _p_record_talk,
     "flag_dead_links": _p_flag_dead_links,
+    "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
@@ -1091,6 +1105,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                                {"name": "entries", "type": "list"}], "output": "dict"},
     "flag_dead_links": {"summary": "Flag dangling kb cross-links as todos on each article's talk.",
                         "inputs": [], "output": "dict"},
+    "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",
+                       "inputs": [{"name": "articles", "type": "list", "required": True},
+                                  {"name": "valid", "type": "list", "required": True}], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",

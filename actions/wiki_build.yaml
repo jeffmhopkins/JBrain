@@ -57,11 +57,8 @@ steps:
   - stop_when: "{{ not outline.articles }}"
     stop_message: "the outline produced no articles"
 
-  # 4. Write/refresh the index map (protected page).
-  - do: write_note
-    with: { title: "kb/_index", content_md: "{{ outline.index_md }}", kind: kb }
-
-  # 5. Write every article (draft + revise + lint).
+  # 4. Write every article (draft + revise + lint). The index map is written AFTER, from
+  #    only the articles that actually save, so it never links a quarantined article.
   - id: built
     do: wiki_write_batch
     with: { articles: "{{ outline.articles }}", instructions: "{{ config.instructions | default(none) }}" }
@@ -76,6 +73,9 @@ steps:
         when: "{{ item.talk }}"
         with: { article_title: "{{ item.title }}", entries: "{{ item.talk }}" }
 
+  # 6a. Write the index map from the articles that actually saved (no links to quarantined).
+  - do: write_kb_index
+    with: { articles: "{{ outline.articles }}", valid: "{{ built.valid }}" }
   # 6b. Re-aggregate so each entity now links to its freshly-written article (cheap, no LLM).
   - do: rebuild_entity_index
   # 6c. Generate disambiguation pages for terms that resolve to multiple articles.

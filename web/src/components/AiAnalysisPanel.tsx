@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { get } from "../api";
+import { get, refreshNoteAnalysis } from "../api";
+import { Icon } from "./Icon";
 import { expandTimeTokens } from "../time";
 
 interface Entity { type: string; name: string; }
@@ -14,7 +15,7 @@ interface Analysis {
 }
 
 const ENTITY_ICON: Record<string, string> = {
-  person: "👤", org: "🏢", place: "📍", thing: "📦",
+  person: "👤", animal: "🐾", org: "🏢", place: "📍", thing: "📦", work: "🎬",
   condition: "🩺", medication: "💊", procedure: "🩻", event: "📅", concept: "💡",
 };
 
@@ -23,6 +24,7 @@ const ENTITY_ICON: Record<string, string> = {
 // nothing until an analysis exists, so notes that haven't been analyzed stay clean.
 export default function AiAnalysisPanel({ slug }: { slug: string }) {
   const [a, setA] = useState<Analysis | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -32,18 +34,32 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
     return () => { live = false; };
   }, [slug]);
 
+  async function reanalyze() {
+    setBusy(true);
+    try {
+      const r = await refreshNoteAnalysis(slug);
+      if (r && (r.gist || r.facts?.length || r.entities?.length)) setA(r);
+    } catch { /* keep what we have */ }
+    finally { setBusy(false); }
+  }
+
   if (!a) return null;
 
   return (
     <div style={{ marginTop: 20 }}>
-      <h3 style={{ marginBottom: 6 }}>
-        AI analysis
+      <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>AI analysis</h3>
         {a.domain && a.domain !== "Unsure" && (
-          <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle", fontWeight: 500 }}>{a.domain}</span>
+          <span className="badge" style={{ verticalAlign: "middle", fontWeight: 500 }}>{a.domain}</span>
         )}
-      </h3>
+        <span style={{ flex: 1 }} />
+        <button className="icon-btn" style={{ padding: 4 }} disabled={busy} onClick={reanalyze}
+                title={busy ? "Re-analyzing…" : "Re-analyze this note (ignores the cache)"}>
+          <Icon name="refresh" size={15} />
+        </button>
+      </div>
       <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
-        Auto-extracted, read-only. The note itself is unchanged.
+        {busy ? "Re-analyzing…" : "Auto-extracted, read-only. The note itself is unchanged."}
       </p>
 
       {a.gist && <p style={{ fontSize: 13, fontStyle: "italic", margin: "6px 0" }}>{expandTimeTokens(a.gist)}</p>}

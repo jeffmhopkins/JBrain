@@ -22,7 +22,7 @@ log = logging.getLogger("jbrain")
 _DOMAINS = {"Reference", "People", "Groups", "Places", "Things", "Activities", "Unsure"}
 # Entity types: the four core kinds plus domain-specific kinds that make medical/
 # reference content first-class (a diagnosis or procedure isn't a 'thing').
-_ENTITY_TYPES = {"person", "org", "place", "thing",
+_ENTITY_TYPES = {"person", "animal", "org", "place", "thing", "work",
                  "condition", "medication", "procedure", "event", "concept"}
 
 _DEFAULT_PROMPT = (

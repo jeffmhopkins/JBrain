@@ -183,6 +183,10 @@ export const getAnalysisStatus = (id: number) =>
   isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
            : get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);
 
+// Force-recompute one note's AI analysis sidecar (ignores the content-hash cache).
+export const refreshNoteAnalysis = (slug: string) =>
+  post<any>(`/api/notes/${encodeURIComponent(slug)}/analysis`);
+
 // Attachments need the auth header, so a plain <a>/<img> won't work — fetch+blob.
 async function attachmentBlob(id: number): Promise<Blob> {
   const headers: Record<string, string> = {};

@@ -131,6 +131,25 @@ def note_analysis(slug: str):
     return na.get(conn, row["id"]) or {}
 
 
+@router.post("/{slug}/analysis")
+def refresh_note_analysis(slug: str):
+    """Force-recompute THIS note's analysis sidecar (ignoring the content-hash cache) — the
+    per-note 'reanalyze' button. Re-aggregates the entity index when it changes, so the
+    note's entities/types update everywhere. Returns the fresh analysis (or {} with no LLM)."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found")
+    from ..services import note_analysis as na
+    from ..services import entity_index
+    if na.analyze(conn, row["id"], force=True):
+        entity_index.rebuild(conn)            # rebuild commits; refresh browse/search too
+    conn.commit()
+    return na.get(conn, row["id"]) or {}
+
+
 class TalkIn(BaseModel):
     kind: str = "note"
     body: str

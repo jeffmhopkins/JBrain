@@ -1295,6 +1295,33 @@ def test_entity_embeddings_and_entities_mode(client):
     assert any(h["kind"] == "entity" for h in sem)                    # semantic mode now reaches entities
 
 
+def test_note_analysis_force_refresh_endpoint(client, monkeypatch):
+    """POST /api/notes/{slug}/analysis force-recomputes the sidecar even when cached."""
+    import json
+    from app.db import get_conn
+    from app.services import note_analysis as na, llm
+    conn = get_conn()
+    r = client.post("/api/notes", json={"title": "notes/Rex", "content_md": "Rex is my dog."}).json()
+    slug = r["slug"]
+    # Seed a STALE cached analysis (the old 'thing' classification) at the current hash.
+    h = na.content_hash("notes/Rex", "Rex is my dog.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, gist, facts_json, entities_json, domain) "
+                 "VALUES (?,?,?,?,?,?)",
+                 (r["id"], h, "old", "[]", json.dumps([{"type": "thing", "name": "Rex"}]), "Things"))
+    conn.commit()
+    # Stub the LLM so the forced re-analysis is deterministic + offline.
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: json.dumps(
+        {"gist": "Rex the dog", "facts": ["Rex is a dog"],
+         "entities": [{"type": "animal", "name": "Rex"}], "domain": "People", "dates": []}))
+
+    out = client.post(f"/api/notes/{slug}/analysis").json()
+    assert out["entities"][0]["type"] == "animal" and out["domain"] == "People"
+    # The stored sidecar (what the panel re-reads) is updated too.
+    assert client.get(f"/api/notes/{slug}/analysis").json()["entities"][0]["type"] == "animal"
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

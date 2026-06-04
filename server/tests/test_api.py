@@ -711,6 +711,41 @@ def test_note_analysis_sidecar(client, monkeypatch):
     assert r["gist"].startswith("A clinic visit") and r["domain"] == "People"
 
 
+def test_wiki_guides(client):
+    """The KB guide backbone: protected-page detection, domain mapping, spec-driven
+    structure lint (lead, citations, the Reference PII firewall, stub exemption), and
+    idempotent read-only seeding."""
+    from app.db import get_conn
+    from app.services import wiki_guides as g
+
+    assert g.is_protected("kb/_Style Guide") and g.is_protected("kb/People/_Guide")
+    assert not g.is_protected("kb/People/Allan")
+    assert g.domain_for_title("kb/People/Allan") == "People"
+    assert g.domain_for_title("kb/Reference/Medicine/TTP") == "Reference"
+    assert g.domain_for_title("kb/Nope/x") is None
+
+    good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
+            "## Key facts\n- Relationship: brother\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
+    r = g.validate_structure("kb/People/Allan", good)
+    assert r["ok"] and not r["errors"]
+
+    pii = "# TTP\nA blood disorder my brother [[kb/People/Allan]] has.\n\n## Overview\nLow platelets.\n"
+    r = g.validate_structure("kb/Reference/Medicine/TTP", pii)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    r = g.validate_structure("kb/Things/Car", "# Car\n## History\nIt happened.[^s1]\n")
+    assert not r["ok"]
+    assert any("lead" in e for e in r["errors"]) and any("no definition" in e for e in r["errors"])
+
+    assert g.validate_structure("kb/People/Bob", "# Bob\nA friend.")["stub"] is True
+
+    conn = get_conn()
+    assert g.seed_guides(conn) == 7      # general + 6 domains
+    assert g.seed_guides(conn) == 0      # idempotent — no churn on re-seed
+    titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
+    assert "kb/People/_Guide" in titles and all(g.is_protected(t) for t in titles)
+
+
 def test_geo_distance_resolves_place_geofence(client):
     """A saved place keeps its coords in the geofence table, not on its loc/ note, so
     geo_distance must resolve it by place name AND by the loc/ note title — otherwise a

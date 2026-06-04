@@ -204,6 +204,139 @@ actions:
 
     ARTICLE:
     {article}
+  # Knowledge-base GUIDES — the backbone. Each is human-readable prose (the LLM reads
+  # it when writing/maintaining an article) PLUS a fenced ```spec block the structure
+  # lint parses, so the guide is the single source of truth for both writing AND
+  # checking. Seeded as read-only kb/_* pages you can view and edit.
+  wiki_guide:
+    general: |
+      # House style for knowledge-base articles
+
+      Every article here is written like a real encyclopedia entry — faithful,
+      self-contained, consistently structured. Follow this shape; the domain guide for
+      the article's folder adds specifics.
+
+      Structure, top to bottom:
+      - LEAD — one self-contained opening paragraph (no heading) saying what or who the
+        subject is and its most important facts. A reader who stops here is still informed.
+      - KEY FACTS (optional) — a short "## Key facts" bullet block for an entity's
+        at-a-glance data (dates, identifiers, relationships). Skip for pure concepts.
+      - SECTIONS — thematic "## " sections in a logical order (chronological or by
+        aspect). One subject per article; split rather than sprawl.
+      - SEE ALSO (optional) — "## See also" linking sibling articles.
+      - REFERENCES — a "## References" footnote block whenever you cite a source.
+
+      Voice: neutral, concise, summary style. State facts plainly. Never invent — every
+      claim must trace to a source note. Prefer durable facts over fleeting chatter.
+
+      Citations (house footnote style): attach a source as a marker [^s1] in the text and
+      define it under "## References":
+          [^s1]: [[Source Note Title]] — 2026-06-01
+      Every marker has exactly one definition; every definition contains the source's
+      [[link]]; never reuse an id. Where a [[link]] reads naturally mid-sentence, keep it
+      inline instead. Cross-link the people, groups, places, and things an article
+      mentions to their own articles (real titles only).
+
+      ```spec
+      require_lead: true
+      require_references_when_cited: true
+      stub_max_chars: 350
+      ```
+    reference: |
+      # Reference articles (kb/Reference)
+
+      General, de-identified knowledge that would be true and useful even if no one in
+      your life existed: medical and scientific facts, how things work, procedures,
+      definitions, products. Write it like a short Wikipedia entry.
+
+      - LEAD defines the subject in the first sentence.
+      - Sections by aspect (e.g. Overview, Symptoms, Treatment; or Steps, Tips).
+      - PII FIREWALL: never name a specific person or your relationships, and never link a
+        People or Groups article. If a fact is about a particular person, it belongs in
+        THAT person's article, not here. Keep this layer general.
+      - Cite the source notes the knowledge came from.
+
+      ```spec
+      forbid_link_prefixes: [kb/People, kb/Groups]
+      recommended_sections: [Overview]
+      ```
+    people: |
+      # People articles (kb/People — one per individual)
+
+      One article per person you know. This is the HOME for personal facts about them —
+      the PII that must never appear in Reference.
+
+      - LEAD: who they are and your relationship, in the first sentence.
+      - "## Key facts": relationship, age/birthday, contact, where they live/work, key
+        affiliations (link the org as [[kb/Groups/...]]).
+      - Sections as the person warrants: Background, Health, Preferences, Important dates,
+        History/interactions.
+      - Cross-link the groups they belong to, things they own, places tied to them.
+      - Cite every fact to the note it came from.
+
+      ```spec
+      require_lead: true
+      recommended_sections: [Key facts, Background]
+      ```
+    groups: |
+      # Group & organization articles (kb/Groups)
+
+      Collections of people: companies, institutions, services, your household, teams,
+      clubs.
+
+      - LEAD: what it is and your relationship to it.
+      - "## Key facts": type, your role/account, key people (link [[kb/People/...]]).
+      - Sections: Purpose / Services, People, History, Account / Practical details.
+      - Cross-link the individual members to their People articles.
+      - Cite sources.
+
+      ```spec
+      recommended_sections: [Key facts, People]
+      ```
+    places: |
+      # Place articles (kb/Places)
+
+      Durable KNOWLEDGE about a location — distinct from its map pin. Coordinates and the
+      geofence live on the loc/ page; the prose, history, and notes live here.
+
+      - LEAD: what and where it is.
+      - "## Key facts": address, the map pin ([[loc/<Place>]]), hours, contact.
+      - Sections: Experiences / Notes, Practical info, History.
+      - ALWAYS link the loc/ pin so the two layers stay connected.
+      - Cite sources.
+
+      ```spec
+      recommend_link_prefixes: [loc/]
+      recommended_sections: [Key facts]
+      ```
+    things: |
+      # Thing & asset articles (kb/Things)
+
+      Specific objects you track: home, vehicles, devices, accounts, valuables.
+
+      - LEAD: what it is and your relationship (owned, used, leased).
+      - "## Key facts": make/model, identifiers (serial/VIN/account), acquired date,
+        value, the account or org that pays for it ([[kb/Groups/...]]).
+      - Sections: Maintenance, History, Documents / Warranty.
+      - Cite sources.
+
+      ```spec
+      recommended_sections: [Key facts]
+      ```
+    activities: |
+      # Activity & project articles (kb/Activities)
+
+      Hobbies, pursuits, and ongoing projects.
+
+      - LEAD: the activity/project and its current status.
+      - "## Key facts": status, started, key gear ([[kb/Things/...]]), people involved
+        ([[kb/People/...]]).
+      - Sections: Progress / Practice, Gear, Milestones / Log.
+      - Cite sources.
+
+      ```spec
+      recommended_sections: [Key facts]
+      ```
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

@@ -223,6 +223,10 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
     for k in _linked_kb(conn, entries):
         if k["title"] not in seen:
             kb.append(k); seen.add(k["title"])
+    # Protected system pages (guides, the index) describe the KB — they're never
+    # synthesis context and must never be overwritten as if they were articles.
+    from . import wiki_guides
+    kb = [k for k in kb if not wiki_guides.is_protected(k["title"])]
     entries_text = "\n\n".join(_entry_block(e) for e in entries)
     kb_text = "\n\n".join(f"### {k['title']}\n{k['content_md']}" for k in kb) or "(none yet)"
     extra = f"\nAdditional guidance: {instructions}" if instructions else ""

@@ -135,11 +135,16 @@ async def lifespan(app: FastAPI):
     # keeps working off vec_notes meanwhile.
     async def _warm_embeddings():
         try:
-            from .services import embeddings
+            from .services import embeddings, wiki_guides
             await asyncio.to_thread(embeddings._get_model)
             n = await asyncio.to_thread(lambda: embeddings.reindex_missing_note_chunks(get_conn()))
             if n:
                 print(f"[embeddings] backfilled chunk vectors for {n} note(s)", flush=True)
+            # Seed/update the read-only KB guide pages (off the event loop, after the
+            # model is warm so the seed writes don't block startup on the first embed).
+            g = await asyncio.to_thread(lambda: wiki_guides.seed_guides(get_conn()))
+            if g:
+                print(f"[wiki] seeded/updated {g} guide page(s)", flush=True)
         except Exception:  # noqa: BLE001
             pass
     asyncio.create_task(_warm_embeddings())

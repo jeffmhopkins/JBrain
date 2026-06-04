@@ -714,7 +714,9 @@ def test_note_analysis_sidecar(client, monkeypatch):
     assert na.analyze(conn, nid) is True
     conn.commit()
     assert na.analyze(conn, nid) is False             # unchanged → hash no-op, no LLM re-spend
-    assert nid not in na.pending_ids(conn, 50)        # no longer pending
+    assert nid not in na.pending_ids(conn, 50)            # no longer pending
+    assert nid in na.pending_ids(conn, 50, force=True)    # force re-includes analyzed notes
+    assert na.analyze(conn, nid, force=True) is True      # force recomputes despite an unchanged hash
 
     a = na.get(conn, nid)
     assert a["domain"] == "People"

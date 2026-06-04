@@ -10,23 +10,32 @@
 #
 # config keys:
 #   batch_limit — max notes per run (default 80)
+#   force       — re-analyze ALL notes, ignoring the content-hash cache. Use this once
+#                 after the analyzer's behaviour/prompt changes (e.g. the time-token
+#                 fix) to refresh analyses that would otherwise never be recomputed.
+#                 Raise batch_limit for a one-shot full refresh.
 #   review      — set true to post a review card (default off; this is housekeeping)
 type: analyze_notes
 category: Knowledge base
 config:
   - { key: batch_limit, label: Max notes per run, type: number, default: 80 }
+  - { key: force, label: Re-analyze ALL (ignore cache), type: review, default: false }
   - { key: review, label: Post a review card, type: review, default: false }
 steps:
   - id: pending
     do: analyze_pending
-    with: { limit: "{{ config.batch_limit | default(80) }}" }
+    with:
+      limit: "{{ config.batch_limit | default(80) }}"
+      force: "{{ config.force != false }}"
     stop_when_empty: "no notes need analysis"
 
   - id: done
     for_each: "{{ pending }}"
     steps:
       - do: analyze_note
-        with: { id: "{{ item }}" }
+        with:
+          id: "{{ item }}"
+          force: "{{ config.force != false }}"
 
   - do: create_review
     when: "{{ config.review != false and pending }}"

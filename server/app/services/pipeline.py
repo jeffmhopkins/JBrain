@@ -150,17 +150,18 @@ def _p_semantic_search(ctx, query, limit=8):
     return embeddings.semantic_search(ctx.conn, query, int(limit))
 
 
-def _p_analyze_pending(ctx, limit=60):
-    """Ids of entry/daily notes whose AI analysis is missing or stale."""
+def _p_analyze_pending(ctx, limit=60, force=False):
+    """Ids of entry/daily notes whose AI analysis is missing or stale (or ALL of them
+    when force is set — to refresh every analysis after a behaviour/prompt change)."""
     from . import note_analysis
-    return note_analysis.pending_ids(ctx.conn, int(limit))
+    return note_analysis.pending_ids(ctx.conn, int(limit), force=bool(force))
 
 
-def _p_analyze_note(ctx, id):
-    """(Re)compute one note's analysis sidecar (no-op if unchanged). Returns whether
-    a fresh analysis was stored."""
+def _p_analyze_note(ctx, id, force=False):
+    """(Re)compute one note's analysis sidecar (no-op if unchanged, unless force).
+    Returns whether a fresh analysis was stored."""
     from . import note_analysis
-    return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id)))}
+    return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id), force=bool(force)))}
 
 
 def _p_kb_reset(ctx):
@@ -1047,10 +1048,10 @@ _PRIMITIVE_META: dict[str, dict] = {
     "discover_stays": {"summary": "Find unlabeled spots the trail shows you revisiting across several days (place candidates).",
                        "inputs": [{"name": "min_days", "type": "int"}, {"name": "days_back", "type": "int"},
                                   {"name": "min_minutes", "type": "int"}], "output": "object"},
-    "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale.",
-                        "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
-    "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged).",
-                     "inputs": [{"name": "id", "type": "int", "required": True}], "output": "dict"},
+    "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",
+                        "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
+    "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",
+                     "inputs": [{"name": "id", "type": "int", "required": True}, {"name": "force", "type": "bool"}], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",

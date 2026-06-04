@@ -149,16 +149,18 @@ def get(conn, note_id: int) -> dict | None:
     return out
 
 
-def pending_ids(conn, limit: int = 60) -> list[int]:
-    """Entry/daily notes whose analysis is missing or stale (the note changed since
-    it was last analyzed). kb/* and protected pages are excluded — analysis FEEDS the
-    knowledge base, it isn't part of it. updated_at>analyzed_at is the cheap SQL
-    pre-filter; analyze() re-checks the content hash and no-ops if nothing changed."""
+def pending_ids(conn, limit: int = 60, force: bool = False) -> list[int]:
+    """Entry/daily notes to analyze. Normally only those missing or stale (the note
+    changed since last analyzed); with force=True, ALL of them — used to refresh every
+    analysis after the analyzer's behaviour or prompt changes (e.g. the time-token fix),
+    since hash-keyed analyses are otherwise never recomputed for unchanged notes. kb/*
+    and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it."""
+    where = "n.deleted_at IS NULL AND n.kind IN ('entry','daily')"
+    if not force:
+        where += " AND (a.note_id IS NULL OR n.updated_at > a.analyzed_at)"
     rows = conn.execute(
         "SELECT n.id FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
-        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') "
-        "AND (a.note_id IS NULL OR n.updated_at > a.analyzed_at) "
-        "ORDER BY n.updated_at DESC LIMIT ?",
+        f"WHERE {where} ORDER BY n.updated_at DESC LIMIT ?",
         (max(1, int(limit)),),
     ).fetchall()
     return [r["id"] for r in rows]

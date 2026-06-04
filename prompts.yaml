@@ -369,7 +369,8 @@ actions:
 
     The owner — the note-taker — is {owner}. Notes are written in their voice, so
     first-person ("I", "my truck") means {owner}; such notes belong to {owner}'s People
-    article (and the relevant Things/Places/etc.), never a separate "Me" article.
+    article (and the relevant Things/Places/etc.). The owner's page is kb/People/{owner} —
+    NEVER a separate "Me", "Owner", or "the owner" article; those are {owner}.
 
     Every article title is "kb/<Domain>/<Name>", using these domains:
     - Reference — general, de-identified knowledge (concepts, how-things-work, conditions, medications, procedures); never about a specific person

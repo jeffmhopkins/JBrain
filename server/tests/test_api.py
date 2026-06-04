@@ -1021,6 +1021,38 @@ def test_note_normalize_redate_and_title(client, monkeypatch):
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
 
 
+def test_owner_self_reference_folds_into_named_owner(client):
+    """Once the owner has a real name, self-references ('the owner', 'me', 'I') merge into
+    that named person entity — so the index never forks an 'Owner' from e.g. 'Jeff', and
+    'the owner' resolves to the owner's notes."""
+    import json
+    from app.db import get_conn, ensure_default_person
+    from app.services import entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    ensure_default_person(conn)
+    conn.execute("UPDATE people SET name='Jeff' WHERE is_default=1")
+
+    def note(title, ents):
+        nid = ns.upsert_note(conn, title, "x")
+        conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                     (nid, title, json.dumps(ents)))
+        return nid
+
+    note("n1", [{"type": "person", "name": "Jeff"}])
+    note("n2", [{"type": "person", "name": "the owner"}])   # placeholder → folds into Jeff
+    note("n3", [{"type": "person", "name": "Allan"}])       # a real other person → stays separate
+    conn.commit()
+    ei.rebuild(conn)
+
+    rows = conn.execute(
+        "SELECT canonical_name, note_count FROM entities WHERE type='person' ORDER BY canonical_name").fetchall()
+    names = {r["canonical_name"]: r["note_count"] for r in rows}
+    assert set(names) == {"Allan", "Jeff"}        # no separate "Owner"/"the owner" entity
+    assert names["Jeff"] == 2 and names["Allan"] == 1
+    assert ei.note_ids_for_name(conn, "the owner") == ei.note_ids_for_name(conn, "Jeff")
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

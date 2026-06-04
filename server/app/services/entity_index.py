@@ -15,11 +15,17 @@ import json
 import re
 from collections import Counter, defaultdict
 
+from . import people
+
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
 _TYPE_LABELS = [("person", "People"), ("org", "Organizations"), ("place", "Places"),
                 ("thing", "Things"), ("condition", "Conditions"), ("medication", "Medications"),
                 ("procedure", "Procedures"), ("event", "Events"), ("concept", "Concepts")]
+# Person mentions that mean "the note-taker" rather than a distinct individual. They are
+# folded into the owner's NAMED entity so a stray "Owner"/"the owner"/"me"/"I" never forks
+# from e.g. "Jeff". ("the owner" normalizes to "owner" — "the" is a stripped title word.)
+_OWNER_ALIAS_NORMS = {"owner", "me", "myself", "i", "self", "narrator"}
 
 
 def _tokens(name: str) -> list[str]:
@@ -130,12 +136,36 @@ def _merge_map(clusters: dict) -> dict:
     return out
 
 
+def _fold_owner(conn, clusters: dict, mapping: dict) -> None:
+    """Merge the owner's self-references into their NAMED person entity.
+
+    The owner is the note-taker, so first-person facts get extracted under the owner's
+    name (once they've set one) but stray mentions like "the owner"/"Owner"/"me"/"I" also
+    appear. This points those placeholder person-clusters at the owner's real-name cluster
+    so the index holds ONE owner entity (displayed under the real name, the placeholders
+    becoming its aliases). No-op until the owner has set a real name AND it actually shows
+    up as a person entity — re-analysis is what makes first-person resolve to that name."""
+    o = people.owner(conn)
+    real = normalize(o["name"]) if o else ""
+    if not real or real in _OWNER_ALIAS_NORMS:
+        return
+    person = clusters.get("person", {})
+    if real not in person:
+        return
+    pm = mapping["person"]
+    canon = pm.get(real, real)
+    for n in list(person):
+        if n != real and (n in _OWNER_ALIAS_NORMS or pm.get(n, n) in _OWNER_ALIAS_NORMS):
+            pm[n] = canon
+
+
 def rebuild(conn, limit: int = 20000) -> int:
     """(Re)aggregate the entity index from note_analysis. Upserts by (type, key) so ids
     are stable, replaces each entity's mentions, prunes entities that vanished, and links
     each to its kb article (if one exists). Returns the entity count."""
     clusters = _collect(conn, limit)
     mapping = _merge_map(clusters)
+    _fold_owner(conn, clusters, mapping)
 
     canon: dict = defaultdict(lambda: {"notes": set(), "raws": Counter(), "aliases": {}, "display": None})
     for typ, norms in clusters.items():

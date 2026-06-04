@@ -41,17 +41,73 @@ def embed_many(texts: Iterable[str]) -> list[list[float]]:
 
 
 def upsert_note_embedding(conn, note_id: int, title: str, content_md: str) -> None:
-    """(Re)compute and store the embedding for a note."""
-    vec = embed(f"{title}\n\n{content_md}".strip())
+    """(Re)compute and store BOTH representations of a note:
+      - vec_notes: one whole-note vector (research_scope reads this directly), and
+      - vec_note_chunks: one vector per content window, so a long note's body — past
+        the embedder's ~512-token truncation — is still reachable by semantic_search.
+    """
+    full = f"{title}\n\n{content_md}".strip()
+    vec = embed(full)
     conn.execute("DELETE FROM vec_notes WHERE note_id = ?", (note_id,))
     conn.execute(
         "INSERT INTO vec_notes (note_id, embedding) VALUES (?, ?)",
         (note_id, sqlite_vec.serialize_float32(vec)),
     )
+    upsert_note_chunk_embeddings(conn, note_id, full)
+
+
+def upsert_note_chunk_embeddings(conn, note_id: int, full_text: str) -> None:
+    """Replace a note's chunk vectors. `full_text` is the same 'title\\n\\ncontent'
+    string used for the whole-note vector, so a one-chunk note matches identically."""
+    from .attachments import chunk_text  # lazy: attachments imports this module
+    delete_note_chunk_embeddings(conn, note_id)
+    chunks = chunk_text(full_text)
+    if not chunks:
+        return
+    vectors = embed_many(chunks)
+    for idx, (text, vec) in enumerate(zip(chunks, vectors)):
+        cur = conn.execute(
+            "INSERT INTO note_chunks (note_id, chunk_index, text) VALUES (?, ?, ?)",
+            (note_id, idx, text),
+        )
+        conn.execute(
+            "INSERT INTO vec_note_chunks (chunk_id, embedding) VALUES (?, ?)",
+            (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
+        )
+
+
+def delete_note_chunk_embeddings(conn, note_id: int) -> None:
+    # vec_note_chunks is a virtual table: the FK CASCADE on note_chunks won't reach
+    # it, so delete its vectors explicitly first (mirrors delete_attachment_embeddings).
+    for r in conn.execute(
+        "SELECT id FROM note_chunks WHERE note_id = ?", (note_id,)
+    ).fetchall():
+        conn.execute("DELETE FROM vec_note_chunks WHERE chunk_id = ?", (r["id"],))
+    conn.execute("DELETE FROM note_chunks WHERE note_id = ?", (note_id,))
 
 
 def delete_note_embedding(conn, note_id: int) -> None:
     conn.execute("DELETE FROM vec_notes WHERE note_id = ?", (note_id,))
+    delete_note_chunk_embeddings(conn, note_id)
+
+
+def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
+    """Backfill chunk vectors for notes that have none yet (e.g. after the migration
+    that introduced them). Returns how many notes were indexed. Commits if it did
+    work. `batch` caps the pass; None does all remaining."""
+    sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL "
+           "AND id NOT IN (SELECT DISTINCT note_id FROM note_chunks)")
+    if batch:
+        sql += f" LIMIT {int(batch)}"
+    rows = conn.execute(sql).fetchall()
+    n = 0
+    for r in rows:
+        full = f"{r['title']}\n\n{r['content_md']}".strip()
+        upsert_note_chunk_embeddings(conn, r["id"], full)
+        n += 1
+    if n:
+        conn.commit()
+    return n
 
 
 def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, chunks: list[str]) -> None:
@@ -116,20 +172,31 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
 
 
 def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:
-    """Return notes most similar in meaning to the query."""
+    """Return notes most similar in meaning to the query, collapsed to each note's
+    BEST-matching chunk. Searching chunks (not the whole-note vector) means a long
+    note surfaces on the part that matches, instead of being judged only by the
+    truncated head the embedder saw. Returns [{id, title, slug, distance}]."""
     qvec = embed(query)
+    # Over-fetch chunks so several distinct notes survive even when one long note
+    # contributes many near-neighbour chunks; then collapse to best-per-note.
+    k = max(limit * 10, 80)
     rows = conn.execute(
         """
-        SELECT n.id, n.title, n.slug, v.distance
-        FROM vec_notes v
-        JOIN notes n ON n.id = v.note_id
+        SELECT c.note_id AS id, n.title, n.slug, v.distance
+        FROM vec_note_chunks v
+        JOIN note_chunks c ON c.id = v.chunk_id
+        JOIN notes n ON n.id = c.note_id
         WHERE v.embedding MATCH ? AND k = ?
           AND n.deleted_at IS NULL
         ORDER BY v.distance
         """,
-        (sqlite_vec.serialize_float32(qvec), limit),
+        (sqlite_vec.serialize_float32(qvec), k),
     ).fetchall()
-    return [
-        {"id": r["id"], "title": r["title"], "slug": r["slug"], "distance": r["distance"]}
-        for r in rows
-    ]
+    best: dict[int, dict] = {}
+    for r in rows:  # rows are distance-ascending → first hit per note is its best chunk
+        if r["id"] not in best:
+            best[r["id"]] = {"id": r["id"], "title": r["title"], "slug": r["slug"],
+                             "distance": r["distance"]}
+        if len(best) >= limit:
+            break
+    return list(best.values())[:limit]

@@ -129,11 +129,17 @@ async def lifespan(app: FastAPI):
         print(f"[pipeline] action warning: {w}", flush=True)
 
     # Warm the local embedding model in the background so the first capture/search
-    # doesn't block on its (one-time) download/load.
+    # doesn't block on its (one-time) download/load — then one-shot backfill any
+    # notes that predate per-note chunk vectors (so long notes become searchable on
+    # their bodies, not just their truncated head). Runs off the event loop; search
+    # keeps working off vec_notes meanwhile.
     async def _warm_embeddings():
         try:
             from .services import embeddings
             await asyncio.to_thread(embeddings._get_model)
+            n = await asyncio.to_thread(lambda: embeddings.reindex_missing_note_chunks(get_conn()))
+            if n:
+                print(f"[embeddings] backfilled chunk vectors for {n} note(s)", flush=True)
         except Exception:  # noqa: BLE001
             pass
     asyncio.create_task(_warm_embeddings())

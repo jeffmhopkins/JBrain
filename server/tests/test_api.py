@@ -870,6 +870,45 @@ def test_semantic_search_orders_by_similarity(client, monkeypatch):
     assert [r["title"] for r in res] == ["notes/B", "notes/C", "notes/A"]
 
 
+def test_note_chunking_finds_buried_terms_and_collapses(monkeypatch, tmp_path):
+    """Per-note chunking's payoff: a long note whose RELEVANT passage sits far past
+    the embedder's truncation head still surfaces semantically (the whole-note vector
+    would only have seen the irrelevant head), and the note's many chunks collapse to
+    ONE result. Uses deterministic bag-of-words vectors so it needs no model download."""
+    import hashlib
+    os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "chunk.db"),
+                      JBRAIN_ACCESS_KEY=TEST_KEY, BRAIN_NAME="Test Brain", JBRAIN_DOMAIN="localhost")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    import app.db as db
+    db._initialized = False
+    db._local.__dict__.clear()
+    db.init_db()
+    from app.services import embeddings, notes as ns, search
+    dim = embeddings.EMBEDDING_DIM
+
+    def fake_embed(text):
+        v = [0.0] * dim
+        for tok in str(text).lower().split():
+            v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+        return v
+    monkeypatch.setattr(embeddings, "embed", fake_embed)
+    monkeypatch.setattr(embeddings, "embed_many", lambda ts: [fake_embed(t) for t in ts])
+
+    conn = db.get_conn()
+    filler = "parking catering badges schedule minutes agenda " * 80   # off-topic head, many chunks
+    buried = " rare condition thrombocytopenic purpura petechiae confusion"
+    lid = ns.upsert_note(conn, "notes/daily/x", filler + buried)
+    ns.upsert_note(conn, "Grocery", "milk eggs bread coffee")
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) FROM note_chunks WHERE note_id = ?", (lid,)).fetchone()[0] > 1
+    titles = [h["title"] for h in embeddings.semantic_search(conn, "thrombocytopenic purpura petechiae", 8)]
+    assert "notes/daily/x" in titles            # found on the buried chunk
+    assert titles.count("notes/daily/x") == 1   # collapsed to one result, not one per chunk
+    assert "notes/daily/x" in [h["title"] for h in search.hybrid_notes(conn, "thrombocytopenic purpura", 8)]
+
+
 def test_geotrail_math(client):
     """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
     from app.db import get_conn

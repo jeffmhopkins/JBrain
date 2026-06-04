@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 def init_db() -> None:
@@ -86,6 +86,10 @@ def init_db() -> None:
         )
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
+            f"chunk_id INTEGER PRIMARY KEY, embedding float[{dim}])"
+        )
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_note_chunks USING vec0("
             f"chunk_id INTEGER PRIMARY KEY, embedding float[{dim}])"
         )
 
@@ -437,6 +441,21 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
                     conn.execute("UPDATE locations SET person_id = ? WHERE source IS ?", (p["id"], s))
         except Exception:  # noqa: BLE001 — best-effort; detection re-resolves anyway
             pass
+
+    if current < 30:
+        # Per-note semantic chunks (vec_note_chunks is the vec0 table, created
+        # unconditionally above). The regular note_chunks table is created here for
+        # existing DBs; fresh DBs get it from schema.sql. Existing notes are
+        # backfilled lazily at startup (reindex_missing_note_chunks).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS note_chunks (
+              id          INTEGER PRIMARY KEY AUTOINCREMENT,
+              note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              chunk_index INTEGER NOT NULL,
+              text        TEXT NOT NULL,
+              created_at  TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);
+        """)
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:

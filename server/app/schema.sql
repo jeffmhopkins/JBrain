@@ -104,6 +104,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   content
 );
 
+-- Per-note semantic chunks. The whole-note vector in vec_notes truncates at the
+-- embedder's ~512-token limit, so a long note's body never gets embedded; we ALSO
+-- split each note into windows (mirroring attachment_chunks) and embed each into
+-- vec_note_chunks, so semantic_search collapses to a note's best-matching chunk.
+-- vec_notes stays (one whole-note vector per note) — research_scope reads it directly.
+CREATE TABLE IF NOT EXISTS note_chunks (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  chunk_index INTEGER NOT NULL,
+  text        TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);
+
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives
 -- in one consistency domain and is trivially searchable. note_id is nullable so
 -- an attachment can exist before being linked to an entry.

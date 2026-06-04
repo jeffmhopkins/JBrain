@@ -23,6 +23,10 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
     q = (q or "").strip()
     if not q:
         return []
+    # Each half fetches a WIDER pool than `limit` before fusion, so a hit ranked just
+    # outside the top-`limit` in one half (e.g. a long note BM25 penalises) can still
+    # win overall once the other half lifts it. Output is sliced back to `limit`.
+    pool = max(limit * 3, 24)
     scores: dict[int, float] = {}
     meta: dict[int, dict] = {}
 
@@ -34,7 +38,7 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
         rows = conn.execute(
             "SELECT f.note_id, n.title, n.slug FROM notes_fts f JOIN notes n ON n.id = f.note_id "
             "WHERE notes_fts MATCH ? AND n.deleted_at IS NULL ORDER BY rank LIMIT ?",
-            (_fts_query(q), limit),
+            (_fts_query(q), pool),
         ).fetchall()
         for i, r in enumerate(rows):
             bump(r["note_id"], r["title"], r["slug"], i)
@@ -42,7 +46,7 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
         pass
 
     try:  # semantic (vector similarity order)
-        for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
+        for i, r in enumerate(embeddings.semantic_search(conn, q, pool)):
             bump(r["id"], r["title"], r["slug"], i)
     except Exception:  # noqa: BLE001
         pass

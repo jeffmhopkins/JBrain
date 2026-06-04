@@ -129,6 +129,40 @@ churn over recent runs, sibling counts thrashing the threshold. Past thresholds 
 single Review card "Reorganize recommended: <reasons>." Same SQL machinery as the
 recategorize trigger, in read-only mode.
 
+### 1.11 `research_article(title)`  ⟵ semantic Reference-link SUGGESTER (gauntlet-constrained)
+Surfaces EXISTING Reference articles related to an article's salient concepts **by meaning**
+— catching relationships the deterministic `check_needed_links` (§1.7) misses because the
+body never names the leaf ("even if not hard-linked"). It is the partial answer to §9.3 and
+an **adjunct that feeds `rebuild_article`** — wiring an old article into the current
+Reference tree. A design + red-team gauntlet rejected the naive auto-linker; this is the
+disciplined form, and the three guardrails are **non-negotiable**:
+
+- **Nomination = distance < τ AND a deterministic corroborator.** `embeddings.semantic_search`
+  (`embeddings.py:174`) returns raw top-k with **no relevance cutoff** — embedding-alone
+  nomination *is* the sprawl §9.3 deferred. So a candidate Reference article qualifies only
+  if it is both semantically near (`distance < τ`) **and** corroborated by a deterministic
+  signal already in the design — a shared backlink/co-citer/entity/prefix from
+  `scoped_known_titles` (§1.1) or an `entity_index` link. First-hop only, `kb/Reference/*`
+  only.
+- **Propose-only; the human is the adversary.** It **never auto-writes**, is **off the scrub
+  hot path**, and **never gates the watermark**. The LLM "is this relevant?" judgment
+  colludes with the embedding selector (it confirms the bias), so the non-colluding gate is
+  the **owner's accept/reject** on a Review card — or, as the red-team preferred, it surfaces
+  *inside `rebuild_article`* via the already-blessed "Search is review-suggestion only, never
+  a seed" hook (§1.2 step 1). Routes through `check_needed_links`'s ambiguous-term +
+  common-word refusals and dedups against existing links (no flip-flop with `flag_dead_links`).
+- **Grounding firewall — a link or nothing.** Its only possible mutation is wrapping a phrase
+  **already in the body** in `[[kb/Reference/…]]` (or a deferred links-only See-also). It may
+  add **no prose, fact, definition, or "researched context"** — enforced in code (the
+  `_bad_links` candidate-membership + substring-of-body checks), and any added body content
+  would trip `flag_ungrounded_reference` (`wiki_build.py:546`). This honors the GROUNDING +
+  1-HOP rules (`prompts.yaml:450,397`) by construction.
+
+**It links; it does not fix stale *content* (F6).** A genuinely stale article is wrong in its
+*facts* — only `rebuild_article` (from sources) fixes that. `research_article` is the
+link-enrichment adjunct, not a substitute, and must not make a stale article merely *look*
+maintained. **Ship propose-only and measure human accept-rate before ever discussing auto.**
+
 ---
 
 ## 2. The scrub cycle (`actions/wiki_scrub.yaml`)
@@ -233,7 +267,9 @@ human-triggered global re-cluster. It remains the only op that re-partitions the
 - **Phase 3** (structure): `merge`/`split`/`recategorize` with `_rename_inbound_links`
   rewrite + inverse-pair hysteresis (K=3) + second-block→Review; demote rebuild→Reorganize;
   **+ the two narrow LLM review gates** (§10.3: near-duplicate adjudication on
-  create/rebuild + a budgeted sampled grounding audit — never on the hot scrub path).
+  create/rebuild + a budgeted sampled grounding audit — never on the hot scrub path);
+  **+ `research_article` (§1.11) propose-only**, surfaced inside `rebuild_article`,
+  corroborated + grounded, with accept-rate measured before any `auto`.
 
 ---
 
@@ -263,9 +299,12 @@ human-triggered global re-cluster. It remains the only op that re-partitions the
 2. **Subcategory naming drift** — `recategorize` names wander; bounded by SQL trigger +
    `taxonomy_health`.
 3. **Linking is neighborhood + leaf-scan, not global (F3)** — two related articles that
-   share no backlink/citation/entity/prefix *and* never name each other's leaf won't auto-
-   link. Reciprocity passes cover the common cases; the global guarantee is explicitly out
-   of scope (and would require an embedding-similarity pass — a possible future addition).
+   share no backlink/citation/entity/prefix *and* never name each other's leaf won't
+   *deterministically* auto-link. Reciprocity passes cover the common cases. The semantic
+   gap is **partially** closed by `research_article` (§1.11) — but only as a *propose-only*,
+   deterministically-corroborated, human-approved suggester (pure embedding-similarity
+   auto-linking stays out of scope, by design). A fully-global auto guarantee remains
+   deliberately unbuilt.
 4. **Cross-article *fact* duplication (F5)** — per-article maintenance can't see other
    articles' bodies, so the same fact restated in 3 articles can drift to 3 values under
    per-article SUPERSEDE. Mitigation: prefer a single canonical home + links; optionally a

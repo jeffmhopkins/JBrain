@@ -211,6 +211,11 @@ export default function WorkflowsPage() {
             <button className="ghost" onClick={() => runNow(w)} disabled={running[w.id]}>
               {running[w.id] ? "Running…" : "Run now"}
             </button>
+            {live[w.id] && (
+              <button className="ghost" onClick={() => setWatch({ id: w.id, name: w.name })}>
+                {running[w.id] ? "⏳ Watch" : "View last run"}
+              </button>
+            )}
             <button className="ghost" onClick={() => openEdit(w)}>Edit</button>
             <button className="ghost" onClick={() => showRuns(w.id)}>History</button>
             {w.locked && <button className="ghost" onClick={() => resetToRepo(w)} title="Discard local edits; track the repo version again">Reset to repo</button>}

@@ -364,6 +364,18 @@ actions:
     article per note. Prefer a few solid articles over many thin stubs. Use each note id
     at most once, in its best-fit article.
 
+    SUB-CATEGORISE within a domain instead of letting it sprawl flat: when a domain would
+    hold many articles, fold them under a subcategory — kb/<Domain>/<Subcategory>/<Name>.
+    Reference especially must be foldered by subject (kb/Reference/Medicine/..., kb/
+    Reference/Finance/..., kb/Reference/Technology/...), never a flat pile. The domain is
+    always the first path segment.
+
+    POPULATE GROUPS — don't leave it empty. Create a Groups article for each collective
+    that ties People together: a household/family, an employer, a club, a team. If
+    several people are related, make a kb/Groups/<Family name> (household) article, assign
+    the notes about the family as a unit to it, and still give each member their own
+    People article. Likewise make a Groups article for a shared workplace or organisation.
+
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
     {instructions}

@@ -1010,8 +1010,10 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
         changed += 1 if _apply_maintain(conn, out, "incremental update") else 0
         resolved += len(out["resolved"])
 
-    # Nudge: brand-new subjects with no article yet (creation is deferred to the full rebuild).
-    nudged = _nudge_new_subjects(conn, orphans, new_subject_min)
+    # Brand-new recurring subjects: CREATE their articles now — maintenance owns this, no
+    # waiting for a full rebuild. create_article dedups/folds and refuses thin subjects; a
+    # creation that fails the lint falls back to a Review card for the owner.
+    subj = _create_new_subjects(conn, orphans, new_subject_min)
 
     # Advance over the leading run of changes whose targets all succeeded; stop at the first
     # change that touched a failed/deferred article so it (and everything after) is retried.
@@ -1023,12 +1025,15 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
     set_meta(conn, _WATERMARK, new_wm)
     conn.commit()
     return {"changes": len(changes), "articles": len(items), "changed": changed,
-            "resolved": resolved, "failed": failed, "deferred": len(deferred), "new_subjects": nudged}
+            "resolved": resolved, "failed": failed, "deferred": len(deferred),
+            "created": subj["created"], "new_subjects": subj["created"] + subj["nudged"]}
 
 
-def _nudge_new_subjects(conn, orphans: list[dict], min_notes: int) -> int:
-    """One Review card per recurring subject (≥ min_notes notes) that changed but has no
-    article, so the owner can fold it in at the next rebuild. De-duped against pending cards."""
+def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
+    """Recurring subjects (≥ min_notes notes) that changed but have no article yet: CREATE
+    them (create_article dedups/folds + refuses thin stubs). A creation that fails the lint
+    falls back to a Review card so the owner sees it — maintenance no longer defers new
+    subjects to a full rebuild. Returns {created, nudged}."""
     from . import reviews as reviews_svc
     tally: dict[tuple, int] = {}
     for ch in orphans:
@@ -1037,18 +1042,25 @@ def _nudge_new_subjects(conn, orphans: list[dict], min_notes: int) -> int:
             "WHERE m.note_id=? AND e.article_title IS NULL", (ch["id"],)).fetchall():
             key = (r["type"], r["canonical_name"])
             tally[key] = tally.get(key, 0) + 1
-    posted = 0
+    created = nudged = 0
     for (typ, name), c in tally.items():
         if c < int(min_notes):
             continue
-        title = f"New subject: {name}"
-        if conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'", (title,)).fetchone():
+        res = create_article(conn, name, etype=typ, min_notes=int(min_notes))
+        if res.get("created"):
+            created += 1
+        elif res.get("folded"):
             continue
-        reviews_svc.create_review_item(
-            conn, None, title=title,
-            message=f"{c} note(s) mention {name} ({typ}) but it has no article yet — add it on the next rebuild.")
-        posted += 1
-    return posted
+        else:
+            card = f"New subject: {name}"
+            if not conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'",
+                                (card,)).fetchone():
+                reviews_svc.create_review_item(
+                    conn, None, title=card,
+                    message=f"{c} note(s) mention {name} ({typ}) — couldn't auto-create its article "
+                            f"({res.get('reason')}); add it by hand.")
+                nudged += 1
+    return {"created": created, "nudged": nudged}
 
 
 def _now(conn) -> str:

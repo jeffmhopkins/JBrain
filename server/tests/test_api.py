@@ -1540,6 +1540,29 @@ def test_rebuild_article_quarantine_restores_prior(client, monkeypatch):
                for t in article_talk.list_for(conn, "kb/People/Ghost"))
 
 
+def test_wiki_update_creates_new_subject_article(client, monkeypatch):
+    """Self-sufficiency: a recurring new subject in the change window gets its article
+    CREATED by the incremental update — no waiting for a full rebuild."""
+    import json
+    from app.db import get_conn, set_meta
+    from app.services import wiki_build, entity_index, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    set_meta(conn, "kb_incremental:since", "2000-01-01 00:00:00.000")
+    for i in (1, 2):
+        nid = ns.upsert_note(conn, f"notes/nv{i}", "Nadia volunteers at the animal shelter.")
+        conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                     (nid, f"hn{i}", json.dumps([{"type": "person", "name": "Nadia"}])))
+    conn.commit(); entity_index.rebuild(conn)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "# Nadia\nNadia volunteers at the animal shelter.[^s1]\n\n## References\n[^s1]: [[notes/nv1]] — 2026-06-01\n")
+
+    res = wiki_build.update_batch(conn, limit=40)
+    assert res["created"] >= 1
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/People/Nadia' AND kind='kb' AND deleted_at IS NULL").fetchone()
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually

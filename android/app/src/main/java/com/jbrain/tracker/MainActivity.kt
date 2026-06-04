@@ -101,6 +101,10 @@ private fun TrackerScreen(modifier: Modifier = Modifier) {
         while (true) { queued = FixQueue.size(ctx); delay(3000) }
     }
 
+    // Drain any watch-relayed notes that couldn't be forwarded earlier (e.g. the phone
+    // was offline or unconfigured when the watch sent them).
+    LaunchedEffect(Unit) { NoteQueue.flush(ctx) }
+
     fun turnOn() {
         Tracking.setEnabled(ctx, true)
         tracking = true

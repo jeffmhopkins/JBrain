@@ -1,7 +1,10 @@
 name: Build Android Tracker APK
 
-# Compiles the android/ phone tracker and uploads an installable release APK you can
-# grab from the run page and sideload onto your (and family) phones.
+# Compiles the android/ phone tracker — which now EMBEDS the Wear OS watch app — and
+# uploads one installable release APK you can grab from the run page and sideload onto
+# your (and family) phones. Installing it carries the watch app, which the Wear OS
+# companion delivers to a paired watch; the watch holds no keys of its own (it relays
+# dictated notes to the phone). There is no separate watch APK / workflow anymore.
 #
 # Set these in the repo (Settings → Secrets and variables → Actions):
 #   Variable  JBRAIN_DOMAIN   e.g. https://your-brain.example.com

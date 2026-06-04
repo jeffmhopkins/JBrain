@@ -1,41 +1,32 @@
-import java.io.FileInputStream
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
-// Pull the server domain + access key out of local.properties (gitignored) so the
-// secret key is baked into BuildConfig at build time and never has to be typed on
-// the watch nor committed. Falls back to env vars (handy for CI), then to a
-// harmless default so a fresh checkout still configures.
-val localProps = Properties().apply {
-    val f = rootProject.file("local.properties")
-    if (f.exists()) FileInputStream(f).use { load(it) }
-}
-fun secret(key: String, default: String): String =
-    localProps.getProperty(key) ?: System.getenv(key) ?: default
-
+// The watch app no longer holds the JBrain domain or access key: it dictates a note
+// and relays the transcript to the phone over the Wear Data Layer, and the phone (which
+// already has the key from its setup code) forwards it to JBrain. So there are no
+// compile-time secrets here at all — nothing to maintain, nothing to rebuild on a key
+// change.
+//
+// `applicationId` MUST match the phone module's (com.jbrain.tracker): the Wear Data
+// Layer only routes messages between apps that share an applicationId, and the same
+// match is what lets this APK be embedded into and auto-delivered by the phone app.
 android {
     namespace = "com.jbrain.watch"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.jbrain.watch"
+        applicationId = "com.jbrain.tracker"
         minSdk = 30
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
-
-        buildConfigField("String", "JBRAIN_DOMAIN", "\"${secret("JBRAIN_DOMAIN", "https://example.com")}\"")
-        buildConfigField("String", "JBRAIN_KEY", "\"${secret("JBRAIN_KEY", "")}\"")
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     compileOptions {
@@ -46,10 +37,9 @@ android {
         jvmTarget = "17"
     }
 
-    // Sign the release build. CI supplies a real keystore via env vars
-    // (KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD) for a stable signature
-    // so updates install in place; without one we fall back to the debug key below so
-    // the APK is still signed and installable (e.g. via Wear Installer 2).
+    // Sign with the same key as the phone app. The embedded-wear mechanism requires the
+    // watch APK and its host phone APK to share a signature, so CI supplies one keystore
+    // (KEYSTORE_FILE/…) for both; without one both fall back to the shared debug key.
     val releaseKeystore = System.getenv("KEYSTORE_FILE")?.takeIf { file(it).exists() }
     signingConfigs {
         create("release") {
@@ -87,10 +77,9 @@ dependencies {
     implementation(libs.wear.compose.foundation)
 
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.okhttp)
 
-    // Background location (FusedLocationProviderClient) for the trail tracker.
-    implementation(libs.play.services.location)
+    // Wear Data Layer: relay the dictated note to the phone (no direct HTTP, no key).
+    implementation(libs.play.services.wearable)
 
     // Tile (one-tap capture from the watch face)
     implementation(libs.wear.tiles)

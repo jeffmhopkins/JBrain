@@ -57,5 +57,16 @@
             android:name=".ActivityReceiver"
             android:exported="false" />
 
+        <!-- Receives notes dictated on the paired watch (relayed over the Wear Data
+             Layer) and forwards them to JBrain with this phone's configured key. -->
+        <service
+            android:name=".NoteRelayService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/jbrain/note" />
+            </intent-filter>
+        </service>
+
     </application>
 </manifest>

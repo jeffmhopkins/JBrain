@@ -21,3 +21,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "JBrainTracker"
 include(":app")
+// The Wear OS watch app, embedded into the phone APK (see app/build.gradle.kts:
+// `wearApp(project(":wear"))`) so a single install carries the watch app.
+include(":wear")

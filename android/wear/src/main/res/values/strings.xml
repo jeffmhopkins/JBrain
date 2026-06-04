@@ -5,8 +5,8 @@
     <string name="tile_button">＋ Note</string>
     <string name="speak_prompt">Speak your note</string>
     <string name="status_idle">Tap to speak</string>
-    <string name="status_saving">Saving…</string>
-    <string name="status_saved">Saved ✓</string>
-    <string name="status_offline">Saved offline ✓</string>
+    <string name="status_saving">Sending…</string>
+    <string name="status_saved">Sent ✓</string>
+    <string name="status_offline">Queued — phone offline ✓</string>
     <string name="status_error">No voice input</string>
 </resources>

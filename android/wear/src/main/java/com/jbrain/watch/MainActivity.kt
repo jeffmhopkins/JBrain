@@ -1,6 +1,5 @@
 package com.jbrain.watch
 
-import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -13,10 +12,7 @@ import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
-import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,7 +79,7 @@ private fun CaptureScreen(autoStart: Boolean) {
         }
         phase = Phase.SAVING
         scope.launch {
-            if (NoteClient.createEntry(spoken)) {
+            if (PhoneRelay.send(context, spoken)) {
                 vibrate(context)
                 phase = Phase.SAVED
             } else {
@@ -107,37 +103,8 @@ private fun CaptureScreen(autoStart: Boolean) {
         }
     }
 
-    // Background location trail toggle. Background location needs a two-step grant
-    // (foreground first, then "Allow all the time" separately on Android 10+).
-    var tracking by remember { mutableStateOf(Tracking.isEnabled(context)) }
-    val bgLauncher = rememberLauncherForActivityResult(RequestPermission()) { _ ->
-        if (Tracking.hasBackground(context)) { Tracking.setEnabled(context, true); tracking = true }
-    }
-    val fgLauncher = rememberLauncherForActivityResult(RequestMultiplePermissions()) { _ ->
-        if (!Tracking.hasForeground(context)) return@rememberLauncherForActivityResult
-        if (Tracking.hasBackground(context)) { Tracking.setEnabled(context, true); tracking = true }
-        else bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-    }
-    fun toggleTracking() {
-        if (tracking) { Tracking.setEnabled(context, false); tracking = false; return }
-        when {
-            !Tracking.hasForeground(context) -> {
-                val perms = mutableListOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                fgLauncher.launch(perms.toTypedArray())
-            }
-            !Tracking.hasBackground(context) -> bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-            else -> { Tracking.setEnabled(context, true); tracking = true }
-        }
-    }
-
-    // On open: replay anything queued from a previous offline capture, then (if we
-    // were launched from the Tile) jump straight into dictation.
+    // On open: replay anything queued while the phone was unreachable, then (if we were
+    // launched from the Tile) jump straight into dictation.
     LaunchedEffect(Unit) {
         NoteQueue.flush(context)
         if (autoStart) startListening()
@@ -169,16 +136,6 @@ private fun CaptureScreen(autoStart: Boolean) {
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colors.onBackground,
                     style = MaterialTheme.typography.caption1,
-                )
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = if (tracking) "Location: on — tap to stop" else "Track my location",
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colors.primary,
-                    style = MaterialTheme.typography.caption2,
-                    modifier = Modifier
-                        .clickable { toggleTracking() }
-                        .padding(6.dp),
                 )
             }
         }

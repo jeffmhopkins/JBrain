@@ -90,4 +90,12 @@ dependencies {
 
     // Background location (FusedLocationProviderClient) for the trail tracker.
     implementation(libs.play.services.location)
+
+    // Wearable Data Layer: receive notes dictated on the watch and forward them.
+    implementation(libs.play.services.wearable)
+
+    // Embed the Wear OS watch app inside this APK so a single phone install carries the
+    // watch app, which the Wear companion delivers to a paired watch. Both modules share
+    // an applicationId + signing key, which the embedding requires.
+    wearApp(project(":wear"))
 }

@@ -30,7 +30,9 @@ object NoteClient {
     suspend fun createEntry(ctx: Context, text: String): Boolean = withContext(Dispatchers.IO) {
         if (!Settings.isConfigured(ctx)) return@withContext false
         val domain = Settings.serverUrl(ctx).trimEnd('/')
-        val payload = JSONObject().put("text", text)
+        // Tag the provenance so the note's version history shows it was dictated on the
+        // watch and relayed through the phone, not typed.
+        val payload = JSONObject().put("text", text).put("source", "watch")
         val request = Request.Builder()
             .url("$domain/api/notes/entry")
             .addHeader("Authorization", "Bearer ${Settings.key(ctx)}")

@@ -20,6 +20,11 @@ class NoteIn(BaseModel):
 class EntryIn(BaseModel):
     text: str
     title: str | None = None
+    # Provenance for the version badge. The watch relays dictations through the phone,
+    # which tags them `watch` so the note's history shows where it came from. Anything
+    # unrecognised is clamped to `user` in the handler (capture must never 422 away a
+    # note over a bad label).
+    source: str | None = None
     # Bounded so a stray reading (incl. NaN/inf, which fail the bounds) can't be
     # stored and break downstream distance math / JSON serialisation.
     lat: float | None = Field(default=None, ge=-90, le=90)
@@ -221,6 +226,12 @@ def create_entry(body: EntryIn):
     explicit = (body.title or "").strip()
     if not text and not explicit:
         raise HTTPException(status_code=422, detail="Entry text cannot be empty")
+    # Provenance: `watch` for relayed wrist dictations, else a plain human `user`
+    # entry. Clamp anything unknown so the version badge stays a known value and the
+    # entry_created enrichment still fires (see upsert_note's human-source gate).
+    source = (body.source or "user").strip().lower()
+    if source not in ("user", "watch"):
+        source = "user"
     if explicit:
         # An explicit title (the assisted-attachment path) keeps its own name —
         # "assisted notes can go somewhere else". The first line is NOT a title.
@@ -232,7 +243,7 @@ def create_entry(body: EntryIn):
         title = notes_svc.next_dated_title(conn, clock.today_local())
     try:
         note_id = notes_svc.upsert_note(
-            conn, title, text, source="user", lat=body.lat, lon=body.lon, fire_events=False,
+            conn, title, text, source=source, lat=body.lat, lon=body.lon, fire_events=False,
         )
         conn.commit()
     except Exception:

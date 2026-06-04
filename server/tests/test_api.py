@@ -103,6 +103,19 @@ def test_entry_mode_dated_titles_no_first_line_convention(client):
     assert e["title"].rsplit("/", 1)[1] == "03"
 
 
+def test_entry_source_watch_is_recorded_and_clamped(client):
+    # A watch-dictated entry (relayed by the phone) is a normal dated note whose
+    # version history is tagged `watch` for provenance.
+    w = client.post("/api/notes/entry", json={"text": "dictated on my wrist", "source": "watch"}).json()
+    vers = client.get(f"/api/notes/{w['slug']}/versions").json()
+    assert vers[0]["source"] == "watch"
+    # No source -> plain `user`; an unrecognised source is clamped to `user` (never 422).
+    u = client.post("/api/notes/entry", json={"text": "typed note"}).json()
+    assert client.get(f"/api/notes/{u['slug']}/versions").json()[0]["source"] == "user"
+    x = client.post("/api/notes/entry", json={"text": "weird", "source": "../../etc"}).json()
+    assert client.get(f"/api/notes/{x['slug']}/versions").json()[0]["source"] == "user"
+
+
 def test_research_mode_is_read_only(client):
     # Research mode must not expose write tools.
     from app.services import architect

@@ -1399,6 +1399,59 @@ def test_wiki_write_honors_instructions(client, monkeypatch):
     assert any("Mention her PhD" in p and "ADDITIONAL GUIDANCE" in p for p in prompts)
 
 
+def test_rebuild_article_regenerates_in_place(client, monkeypatch):
+    """rebuild_article regenerates from sources, preserving the SAME row (slug + version
+    history) and inbound links, and carries an open directive into the writer."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    sid = ns.upsert_note(conn, "notes/k", "Kate is a pilot. She flies a Cessna.")
+    nid = ns.upsert_note(conn, "kb/People/Kate",
+        "# Kate\nKate is a pilot.[^s1]\n\n## References\n[^s1]: [[notes/k]] — 2026-06-01\n", kind="kb")
+    ns.upsert_note(conn, "kb/Things/Cessna", "# Cessna\nFlown by [[kb/People/Kate]].", kind="kb")  # inbound
+    article_talk.add(conn, "kb/People/Kate", "directive", "Note that she flies a Cessna.")
+    conn.commit()
+    v_before = conn.execute("SELECT COUNT(*) c FROM note_versions WHERE note_id=?", (nid,)).fetchone()["c"]
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    seen = []
+    def fake(msgs, **k):
+        seen.append(msgs[0]["content"])
+        return "# Kate\nKate is a pilot who flies a Cessna.[^s1]\n\n## References\n[^s1]: [[notes/k]] — 2026-06-01\n"
+    monkeypatch.setattr(llm, "complete", fake)
+
+    res = wiki_build.rebuild_article(conn, "kb/People/Kate")
+    assert res["ok"], res
+    row = conn.execute("SELECT id, content_md FROM notes WHERE title='kb/People/Kate' AND deleted_at IS NULL").fetchone()
+    assert row["id"] == nid                                       # SAME row → history preserved
+    assert "Cessna" in row["content_md"]                          # regenerated from sources
+    assert any("flies a Cessna" in p for p in seen)               # open directive reached the writer
+    v_after = conn.execute("SELECT COUNT(*) c FROM note_versions WHERE note_id=?", (nid,)).fetchone()["c"]
+    assert v_after > v_before                                     # version continuity (appended)
+    assert conn.execute("SELECT 1 FROM links WHERE target_note_id=? LIMIT 1", (nid,)).fetchone()  # inbound survived
+
+
+def test_rebuild_article_quarantine_restores_prior(client, monkeypatch):
+    """A rebuild that can't resolve any sources quarantines: the prior version is restored
+    (never a hole) and an open todo is recorded."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "kb/People/Ghost",
+        "# Ghost\nA person of note.[^s1]\n\n## References\n[^s1]: [[notes/missing]] — 2026-01-01\n", kind="kb")
+    conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)  # no resolvable sources → write_one bails pre-LLM
+
+    res = wiki_build.rebuild_article(conn, "kb/People/Ghost")
+    assert res["ok"] is False and res.get("quarantined")
+    row = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Ghost' AND deleted_at IS NULL").fetchone()
+    assert row and "A person of note" in row["content_md"]        # prior restored, not deleted
+    assert any(t["kind"] == "todo" and "quarantin" in t["body"].lower()
+               for t in article_talk.list_for(conn, "kb/People/Ghost"))
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually

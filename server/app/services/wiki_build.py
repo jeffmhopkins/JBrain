@@ -629,6 +629,90 @@ def scoped_known_titles(conn, title: str, all_titles, budget: int = 600) -> list
     return result
 
 
+# ---- KB write lock (advisory, atomic claim) ------------------------------------------
+def kb_lock_acquire(conn, key: str = "kb_write", ttl_s: int = 1800) -> bool:
+    """Claim the KB write lock so manual ops, the scrub, and nightly jobs can't interleave
+    mutations across separate connections. Atomic: INSERT OR IGNORE on a unique key — exactly
+    one caller wins. A holder older than ttl_s is reclaimed so a crash can't wedge the KB."""
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_locks (key TEXT PRIMARY KEY, held_at INTEGER NOT NULL)")
+    conn.execute("DELETE FROM kb_locks WHERE key=? AND held_at < CAST(strftime('%s','now') AS INTEGER) - ?",
+                 (key, int(ttl_s)))
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO kb_locks(key, held_at) VALUES (?, CAST(strftime('%s','now') AS INTEGER))", (key,))
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def kb_lock_release(conn, key: str = "kb_write") -> None:
+    conn.execute("DELETE FROM kb_locks WHERE key=?", (key,))
+    conn.commit()
+
+
+def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
+    """Regenerate ONE existing kb article from scratch from its PRIMARY SOURCES (the owner's
+    notes), then re-link it into the KB. REGENERATE-IN-PLACE, never a wipe: it revives the
+    SAME row, so slug + version history + inbound links + the AI-talk ledger all survive.
+    Sources = the article's prior citations ∪ the entity index for its subject (search is
+    never a seed). Open directives/conflicts are carried into the writer. On a quarantine
+    (lint fail) the prior version is restored and an open todo is recorded — a failed rebuild
+    never leaves a hole. Runs under the KB write lock. Returns {ok, title, reason?, quarantined?}."""
+    from . import notes as notes_svc, entity_index, article_talk
+    title = (title or "").strip()
+    note = notes_svc.get_by_title(conn, title)
+    if not note or note["kind"] != "kb":
+        return {"ok": False, "title": title, "reason": "no such kb article"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "title": title,
+                "reason": "KB is busy (another build/maintain is running) — try again shortly"}
+    try:
+        nid = note["id"]
+        prior = note["content_md"] or ""
+        # 1. Primary sources: prior citations ∪ entity index for the subject. No search seed.
+        ids: set[int] = set()
+        for t in wikilinks.extract_links(prior):
+            if t.lower().startswith("kb/"):
+                continue
+            r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                             (t,)).fetchone()
+            if r:
+                ids.add(int(r["id"]))
+        ids |= {int(i) for i in entity_index.note_ids_for_name(conn, title.rsplit("/", 1)[-1])}
+        # 2. Carry OPEN directives/conflicts into the writer so the rebuild doesn't drop them.
+        opens = article_talk.open_for(conn, title)
+        directives = "; ".join(o["body"] for o in opens
+                               if o.get("kind") in ("directive", "conflict") and o.get("body"))
+        instr = (instructions or "").strip()
+        if directives:
+            instr = (instr + "\nHonor these standing directives / unresolved conflicts: " + directives).strip()
+        scope = prior.splitlines()[0].lstrip("# ").strip() if prior.strip() else ""
+        art = {"title": title, "domain": wiki_guides.domain_for_title(title),
+               "scope": scope, "sources": sorted(ids)}
+        # 3. Soft-delete this one article, regenerate, revive the SAME row on success.
+        notes_svc.soft_delete(conn, nid)
+        out = write_one(conn, art, instr, known_titles=_known_titles(conn))
+        if out.get("ok") and out.get("content_md"):
+            notes_svc.upsert_note(conn, title, out["content_md"], kind="kb",
+                                  source="rebuild", version_note="rebuilt from sources")
+            # soft_delete nulled inbound links' target_note_id; re-point them at the revived
+            # row so other articles' [[links]] to this one reconnect (as restore() does).
+            wikilinks.resolve_dangling_links(conn, nid, title)
+            if out.get("talk"):
+                article_talk.record(conn, title, out["talk"])
+            entity_index.rebuild(conn)                 # relink entity → fresh article
+            entity_index.write_disambiguation_pages(conn)
+            flag_dead_links(conn)                      # sweep any dangling cross-links
+            conn.commit()
+            return {"ok": True, "title": title}
+        # Quarantine: restore the prior version (never leave a hole) + surface an open todo.
+        notes_svc.restore(conn, nid)
+        reason = "; ".join(out.get("errors") or []) or "structure lint failed"
+        article_talk.add(conn, title, "todo", f"Rebuild quarantined ({reason}) — manual review.")
+        conn.commit()
+        return {"ok": False, "title": title, "quarantined": True, "reason": reason}
+    finally:
+        kb_lock_release(conn)
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

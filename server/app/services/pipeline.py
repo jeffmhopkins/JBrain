@@ -189,6 +189,12 @@ def _p_flag_dead_links(ctx):
     return wiki_build.flag_dead_links(ctx.conn)
 
 
+def _p_rebuild_article(ctx, title=None, instructions=None):
+    """Regenerate ONE kb article in place from its source notes (manual/owner-triggered)."""
+    from . import wiki_build
+    return wiki_build.rebuild_article(ctx.conn, title, instructions)
+
+
 def _p_link_owner(ctx):
     """Link the default person to their freshly-written People article."""
     from . import wiki_build
@@ -1095,6 +1101,7 @@ _PRIMITIVES = {
     "write_disambiguation": _p_write_disambiguation,
     "record_talk": _p_record_talk,
     "flag_dead_links": _p_flag_dead_links,
+    "rebuild_article": _p_rebuild_article,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1198,6 +1205,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                                {"name": "entries", "type": "list"}], "output": "dict"},
     "flag_dead_links": {"summary": "Flag dangling kb cross-links as todos on each article's talk.",
                         "inputs": [], "output": "dict"},
+    "rebuild_article": {"summary": "Regenerate ONE kb article in place from its source notes (manual).",
+                        "inputs": [{"name": "title", "type": "str"},
+                                   {"name": "instructions", "type": "str"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",

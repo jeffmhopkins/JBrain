@@ -1,0 +1,37 @@
+# Declarative action: REBUILD ONE knowledge-base article from scratch.
+#
+# Regenerates a single stale/messy article ground-up from its PRIMARY SOURCES (the owner's
+# notes — its prior citations ∪ the entity index for its subject), then re-links it into
+# the KB. It REGENERATES IN PLACE, never a wipe: the article keeps its slug, version
+# history, inbound links, and AI-talk ledger; open directives are honored in the rewrite.
+# If the rebuild fails the structure lint it is QUARANTINED — the prior version is restored
+# and an open todo is recorded, so a failed rebuild never leaves a hole. Runs under the KB
+# write lock so it can't interleave with maintenance. Owner-triggered, per article.
+# Requires an Anthropic key.
+#
+# config keys:
+#   title        — the kb article to rebuild, e.g. kb/People/Allan (required)
+#   instructions — optional extra guidance for the rewrite
+#   review       — post a review card (default true)
+type: wiki_rebuild_article
+category: Knowledge base
+config:
+  - { key: title, label: "Article title (kb/…)", type: text }
+  - { key: instructions, label: "Extra guidance (optional)", type: textarea }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: rb
+    do: rebuild_article
+    with: { title: "{{ config.title }}", instructions: "{{ config.instructions | default(none) }}" }
+  - do: create_review
+    when: "{{ config.review != false and rb.ok }}"
+    with:
+      title: "Article rebuilt"
+      message: "Rebuilt {{ config.title }} from its source notes."
+      link_title: "{{ config.title }}"
+  - do: create_review
+    when: "{{ config.review != false and not rb.ok }}"
+    with:
+      title: "Rebuild needs a look"
+      message: "Could not rebuild {{ config.title }}: {{ rb.reason }}"
+      link_title: "{{ config.title }}"

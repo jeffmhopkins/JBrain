@@ -33,13 +33,20 @@ def add(conn, article_title: str, kind: str, body: str, author: str = "ai") -> i
     return cur.lastrowid
 
 
+# Log kinds are immutable records (don't re-add ever); actionable kinds may legitimately
+# RE-EMERGE after being resolved (a conflict that comes back), so they dedup against OPEN only.
+_LOG_KINDS = {"note", "decision"}
+
+
 def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
-    """Add a batch of {kind, body} entries, skipping ones already present for this article
-    (open OR resolved), so re-runs don't pile up the same conflict/log. Returns how many
-    were added."""
-    existing = {(r["kind"], r["body"]) for r in conn.execute(
-        "SELECT kind, body FROM article_talk WHERE article_title=?",
-        (article_title,)).fetchall()}
+    """Add a batch of {kind, body} entries. Log entries (note/decision) dedup against ALL
+    history so they don't pile up each run; actionable entries (conflict/question/todo/
+    directive) dedup against OPEN only, so a genuinely re-emerged issue can resurface after
+    an earlier resolution. Returns how many were added."""
+    rows = conn.execute("SELECT kind, body, resolved_at FROM article_talk WHERE article_title=?",
+                        (article_title,)).fetchall()
+    all_keys = {(r["kind"], r["body"]) for r in rows}
+    open_keys = {(r["kind"], r["body"]) for r in rows if r["resolved_at"] is None}
     n = 0
     for e in entries or []:
         if not isinstance(e, dict):
@@ -47,10 +54,13 @@ def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
         kind = str(e.get("kind") or "note").lower()
         kind = kind if kind in _KINDS else "note"
         body = str(e.get("body") or "").strip()
-        if not body or (kind, body) in existing:
+        if not body:
+            continue
+        seen = all_keys if kind in _LOG_KINDS else open_keys
+        if (kind, body) in seen:
             continue
         add(conn, article_title, kind, body, author)
-        existing.add((kind, body))
+        all_keys.add((kind, body)); open_keys.add((kind, body))
         n += 1
     return n
 

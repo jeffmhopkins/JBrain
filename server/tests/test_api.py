@@ -973,6 +973,65 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_gauntlet_fixes(client, monkeypatch):
+    """Regression bundle for the adversarial-review fixes."""
+    import json
+    from app.db import get_conn, get_meta
+    from app.services import wiki_build, entity_index as ei, article_talk, pipeline
+    from app.services import notes as ns
+    conn = get_conn()
+
+    # #1 entity→article links via ALIAS, not exact leaf (TTP ↔ full name).
+    n1 = ns.upsert_note(conn, "n/ttp1", "x"); n2 = ns.upsert_note(conn, "n/ttp2", "x")
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (n1, "a", json.dumps([{"type": "condition", "name": "TTP"}])))
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (n2, "b", json.dumps([{"type": "condition", "name": "Thrombotic Thrombocytopenic Purpura"}])))
+    ns.upsert_note(conn, "kb/Reference/Medicine/Conditions/TTP", "# TTP\nstub.", kind="kb")  # leaf = the acronym
+    conn.commit()
+    ei.rebuild(conn)
+    row = conn.execute("SELECT article_title FROM entities WHERE canonical_name='Thrombotic Thrombocytopenic Purpura'").fetchone()
+    assert row["article_title"] == "kb/Reference/Medicine/Conditions/TTP"     # matched via alias, not leaf
+
+    # #11 neutralizing a dead citation drops the footnote def AND its orphaned marker.
+    out = wiki_build._neutralize_links(
+        "Fact one.[^s1] Fact two.[^s2]\n\n## References\n[^s1]: [[notes/gone]] — 2026-01-01\n[^s2]: [[n/ttp1]] — 2026-01-02\n",
+        {"notes/gone"})
+    assert "[^s1]" not in out and "notes/gone" not in out                    # dead citation fully removed
+    assert "[^s2]" in out                                                    # the live one survives
+
+    # #10 actionable items re-emerge after resolution; log notes never re-pile.
+    article_talk.add(conn, "kb/Reference/Medicine/Conditions/TTP", "conflict", "dates disagree")
+    conn.execute("UPDATE article_talk SET resolved_at=datetime('now') WHERE body='dates disagree'")
+    conn.commit()
+    assert article_talk.record(conn, "kb/Reference/Medicine/Conditions/TTP", [{"kind": "conflict", "body": "dates disagree"}]) == 1
+    article_talk.record(conn, "kb/Reference/Medicine/Conditions/TTP", [{"kind": "note", "body": "logline"}])
+    assert article_talk.record(conn, "kb/Reference/Medicine/Conditions/TTP", [{"kind": "note", "body": "logline"}]) == 0
+
+    # #3 review_open_talk doesn't re-post a card for an article that already has a pending one.
+    a1 = pipeline._PRIMITIVES["review_open_talk"](pipeline._Ctx(conn, None, None))["cards"]
+    a2 = pipeline._PRIMITIVES["review_open_talk"](pipeline._Ctx(conn, None, None))["cards"]
+    assert a1 >= 1 and a2 == 0
+
+    # #2 a failed article holds the watermark (the change isn't skipped).
+    from app.db import set_meta as _set_meta
+    _set_meta(conn, "kb_incremental:since", "2000-01-01 00:00:00.000")
+    sid = ns.upsert_note(conn, "n/fail", "Allan got a dog.")
+    conn.execute("INSERT INTO note_analysis (note_id,content_hash,entities_json) VALUES (?,?,?)",
+                 (sid, "f", json.dumps([{"type": "person", "name": "Allan"}])))
+    ns.upsert_note(conn, "kb/People/Allan", "# Allan\nKnows Bob.[^s1]\n\n## References\n[^s1]: [[n/fail]] — 2026-06-01", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+    monkeypatch.setattr(wiki_build.llm, "has_credentials", lambda: True)
+    # Long body (not a stub) with a footnote marker but no References section → fails the lint.
+    monkeypatch.setattr(wiki_build.llm, "complete",
+                        lambda *a, **k: "# Allan\n" + "He knows many people. " * 40 + "[^z]\n")
+    before = get_meta("kb_incremental:since")
+    res = wiki_build.update_batch(conn, limit=40)
+    assert res["failed"] >= 1
+    assert get_meta("kb_incremental:since") == before                        # watermark held — change retried next run
+
+
 def test_flag_ungrounded_reference(client):
     """A Reference article whose body dwarfs its cited sources (LLM 'common knowledge'
     padding) is flagged with a todo; a thin, well-grounded one is not."""

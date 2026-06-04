@@ -180,15 +180,24 @@ def rebuild(conn, limit: int = 20000) -> int:
 
 
 def _link_articles(conn) -> None:
-    """Point each entity at the kb article whose title leaf matches its canonical name."""
+    """Point each entity at the kb article whose title leaf matches the entity — by the SAME
+    robust basis as note_ids_for_name (normalized key OR any alias), not a raw-string leaf.
+    A leaf-exact match missed common variants (entity 'Thrombotic Thrombocytopenic Purpura'
+    vs article leaf 'TTP', or aliased/merged names), silently leaving article_title NULL and
+    breaking incremental routing, disambiguation, and the browse link."""
     conn.execute("UPDATE entities SET article_title = NULL")
-    leaf_map: dict = {}
+    leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
     for k in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall():
-        leaf_map.setdefault(k["title"].split("/")[-1].lower(), k["title"])
-    for e in conn.execute("SELECT id, canonical_name FROM entities").fetchall():
-        t = leaf_map.get(e["canonical_name"].lower())
-        if t:
-            conn.execute("UPDATE entities SET article_title=? WHERE id=?", (t, e["id"]))
+        leaf_map.setdefault(normalize(k["title"].split("/")[-1]), k["title"])
+    aliases: dict = {}       # entity_id -> [alias_norm, ...]
+    for a in conn.execute("SELECT entity_id, alias_norm FROM entity_aliases").fetchall():
+        aliases.setdefault(a["entity_id"], []).append(a["alias_norm"])
+    for e in conn.execute("SELECT id, normalized_key FROM entities").fetchall():
+        for key in [e["normalized_key"], *aliases.get(e["id"], [])]:
+            t = leaf_map.get(key)
+            if t:
+                conn.execute("UPDATE entities SET article_title=? WHERE id=?", (t, e["id"]))
+                break
 
 
 def _partners(conn, entity_id: int, k: int) -> list[str]:

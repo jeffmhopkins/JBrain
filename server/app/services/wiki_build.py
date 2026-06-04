@@ -231,15 +231,27 @@ def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
 
 
 def _neutralize_links(content: str, bad: set[str]) -> str:
-    """Unwrap dead [[links]] into plain text (display text, else the title leaf) so a bad
-    link can never reach a saved article. Non-bad links are left untouched."""
+    """Remove dead links so they can't reach a saved article. A dead link in a FOOTNOTE
+    DEFINITION (a citation to a now-missing source) drops the whole definition line — and
+    any inline [^marker] left without a definition is then stripped — rather than leaving a
+    mangled '[^s1]: Ghost — DATE'. Dead links in PROSE unwrap to plain text. Live links and
+    valid footnotes are untouched."""
     def repl(m):
         target = m.group(1).strip()
         if target not in bad:
             return m.group(0)
         inner = m.group(0)[2:-2]
         return inner.split("|", 1)[1].strip() if "|" in inner else target.split("/")[-1]
-    return wikilinks.WIKILINK_RE.sub(repl, content)
+
+    kept = []
+    for line in content.split("\n"):
+        if re.match(r"^\s*\[\^[^\]]+\]:", line) and any(b in line for b in bad):
+            continue                                        # a citation to a dead source → drop the footnote
+        kept.append(line)
+    out = wikilinks.WIKILINK_RE.sub(repl, "\n".join(kept))
+    defined = set(re.findall(r"(?m)^\s*\[\^([^\]]+)\]:", out))
+    # Strip inline footnote markers whose definition we just removed.
+    return re.sub(r"\[\^([^\]]+)\]", lambda m: m.group(0) if m.group(1) in defined else "", out)
 
 
 def write_one(conn, art: dict, instructions: str | None = None,
@@ -486,6 +498,27 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     if bad:
         revised = _neutralize_links(revised, set(bad))
     v = wiki_guides.validate_structure(article_title, revised)
+    # One self-critique/revise pass against the lint (mirrors write_one) — so a structural
+    # slip (e.g. a deletion-purge that dropped a required section) gets a chance to recover
+    # instead of silently no-op'ing the whole update.
+    if (v["errors"] or v["warnings"]) and not v["stub"]:
+        issues = "\n".join(f"- {x}" for x in (v["errors"] + v["warnings"]))
+        rprompt = (prompts.get("actions.wiki_revise", "")
+                   .replace("{issues}", issues).replace("{general_guide}", wiki_guides.guide_text(None))
+                   .replace("{domain_guide}", wiki_guides.guide_text(domain)).replace("{domain}", domain)
+                   .replace("{known_titles}", known_block).replace("{draft}", revised))
+        try:
+            r2, _ = _extract_maintain(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600)))
+            r2 = r2.strip()
+            b2 = _bad_links(conn, r2, allowed)
+            if b2:
+                r2 = _neutralize_links(r2, set(b2))
+            v2 = wiki_guides.validate_structure(article_title, r2)
+            if r2 and len(v2["errors"]) <= len(v["errors"]):
+                revised, v = r2, v2
+        except Exception as exc:  # noqa: BLE001
+            log.info("wiki_maintain revise failed for %s: %s", article_title, exc)
     open_ids = {it["id"] for it in open_items}
     resolved = [{"id": int(r["id"]), "how": str(r.get("how") or "")}
                 for r in (payload.get("resolved") or [])
@@ -516,6 +549,9 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
     notes. Records a todo (the worklist for an approved external fill) and returns counts.
     Forward-looking: the GROUNDING rule keeps new articles honest; this audits what's there."""
     from . import article_talk
+    # Reclassify any flags left as 'todo' by an earlier build so they stop driving maintenance.
+    conn.execute("UPDATE article_talk SET kind='note' WHERE kind='todo' AND resolved_at IS NULL "
+                 "AND body LIKE 'External reference needed%'")
     rows = conn.execute(
         "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
         "AND title LIKE 'kb/Reference/%'").fetchall()
@@ -531,7 +567,7 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
             continue                                        # a stub is fine — that's the goal
         slen = _cited_source_len(conn, body)
         if slen == 0 or blen / slen > ratio:
-            article_talk.record(conn, r["title"], [{"kind": "todo",
+            article_talk.record(conn, r["title"], [{"kind": "note",
                 "body": "External reference needed (Grokipedia) — the general content here isn't "
                         "grounded in your notes; awaiting an approved external fill."}], author="ai")
             flagged += 1
@@ -555,7 +591,12 @@ def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     if changed:
         notes_svc.upsert_note(conn, out["title"], out["content_md"], kind="kb", version_note=version_note)
     for r in out["resolved"]:
-        article_talk.resolve_with(conn, r["id"], r["how"])
+        # If the model claimed an item resolved but the article didn't actually change, mark
+        # it so the log is honest (it's auditable / reopenable) rather than looking like work.
+        how = r["how"] or ""
+        if not changed:
+            how = ("(no edit needed) " + how).strip()
+        article_talk.resolve_with(conn, r["id"], how)
     if out["new"]:
         article_talk.record(conn, out["title"], out["new"], author="ai")
     return changed
@@ -603,13 +644,17 @@ def _articles_for_note_entities(conn, note_id: int) -> set[str]:
 _WATERMARK = "kb_incremental:since"
 
 
-def update_batch(conn, limit: int = 40, new_subject_min: int = 2) -> dict:
+def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: int = 25) -> dict:
     """Incremental update: flow notes changed since the last pass into the EXISTING KB.
     Routes each change to its articles (cite-based for edits/deletes ∪ entity-based for new
     facts), refreshes each affected article once, nudges a Review card for brand-new
     subjects that have no article yet, and advances the watermark. Additive + reconciling;
     the full rebuild remains the source of truth. Assumes changed notes are already
-    analyzed + the entity index rebuilt (the recipe does that first)."""
+    analyzed + the entity index rebuilt (the recipe does that first).
+
+    Watermark discipline: it advances only over the LEADING run of changes whose every
+    target article succeeded — a failed (or deferred-by-cap) article holds the watermark at
+    the prior change, so nothing is silently skipped; the next run retries from there."""
     from ..db import get_meta, set_meta
     since = get_meta(_WATERMARK)
     if since is None:
@@ -631,12 +676,15 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2) -> dict:
         return {"changes": 0, "articles": 0, "changed": 0, "resolved": 0, "new_subjects": 0}
 
     # Route each change → affected articles, collecting new sources + removed (deleted) titles.
+    # Keep per-change targets so we can hold the watermark precisely on any failure.
     affected: dict[str, dict] = {}
+    change_targets: list[tuple] = []                         # (changed_at, {titles})  in order
     orphans: list[dict] = []
     for ch in changes:
         targets = _articles_citing(conn, ch["id"])
         if not ch["deleted"]:
             targets |= _articles_for_note_entities(conn, ch["id"])
+        change_targets.append((ch["changed_at"], targets))
         if not targets:
             if not ch["deleted"]:
                 orphans.append(dict(ch))                     # a new/edited subject with no article
@@ -648,13 +696,21 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2) -> dict:
             else:
                 slot["new"].add(ch["id"])
 
+    # Cap the LLM fan-out: refresh at most max_articles this run; the rest are "deferred"
+    # and (like failures) hold the watermark so they're picked up next run.
+    items = list(affected.items())
+    deferred = {t for t, _ in items[int(max_articles):]}
+    items = items[:int(max_articles)]
+
     known = _known_titles(conn)
     changed = resolved = failed = 0
-    for title, slot in affected.items():
+    bad_articles = set(deferred)
+    for title, slot in items:
         out = maintain_one(conn, title, known,
                            extra_source_ids=list(slot["new"]), removed_titles=list(slot["removed"]))
         if not out["ok"]:
             failed += 1
+            bad_articles.add(title)
             continue
         changed += 1 if _apply_maintain(conn, out, "incremental update") else 0
         resolved += len(out["resolved"])
@@ -662,10 +718,17 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2) -> dict:
     # Nudge: brand-new subjects with no article yet (creation is deferred to the full rebuild).
     nudged = _nudge_new_subjects(conn, orphans, new_subject_min)
 
-    set_meta(conn, _WATERMARK, changes[-1]["changed_at"])    # advance past everything processed
+    # Advance over the leading run of changes whose targets all succeeded; stop at the first
+    # change that touched a failed/deferred article so it (and everything after) is retried.
+    new_wm = since
+    for changed_at, targets in change_targets:
+        if targets & bad_articles:
+            break
+        new_wm = changed_at
+    set_meta(conn, _WATERMARK, new_wm)
     conn.commit()
-    return {"changes": len(changes), "articles": len(affected), "changed": changed,
-            "resolved": resolved, "failed": failed, "new_subjects": nudged}
+    return {"changes": len(changes), "articles": len(items), "changed": changed,
+            "resolved": resolved, "failed": failed, "deferred": len(deferred), "new_subjects": nudged}
 
 
 def _nudge_new_subjects(conn, orphans: list[dict], min_notes: int) -> int:
@@ -694,7 +757,9 @@ def _nudge_new_subjects(conn, orphans: list[dict], min_notes: int) -> int:
 
 
 def _now(conn) -> str:
-    return conn.execute("SELECT datetime('now') AS n").fetchone()["n"]
+    # Match the notes table's timestamp format (millisecond precision) so watermark
+    # comparisons against updated_at/deleted_at are exact, not off-by-a-fraction.
+    return conn.execute("SELECT strftime('%Y-%m-%d %H:%M:%f','now') AS n").fetchone()["n"]
 
 
 def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:

@@ -240,6 +240,9 @@ def _p_review_open_talk(ctx, limit=20):
             (r["title"],)).fetchone()
         if not note:
             continue
+        if conn.execute("SELECT 1 FROM review_items WHERE link_slug=? AND status='pending'",
+                        (note["slug"],)).fetchone():
+            continue                                        # already an open card for this article — don't re-spam
         leaf = r["title"].split("/")[-1]
         reviews_svc.create_review_item(
             conn, ctx.workflow_id, title=f"Review: {leaf}",
@@ -258,6 +261,8 @@ def _p_write_kb_index(ctx, articles, valid):
     from . import notes as ns
     saved = {str(d.get("title", "")).lower() for d in (valid or [])}
     kept = [a for a in (articles or []) if str(a.get("title", "")).lower() in saved]
+    if not kept:
+        return {"articles": 0, "skipped": "no saved articles — kept the existing index"}
     ns.upsert_note(ctx.conn, "kb/_index", wiki_build.build_index_md(kept), kind="kb")
     ctx.conn.commit()
     return {"articles": len(kept)}

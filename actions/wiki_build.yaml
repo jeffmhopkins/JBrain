@@ -86,7 +86,8 @@ steps:
   - id: deadlinks
     do: flag_dead_links
   # 6e. Flag Reference articles padded with general "common knowledge" instead of your notes.
-  - do: flag_ungrounded_reference
+  - id: grounding
+    do: flag_ungrounded_reference
   # 6f. Reset the incremental-update watermark — this build just covered all history.
   - do: seed_kb_watermark
 
@@ -103,5 +104,11 @@ steps:
     with:
       title: "Some articles need a look"
       message: "{{ built.bad }} article(s) failed structure checks and were NOT saved. Reasons: {{ built.report }}"
+  - do: create_review
+    when: "{{ config.review != false and grounding.flagged }}"
+    with:
+      title: "Reference needs grounding"
+      message: "{{ grounding.flagged }} Reference article(s) lean on general knowledge not in your notes — candidates for an approved external (Grokipedia) fill."
+      link_title: "kb/_index"
   - do: review_open_talk
     when: "{{ config.review != false }}"

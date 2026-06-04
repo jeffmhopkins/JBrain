@@ -359,6 +359,38 @@ def flag_dead_links(conn) -> dict:
     return {"dead_links": len(items), "articles": len(by_src), "fixed": fixed}
 
 
+def link_owner(conn) -> dict:
+    """Connect the default person (the note-taker / 'me') to their People article, so the
+    owner's page isn't an orphan. Matches the article leaf first against the person's real
+    name/aliases, then against the generic placeholders the writer uses when the default
+    person is unnamed ('Owner', 'Me'). Never guesses — returns linked:None rather than
+    risk attaching 'me' to a family member's page."""
+    from . import people
+    o = people.owner(conn)
+    if not o:
+        return {"linked": None}
+    name = (o["name"] or "").strip().lower()
+    aliases = {a.strip().lower() for a in (o["aliases"] or "").split(",") if a.strip()}
+    strong = ({name} if name and name != "me" else set()) | aliases
+    weak = {"owner", "me", "the owner"} | ({name} if name else set())
+    rows = [dict(r) for r in conn.execute(
+        "SELECT slug, title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "AND title LIKE 'kb/People/%'").fetchall()]
+
+    def find(cands):
+        for r in rows:
+            if r["title"].split("/")[-1].strip().lower() in cands:
+                return r
+        return None
+
+    target = (find(strong) if strong else None) or find(weak)
+    if not target:
+        return {"linked": None}
+    conn.execute("UPDATE people SET note_slug=? WHERE id=?", (target["slug"], o["id"]))
+    conn.commit()
+    return {"linked": target["title"], "person": o["name"]}
+
+
 def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:
     """Write every article; split valid (saved by the recipe) vs quarantined (failed
     the structure lint — surfaced, not saved). Mirrors validate_citations' shape.

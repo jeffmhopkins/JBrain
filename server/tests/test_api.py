@@ -860,6 +860,28 @@ def test_write_one_never_saves_dead_link(client, monkeypatch):
     assert any(t["kind"] == "todo" and "Ghost" in t["body"] for t in out["talk"])
 
 
+def test_link_owner_to_people_article(client):
+    """The build links the default person to their People article — by real name when set,
+    and by the generic 'Owner' placeholder when the default person is still unnamed."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+
+    ns.upsert_note(conn, "kb/People/Owner", "# Owner\nThe author of this KB.", kind="kb")
+    conn.commit()
+    res = wiki_build.link_owner(conn)
+    assert res["linked"] == "kb/People/Owner"
+    slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Owner'").fetchone()["slug"]
+    assert conn.execute("SELECT note_slug FROM people WHERE is_default=1").fetchone()["note_slug"] == slug
+
+    conn.execute("UPDATE people SET name='Jeff Hopkins' WHERE is_default=1")
+    ns.upsert_note(conn, "kb/People/Jeff Hopkins", "# Jeff Hopkins\nThe owner.", kind="kb")
+    conn.commit()
+    res = wiki_build.link_owner(conn)
+    assert res["linked"] == "kb/People/Jeff Hopkins"          # real name preferred over placeholder
+
+
 def test_disambig_pages_reset_and_scanned(client):
     """Disambiguation pages are derived build artifacts: reset wipes them (unlike the
     static guides), and their cross-links ARE scanned for dead links."""

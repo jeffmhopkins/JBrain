@@ -189,6 +189,12 @@ def _p_flag_dead_links(ctx):
     return wiki_build.flag_dead_links(ctx.conn)
 
 
+def _p_link_owner(ctx):
+    """Link the default person to their freshly-written People article."""
+    from . import wiki_build
+    return wiki_build.link_owner(ctx.conn)
+
+
 def _p_write_kb_index(ctx, articles, valid):
     """(Re)write the protected kb/_index map from the articles that were actually SAVED, so
     it never links to a quarantined (unsaved) article — the one dead-link source the
@@ -1017,6 +1023,7 @@ _PRIMITIVES = {
     "write_disambiguation": _p_write_disambiguation,
     "record_talk": _p_record_talk,
     "flag_dead_links": _p_flag_dead_links,
+    "link_owner": _p_link_owner,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
@@ -1112,6 +1119,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                                {"name": "entries", "type": "list"}], "output": "dict"},
     "flag_dead_links": {"summary": "Flag dangling kb cross-links as todos on each article's talk.",
                         "inputs": [], "output": "dict"},
+    "link_owner": {"summary": "Link the default person to their People article.",
+                   "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",
                        "inputs": [{"name": "articles", "type": "list", "required": True},
                                   {"name": "valid", "type": "list", "required": True}], "output": "dict"},

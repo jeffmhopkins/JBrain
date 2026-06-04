@@ -24,7 +24,6 @@ export default function TalkPanel({ slug }: { slug: string }) {
     await post(`/api/notes/${slug}/talk`, { kind, body });
     setBody(""); load();
   }
-  async function resolve(id: number) { await post(`/api/notes/${slug}/talk/${id}/resolve`, {}); load(); }
 
   const open = items.filter((t) => !t.resolved_at);
   const done = items.filter((t) => t.resolved_at);
@@ -33,14 +32,15 @@ export default function TalkPanel({ slug }: { slug: string }) {
     <div style={{ marginTop: 20 }}>
       <h3 style={{ marginBottom: 4 }}>AI talk</h3>
       <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
-        Decisions, conflicts &amp; questions the maintenance pass reads. Add a directive to steer it.
+        The AI's reasoning for this article. Open items are worked through the Review inbox and
+        the maintenance pass — they clear when the issue is actually handled, not by a click.
+        Add a directive to steer the next pass.
       </p>
 
       {open.map((t) => (
         <div key={t.id} className="talk-item">
           <span title={t.kind}>{KIND_ICON[t.kind] || "•"}</span>
           <span style={{ flex: 1 }}>{t.body}{t.author === "user" && <em className="muted"> — you</em>}</span>
-          <button className="ghost talk-resolve" title="Resolve" onClick={() => resolve(t.id)}>✓</button>
         </div>
       ))}
       {open.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No open items.</p>}

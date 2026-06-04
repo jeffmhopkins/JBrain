@@ -195,6 +195,35 @@ def _p_link_owner(ctx):
     return wiki_build.link_owner(ctx.conn)
 
 
+def _p_review_open_talk(ctx, limit=20):
+    """Open a review 'session' from the build: post a Review card for each article that
+    has unresolved talk items needing a human (conflict / question / todo / directive), so
+    they're worked through the Review inbox rather than ticked off in the talk panel."""
+    from . import reviews as reviews_svc
+    conn = ctx.conn
+    rows = conn.execute(
+        "SELECT t.article_title AS title, COUNT(*) AS c FROM article_talk t "
+        "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive') "
+        "GROUP BY t.article_title ORDER BY c DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    posted = 0
+    for r in rows:
+        note = conn.execute(
+            "SELECT slug FROM notes WHERE title=? AND kind='kb' AND deleted_at IS NULL",
+            (r["title"],)).fetchone()
+        if not note:
+            continue
+        leaf = r["title"].split("/")[-1]
+        reviews_svc.create_review_item(
+            conn, ctx.workflow_id, title=f"Review: {leaf}",
+            message=f"{r['c']} open item(s) in this article's AI talk need a look.",
+            link_slug=note["slug"])
+        posted += 1
+    conn.commit()
+    return {"cards": posted}
+
+
 def _p_write_kb_index(ctx, articles, valid):
     """(Re)write the protected kb/_index map from the articles that were actually SAVED, so
     it never links to a quarantined (unsaved) article — the one dead-link source the
@@ -1024,6 +1053,7 @@ _PRIMITIVES = {
     "record_talk": _p_record_talk,
     "flag_dead_links": _p_flag_dead_links,
     "link_owner": _p_link_owner,
+    "review_open_talk": _p_review_open_talk,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
@@ -1121,6 +1151,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
+    "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",
+                         "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",
                        "inputs": [{"name": "articles", "type": "list", "required": True},
                                   {"name": "valid", "type": "list", "required": True}], "output": "dict"},

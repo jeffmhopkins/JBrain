@@ -86,7 +86,8 @@ steps:
   - id: deadlinks
     do: flag_dead_links
 
-  # 7. Reviews.
+  # 7. Reviews — summary card, quarantine card, then open a review SESSION: one card per
+  #    article with unresolved talk items (conflicts/questions/directives) to work through.
   - do: create_review
     when: "{{ config.review != false }}"
     with:
@@ -98,3 +99,5 @@ steps:
     with:
       title: "Some articles need a look"
       message: "{{ built.bad }} article(s) failed structure checks and were NOT saved. Reasons: {{ built.report }}"
+  - do: review_open_talk
+    when: "{{ config.review != false }}"

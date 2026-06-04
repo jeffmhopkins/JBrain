@@ -34,10 +34,11 @@ def add(conn, article_title: str, kind: str, body: str, author: str = "ai") -> i
 
 
 def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
-    """Add a batch of {kind, body} entries, skipping ones that duplicate an existing
-    OPEN entry (so re-runs don't pile up the same conflict). Returns how many were added."""
+    """Add a batch of {kind, body} entries, skipping ones already present for this article
+    (open OR resolved), so re-runs don't pile up the same conflict/log. Returns how many
+    were added."""
     existing = {(r["kind"], r["body"]) for r in conn.execute(
-        "SELECT kind, body FROM article_talk WHERE article_title=? AND resolved_at IS NULL",
+        "SELECT kind, body FROM article_talk WHERE article_title=?",
         (article_title,)).fetchall()}
     n = 0
     for e in entries or []:

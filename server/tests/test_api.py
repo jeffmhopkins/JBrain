@@ -828,12 +828,14 @@ def test_dead_link_detection_and_flagging(client):
     assert res["count"] >= 1 and any(i["target_title"] == "kb/People/Ghost" for i in res["items"])
 
     wiki_build.flag_dead_links(conn)
-    todos = [t for t in article_talk.open_for(conn, "kb/People/Allan") if t["kind"] == "todo"]
-    assert any("kb/People/Ghost" in t["body"] for t in todos)
     # The dead link is stripped from the body (kept as plain text); the real link stays.
     body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
     assert "[[kb/People/Ghost]]" not in body and "Ghost" in body
     assert "[[kb/People/Bob]]" in body
+    # The fix is LOGGED (resolved), never left as an open item to tick off.
+    assert not any("Ghost" in t["body"] for t in article_talk.open_for(conn, "kb/People/Allan"))
+    logged = [t for t in article_talk.list_for(conn, "kb/People/Allan") if t["resolved_at"]]
+    assert any("kb/People/Ghost" in t["body"] for t in logged)
 
 
 def test_write_one_never_saves_dead_link(client, monkeypatch):
@@ -857,7 +859,7 @@ def test_write_one_never_saves_dead_link(client, monkeypatch):
     assert "[[kb/People/Ghost" not in out["content_md"]        # dead link gone
     assert "his cousin" in out["content_md"]                   # display text preserved as plain text
     assert "[[kb/People/Bob]]" in out["content_md"]            # the real link kept
-    assert any(t["kind"] == "todo" and "Ghost" in t["body"] for t in out["talk"])
+    assert any("Ghost" in t["body"] for t in out["talk"])      # the fix is logged (not an open todo)
 
 
 def test_link_owner_to_people_article(client):
@@ -931,7 +933,8 @@ def test_owner_first_person(client, monkeypatch):
 
 def test_article_talk(client, monkeypatch):
     """Writer-emitted talk is parsed out of the article + recorded; the slug endpoints
-    list/add/resolve; open items are what maintenance will read."""
+    list/add work. There is NO user 'resolve' — open items clear via the Review flow /
+    maintenance, not a click — so the conflict + the user's directive both stay open."""
     from app.db import get_conn
     from app.services import wiki_build, article_talk, llm
     from app.services import notes as ns
@@ -954,11 +957,29 @@ def test_article_talk(client, monkeypatch):
     talk = client.get(f"/api/notes/{slug}/talk").json()
     assert any(t["kind"] == "conflict" for t in talk)
 
-    add = client.post(f"/api/notes/{slug}/talk", json={"kind": "directive", "body": "Keep her maiden name out."}).json()
-    assert client.post(f"/api/notes/{slug}/talk/{add['id']}/resolve").json()["ok"]
-    after = client.get(f"/api/notes/{slug}/talk").json()
-    assert next(t for t in after if t["id"] == add["id"])["resolved_at"]      # resolved
-    assert len(article_talk.open_for(conn, "kb/People/Allan")) == 1            # the conflict remains open
+    client.post(f"/api/notes/{slug}/talk", json={"kind": "directive", "body": "Keep her maiden name out."})
+    # No resolve endpoint anymore — both the conflict and the directive remain open.
+    assert client.post(f"/api/notes/{slug}/talk/1/resolve").status_code in (404, 405)
+    assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
+
+
+def test_review_open_talk_opens_session(client):
+    """The build's review step posts a Review card per article with unresolved talk items,
+    so they're worked through the inbox instead of ticked off in the panel."""
+    from app.db import get_conn
+    from app.services import article_talk, pipeline
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Allan", "# Allan", kind="kb")
+    article_talk.add(conn, "kb/People/Allan", "conflict", "Sources disagree on the move year.")
+    conn.commit()
+
+    res = pipeline._PRIMITIVES["review_open_talk"](pipeline._Ctx(conn, None, None))
+    assert res["cards"] >= 1
+    slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Allan'").fetchone()["slug"]
+    card = conn.execute(
+        "SELECT title, link_slug FROM review_items WHERE link_slug=? AND status='pending'", (slug,)).fetchone()
+    assert card and "Allan" in card["title"]
 
 
 def test_entity_aliases_and_disambiguation(client):

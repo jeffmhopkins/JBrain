@@ -305,7 +305,7 @@ def write_one(conn, art: dict, instructions: str | None = None,
     # article — unwrap it to plain text and note it on the article's talk.
     if bad:
         draft = _neutralize_links(draft, set(bad))
-        talk = list(talk) + [{"kind": "todo",
+        talk = list(talk) + [{"kind": "note",
                               "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
                              for t in bad]
 
@@ -330,12 +330,12 @@ def dead_links(conn) -> list[dict]:
 
 
 def flag_dead_links(conn) -> dict:
-    """Neutralize + flag dead cross-links in saved articles. Runs AFTER every article is
-    saved, so it has ground truth: any [[link]] whose target still doesn't exist — e.g. the
-    target article was planned but quarantined — is unwrapped to plain text and recorded as
-    a todo on the source article's talk. This is the final guarantee that no dead link
-    survives in a published article (the write-time backstop can't catch a link to a
-    target that was legitimately planned but then failed to save)."""
+    """Neutralize dead cross-links in saved articles and LOG the fix. Runs after every
+    article is saved, so it has ground truth: any [[link]] whose target still doesn't
+    exist (e.g. the target article was planned but quarantined) is unwrapped to plain text
+    and recorded as a RESOLVED note on the article's talk — the AI handled it, so it's a
+    log entry, never an open item awaiting a click. Also closes any dead-link items left
+    open by an earlier build/model."""
     from . import article_talk
     from . import notes as notes_svc
     items = dead_links(conn)
@@ -353,8 +353,13 @@ def flag_dead_links(conn) -> dict:
                 notes_svc.upsert_note(conn, src, new, kind="kb", version_note="unlinked dead references")
                 fixed += 1
         article_talk.record(conn, src, [
-            {"kind": "todo", "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
+            {"kind": "note", "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
             for t in sorted(targets)], author="ai")
+    # Dead-link entries are completed actions, not open work — resolve them (and any left
+    # open by older builds) so they live in the log, not the "needs attention" list.
+    conn.execute(
+        "UPDATE article_talk SET resolved_at=datetime('now') WHERE resolved_at IS NULL "
+        "AND (body LIKE 'Dead link%' OR body LIKE 'Unlinked dead reference%')")
     conn.commit()
     return {"dead_links": len(items), "articles": len(by_src), "fixed": fixed}
 

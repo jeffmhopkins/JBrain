@@ -138,22 +138,14 @@ def get_talk(slug: str):
 
 @router.post("/{slug}/talk")
 def add_talk(slug: str, body: TalkIn):
-    """Add an owner note/directive/question to an article's talk."""
+    """Add an owner note/directive/question to an article's talk. (There is intentionally
+    no user 'resolve' — open items are addressed through the Review flow / maintenance pass
+    when the underlying issue is actually handled, not by ticking a box.)"""
     conn = get_conn()
     from ..services import article_talk
     tid = article_talk.add(conn, _note_title(conn, slug), body.kind, body.body, author="user")
     conn.commit()
     return {"id": tid}
-
-
-@router.post("/{slug}/talk/{talk_id}/resolve")
-def resolve_talk(slug: str, talk_id: int):
-    conn = get_conn()
-    from ..services import article_talk
-    _note_title(conn, slug)  # 404 if the note's gone
-    article_talk.resolve(conn, talk_id)
-    conn.commit()
-    return {"ok": True}
 
 
 @router.get("/kb/dead-links")

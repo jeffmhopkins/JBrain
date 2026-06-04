@@ -1,0 +1,19 @@
+# Fold one kb article INTO another (collapse a near-duplicate). Unions their source notes,
+# rewrites the merged article, soft-deletes the source, and rewrites inbound links. Owner-
+# triggered. Requires an Anthropic key.
+type: wiki_merge_articles
+category: Knowledge base
+config:
+  - { key: source, label: "Article to fold in (kb/…)", type: text }
+  - { key: into, label: "Merge INTO (kb/…)", type: text }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: mg
+    do: merge_articles
+    with: { sources: ["{{ config.source }}"], into: "{{ config.into }}" }
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ 'Articles merged' if mg.ok else 'Merge failed' }}"
+      message: "{{ (config.source + ' → ' + config.into) if mg.ok else mg.reason }}"
+      link_title: "{{ config.into }}"

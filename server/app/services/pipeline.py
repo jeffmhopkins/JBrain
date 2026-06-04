@@ -207,6 +207,24 @@ def _p_create_article(ctx, subject=None, etype=None, min_notes=2):
     return wiki_build.create_article(ctx.conn, subject, etype, int(min_notes))
 
 
+def _p_recategorize_article(ctx, title=None, new_title=None):
+    """Move/rename a kb article (folds it into a subcategory; rewrites inbound links)."""
+    from . import wiki_build
+    return wiki_build.recategorize_article(ctx.conn, title, new_title)
+
+
+def _p_merge_articles(ctx, sources=None, into=None):
+    """Fold kb articles INTO another (union sources, rewrite inbound links, hysteresis)."""
+    from . import wiki_build
+    return wiki_build.merge_articles(ctx.conn, sources or [], into)
+
+
+def _p_refresh_index(ctx):
+    """Rebuild kb/_index from live articles (no LLM)."""
+    from . import wiki_build
+    return {"articles": wiki_build.refresh_index(ctx.conn)}
+
+
 def _p_taxonomy_health(ctx):
     """Read-only KB taxonomy-drift report (orphans, un-foldered Reference); cards if overdue."""
     from . import wiki_build
@@ -1123,6 +1141,9 @@ _PRIMITIVES = {
     "check_needed_links": _p_check_needed_links,
     "create_article": _p_create_article,
     "taxonomy_health": _p_taxonomy_health,
+    "recategorize_article": _p_recategorize_article,
+    "merge_articles": _p_merge_articles,
+    "refresh_index": _p_refresh_index,
     "link_owner": _p_link_owner,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
@@ -1236,6 +1257,12 @@ _PRIMITIVE_META: dict[str, dict] = {
                         "inputs": [{"name": "subject", "type": "str"}, {"name": "etype", "type": "str"},
                                    {"name": "min_notes", "type": "int"}], "output": "dict"},
     "taxonomy_health": {"summary": "Read-only KB taxonomy-drift report (orphans, un-foldered Reference).",
+                        "inputs": [], "output": "dict"},
+    "recategorize_article": {"summary": "Move/rename a kb article (rewrites inbound links + index).",
+                        "inputs": [{"name": "title", "type": "str"}, {"name": "new_title", "type": "str"}], "output": "dict"},
+    "merge_articles": {"summary": "Fold kb articles into another (union sources, rewrite inbound links).",
+                        "inputs": [{"name": "sources", "type": "list"}, {"name": "into", "type": "str"}], "output": "dict"},
+    "refresh_index": {"summary": "Rebuild kb/_index from live articles (no LLM).",
                         "inputs": [], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},

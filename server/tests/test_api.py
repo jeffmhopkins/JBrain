@@ -1458,6 +1458,47 @@ def test_create_article_dedups_and_gates_thin_subjects(client, monkeypatch):
     conn.commit(); entity_index.rebuild(conn)
     res3 = wiki_build.create_article(conn, "Quokka", etype="thing", min_notes=2)
     assert not res3["ok"] and "note" in res3["reason"]                   # one note → not spawned
+def test_recategorize_article_moves_and_rewrites_inbound_links(client):
+    """Recategorize (move/fold) rewrites inbound [[old]]→[[new]] links rather than letting
+    the dead-link sweep unwrap them."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Doc", "# Doc\nA physician.", kind="kb")
+    ns.upsert_note(conn, "kb/People/Pat", "# Pat\nSees [[kb/People/Doc]] weekly.", kind="kb")
+    conn.commit()
+    res = wiki_build.recategorize_article(conn, "kb/People/Doc", "kb/People/HealthFirst/Doc")
+    assert res["ok"], res
+    assert conn.execute("SELECT 1 FROM notes WHERE title='kb/People/HealthFirst/Doc' AND deleted_at IS NULL").fetchone()
+    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/People/Doc' AND deleted_at IS NULL").fetchone()
+    pat = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Pat'").fetchone()["content_md"]
+    assert "[[kb/People/HealthFirst/Doc]]" in pat            # inbound link rewritten, not unwrapped
+
+
+def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
+    """Merge unions sources into one article, soft-deletes the others, and rewrites inbound
+    [[source]]→[[into]] links (never unwraps them)."""
+    from app.db import get_conn
+    from app.services import wiki_build, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    s1 = ns.upsert_note(conn, "notes/g1", "Grover is a cat.")
+    s2 = ns.upsert_note(conn, "notes/g2", "Grover the cat likes tuna.")
+    ns.upsert_note(conn, "kb/Things/Grover", "# Grover\nA cat.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n", kind="kb")
+    ns.upsert_note(conn, "kb/Things/GroverCat", "# Grover the cat\nLikes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g2]] — 2026-06-01\n", kind="kb")
+    ns.upsert_note(conn, "kb/People/Owner", "# Owner\nFeeds [[kb/Things/GroverCat]].", kind="kb")
+    conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+        "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
+    res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
+    assert res["ok"], res
+    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/Things/GroverCat' AND deleted_at IS NULL").fetchone()
+    owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
+    assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
+
+
 
 def test_taxonomy_health_flags_orphans_and_flat_reference(client):
     """The read-only report flags un-foldered Reference articles and orphans (no inbound link)."""

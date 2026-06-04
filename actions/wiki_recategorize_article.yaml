@@ -1,0 +1,18 @@
+# Move/rename ONE kb article (e.g. fold it under a subcategory). Rewrites inbound links
+# and refreshes the index. Owner-triggered.
+type: wiki_recategorize_article
+category: Knowledge base
+config:
+  - { key: title, label: "Current title (kb/…)", type: text }
+  - { key: new_title, label: "New title (kb/…)", type: text }
+  - { key: review, label: Post review card, type: review, default: true }
+steps:
+  - id: rc
+    do: recategorize_article
+    with: { title: "{{ config.title }}", new_title: "{{ config.new_title }}" }
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ 'Article moved' if rc.ok else 'Move failed' }}"
+      message: "{{ (config.title + ' → ' + config.new_title) if rc.ok else rc.reason }}"
+      link_title: "{{ config.new_title if rc.ok else config.title }}"

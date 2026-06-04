@@ -861,6 +861,119 @@ def create_article(conn, subject: str, etype: str | None = None, min_notes: int 
         kb_lock_release(conn)
 
 
+def refresh_index(conn) -> int:
+    """Rebuild kb/_index from the live (non-protected) articles. No LLM. Run after any
+    structural op (create/merge/rename) so the org map can't go stale or dangle."""
+    from . import notes as notes_svc
+    arts = [{"title": r["title"], "domain": wiki_guides.domain_for_title(r["title"]) or "", "scope": ""}
+            for r in conn.execute(
+                r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+                r"AND title NOT LIKE 'kb/\_%' ESCAPE '\' ORDER BY title")]
+    notes_svc.upsert_note(conn, "kb/_index", build_index_md(arts), kind="kb",
+                          source="index", version_note="index refreshed")
+    return len(arts)
+
+
+def _structure_log(conn, op: str, pair_key: str) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
+    conn.execute("INSERT INTO kb_structure_log(op, pair_key, at) VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER))",
+                 (op, pair_key))
+
+
+def _structure_recent(conn, op: str, pair_key: str, k_days: int = 3) -> bool:
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
+    return conn.execute(
+        "SELECT 1 FROM kb_structure_log WHERE op=? AND pair_key=? "
+        "AND at > CAST(strftime('%s','now') AS INTEGER) - ? LIMIT 1",
+        (op, pair_key, int(k_days) * 86400)).fetchone() is not None
+
+
+def recategorize_article(conn, title: str, new_title: str) -> dict:
+    """Move/rename a kb article (e.g. fold it into a subcategory). Reuses upsert_note's
+    rename path, which rewrites inbound [[old]]→[[new]] links itself (never relies on the
+    dead-link sweep, which would unwrap them). Refreshes the index. Under the KB lock."""
+    from . import notes as notes_svc, entity_index
+    title, new_title = (title or "").strip(), (new_title or "").strip()
+    note = notes_svc.get_by_title(conn, title)
+    if not note or note["kind"] != "kb":
+        return {"ok": False, "reason": "no such kb article"}
+    if not new_title.startswith("kb/") or new_title.lower().startswith("kb/_"):
+        return {"ok": False, "reason": "new title must be a normal kb/… path"}
+    if notes_svc.get_by_title(conn, new_title):
+        return {"ok": False, "reason": "target title already exists"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "reason": "KB busy — try again shortly"}
+    try:
+        notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], kind="kb",
+                              source="recategorize", version_note=f"recategorized from {title}")
+        entity_index.rebuild(conn)
+        flag_dead_links(conn)
+        refresh_index(conn)
+        conn.commit()
+        return {"ok": True, "from": title, "to": new_title}
+    finally:
+        kb_lock_release(conn)
+
+
+def merge_articles(conn, sources: list[str], into: str) -> dict:
+    """Fold one or more kb articles INTO another: rewrite the merged article from the union
+    of all their source notes, soft-delete the sources, and rewrite every inbound
+    [[source]]→[[into]] link (via _rename_inbound_links — NOT the dead-link sweep, which
+    would unwrap them and lose the connection). Inverse-pair hysteresis blocks merging
+    titles a recent split produced. Under the KB lock."""
+    from . import notes as notes_svc, entity_index, article_talk
+    into = (into or "").strip()
+    sources = [s.strip() for s in (sources or []) if s and s.strip() and s.strip() != into]
+    if not into or not sources:
+        return {"ok": False, "reason": "need source(s) + a distinct `into`"}
+    if _structure_recent(conn, "split", "|".join(sorted(sources))):
+        article_talk.add(conn, into, "todo",
+                         f"Merge of {sources} blocked — they were split apart recently; review by hand.")
+        return {"ok": False, "reason": "blocked by hysteresis (recently split)"}
+    by = {t: notes_svc.get_by_title(conn, t) for t in [into] + sources}
+    if not by[into] or by[into]["kind"] != "kb":
+        return {"ok": False, "reason": "`into` is not a kb article"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "reason": "KB busy — try again shortly"}
+    try:
+        ids: set[int] = set()
+        for t, n in by.items():
+            if not n:
+                continue
+            for x in wikilinks.extract_links(n["content_md"] or ""):
+                if not x.lower().startswith("kb/"):
+                    r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                                     (x,)).fetchone()
+                    if r:
+                        ids.add(int(r["id"]))
+            ids |= {int(i) for i in entity_index.note_ids_for_name(conn, t.rsplit("/", 1)[-1])}
+        out = write_one(conn, {"title": into, "domain": wiki_guides.domain_for_title(into),
+                               "scope": "", "sources": sorted(ids)}, None, known_titles=_known_titles(conn))
+        if not (out.get("ok") and out.get("content_md")):
+            conn.commit()
+            return {"ok": False, "reason": "; ".join(out.get("errors") or []) or "merged draft failed the lint"}
+        into_id = by[into]["id"]
+        notes_svc.upsert_note(conn, into, out["content_md"], note_id=into_id, kind="kb",
+                              source="merge", version_note=f"merged {', '.join(sources)}")
+        wikilinks.resolve_dangling_links(conn, into_id, into)
+        for s in sources:
+            sn = by[s]
+            if not sn:
+                continue
+            notes_svc.soft_delete(conn, sn["id"])
+            notes_svc._rename_inbound_links(conn, s, into, into_id)   # [[old]]→[[into]], never unwrap
+        if out.get("talk"):
+            article_talk.record(conn, into, out["talk"])
+        _structure_log(conn, "merge", "|".join(sorted(sources)))
+        entity_index.rebuild(conn)
+        flag_dead_links(conn)
+        refresh_index(conn)
+        conn.commit()
+        return {"ok": True, "into": into, "merged": sources}
+    finally:
+        kb_lock_release(conn)
+
+
 def _apply_maintain(conn, out: dict, version_note: str) -> bool:
     """Apply a maintain_one result: save the revision (versioned), resolve addressed items
     (recording HOW), record any new items. Returns True if the article content changed."""

@@ -81,6 +81,24 @@ def _parse_obj(text: str) -> dict:
     return {}
 
 
+def _ensure_media_transcribed(conn, note_id: int) -> None:
+    """Kick off local transcription for any audio/video attachment on this note that hasn't
+    been transcribed yet. Best-effort and idempotent (start_transcription guards re-runs); on
+    completion the transcript folds back into a re-run of this analysis."""
+    from . import audio_transcription
+    rows = conn.execute(
+        "SELECT id, mime, filename FROM attachments WHERE note_id = ? AND content_blob IS NOT NULL "
+        "AND (analysis_status IS NULL OR analysis_status IN ('', 'none'))",
+        (note_id,),
+    ).fetchall()
+    for r in rows:
+        if audio_transcription.is_transcribable(r["mime"], r["filename"]):
+            try:
+                audio_transcription.start_transcription(conn, r["id"])
+            except Exception:  # noqa: BLE001 — never let a transcription hiccup block analysis
+                pass
+
+
 def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     """(Re)compute the analysis for one note. No-ops (returns False) when the note's
     content is unchanged since the last analysis, when it's gone, or when no LLM key
@@ -91,6 +109,10 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     ).fetchone()
     if not row:
         return False
+    # Ensure audio/video is transcribed (local, no key) — BEFORE the hash check so it runs even
+    # when the text analysis is already current. The transcript lands asynchronously and then
+    # re-runs this analysis, so the gist/facts pick up what was said.
+    _ensure_media_transcribed(conn, note_id)
     # Fold in attachment content so the gist/facts/ENTITIES capture what's in the photos
     # (vision summary), audio/video (transcript), AND documents (PDF / text / office extracted
     # text) too — an image-only or document-only capture otherwise analyzes to nothing. Part of

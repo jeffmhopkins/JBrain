@@ -6338,3 +6338,48 @@ def test_signed_media_stream_forces_download_for_non_media(client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/octet-stream")   # not rendered inline
     assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_ai_analysis_kicks_off_untranscribed_media(client, monkeypatch):
+    # Running the note AI analysis starts transcription for any audio/video that hasn't been done.
+    from app.db import get_conn
+    from app.services import note_analysis as na, audio_transcription as at, llm
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "clip note", "title": "Clip"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+                 "VALUES (?,?,?,?,?,?,?)", (nid, "clip.mp4", "video/mp4", "", b"\x00ftyp", 5, "sha-v"))
+    conn.commit()
+    started = []
+    monkeypatch.setattr(at, "start_transcription", lambda conn, aid, **k: (started.append(aid) or {"status": "pending"}))
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: '{"gist":"x","facts":[],"entities":[],"domain":"Unsure","dates":[]}')
+    na.analyze(conn, nid)
+    assert len(started) == 1   # the untranscribed video was queued
+
+
+def test_transcription_completion_refreshes_note_analysis(client, monkeypatch):
+    # When a transcript lands, the note's AI analysis re-runs with the transcript folded in.
+    from app.db import get_conn
+    from app.services import audio_transcription as at, note_analysis as na, llm
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "memo", "title": "Memo"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+                       "VALUES (?,?,?,?,?,?,?) RETURNING id",
+                       (nid, "memo.m4a", "audio/mp4", "", b"\x00aud", 4, "sha-a")).fetchone()["id"]
+    conn.commit()
+    monkeypatch.setattr(at, "_transcribe", lambda raw: "Buy milk and call Colin.")
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    seen = {}
+
+    def fake_complete(messages, **k):
+        seen["prompt"] = messages[0]["content"]
+        return '{"gist":"about a memo","facts":["Buy milk"],"entities":[],"domain":"Unsure","dates":[]}'
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    at.transcribe(aid)                                   # completes → auto-refreshes analysis
+    assert "Buy milk and call Colin" in seen.get("prompt", "")   # transcript reached the analyzer
+    assert (na.get(conn, nid) or {}).get("gist", "").startswith("about a memo")

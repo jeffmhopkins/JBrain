@@ -145,11 +145,14 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
     from . import entity_index
     extra = f"\nAdditional guidance: {instructions}\n" if instructions else ""
     roster = entity_index.roster(conn) or "(none yet)"
+    saved_places = ", ".join(
+        r["name"] for r in conn.execute("SELECT name FROM places ORDER BY name").fetchall()) or "(none)"
     from . import people
     prompt = (prompts.get("actions.wiki_outline", "")
               .replace("{owner}", people.owner_name(conn))
               .replace("{survey}", _survey_text(digest))
               .replace("{roster}", roster)
+              .replace("{saved_places}", saved_places)
               .replace("{instructions}", extra))
     try:
         text = llm.complete([{"role": "user", "content": prompt}], max_tokens=4000)

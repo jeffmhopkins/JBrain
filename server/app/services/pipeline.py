@@ -274,6 +274,13 @@ def _p_link_medications(ctx, limit=200):
     return medref.link_medications(ctx.conn, int(limit))
 
 
+def _p_link_places(ctx):
+    """Reconcile saved geofences with their kb/Places articles — add a location box (coords +
+    address + loc/ link) + a back-link on the loc/ note. Deterministic, link-only."""
+    from . import places
+    return places.link_places(ctx.conn)
+
+
 def _p_tidy_talk(ctx):
     """Demote non-actionable 'stub / needs-more-notes / revisit-later' talk todos to inert
     notes and cap clutter — stops them nagging maintenance + Review cards, and retires the
@@ -1181,6 +1188,7 @@ _PRIMITIVES = {
     "wiki_update": _p_wiki_update,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
+    "link_places": _p_link_places,
     "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
@@ -1314,6 +1322,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "link_places": {"summary": "Reconcile saved geofences with their kb/Places articles (location box + cross-link).",
+                    "inputs": [], "output": "dict"},
     "tidy_talk": {"summary": "Demote non-actionable stub/needs-more-notes talk todos to notes + cap clutter.",
                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",

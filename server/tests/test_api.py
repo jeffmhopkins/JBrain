@@ -1505,6 +1505,39 @@ def test_talk_dedup_cap_and_demote(client):
     assert kind_of("almost no information") == "note"         # stub question demoted
 
 
+def test_places_reconcile_with_kb(client, monkeypatch):
+    """A saved geofence reconciles with its kb/Places article: matched by name AND by the
+    coordinates of a divergently-named mention; link_places adds a location box + cross-link."""
+    import json
+    from app.db import get_conn
+    from app.services import places as places_svc, geocode, entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Home', 28.40, -80.78, 150)")
+    note_slug = ns.upsert_note(conn, "loc/Home", "# Home\nWhere I live.", kind="place")
+    loc_slug = conn.execute("SELECT slug FROM notes WHERE id=?", (note_slug,)).fetchone()["slug"]
+    conn.execute("UPDATE places SET note_slug=? WHERE name='Home'", (loc_slug,))
+    ns.upsert_note(conn, "kb/Places/Home", "# Home\nWhere the family lives.", kind="kb")
+    # A note that calls the place "the house" and was captured inside the Home geofence.
+    nid = ns.upsert_note(conn, "notes/x", "dinner at the house")
+    conn.execute("UPDATE notes SET lat=28.4001, lon=-80.7802 WHERE id=?", (nid,))
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "place", "name": "the house"}])))
+    conn.commit()
+    ei.rebuild(conn)
+
+    assert places_svc.geofence_for(conn, "Home")["name"] == "Home"            # name match
+    assert places_svc.geofence_for(conn, "the house")["name"] == "Home"       # coordinate match
+
+    monkeypatch.setattr(geocode, "reverse", lambda c, lat, lon: {"address": "123 Main St, Cocoa FL"})
+    assert places_svc.link_places(conn)["linked"] == 1
+    art = conn.execute("SELECT content_md FROM notes WHERE title='kb/Places/Home'").fetchone()["content_md"]
+    assert "[[loc/Home]]" in art and "123 Main St" in art                     # location box on the article
+    loc = conn.execute("SELECT content_md FROM notes WHERE title='loc/Home'").fetchone()["content_md"]
+    assert "[[kb/Places/Home]]" in loc                                        # back-link on the loc note
+    assert places_svc.link_places(conn)["linked"] == 0                        # idempotent
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

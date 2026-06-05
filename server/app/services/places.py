@@ -7,6 +7,7 @@ place, so every saved place shows up in the Wiki "Places" tab, not just the Map
 panel. Callers own the transaction: this never commits and raises on error so the
 caller's rollback unwinds cleanly. Returns the note slug (or None if no such place).
 """
+import json
 import re
 
 from . import notes as notes_svc
@@ -135,21 +136,65 @@ def _ensure_loc_link(conn, note_slug: str, art_title: str) -> None:
 def link_places(conn) -> dict:
     """For each kb/Places article that maps to a saved geofence, add a location box (coords +
     reverse-geocoded address + a link to its loc/ note) and a back-link on the loc/ note.
-    Deterministic, link-only, idempotent, cached. Returns {checked, linked}."""
-    from . import geocode
+    Also de-forks: when ≥2 articles map to the SAME geofence they're the same place, so record
+    a merge hint. Deterministic, link-only, idempotent, cached. Returns {checked, linked,
+    merge_hints}."""
+    from . import geocode, article_talk
     arts = conn.execute(
         "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title LIKE 'kb/Places/%'"
     ).fetchall()
     checked = linked = 0
+    by_gf: dict[int, list] = {}
     for a in arts:
         checked += 1
         gf = geofence_for(conn, a["title"].split("/")[-1])
         if not gf:
             continue
+        by_gf.setdefault(gf["id"], []).append((a["title"], gf))
         addr = geocode.reverse(conn, gf["lat"], gf["lon"]) if geocode.enabled() else None
         if _apply_box(conn, a["title"], gf, addr):
             linked += 1
         if gf["note_slug"]:
             _ensure_loc_link(conn, gf["note_slug"], a["title"])
+    # De-fork: two+ differently-named articles for one saved place → a merge hint (a logged
+    # 'restructure' item — deduped, never nags) targeting the geofence-named article.
+    merge_hints = 0
+    for lst in by_gf.values():
+        if len(lst) < 2:
+            continue
+        gf = lst[0][1]
+        titles = [t for t, _ in lst]
+        canon = next((t for t in titles
+                      if entity_index.normalize(t.split("/")[-1]) == entity_index.normalize(gf["name"])),
+                     titles[0])
+        for t in titles:
+            if t == canon:
+                continue
+            body = json.dumps({"op": "merge", "target": canon,
+                               "rationale": f"same saved place “{gf['name']}” as {canon}"})
+            article_talk.record(conn, t, [{"kind": "restructure", "body": body}], author="ai")
+            merge_hints += 1
     conn.commit()
-    return {"checked": checked, "linked": linked}
+    return {"checked": checked, "linked": linked, "merge_hints": merge_hints}
+
+
+def unsaved_places(conn) -> list[str]:
+    """kb/Places article titles with no matching saved geofence — candidates the owner could
+    'save as a place' for trail tracking. Cheap: no geocoding."""
+    return [a["title"] for a in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "AND title LIKE 'kb/Places/%' ORDER BY title").fetchall()
+        if not geofence_for(conn, a["title"].split("/")[-1])]
+
+
+def create_place(conn, name: str, lat: float, lon: float, radius_m: int = 150) -> dict:
+    """Create a saved geofence (+ its loc/ note) at coords, or return an existing place of the
+    same name. Returns {id, name, note_slug, existing}. Caller commits."""
+    name = (name or "").strip()[:80]
+    existing = conn.execute("SELECT id FROM places WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    if existing:
+        return {"id": existing["id"], "name": name, "note_slug": ensure_note(conn, existing["id"]),
+                "existing": True}
+    pid = conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES (?,?,?,?)",
+                       (name, float(lat), float(lon), max(20, min(int(radius_m), 20000)))).lastrowid
+    return {"id": pid, "name": name, "note_slug": ensure_note(conn, pid), "existing": False}

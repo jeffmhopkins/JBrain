@@ -11,6 +11,7 @@ Jinja2==3.1.6          # action-engine templating (pipeline.py): SandboxedEnviro
 croniter==3.0.3
 tzdata==2024.2
 pypdf==5.1.0
+pdfplumber==0.11.4   # geometry-aware PDF parsing (lab-result tables: map values->date columns by x)
 Pillow==10.4.0   # fastembed 0.5.1 requires pillow <11.0.0,>=10.3.0
 pywebpush==2.0.0   # Web Push (VAPID signing + RFC8291 payload encryption); pulls py-vapid, http-ece
 # Test-only deps (pytest, httpx) live in requirements-dev.txt — not in the image.

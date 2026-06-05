@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, get, getMedicalDests, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
+import { createEntry, extractLabs, get, getMedicalDests, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
@@ -320,8 +320,18 @@ export default function Chat() {
       try {
         const dest = mode === "medical" ? (curDest || undefined) : undefined;
         const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords, dest);
-        if (file) await uploadAttachment(r.slug, file, setUploadPct);
-        setEntries((xs) => [...xs, { text: text || (file ? `📎 ${file.name}` : ""), title: r.title, slug: r.slug }]);
+        let labMsg = "";
+        if (file) {
+          await uploadAttachment(r.slug, file, setUploadPct);
+          // Medical mode: if the upload was a lab PDF, extract its values into lab_results.
+          if (mode === "medical" && /\.pdf$/i.test(file.name)) {
+            try {
+              const lab = await extractLabs(r.slug);
+              if (lab.inserted || lab.updated) labMsg = ` · ${lab.inserted + lab.updated} lab results imported`;
+            } catch { /* non-fatal: the note + attachment are saved regardless */ }
+          }
+        }
+        setEntries((xs) => [...xs, { text: (text || (file ? `📎 ${file.name}` : "")) + labMsg, title: r.title, slug: r.slug }]);
       } catch (err) {
         // Don't silently lose the entry: put the text back and tell the user.
         setInput(text);

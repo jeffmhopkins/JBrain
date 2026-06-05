@@ -83,7 +83,13 @@ const capTrack = (t: Track): Track => {
 // whenever the zoom level changes.
 const epsilonForZoom = (zoom: number) => (360 / 256 / 2 ** zoom) * 1.5;
 
-const noteIcon = L.divIcon({ className: "note-pin", html: "📍", iconSize: [22, 22], iconAnchor: [11, 22], popupAnchor: [0, -20] });
+// Note pins draw on the SHARED preferCanvas renderer (one bitmap, GPU-transformed during a
+// drag) instead of one DOM node per note — DOM markers were the mobile drag-stutter cause on
+// large date ranges. Styled deliberately UNLIKE the person head dots (which are small opaque
+// white-ringed dots): a larger, translucent, magenta ring, so a note reads as a distinct
+// object by shape+size+hue, not just colour. Radius 8 keeps a usable mobile tap target
+// (≈9.5px hit area), backed by the 200 m "notes here" map-tap fallback.
+const NOTE_DOT: L.CircleMarkerOptions = { radius: 8, color: "#e91e63", weight: 3, fillColor: "#e91e63", fillOpacity: 0.22 };
 
 // Location trail over a server-proxied map (browser only talks to /api/tiles, so the
 // trail's coordinates never leak to a third-party tile host). Trail / dwell-heatmap
@@ -100,7 +106,7 @@ export default function MapPage() {
   const head = useRef<L.Layer | null>(null);
   const placeLayer = useRef<L.LayerGroup | null>(null);
   const noteLayer = useRef<L.LayerGroup | null>(null);
-  const noteMarkers = useRef<Record<string, L.Marker>>({});
+  const noteMarkers = useRef<Record<string, L.CircleMarker>>({});
   const shownSlugs = useRef<Set<string>>(new Set());
   const notesRef = useRef<LocatedNote[]>([]);
   const addingRef = useRef(false);
@@ -364,7 +370,7 @@ export default function MapPage() {
     const g = L.layerGroup();
     if (showNotes) {
       notes.forEach((n) => {
-        noteMarkers.current[n.slug] = L.marker([n.lat, n.lon], { icon: noteIcon }).bindPopup(() => notePopup(n));
+        noteMarkers.current[n.slug] = L.circleMarker([n.lat, n.lon], NOTE_DOT).bindPopup(() => notePopup(n));
       });
     }
     g.addTo(m);

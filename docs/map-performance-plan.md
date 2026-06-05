@@ -245,8 +245,13 @@ Replace the per-note `L.marker(divIcon)` with **`L.circleMarker`** on the existi
 - Keep the existing layerGroup + scrub-time reconcile + `bindPopup`/`openPopup` (circleMarker
   supports the full Layer/Popup API), so click→note, the "Save as place" popup, and the
   `?focus=<slug>` deep-link `openPopup()` all keep working unchanged.
-- Style the dot to read as a note pin (filled circle + white ring, a distinct "note" colour),
-  with a tap-friendly radius for mobile.
+- Style the dot **distinct from the person head dots** (small opaque white-ringed circles):
+  a larger translucent magenta ring (`radius 8, weight 3, #e91e63, fillOpacity 0.22`) —
+  differentiated by shape+size+hue, not colour alone (survives colour-blindness; per review).
+  Radius 8 keeps a usable mobile tap target (~9.5px), backed by the existing 200 m "notes
+  here" map-tap fallback. **No separate renderer** (that would create a second canvas and
+  forfeit the shared-canvas drag win). Leave the trail vertex budget UNTOUCHED — measurement
+  says it isn't the bottleneck, so changing it is scope creep / fidelity risk.
 
 ### Why not the alternatives
 - **Viewport-culling the DOM markers** (add/remove on moveend): no new dep, but keeps DOM
@@ -257,7 +262,8 @@ Replace the per-note `L.marker(divIcon)` with **`L.circleMarker`** on the existi
   note counts reach the thousands AND canvas markers prove insufficient.
 
 ### Acceptance
-- Dragging a large-range view with Notes ON is smooth on mobile (the reported case).
+- Dragging a large-range view with Notes ON is smooth on mobile (the reported case), with no
+  objectionable hitch on drag-release at the largest range (the new shared-canvas moveend cost).
 - Click a pin → popup; "Save as place" works; `?focus=<slug>` opens the pin's popup.
 - Scrub still reveals pins by time; Notes toggle still works; no DOM node per note (verify in
   devtools elements panel — the marker pane stays empty).

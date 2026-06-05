@@ -1,8 +1,52 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { labsStart, labsTurn, getShareLabSeries, LabSeries } from "../api";
+import { labsStart, labsTurn, getShareLabSeries, LabSeries, LabPoint } from "../api";
 import LabChart from "./LabChart";
 import { Icon } from "./Icon";
+
+const OUT = new Set(["high", "low", "abnormal"]);
+const statusColor = (s: string) => OUT.has(s) ? "var(--danger)" : s === "normal" ? "var(--ok)" : "var(--text-dim)";
+
+// Recipient TABLE view: a trend table (rows = collection dates, columns = shared analytes) so a
+// recipient can read the exact value of any shared result at any time. Values are status-coloured.
+function LabShareTable({ token, analytes }: { token: string; analytes: { analyte: string; test_name: string; unit: string | null }[] }) {
+  const [series, setSeries] = useState<Record<string, LabSeries>>({});
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    Promise.all(analytes.map((a) =>
+      getShareLabSeries(token, a.analyte).then((s) => [a.analyte, s] as const).catch(() => [a.analyte, null] as const)))
+      .then((pairs) => {
+        const m: Record<string, LabSeries> = {};
+        pairs.forEach(([k, s]) => { if (s) m[k] = s; });
+        setSeries(m); setLoading(false);
+      });
+  }, [token]);
+  if (loading) return <div className="muted" style={{ fontSize: 13, padding: 8 }}>Loading…</div>;
+  const cols = analytes.filter((a) => series[a.analyte]?.points.length);
+  const lookup: Record<string, Record<string, LabPoint>> = {};
+  const dateSet = new Set<string>();
+  cols.forEach((a) => { lookup[a.analyte] = {}; series[a.analyte].points.forEach((p) => { lookup[a.analyte][p.t] = p; dateSet.add(p.t); }); });
+  const dates = [...dateSet].sort().reverse();   // newest first
+  if (!dates.length) return <div className="muted" style={{ fontSize: 13 }}>No results to show.</div>;
+  return (
+    <div className="lab-share-table-wrap">
+      <table className="lab-share-table">
+        <thead><tr><th>Date</th>{cols.map((a) => (
+          <th key={a.analyte}>{a.test_name}{a.unit ? <span className="muted"> {a.unit}</span> : ""}</th>))}</tr></thead>
+        <tbody>
+          {dates.map((d) => (
+            <tr key={d}>
+              <td className="muted" style={{ whiteSpace: "nowrap" }}>{d}</td>
+              {cols.map((a) => { const p = lookup[a.analyte][d];
+                return <td key={a.analyte} style={{ color: p ? statusColor(p.status) : undefined, fontWeight: p && OUT.has(p.status) ? 600 : undefined }}>
+                  {p ? p.vtext : "—"}</td>; })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 // Recipient view of a lab-share link (kind='labs'): a fixed selection of trend charts the owner
 // chose to share, plus an optional scoped AI chat. ALL series come through the token-scoped,
@@ -37,6 +81,7 @@ export default function LabShareView({ token, brainName, intro, consent, allowCh
   token: string; brainName: string; intro?: string; consent?: string; allowChat?: boolean;
 }) {
   const [phase, setPhase] = useState<"consent" | "viewing">("consent");
+  const [view, setView] = useState<"charts" | "table">("charts");
   const [name, setName] = useState(localStorage.getItem("jbrain_share_name") || "");
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
   const [win, setWin] = useState<{ from: string | null; to: string | null }>({ from: null, to: null });
@@ -115,10 +160,18 @@ export default function LabShareView({ token, brainName, intro, consent, allowCh
       <div className="messages" style={{ paddingBottom: chatOn ? undefined : 24 }}>
         <div className="share-banner">⚕️ Not a diagnosis — always confirm against the source reports.
           Some values may have been read from a photo.</div>
-        {analytes.map((a) => (
-          <ShareChart key={a.analyte} token={token} analyte={a.analyte}
-                      from={win.from || undefined} to={win.to || undefined} title={a.test_name} />
-        ))}
+        {analytes.length > 1 && (
+          <div className="row" style={{ gap: 6, marginBottom: 4 }}>
+            <button className={"chip" + (view === "charts" ? " active" : "")} onClick={() => setView("charts")}>Charts</button>
+            <button className={"chip" + (view === "table" ? " active" : "")} onClick={() => setView("table")}>Table</button>
+          </div>
+        )}
+        {view === "table"
+          ? <LabShareTable token={token} analytes={analytes} />
+          : analytes.map((a) => (
+              <ShareChart key={a.analyte} token={token} analyte={a.analyte}
+                          from={win.from || undefined} to={win.to || undefined} title={a.test_name} />
+            ))}
         {analytes.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No results to show.</div>}
 
         {chatOn && msgs.length === 0 && (

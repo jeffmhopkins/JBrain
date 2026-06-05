@@ -26,6 +26,9 @@ class NoteIn(BaseModel):
 class EntryIn(BaseModel):
     text: str
     title: str | None = None
+    # Medical-mode capture: file the entry under notes/medical/<dest>/NN (a preconfigured
+    # destination the PWA offers). Ignored when an explicit title is given.
+    dest: str | None = None
     # Provenance for the version badge. The watch relays dictations through the phone,
     # which tags them `watch` so the note's history shows where it came from. Anything
     # unrecognised is clamped to `user` in the handler (capture must never 422 away a
@@ -277,10 +280,15 @@ def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
     source = (body.source or "user").strip().lower()
     if source not in ("user", "watch"):
         source = "user"
+    dest = (body.dest or "").strip()
     if explicit:
         # An explicit title (the assisted-attachment path) keeps its own name —
         # "assisted notes can go somewhere else". The first line is NOT a title.
         title = notes_svc._unique_title(conn, notes_svc.root_title(explicit, "notes"))
+    elif dest:
+        # Medical-mode capture: file under the chosen destination, notes/medical/<dest>/NN,
+        # so clinical uploads land in their own browsable folder (not the daily tree).
+        title = notes_svc._unique_title(conn, notes_svc.next_medical_title(conn, dest))
     else:
         # Pure Entry capture: no title. File chronologically under the standard flat
         # dated tree as notes/YYYY/MM/DD/NN; the whole text is the body. Day boundary

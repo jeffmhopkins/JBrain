@@ -18,6 +18,7 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
       { to: "/entities", label: "Entities", sub: "People, orgs & things in your notes", icon: "entities" },
       { to: "/map", label: "Map", sub: "Location trail & heatmap", icon: "pin" },
       { to: "/people", label: "Users", sub: "Trail attribution & colours", icon: "people" },
+      { to: "/medical", label: "Medical", sub: "Log destinations", icon: "medical" },
     ],
   },
   {

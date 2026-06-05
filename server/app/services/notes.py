@@ -179,6 +179,37 @@ def next_dated_title(conn, day) -> str:
     return f"notes/{day_path}/{max_dated_n(conn, day_path) + 1:02d}"
 
 
+_MED_ROOT = "medical"
+
+
+def sanitize_dest(dest: str) -> str:
+    """A safe folder path under notes/medical/ from a user-supplied destination name.
+
+    Collapses whitespace, drops empty/'.'/'..' segments (no path traversal), caps each
+    segment and the whole path, and strips a leading 'notes'/'medical' the caller may
+    have included. Nested names ('Cardiology/Visits') are preserved. '' if nothing safe
+    remains."""
+    raw = (dest or "").strip().strip("/")
+    segs: list[str] = []
+    for s in raw.split("/"):
+        s = " ".join(s.split())
+        if not s or s in (".", ".."):
+            continue
+        segs.append(s[:60])
+    while segs and segs[0].lower() in ("notes", _MED_ROOT):
+        segs.pop(0)
+    return "/".join(segs)[:160]
+
+
+def next_medical_title(conn, dest: str) -> str:
+    """Next medical-capture slot: notes/medical/<dest>/NN (dest sanitized; falls back to
+    notes/medical/General when empty). Reuses the dated-tree per-folder numbering, so a
+    destination's captures sort .../01, .../02, … and never collide with a deleted one."""
+    d = sanitize_dest(dest) or "General"
+    folder = f"{_MED_ROOT}/{d}"
+    return f"notes/{folder}/{max_dated_n(conn, folder) + 1:02d}"
+
+
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
     conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
     conn.execute(

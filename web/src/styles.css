@@ -220,6 +220,10 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .attach-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
 
+/* Medical-mode destination picker (in the compose box). */
+.med-dest-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.med-dest-select { flex: 1; min-width: 0; max-width: 240px; font-size: 13px; color: var(--text); background: var(--surface, transparent); border: 1px solid var(--border, #3a3a3a); border-radius: 8px; padding: 3px 6px; }
+
 /* ---- Phone shell (legacy bottom group nav, reused in Advanced) ----------- */
 .mshell { display: flex; flex-direction: column; min-height: 100vh; }
 .mtop {

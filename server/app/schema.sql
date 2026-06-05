@@ -584,3 +584,231 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   context            TEXT                                        -- 'agent' | 'action' (informational)
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
+
+-- ============================================================================
+-- Medical logging: a queryable PROJECTION of clinical data extracted from note
+-- bodies/attachments. The note/attachment stays the source of truth (exactly
+-- like note_analysis/entities) — these rows are a sidecar, always re-derivable,
+-- never authoritative. `encounters` is the spine a hospital stay/visit hangs off;
+-- every child row carries note_id (+ attachment_id) provenance back to its source.
+-- `identity_key` is a deterministic dedup hash with a partial-unique index, so a
+-- re-upload/re-extraction upserts in place instead of duplicating (NULL opts out).
+-- ============================================================================
+
+-- A hospital stay / clinic visit / ER trip — the organizing spine. Nullable
+-- timestamps so a standalone uploaded result still lands (kind='lab_only').
+CREATE TABLE IF NOT EXISTS encounters (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind         TEXT NOT NULL DEFAULT 'visit'
+                 CHECK (kind IN ('admission','visit','er','procedure','telehealth','lab_only','other')),
+  person_id    INTEGER REFERENCES people(id) ON DELETE SET NULL,  -- whose stay (reuses people)
+  facility     TEXT,                                  -- hospital/clinic name (free text)
+  reason       TEXT,                                  -- chief complaint / reason for visit
+  started_at   TEXT,                                  -- admission datetime (UTC), NULL if unknown
+  ended_at     TEXT,                                  -- discharge datetime (UTC)
+  summary      TEXT,                                  -- one-line human label for lists
+  note_slug    TEXT,                                  -- KB/folder anchor (like places.note_slug)
+  identity_key TEXT,                                  -- dedup key; NULL = manual, never dedup'd
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_encounters_identity ON encounters(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_encounters_person_time ON encounters(person_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_encounters_started ON encounters(started_at);
+
+-- A typed clinical document index (discharge summary, H&P, op note, radiology…).
+-- The TEXT lives in the note/attachment; this row classifies + links it.
+CREATE TABLE IF NOT EXISTS clinical_documents (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  doc_type      TEXT NOT NULL,           -- 'discharge'|'hp'|'progress'|'op_note'|'radiology'|'pathology'|'consult'|'labs'|'other'
+  title         TEXT,
+  authored_at   TEXT,                    -- document date (UTC)
+  author        TEXT,                    -- provider name as printed
+  identity_key  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clinical_docs_identity ON clinical_documents(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_clinical_docs_encounter ON clinical_documents(encounter_id);
+
+-- One row per analyte result. Raw layer (test_name/value_text/unit/ref_text,
+-- never lossy) + normalization layer (analyte_key/canonical_* for trends) +
+-- optional LOINC anchor. value_num is the TYPED column trend/aggregate queries use.
+CREATE TABLE IF NOT EXISTS lab_results (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id   INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id        INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id  INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  test_name      TEXT NOT NULL,          -- as printed ("Sodium", "Na", "WBC")
+  analyte_key    TEXT,                   -- normalized analyte slug for trend grouping
+  loinc          TEXT,                   -- LOINC code if resolvable (opportunistic enrichment)
+  value_text     TEXT,                   -- raw value as printed (handles "<0.01", "POSITIVE")
+  value_num      REAL,                   -- parsed numeric value, NULL if non-numeric
+  unit           TEXT,                   -- as printed ("mmol/L", "10^3/uL")
+  canonical_unit TEXT,                   -- normalized unit for trend math, NULL if not converted
+  canonical_num  REAL,                   -- value_num converted to canonical_unit
+  ref_low        REAL,
+  ref_high       REAL,
+  ref_text       TEXT,                   -- raw reference range ("3.5-5.0", "Negative")
+  flag           TEXT,                   -- 'H'|'L'|'HH'|'LL'|'A'|'N'|NULL (lab's own abnormal flag)
+  collected_at   TEXT,                   -- specimen collection datetime (UTC) — the trend x-axis
+  resulted_at    TEXT,                   -- when the result was reported
+  identity_key   TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lab_results_identity ON lab_results(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lab_results_analyte_time ON lab_results(analyte_key, collected_at);
+CREATE INDEX IF NOT EXISTS idx_lab_results_encounter ON lab_results(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_lab_results_note ON lab_results(note_id);
+
+-- A point-in-time vital sign. One row per measurement; kind is the series key.
+CREATE TABLE IF NOT EXISTS vitals (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  kind          TEXT NOT NULL,           -- 'hr'|'bp_sys'|'bp_dia'|'temp'|'spo2'|'rr'|'weight'|'height'|'bmi'
+  value_num     REAL,
+  unit          TEXT,
+  measured_at   TEXT,                    -- UTC
+  identity_key  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vitals_identity ON vitals(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_vitals_kind_time ON vitals(kind, measured_at);
+CREATE INDEX IF NOT EXISTS idx_vitals_encounter ON vitals(encounter_id);
+
+-- A documented diagnosis. entity_id links the per-encounter occurrence to the
+-- cross-encounter `condition` entity (concept vs occurrence, like entity_mentions).
+CREATE TABLE IF NOT EXISTS diagnoses (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL,           -- as documented ("Type 2 diabetes mellitus")
+  code          TEXT,                    -- ICD-10 / SNOMED code if present
+  code_system   TEXT,                    -- 'icd10'|'icd9'|'snomed'
+  status        TEXT,                    -- 'active'|'resolved'|'history'|'ruled_out'|NULL
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+  diagnosed_at  TEXT,
+  identity_key  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnoses_identity ON diagnoses(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_diagnoses_encounter ON diagnoses(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_diagnoses_entity ON diagnoses(entity_id);
+
+-- A performed procedure / operation / imaging study.
+CREATE TABLE IF NOT EXISTS procedures (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL,
+  code          TEXT,                    -- CPT (link-only, never store descriptor) / SNOMED / ICD-10-PCS
+  code_system   TEXT,                    -- 'cpt'|'snomed'|'icd10pcs'
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,  -- procedure entity
+  performed_at  TEXT,
+  identity_key  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_procedures_identity ON procedures(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_procedures_encounter ON procedures(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_procedures_entity ON procedures(entity_id);
+
+-- A medication in the regimen (the drug/order concept). Reuses the `medication`
+-- entity + medref RxNorm linking (rxcui caches the resolution at row level).
+CREATE TABLE IF NOT EXISTS medications (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL,           -- "Metformin 500 mg"
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,  -- medication entity
+  rxcui         TEXT,                    -- from medref (RxNorm), if resolved
+  dose          TEXT,                    -- "500 mg"
+  route         TEXT,                    -- "PO","IV"
+  frequency     TEXT,                    -- "BID","q8h"
+  status        TEXT,                    -- 'active'|'discontinued'|'home'|'prn'|NULL
+  started_at    TEXT,
+  stopped_at    TEXT,
+  identity_key  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_medications_identity ON medications(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_medications_encounter ON medications(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_medications_entity ON medications(entity_id);
+
+-- A discrete administration event (a MAR line). Optional — populate only when
+-- ingesting medication-administration records. Split from `medications` the way
+-- clinical systems separate orders from administrations.
+CREATE TABLE IF NOT EXISTS med_administrations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  medication_id   INTEGER REFERENCES medications(id) ON DELETE CASCADE,
+  encounter_id    INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id         INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id   INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  dose            TEXT,
+  route           TEXT,
+  administered_at TEXT,
+  identity_key    TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_med_admin_identity ON med_administrations(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_med_admin_med ON med_administrations(medication_id);
+CREATE INDEX IF NOT EXISTS idx_med_admin_encounter ON med_administrations(encounter_id);
+
+-- Denormalized read VIEWS: the low-overhead query API for medical questions. They
+-- let the SQL console / research-mode query_sql answer trend/timeline/current
+-- questions with one obvious SELECT instead of an LLM reading many notes.
+CREATE VIEW IF NOT EXISTS v_encounters AS
+  SELECT e.id AS encounter_id, e.kind, e.facility, e.reason,
+         e.started_at AS admitted_at, e.ended_at AS discharged_at,
+         CASE WHEN e.started_at IS NOT NULL AND e.ended_at IS NOT NULL
+              THEN ROUND(julianday(e.ended_at) - julianday(e.started_at), 2) END AS length_of_stay_days,
+         e.summary, e.note_slug, p.name AS person
+  FROM encounters e LEFT JOIN people p ON p.id = e.person_id;
+
+CREATE VIEW IF NOT EXISTS v_lab_trend AS
+  SELECT l.analyte_key AS analyte, l.test_name, l.value_num, l.unit,
+         l.ref_low, l.ref_high, l.flag, l.collected_at,
+         l.encounter_id, l.note_id, n.title AS note_title
+  FROM lab_results l LEFT JOIN notes n ON n.id = l.note_id
+  WHERE l.value_num IS NOT NULL;
+
+CREATE VIEW IF NOT EXISTS v_abnormal_labs AS
+  SELECT l.analyte_key AS analyte, l.test_name, l.value_num, l.unit, l.flag,
+         l.ref_low, l.ref_high, l.collected_at, l.encounter_id, l.note_id
+  FROM lab_results l
+  WHERE (l.flag IS NOT NULL AND l.flag NOT IN ('N',''))
+     OR (l.value_num IS NOT NULL AND l.ref_low  IS NOT NULL AND l.value_num < l.ref_low)
+     OR (l.value_num IS NOT NULL AND l.ref_high IS NOT NULL AND l.value_num > l.ref_high);
+
+CREATE VIEW IF NOT EXISTS v_current_medications AS
+  SELECT m.name, m.dose, m.route, m.frequency, m.status, m.started_at, m.stopped_at,
+         m.rxcui, m.encounter_id, m.note_id
+  FROM medications m
+  WHERE m.stopped_at IS NULL AND (m.status IS NULL OR m.status <> 'discontinued');
+
+CREATE VIEW IF NOT EXISTS v_encounter_timeline AS
+  SELECT encounter_id, collected_at AS event_at, 'lab' AS event_type, test_name AS label,
+         COALESCE(value_text, CAST(value_num AS TEXT)) || COALESCE(' ' || unit, '') AS detail, note_id
+    FROM lab_results WHERE collected_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, measured_at, 'vital', kind,
+         COALESCE(CAST(value_num AS TEXT), '') || COALESCE(' ' || unit, ''), note_id
+    FROM vitals WHERE measured_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, performed_at, 'procedure', name, COALESCE(code, ''), note_id
+    FROM procedures WHERE performed_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, diagnosed_at, 'diagnosis', name, COALESCE(status, ''), note_id
+    FROM diagnoses WHERE diagnosed_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, COALESCE(started_at, stopped_at), 'medication', name, COALESCE(dose, ''), note_id
+    FROM medications WHERE COALESCE(started_at, stopped_at) IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, authored_at, 'document', COALESCE(title, doc_type), doc_type, note_id
+    FROM clinical_documents WHERE authored_at IS NOT NULL;

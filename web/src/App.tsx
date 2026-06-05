@@ -18,6 +18,7 @@ import EntitiesPage from "./pages/EntitiesPage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
+import MedicalPage from "./pages/MedicalPage";
 import NotificationHistoryPage from "./pages/NotificationHistoryPage";
 import AdvancedHome from "./pages/AdvancedHome";
 import ActionsPage from "./pages/ActionsPage";
@@ -148,6 +149,7 @@ export default function App() {
                 <Route path="/map" element={<MapPage />} />
                 <Route path="/people" element={<PeoplePage />} />
                 <Route path="/entities" element={<EntitiesPage />} />
+                <Route path="/medical" element={<MedicalPage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/prompts" element={<PromptsPanel />} />
                 <Route path="/actions" element={<ActionsPage />} />

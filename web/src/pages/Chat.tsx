@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, get, post, streamChat, uploadAttachment } from "../api";
+import { createEntry, get, getMedicalDests, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import { Icon } from "../components/Icon";
@@ -10,7 +10,7 @@ import { makeLinkRenderer, renderWikiLinks } from "../util";
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
 // but excluded from the LLM history server-side.
 interface Msg { role: "user" | "assistant" | "event"; content: string; }
-type Mode = "entry" | "assisted" | "research";
+type Mode = "entry" | "medical" | "assisted" | "research";
 
 // Render an applied-action summary with any URL made clickable (so a freshly-minted
 // share link is tappable right on the card).
@@ -24,11 +24,13 @@ function renderSummary(text: string) {
 
 const MODES: { key: Mode; label: string; icon: string }[] = [
   { key: "entry", label: "Entry", icon: "plus" },
+  { key: "medical", label: "Medical", icon: "medical" },
   { key: "assisted", label: "Assisted", icon: "robot" },
   { key: "research", label: "Research", icon: "search" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
   entry: "Write an entry…",
+  medical: "Log a lab, note, procedure…",
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
 };
@@ -101,6 +103,10 @@ export default function Chat() {
   // but a fresh PWA launch starts a new session → empty → defaults to Entry capture.
   const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem("jbrain_mode") as Mode) || "entry");
   const [menuOpen, setMenuOpen] = useState(false);
+  // Medical-mode destination picklist (notes/medical/<dest>/…), lazily loaded the first
+  // time Medical mode is used; the chosen destination persists per device.
+  const [dests, setDests] = useState<string[]>([]);
+  const [curDest, setCurDest] = useState<string>(() => localStorage.getItem("jbrain_med_dest") || "");
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -198,6 +204,26 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
+  // Load the medical destinations the first time Medical mode is entered.
+  useEffect(() => {
+    if (mode !== "medical" || dests.length) return;
+    getMedicalDests().then(({ names }) => {
+      setDests(names);
+      setCurDest((c) => (c && names.includes(c) ? c : names[0] || ""));
+    }).catch(() => { /* offline — keep an empty picker */ });
+  }, [mode, dests.length]);
+  function pickDest(d: string) { setCurDest(d); localStorage.setItem("jbrain_med_dest", d); }
+  // Add a new destination inline (full management lives in Advanced → Medical).
+  async function addDest() {
+    const name = window.prompt("New medical destination (e.g. “2026-03 Admission”)")?.trim();
+    if (!name) return;
+    try {
+      const { names } = await setMedicalDests([...dests, name]);
+      setDests(names);
+      pickDest(names.find((n) => n.toLowerCase() === name.toLowerCase()) || names[names.length - 1] || name);
+    } catch { alert("Couldn’t save that destination — please try again."); }
+  }
+
   // A swipe-up from the left third of the composer (detected by the shell) cycles the mode.
   useEffect(() => {
     function cycle() {
@@ -263,7 +289,7 @@ export default function Chat() {
     // Load the cached thread in EVERY mode (so entry shows history too), but only spin up a
     // brand-new conversation when in a chat mode — entry alone shouldn't create empty threads.
     if (id) { setConvId(Number(id)); loadMessages(Number(id)); }
-    else if (mode !== "entry") { newConversation(); }
+    else if (mode !== "entry" && mode !== "medical") { newConversation(); }
   }, [mode, convId]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
@@ -279,14 +305,16 @@ export default function Chat() {
     const text = input.trim();
     if ((!text && !pendingFile) || streaming || busy || !online) return;
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
+    if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     const coords = await geo.getCoords();   // one-shot GPS fix, only now (if enabled)
     const file = pendingFile;
     setInput(""); setPendingFile(null);
 
-    if (mode === "entry") {
+    if (mode === "entry" || mode === "medical") {
       setBusy(true);
       try {
-        const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords);
+        const dest = mode === "medical" ? (curDest || undefined) : undefined;
+        const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords, dest);
         if (file) await uploadAttachment(r.slug, file, setUploadPct);
         setEntries((xs) => [...xs, { text: text || (file ? `📎 ${file.name}` : ""), title: r.title, slug: r.slug }]);
       } catch (err) {
@@ -388,6 +416,8 @@ export default function Chat() {
           <div className="msg assistant muted">
             {mode === "entry"
               ? "Type below and Send — it’s saved straight to your wiki (the AI isn’t involved)."
+              : mode === "medical"
+              ? "Log medical info — it’s saved under notes/medical/<destination>. Pick or add a destination below."
               : mode === "research"
               ? "Ask anything about your notes — I only read; I won’t change anything."
               : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
@@ -466,6 +496,17 @@ export default function Chat() {
         {uploadPct !== null && (
           <div className="attach-chip">
             <Icon name="clip" size={14} /> {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
+          </div>
+        )}
+        {mode === "medical" && (
+          <div className="med-dest-row">
+            <Icon name="medical" size={14} />
+            <span className="muted">notes/medical/</span>
+            <select className="med-dest-select" value={curDest} onChange={(e) => pickDest(e.target.value)}>
+              {dests.length === 0 && <option value="">(add a destination)</option>}
+              {dests.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
           </div>
         )}
         <textarea

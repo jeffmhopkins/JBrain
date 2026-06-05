@@ -139,13 +139,22 @@ Confirmed live bugs, each with a regression test:
 
 Phases 0–2 are SHIPPED and tested (unit + integration: 302 passing).
 
-**Optional vision dependencies.** The image/screenshot/scanned-PDF path
-(`lab_vision.py`) needs `pytesseract` + `pypdfium2` and the system `tesseract-ocr`
-binary — see `server/requirements-vision.txt`. They are intentionally NOT in the base
-image: the deterministic text-PDF path needs none of them, and without them image inputs
-degrade to a *visible* `image_unparsed` status (never a silent no-op). Tesseract is the
-independent OCR reader that *gates* the vision model, so it is what makes that path
-trustworthy — not an optional nicety.
+**Enabling the image/screenshot/scanned-PDF path (`lab_vision.py`).** It needs three things:
+
+1. **OCR + render deps** — `pytesseract` + `pypdfium2` and the system `tesseract-ocr` binary.
+   These are baked into the Docker image (`server/Dockerfile`: an `apt-get install tesseract-ocr`
+   layer + `server/requirements-vision.txt`), so `./update.sh` / `./install.sh` pick them up on
+   the next image rebuild — no script changes needed. (For local/dev outside Docker, install
+   them via `server/requirements-vision.txt` + the system `tesseract-ocr` package.)
+2. **A vision-capable LLM key** — the EXTRACTION step calls the model. Set `LLM_API_KEY`
+   (or `ANTHROPIC_API_KEY`) in `.env`. The default model `claude-sonnet-4-6` is multimodal and
+   `models.vision: ""` falls back to it, so no model config change is required; pin
+   `models.vision` in `prompts.yaml` only to use a different model.
+
+Without (1) the OCR gate, image inputs degrade to a *visible* `image_unparsed` status (never a
+silent no-op). Without (2) a key, the same. Tesseract is the independent OCR reader that
+*corroborates* the vision model (confirmed → medium confidence, unconfirmed → kept but flagged
+low for human review) — it is what makes the path trustworthy, not an optional nicety.
 
 ## Gauntlet round 2 — review-panel findings (all addressed)
 

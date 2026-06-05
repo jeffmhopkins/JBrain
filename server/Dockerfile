@@ -18,8 +18,16 @@ ARG GIT_SHA=""
 ENV JBRAIN_BUILD_REF=$GIT_SHA
 
 WORKDIR /app
-COPY server/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Tesseract OCR: the independent reader that gates the photo/scan lab-import path
+# (server/app/services/lab_vision.py). Without it, image lab uploads degrade visibly to
+# 'image_unparsed' rather than being trusted; with it, a vision value is staged only if
+# Tesseract also saw it. --no-install-recommends + cleanup keeps the layer lean.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+# requirements-vision.txt = pytesseract + pypdfium2 (render scanned PDFs to images for OCR).
+COPY server/requirements.txt server/requirements-vision.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-vision.txt
 
 COPY server/app ./app
 # Repo-defined workflows, action recipes, and central prompt store.

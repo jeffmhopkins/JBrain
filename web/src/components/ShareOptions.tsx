@@ -28,11 +28,11 @@ export default function ShareOptions({ value, onChange, show, disabled }: {
     <div className="share-options">
       <div className="row" style={{ gap: 14, flexWrap: "wrap", marginTop: 4 }}>
         <label className="row" style={{ gap: 6 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={value.bind} disabled={disabled}
+          <input type="checkbox" className="share-check" checked={value.bind} disabled={disabled}
                  onChange={(e) => onChange({ bind: e.target.checked })} /> Lock to first browser</label>
         {s.singleUse !== false && (
           <label className="row" style={{ gap: 6 }}>
-            <input type="checkbox" style={{ width: "auto" }} checked={value.single_use} disabled={disabled}
+            <input type="checkbox" className="share-check" checked={value.single_use} disabled={disabled}
                    onChange={(e) => onChange({ single_use: e.target.checked })} /> Single use</label>
         )}
         {s.expiry !== false && (

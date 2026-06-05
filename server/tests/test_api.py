@@ -1899,6 +1899,30 @@ def test_wiki_update_creates_new_subject_article(client, monkeypatch):
     assert conn.execute("SELECT 1 FROM notes WHERE title='kb/People/Nadia' AND kind='kb' AND deleted_at IS NULL").fetchone()
 
 
+def test_extract_maintain_fence_and_fallbacks():
+    """The maintain parser takes the ```article fence as the body (discarding anything
+    outside the fences), falls back to old un-fenced output, strips a preamble before the
+    first H1 as a backstop, and never deletes an article that simply has no H1."""
+    from app.services.wiki_build import _extract_maintain
+
+    # 1) Fenced: body is the article fence; preamble + inline commentary outside are dropped.
+    body, data = _extract_maintain(
+        'Sure!\n```article\n# X\nProse.\n```\n```maintain\n{"resolved": [], "new": []}\n```')
+    assert body == "# X\nProse." and data == {"resolved": [], "new": []}
+
+    # 2) Old un-fenced output (no ```article): text minus the maintain block, H1 at start.
+    body, _ = _extract_maintain('# X\nProse.\n```maintain\n{"resolved": []}\n```')
+    assert body == "# X\nProse."
+
+    # 3) Backstop: un-fenced with a leading preamble before the first H1 → preamble dropped.
+    body, _ = _extract_maintain('Here you go:\n\n# X\nProse.\n```maintain\n{}\n```')
+    assert body == "# X\nProse."
+
+    # 4) No H1 at all → leave the content untouched (let the lint decide, never delete).
+    body, _ = _extract_maintain('Just prose, no heading.\n```maintain\n{}\n```')
+    assert body == "Just prose, no heading."
+
+
 def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     """Component 3: the maintenance pass revises an article to satisfy a directive, applies
     it (versioned), and resolves the talk item WITH a note of how — only items it actually
@@ -1918,8 +1942,13 @@ def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     conn.commit()
 
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    # Model wraps the article in a ```article fence and leaks commentary OUTSIDE it (a preamble
+    # and an inline-narration line) — both must be discarded, never saved into the article.
     monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        "Here's the updated article — I reconciled the move year:\n\n"
+        "```article\n"
         "# Allan\nAllan moved to Cocoa in 2019.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n"
+        "```\n"
         f'\n```maintain\n{{"resolved": [{{"id": {d1}, "outcome": "applied", '
         f'"how": "Added the 2019 move year from the source."}}]}}\n```\n'))
 
@@ -1927,6 +1956,8 @@ def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     assert res["changed"] == 1 and res["resolved"] == 1 and res["kept_open"] == 0
     body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
     assert "2019" in body                                              # directive applied + saved
+    assert body.startswith("# Allan")                                 # article fence content only…
+    assert "Here's the updated article" not in body and "I reconciled" not in body  # …commentary discarded
     talk = {t["id"]: t for t in article_talk.list_for(conn, "kb/People/Allan")}
     assert talk[d1]["resolved_at"] and "2019" in talk[d1]["resolution"]  # resolved WITH how
     assert not talk[d2]["resolved_at"]                                 # the unanswerable question stays open

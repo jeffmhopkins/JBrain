@@ -543,8 +543,12 @@ actions:
   wiki_maintain: |
     Update ONE existing knowledge-base article so it's faithful and current: address its
     OPEN ITEMS, integrate any NEW/CHANGED sources, and purge anything that relied on a
-    REMOVED source — using ONLY the source notes. Output the FULL revised article in
-    Markdown (start with "# <name>"), then a fenced ```maintain block.
+    REMOVED source — using ONLY the source notes. Output the FULL revised article inside a
+    fenced ```article block (its content starts with "# <name>"), then a fenced ```maintain
+    block. Put NOTHING outside those two blocks — no preamble, no "here's the article", no
+    notes to me. NEVER narrate the edit inside the article itself ("I reconciled…", "Updated
+    to add…"); the article is evergreen encyclopedia prose. Anything you want to say ABOUT
+    the edit goes in the maintain block's "new" list as a note, never in the article body.
 
     The owner is {owner}; first-person in the sources refers to them (resolve by name).
 
@@ -600,7 +604,12 @@ actions:
     kb/<Parent>/<Subtopic>" or "overlaps [[kb/...]] — merge". Keep this article tight in the
     meantime. (A "restructure" item is logged, never re-worked by maintenance, so it won't nag.)
 
-    After the article, append EXACTLY one fenced block (valid JSON):
+    Output EXACTLY these two fenced blocks and nothing else — the article first, then the
+    maintain JSON:
+    ```article
+    # <name>
+    <the full revised article>
+    ```
     ```maintain
     {"resolved": [{"id": 12, "outcome": "answered|applied|reconciled|moot|unresolvable", "how": "one short sentence"}], "new": [{"kind": "conflict|question|todo|note|restructure", "body": "..."}]}
     ```

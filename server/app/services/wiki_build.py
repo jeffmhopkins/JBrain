@@ -428,20 +428,37 @@ def link_owner(conn) -> dict:
 
 
 _MAINTAIN_RE = re.compile(r"\n?```maintain\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
+_ARTICLE_RE = re.compile(r"```article\s*\n(.*?)\n```", re.DOTALL)
+_H1_RE = re.compile(r"(?m)^#\s")
 
 
 def _extract_maintain(text: str):
-    """Pull the trailing ```maintain JSON block out of the maintenance output.
-    Returns (article_without_block, {resolved:[...], new:[...]})."""
-    m = _MAINTAIN_RE.search(text or "")
-    if not m:
-        return text, {}
-    body = text[:m.start()] + text[m.end():]
-    try:
-        data = json.loads(m.group(1))
-    except Exception:  # noqa: BLE001
-        data = {}
-    return body, (data if isinstance(data, dict) else {})
+    """Pull the maintain JSON + the article body out of a maintenance reply.
+
+    The body is the content of a ```article fence when present, so any preamble or commentary
+    OUTSIDE the two fences ("here's the article", "I reconciled X…") is discarded by
+    construction — the model can't leak talk into the saved article. Falls back, for older
+    un-fenced output, to the text minus the maintain block; as a backstop it drops a
+    non-article preamble before the first top-level "# " heading, but ONLY when an H1 exists
+    (never deletes an article that merely lacks one). Returns (article_body, {resolved, new})."""
+    text = text or ""
+    data: dict = {}
+    m = _MAINTAIN_RE.search(text)
+    if m:
+        try:
+            d = json.loads(m.group(1))
+            data = d if isinstance(d, dict) else {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        text = text[:m.start()] + text[m.end():]
+    a = _ARTICLE_RE.search(text)
+    if a:
+        return a.group(1).strip(), data
+    h = _H1_RE.search(text)
+    if h and h.start() > 0:
+        log.info("wiki_maintain: dropped %d chars of preamble before the article heading", h.start())
+        return text[h.start():].strip(), data
+    return text.strip(), data
 
 
 def maintain_one(conn, article_title: str, known_titles: list[str] | None = None,

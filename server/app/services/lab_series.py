@@ -30,6 +30,11 @@ _FLAG_NORMAL = {"N", "NORMAL", "WNL"}
 _FLAG_ABNORMAL = {"A", "AB", "ABN", "ABNORMAL"}
 
 
+# Rows whose source note was (soft-)deleted are hidden — so deleting a mis-imported note in
+# the UI removes its results from the Labs view (and lets you re-upload cleanly).
+_LIVE_NOTE = "(note_id IS NULL OR note_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL))"
+
+
 def _unit_norm(unit: str | None) -> str:
     s = re.sub(r"\s+", "", (unit or "").lower())
     return _UNIT_ALIASES.get(s, s)
@@ -72,12 +77,13 @@ def list_analytes(conn) -> list[dict]:
     rows = conn.execute(
         "SELECT analyte_key, COUNT(*) AS n, MIN(collected_at) AS first_at, MAX(collected_at) AS last_at "
         "FROM lab_results WHERE analyte_key IS NOT NULL AND collected_at IS NOT NULL "
-        "GROUP BY analyte_key").fetchall()
+        f"AND {_LIVE_NOTE} GROUP BY analyte_key").fetchall()
     out = []
     for r in rows:
         latest = conn.execute(
             "SELECT value_text, value_num, flag, ref_low, ref_high FROM lab_results "
-            "WHERE analyte_key = ? AND collected_at IS NOT NULL ORDER BY collected_at DESC, id DESC LIMIT 1",
+            f"WHERE analyte_key = ? AND collected_at IS NOT NULL AND {_LIVE_NOTE} "
+            "ORDER BY collected_at DESC, id DESC LIMIT 1",
             (r["analyte_key"],)).fetchone()
         out.append({
             "analyte": r["analyte_key"],
@@ -128,7 +134,7 @@ def abnormal_analytes(conn, dfrom: str | None = None, dto: str | None = None, li
     ranked most-recently-abnormal first (then by count). Reads lab_results directly and uses
     the SAME _status the chart colours by — so 'what was abnormal' and the chart always agree.
     A censored row counts only if the lab itself flagged it (else it's unknown, never swept in)."""
-    where = "collected_at IS NOT NULL"
+    where = f"collected_at IS NOT NULL AND {_LIVE_NOTE}"
     params: list = []
     if dfrom:
         where += " AND date(collected_at) >= date(?)"; params.append(dfrom)
@@ -162,7 +168,8 @@ def series(conn, analyte: str, unit: str | None = None) -> dict:
         "SELECT lr.collected_at, lr.value_text, lr.value_num, lr.unit, lr.flag, lr.ref_low, "
         "       lr.ref_high, lr.ref_text, lr.encounter_id, lr.note_id, n.slug AS note_slug, n.title AS note_title "
         "FROM lab_results lr LEFT JOIN notes n ON n.id = lr.note_id "
-        "WHERE lr.analyte_key = ? AND lr.collected_at IS NOT NULL ORDER BY lr.collected_at, lr.id",
+        "WHERE lr.analyte_key = ? AND lr.collected_at IS NOT NULL AND n.deleted_at IS NULL "
+        "ORDER BY lr.collected_at, lr.id",
         (analyte,)).fetchall()
 
     points: list[dict] = []

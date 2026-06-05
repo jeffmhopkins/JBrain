@@ -199,10 +199,19 @@ def _parse_page(words: list[dict]) -> list[dict]:
     tops = [e["top"] for e in entries]
     out: list[dict] = []
     for c in cells:
-        i = bisect.bisect_right(tops, c["top"]) - 1          # nearest analyte name at/above
-        if i < 0:
+        # Assign each value to the NEAREST analyte name by vertical distance (above OR below).
+        # Labs vertically-center a row's value cells, so a value can sit a few px ABOVE its
+        # own name (e.g. BUN/Creatinine Ratio's values rendered just above its label) — a
+        # strict "nearest name above" rule would mis-bind them to the previous analyte.
+        i = bisect.bisect_left(tops, c["top"])
+        cand = []
+        if i > 0:
+            cand.append(entries[i - 1])                       # nearest at/above (wins ties)
+        if i < len(entries):
+            cand.append(entries[i])                           # nearest below
+        if not cand:
             continue
-        e = entries[i]
+        e = min(cand, key=lambda en: abs(en["top"] - c["top"]))
         out.append({
             "test_name": e["name"], "analyte_key": analyte_key(e["name"]),
             "value_text": c["vt"], "value_num": c["vn"], "unit": c["unit"] or e["unit"],

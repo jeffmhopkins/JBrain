@@ -9,6 +9,7 @@ interface Attachment {
   id: number; filename: string; mime: string; byte_size: number; created_at: string;
   analysis_status?: "none" | "pending" | "done" | "error" | null;
   analysis_detail?: string | null; analyzed_at?: string | null;
+  analysis_md?: string | null;   // AI vision summary — shown here, not in the note body
 }
 type Viewing =
   | { kind: "image"; filename: string; url: string }
@@ -69,8 +70,8 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   }, [items]);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
 
-  // Poll a single attachment until analysis settles, then refresh the list and
-  // tell the parent note to re-fetch (the summary is appended to the note body).
+  // Poll a single attachment until analysis settles, then refresh the list so the new
+  // AI summary (now stored on the attachment, not the note body) shows in the panel.
   function startPoll(id: number) {
     if (polling.current.has(id)) return;
     polling.current.add(id);
@@ -82,7 +83,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         if (s.status === "pending" && tries++ < 60) { setTimeout(tick, 2000); return; }
       } catch { /* fall through to cleanup */ }
       polling.current.delete(id);
-      if (alive.current) { await load(); onNoteChanged?.(); }
+      if (alive.current) await load();   // refresh the panel; the note body is unchanged now
     };
     setTimeout(tick, 1500);
   }
@@ -195,12 +196,23 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
               Couldn’t show image — {thumbErr[a.id]}
             </div>
           )}
-          {isImage(a.mime) && a.analysis_status && a.analysis_status !== "none" && (
+          {isImage(a.mime) && a.analysis_status === "pending" && (
+            <div className="row" style={{ marginTop: 6, fontSize: 11 }}><span className="muted">⏳ Analyzing image…</span></div>
+          )}
+          {isImage(a.mime) && a.analysis_status === "error" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
-              {a.analysis_status === "pending" && <span className="muted">⏳ Analyzing image…</span>}
-              {a.analysis_status === "done" && <span style={{ color: "var(--accent)" }}>✓ AI summary added to note</span>}
-              {a.analysis_status === "error" && <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>⚠ AI analysis failed</span>}
+              <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>⚠ AI analysis failed</span>
             </div>
+          )}
+          {isImage(a.mime) && a.analysis_md && (
+            // The AI vision summary, read-only, collapsed by default (it can be long) — it
+            // lives here on the image, not in the note body. Re-analyze (below) refreshes it.
+            <details className="att-summary" style={{ marginTop: 6 }}>
+              <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>✦ AI summary</summary>
+              <div className="md" style={{ fontSize: 13, marginTop: 4 }}>
+                <ReactMarkdown>{a.analysis_md}</ReactMarkdown>
+              </div>
+            </details>
           )}
           <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>

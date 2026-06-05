@@ -63,6 +63,7 @@ export default function NotePage() {
   const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
   const [place, setPlace] = useState<Place | null>(null);   // geofence backing a loc/ note
 
   async function remove() {
@@ -261,7 +262,9 @@ export default function NotePage() {
               <input className="share-url" readOnly value={minted.url} onFocus={(e) => e.currentTarget.select()} />
               <div className="share-actions">
                 <button className="ghost" onClick={() => setMinted(null)}>New link</button>
-                <button className="primary" onClick={() => { navigator.clipboard?.writeText(minted.url); }}>Copy</button>
+                <button className="primary" onClick={() => { navigator.clipboard?.writeText(minted.url);
+                  setShareCopied(true); setTimeout(() => setShareCopied(false), 1200); }}>
+                  {shareCopied ? "Copied ✓" : "Copy"}</button>
               </div>
             </div>
           )}

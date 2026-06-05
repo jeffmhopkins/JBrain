@@ -227,6 +227,25 @@ def test_lab_chart_tools(client):
     assert architect._run_tool(conn, None, "log_entry", {"text": "x"}, "research")[1] is None
 
 
+def test_lab_range_token_variants():
+    # The window resolver must tolerate the variants a model emits, not just the exact enum —
+    # otherwise "over the last year" passed as "1 year" yields NO window and the chart shows
+    # all history (the "1y request showed 2 years" bug).
+    from app.db import init_db
+    from app.services import architect
+    from datetime import date
+    init_db()
+
+    def span(r):
+        f, t = architect._resolve_range(r)
+        return (date.fromisoformat(t) - date.fromisoformat(f)).days if (f and t) else None
+
+    for one_year in ("1y", "1 year", "1year", "year"):
+        assert span(one_year) == 365, one_year
+    assert span("6mo") == 183 and span("2 years") == 730 and span("5y") == 1826
+    assert span("all") is None and span("garbage") is None and span(None) is None
+
+
 def test_lab_stat_and_value_at(client):
     # The scalar tools: lowest/highest/latest with the value AND its date in one call (the
     # "what date was the lowest?" fix), free-text analyte resolution, and "when out of range".

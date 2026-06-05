@@ -1384,13 +1384,38 @@ def _record_chart(conn, conversation_id, spec: dict) -> dict:
 _RANGE_DAYS = {"3mo": 91, "6mo": 183, "1y": 365, "2y": 730, "5y": 1826}
 
 
+def _range_to_days(rng) -> int | None:
+    """Days for a relative-window token, TOLERANT of the variants a model may emit instead of
+    the canonical enum: '1y', '1 year', '1year', '12 months', 'year', '6mo', etc. Returns None
+    for 'all'/unbounded/unrecognized (no window)."""
+    if not rng:
+        return None
+    r = " ".join(str(rng).strip().lower().split())
+    if r in ("all", "max", "everything", "all time"):
+        return None
+    if r.replace(" ", "") in _RANGE_DAYS:
+        return _RANGE_DAYS[r.replace(" ", "")]
+    m = re.match(r"^(\d+)\s*(years?|yrs?|y|months?|mos?|mo|m|weeks?|wks?|w|days?|d)$", r)
+    if m:
+        n, u = int(m.group(1)), m.group(2)
+        if u[0] == "y":
+            return n * 365
+        if u == "m" or u.startswith("mo") or u.startswith("month"):
+            return n * 30
+        if u[0] == "w":
+            return n * 7
+        if u[0] == "d":
+            return n
+    return {"year": 365, "yr": 365, "month": 30, "week": 7, "day": 1}.get(r)
+
+
 def _resolve_range(rng=None, dfrom=None, dto=None) -> tuple[str | None, str | None]:
     """(from_iso, to_iso) for a tool's window. Explicit from/to win; otherwise a relative
     `range` token ('1y', '6mo', …) is resolved against TODAY (owner-local). 'all'/None = no
     bound. This is where "over the last year" actually becomes a date window."""
     if dfrom or dto:
         return dfrom, dto
-    days = _RANGE_DAYS.get(rng or "")
+    days = _range_to_days(rng)
     if not days:
         return None, None
     from datetime import timedelta

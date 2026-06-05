@@ -46,13 +46,23 @@ export function useGeo() {
   useGeoFlagSync(setEnabled);   // stay in sync if toggled elsewhere
 
   /** One-shot fix, taken at the moment of posting. Resolves null if the toggle is off,
-   *  geolocation is unavailable, or the request is denied/times out. */
-  function getCoords(): Promise<Coords | null> {
+   *  geolocation is unavailable, or the request is denied/times out.
+   *
+   *  `maxWait` caps how long the caller is willing to block: if no fix arrives within
+   *  that window we resolve null and let the post fire un-stamped. The underlying
+   *  request keeps running and may warm the browser's 60s cache so the NEXT post gets
+   *  a fix instantly. This keeps a cold GPS radio from freezing the UI for the full
+   *  10s timeout. Omit `maxWait` to wait the full timeout for a guaranteed-if-available
+   *  fix (unchanged legacy behaviour). The fix is best-effort metadata, not the payload. */
+  function getCoords(maxWait?: number): Promise<Coords | null> {
     if (!enabled || !("geolocation" in navigator)) return Promise.resolve(null);
     return new Promise((resolve) => {
+      let done = false;
+      const finish = (c: Coords | null) => { if (!done) { done = true; resolve(c); } };
+      if (maxWait != null) window.setTimeout(() => finish(null), maxWait);
       navigator.geolocation.getCurrentPosition(
-        (p) => resolve({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
-        () => resolve(null),
+        (p) => finish({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
+        () => finish(null),
         { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 },
       );
     });

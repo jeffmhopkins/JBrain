@@ -100,6 +100,12 @@ const TOOL_LABELS: Record<string, string> = {
 };
 const toolLabel = (name?: string) => (name && TOOL_LABELS[name]) || "Working…";
 
+// How long a send will wait for a location stamp before posting without one. A cached
+// fix (getCoords' maximumAge: 60s) returns in single-digit ms; a cold fix that needs
+// the GPS radio is dropped after this budget rather than freezing the UI for up to 10s.
+// The stamp is best-effort metadata, not the point of the post.
+const GEO_MAX_WAIT = 1500;
+
 export default function Chat() {
   const online = useOnline();
   const geo = useGeo();
@@ -115,7 +121,11 @@ export default function Chat() {
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [entries, setEntries] = useState<{ text: string; title: string; slug: string }[]>([]);
+  // `pending` entries are the optimistic user bubble shown the instant Send is hit (entry/
+  // medical have no streamed reply, so this is their only immediate feedback). The save
+  // resolves the matching `id` in place (fills title/slug → "Saved:" chip) or drops it on
+  // error. Keyed by a unique `id` so reconciliation never touches the wrong row.
+  const [entries, setEntries] = useState<{ id: number; text: string; title: string; slug: string; pending?: boolean }[]>([]);
   const [input, setInput] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
@@ -134,6 +144,15 @@ export default function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Synchronous re-entrancy latch: streaming/busy gate the UI but they're async React
+  // state, so a second tap during a send's async pre-flight (GPS, conv-create, upload)
+  // could start a second turn before that state flushed. This ref blocks it immediately.
+  const sendingRef = useRef(false);
+  // Mirror convId into a ref + track any in-flight creation so a send that races ahead of
+  // newConversation() can await the id (ensureConversation) instead of being dropped.
+  const convIdRef = useRef<number | null>(null);
+  const convPromiseRef = useRef<Promise<number> | null>(null);
+  const entrySeq = useRef(0);   // unique id for optimistic capture-mode entry rows
 
   // Typewriter reveal for the active assistant turn. The reply arrives over SSE in
   // bursty chunks; we accumulate the full received-so-far into `bufRef` and reveal
@@ -272,10 +291,32 @@ export default function Chat() {
     } catch { /* keep what we have */ }
   }
 
-  async function newConversation() {
-    const { id } = await post("/api/chat/conversations");
+  // Low-level: POST a new conversation and adopt its id. Does NOT touch the message view,
+  // so it's safe to call mid-send (it won't wipe an optimistic bubble already on screen).
+  async function createConversation(): Promise<number> {
+    const { id } = await post<{ id: number }>("/api/chat/conversations");
     localStorage.setItem(CHAT_CONV_KEY, String(id));
-    setConvId(id); setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
+    convIdRef.current = id;
+    setConvId(id);
+    return id;
+  }
+
+  // /clear and friends: start a brand-new thread AND wipe the current view.
+  async function newConversation(): Promise<number> {
+    setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
+    return createConversation();
+  }
+
+  // Resolve a conversation id for a chat turn, awaiting any creation already in flight
+  // (deduped via convPromiseRef) or starting one — so a send issued before convId is set
+  // is queued, never silently dropped, and never disturbs the optimistic message view.
+  // The promise is cleared on settle so a transient create failure doesn't wedge sending.
+  function ensureConversation(): Promise<number> {
+    if (convIdRef.current) return Promise.resolve(convIdRef.current);
+    if (!convPromiseRef.current) {
+      convPromiseRef.current = createConversation().finally(() => { convPromiseRef.current = null; });
+    }
+    return convPromiseRef.current;
   }
 
   // Restore (or migrate to) the single shared chat thread on first entry into a chat
@@ -295,8 +336,8 @@ export default function Chat() {
     }
     // Load the cached thread in EVERY mode (so entry shows history too), but only spin up a
     // brand-new conversation when in a chat mode — entry alone shouldn't create empty threads.
-    if (id) { setConvId(Number(id)); loadMessages(Number(id)); }
-    else if (mode !== "entry" && mode !== "medical") { newConversation(); }
+    if (id) { convIdRef.current = Number(id); setConvId(Number(id)); loadMessages(Number(id)); }
+    else if (mode !== "entry" && mode !== "medical") { ensureConversation(); }
   }, [mode, convId]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
@@ -310,17 +351,34 @@ export default function Chat() {
   async function send(e?: FormEvent) {
     e?.preventDefault();
     const text = input.trim();
-    if ((!text && !pendingFile) || streaming || busy || !online) return;
+    // streaming/busy gate the UI but are async React state; sendingRef is the synchronous
+    // latch that blocks a second tap during this send's async pre-flight (GPS, conv-create,
+    // upload) before that state has flushed.
+    if ((!text && !pendingFile) || streaming || busy || sendingRef.current || !online) return;
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
-    const coords = await geo.getCoords();   // one-shot GPS fix, only now (if enabled)
+    sendingRef.current = true;
+
+    // --- Optimistic UI FIRST (synchronous), async work second. Everything the user should
+    // see the instant they hit Send happens here, BEFORE we await anything: the composer
+    // clears and the user's message/bubble appears immediately, regardless of how slow the
+    // GPS fix or the network turns out to be.
     const file = pendingFile;
+    const bubble = text || (file ? `📎 ${file.name}` : "");
     setInput(""); setPendingFile(null);
+    // Best-effort location stamp: start it now (so it runs concurrently with the post) but
+    // never block on it — capped at GEO_MAX_WAIT, resolves null if the radio is cold. The
+    // post fires un-stamped rather than freezing; awaited just before each network call.
+    const coordsP = geo.getCoords(GEO_MAX_WAIT);
 
     if (mode === "entry" || mode === "medical") {
+      // Optimistic capture bubble — the only immediate feedback these modes get (no reply).
+      const enId = ++entrySeq.current;
+      setEntries((xs) => [...xs, { id: enId, text: bubble, title: "", slug: "", pending: true }]);
       setBusy(true);
       try {
         const dest = mode === "medical" ? (curDest || undefined) : undefined;
+        const coords = await coordsP;
         const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords, dest);
         let labMsg = "";
         if (file) {
@@ -333,36 +391,63 @@ export default function Chat() {
             } catch { /* non-fatal: the note + attachment are saved regardless */ }
           }
         }
-        setEntries((xs) => [...xs, { text: (text || (file ? `📎 ${file.name}` : "")) + labMsg, title: r.title, slug: r.slug }]);
+        // Resolve the optimistic row in place (by id) → renders the "Saved:" chip.
+        setEntries((xs) => xs.map((en) => en.id === enId
+          ? { id: enId, text: bubble + labMsg, title: r.title, slug: r.slug }
+          : en));
       } catch (err) {
-        // Don't silently lose the entry: put the text back and tell the user.
-        setInput(text);
-        if (file) setPendingFile(file);
+        // Don't silently lose the entry: drop the optimistic row, restore the composer
+        // (only if the user hasn't typed something new), and tell them.
+        setEntries((xs) => xs.filter((en) => en.id !== enId));
+        setInput((cur) => cur || text);
+        if (file) setPendingFile((cur) => cur || file);
         alert("Couldn't save entry: " + (err instanceof Error ? err.message : "please try again."));
-      } finally { setBusy(false); setUploadPct(null); }
+      } finally { setBusy(false); setUploadPct(null); sendingRef.current = false; }
       return;
     }
 
-    if (!convId) return;
-    let extra = "";
-    if (mode === "assisted" && file) {
-      // Save the file to a note so there's something to attach it to. Skip
-      // auto-analysis: this carrier note has no real content to inform it.
-      const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
-      await uploadAttachment(r.slug, file, setUploadPct, false);
-      setUploadPct(null);
-      extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
-    }
-    const msg = (text + extra).trim();
+    // --- Chat modes (assisted/research). Show the user bubble + spinner immediately —
+    // even before the conversation id resolves — then queue the actual send behind
+    // ensureConversation() so a turn fired before convId is set is never dropped.
     atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
-    setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
+    setMessages((m) => [...m, { role: "user", content: bubble }, { role: "assistant", content: "" }]);
+    let bubbleShown = true;
     // Reset the typewriter cleanly for this new turn.
     bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = true;
     setStreaming(true);
     setStatus("Thinking…");
     let errored = false;
+    let cid: number | null = null;
+    // Remove the optimistic [user, empty-assistant] pair (only if still present) so a throw
+    // before any token is delivered doesn't leave a dangling half-turn on screen.
+    const dropOptimisticBubble = () => {
+      if (!bubbleShown) return;
+      bubbleShown = false;
+      setMessages((m) => (m.length >= 2 ? m.slice(0, -2) : m));
+    };
     try {
-      await streamChat(convId, msg, (ev) => {
+      cid = await ensureConversation();
+      let extra = "";
+      if (mode === "assisted" && file) {
+        // Save the file to a note so there's something to attach it to. Skip
+        // auto-analysis: this carrier note has no real content to inform it.
+        const coords = await coordsP;
+        const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
+        await uploadAttachment(r.slug, file, setUploadPct, false);
+        setUploadPct(null);
+        extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
+        // Fold the saved-note reference into the already-shown user bubble (it sits just
+        // before the empty assistant placeholder).
+        setMessages((m) => {
+          const c = [...m];
+          const ui = c.length - 2;
+          if (ui >= 0 && c[ui].role === "user") c[ui] = { role: "user", content: (text + extra).trim() };
+          return c;
+        });
+      }
+      const msg = (text + extra).trim();
+      const coords = await coordsP;   // resolved (or null) by now; bounded by GEO_MAX_WAIT
+      await streamChat(cid, msg, (ev) => {
         if (ev.type === "token") {
           if (ev.text) setStatus((s) => (s === "Responding…" ? s : "Responding…"));
           // Accumulate into the buffer; the typewriter loop reveals it gradually.
@@ -408,14 +493,27 @@ export default function Chat() {
           finishRef();
         });
       }
+    } catch (err) {
+      // A throw around conv-create / file-upload / the initial streamChat fetch — NOT an
+      // in-stream 'error' EVENT (handled above; that sets `errored` and keeps the turn).
+      // Roll back so nothing is lost: drop the optimistic bubble, restore the composer.
+      errored = true;
+      dropOptimisticBubble();
+      setInput((cur) => cur || text);
+      if (file) setPendingFile((cur) => cur || file);
+      alert("Couldn't send: " + (err instanceof Error ? err.message : "please try again."));
     } finally {
       streamActiveRef.current = false;
       setStreaming(false);
       setStatus("");
+      setUploadPct(null);
       setStagingTick((t) => t + 1);   // chat modes (assisted+research) share staging
+      sendingRef.current = false;
       // Re-sync from the server: the authoritative turn + any persisted approval
-      // ('event') records, correctly ordered. Skip on error to keep the ⚠️.
-      if (!errored && convId) { await loadMessages(convId); setApplied([]); setCharts([]); }
+      // ('event') records, correctly ordered. Use the captured `cid` (convId state may
+      // not have flushed yet if this send created the conversation). Skip on error to
+      // keep the ⚠️ / the restored composer.
+      if (!errored && cid) { await loadMessages(cid); setApplied([]); setCharts([]); }
     }
   }
 
@@ -472,14 +570,16 @@ export default function Chat() {
           );
         })}
         {/* Entry saves (this session): a user bubble + a link to the saved note. */}
-        {entries.map((en, i) => {
+        {entries.map((en) => {
           const label = en.title.startsWith("notes/daily/")
             ? ((en.text.split("\n").find((l) => l.trim()) || "entry").trim().slice(0, 40) || "entry")
             : en.title.replace(/^notes\//, "");
           return (
-            <div key={`en${i}`} style={{ display: "contents" }}>
+            <div key={`en${en.id}`} style={{ display: "contents" }}>
               {en.text && <div className="msg user">{en.text}</div>}
-              <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>
+              {en.pending
+                ? <span className="saved-chip" style={{ opacity: 0.55 }}><Icon name="check" size={14} /> Saving…</span>
+                : <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>}
             </div>
           );
         })}

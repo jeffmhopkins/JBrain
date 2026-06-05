@@ -159,6 +159,19 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
+  // A swipe-up from the left third of the composer (detected by the shell) cycles the mode.
+  useEffect(() => {
+    function cycle() {
+      setMode((m) => {
+        const next = MODES[(MODES.findIndex((x) => x.key === m) + 1) % MODES.length].key;
+        sessionStorage.setItem("jbrain_mode", next);
+        return next;
+      });
+    }
+    window.addEventListener("jbrain:cyclemode", cycle);
+    return () => window.removeEventListener("jbrain:cyclemode", cycle);
+  }, []);
+
   // Swipe navigation lives on the shell body (vertical-only); pages don't wire touch handlers.
   const slideFrom = useRef(16);   // px the mode-flash slides in from (button mode-change)
 

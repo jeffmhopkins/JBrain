@@ -7,6 +7,8 @@
 #
 # config keys:
 #   batch_limit — max articles per run (default 10; LLM call per article)
+#   auto_apply  — CAUTION: writes the reformatted articles DIRECTLY (versioned/undoable)
+#                 instead of staging them for review. Default false (stage for review).
 type: recite_kb
 category: Knowledge base
 config:

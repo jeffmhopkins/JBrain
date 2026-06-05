@@ -9,14 +9,25 @@ import time
 
 # Write/DDL keywords, plus: `meta` (holds the access-key hash — never readable
 # here), the `sqlite_*` schema tables (full-schema disclosure / recon), `recursive`
-# (CTE DoS), and dangerous SQLite functions.
+# (CTE DoS), the `pragma_*` table-valued functions (schema recon that bare
+# `\bpragma\b` misses — the underscore is not a word boundary), the internal/secret
+# tables, and dangerous SQLite functions. This text filter is the friendly first
+# line; the engine-level authorizer in db.py (_ro_authorizer) is the real backstop.
 _FORBIDDEN = re.compile(
     r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|"
     r"pragma|vacuum|reindex|begin|commit|rollback|recursive|meta|"
+    r"prompt_overrides|staging_actions|workflow_runs|action_defs|review_items|"
+    r"guided_specs|guided_sessions|research_specs|research_sessions|push_subscriptions|"
     r"sqlite_master|sqlite_schema|sqlite_temp_master|sqlite_temp_schema|sqlite_sequence|"
-    r"load_extension|readfile|writefile|fts3_tokenizer|zipfile)\b",
+    r"load_extension|readfile|writefile|fts3_tokenizer|zipfile)\b"
+    r"|\bpragma_",   # pragma_table_list / pragma_table_info(…) TVFs
     re.IGNORECASE,
 )
+
+# Strip string literals before keyword-scanning so legitimate content searches
+# (LIKE '%create%', a note titled 'meta-analysis', the replace() function) aren't
+# false-positives. The engine authorizer + query_only still guard the real boundary.
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
 
 _QUERY_TIMEOUT_S = 2.0          # per-query CPU/wall cap (watchdog interrupts)
 _MAX_CONCURRENT = 4             # cap parallel ad-hoc queries on the single process
@@ -34,7 +45,9 @@ def run_select(conn, sql: str, limit: int = 200):
         raise ValueError("only a single statement is allowed")
     if not re.match(r"^\s*(select|with)\b", sql, re.IGNORECASE):
         raise ValueError("only SELECT/WITH queries are allowed")
-    if _FORBIDDEN.search(sql):
+    # Scan with string literals neutralised so legitimate content searches
+    # (LIKE '%create%', title = 'meta-analysis') aren't falsely rejected.
+    if _FORBIDDEN.search(_STRING_LITERAL.sub("''", sql)):
         raise ValueError("query references a forbidden keyword, table, or function")
     limit = max(1, min(int(limit), 1000))
 

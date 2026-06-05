@@ -20,6 +20,9 @@ data/
 *.db
 *.db-*
 
+# Multi-agent review scratch (transient analysis artifacts)
+.review/
+
 # Editor / OS
 .DS_Store
 .idea/

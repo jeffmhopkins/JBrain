@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 from . import llm, prompts, wiki_guides, wikilinks
 
@@ -145,11 +146,14 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
     from . import entity_index
     extra = f"\nAdditional guidance: {instructions}\n" if instructions else ""
     roster = entity_index.roster(conn) or "(none yet)"
+    saved_places = ", ".join(
+        r["name"] for r in conn.execute("SELECT name FROM places ORDER BY name").fetchall()) or "(none)"
     from . import people
     prompt = (prompts.get("actions.wiki_outline", "")
               .replace("{owner}", people.owner_name(conn))
               .replace("{survey}", _survey_text(digest))
               .replace("{roster}", roster)
+              .replace("{saved_places}", saved_places)
               .replace("{instructions}", extra))
     try:
         text = llm.complete([{"role": "user", "content": prompt}], max_tokens=4000)
@@ -668,20 +672,42 @@ def scoped_known_titles(conn, title: str, all_titles, budget: int = 600) -> list
 
 
 # ---- KB write lock (advisory, atomic claim) ------------------------------------------
+# Re-entrancy depth per thread/key: a nightly batch can hold the lock and still call
+# create_article (which also acquires it) without self-deadlocking, while a SEPARATE
+# thread (e.g. a manual run) still sees the DB row and is correctly excluded.
+_kb_lock_depth = threading.local()
+
+
 def kb_lock_acquire(conn, key: str = "kb_write", ttl_s: int = 1800) -> bool:
     """Claim the KB write lock so manual ops, the scrub, and nightly jobs can't interleave
     mutations across separate connections. Atomic: INSERT OR IGNORE on a unique key — exactly
-    one caller wins. A holder older than ttl_s is reclaimed so a crash can't wedge the KB."""
+    one caller wins. A holder older than ttl_s is reclaimed so a crash can't wedge the KB.
+    Re-entrant within a thread: a nested acquire by the same holder succeeds without a new
+    DB claim (balanced by a nested release)."""
+    counts = getattr(_kb_lock_depth, "counts", None)
+    if counts is None:
+        counts = _kb_lock_depth.counts = {}
+    if counts.get(key, 0) > 0:
+        counts[key] += 1
+        return True
     conn.execute("CREATE TABLE IF NOT EXISTS kb_locks (key TEXT PRIMARY KEY, held_at INTEGER NOT NULL)")
     conn.execute("DELETE FROM kb_locks WHERE key=? AND held_at < CAST(strftime('%s','now') AS INTEGER) - ?",
                  (key, int(ttl_s)))
     cur = conn.execute(
         "INSERT OR IGNORE INTO kb_locks(key, held_at) VALUES (?, CAST(strftime('%s','now') AS INTEGER))", (key,))
     conn.commit()
-    return cur.rowcount == 1
+    if cur.rowcount == 1:
+        counts[key] = 1
+        return True
+    return False
 
 
 def kb_lock_release(conn, key: str = "kb_write") -> None:
+    counts = getattr(_kb_lock_depth, "counts", None) or {}
+    if counts.get(key, 0) > 1:
+        counts[key] -= 1       # inner (re-entrant) release: keep the DB claim
+        return
+    counts.pop(key, None)
     conn.execute("DELETE FROM kb_locks WHERE key=?", (key,))
     conn.commit()
 

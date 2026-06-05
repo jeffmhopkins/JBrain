@@ -89,6 +89,13 @@ const REVIEWS = [
   { id: 1, title: "Daily review — 2026-05-31", message: "Summarised 1 day of 'Daily Log'.", link_slug: "daily-log", created_at: "2026-05-31 07:00" },
 ];
 
+// Recently-dismissed notifications, surfaced on the Notification History page. The
+// real server scopes this to the last 24h; the demo just keeps a seeded list and
+// prepends anything dismissed during the session.
+const REVIEW_HISTORY: any[] = [
+  { id: 90, title: "Knowledge base updated", message: "Folded 2 entries into 'Health & Habits'.", link_slug: "health-habits", created_at: "2026-05-31 03:00", dismissed_at: "2026-05-31 08:15" },
+];
+
 // --- Action recipes (declarative pipelines) for the Actions card -----------
 const ACTION_DEFS: Record<string, any> = {
   synthesize: {
@@ -234,6 +241,7 @@ function match(path: string): any {
   if (p === "/api/auth/verify") return { ok: true };
   if (p === "/api/system/version") return { current: "demo", latest: null, update_available: false, release_url: null };
   if (p === "/api/reviews/count") return { pending: REVIEWS.length };
+  if (p === "/api/reviews/history") return REVIEW_HISTORY;
   if (p === "/api/reviews") return REVIEWS;
   if (p === "/api/workflows") return WORKFLOWS;
   if (p === "/api/workflows/action-types") return ACTION_TYPES;
@@ -273,7 +281,10 @@ export function demoResponse(path: string, method = "GET", body?: any): any {
     const dis = path.match(/\/api\/reviews\/(\d+)\/dismiss$/);
     if (dis) {
       const i = REVIEWS.findIndex((r) => r.id === Number(dis[1]));
-      if (i >= 0) REVIEWS.splice(i, 1);
+      if (i >= 0) {
+        const [item] = REVIEWS.splice(i, 1);
+        REVIEW_HISTORY.unshift({ ...item, dismissed_at: new Date().toISOString().slice(0, 19).replace("T", " ") });
+      }
       return { ok: true };
     }
     // Prompt override (PUT) / reset (DELETE) — persist for the session.

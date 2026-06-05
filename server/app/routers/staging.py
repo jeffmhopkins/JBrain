@@ -28,6 +28,32 @@ def _note_tags(conn, note_id: int) -> list[str]:
         (note_id,)).fetchall()]
 
 
+def _resolve_basis_note(conn, payload: dict, title: str, *, lists: bool = False):
+    """Resolve a destructive op's target note. If the proposal captured a `_basis`
+    (note_id + content_hash), resolve by ID and REFUSE a stale or identity-swapped
+    target (the note deleted & re-created under the same title between propose and
+    apply). Falls back to title for older rows that have no basis."""
+    basis = payload.get("_basis") or {}
+    if basis.get("note_id"):
+        row = conn.execute(
+            "SELECT id, title, kind, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
+            (basis["note_id"],)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=409, detail="The target note no longer exists — re-propose.")
+        if basis.get("content_hash"):
+            live = hashlib.sha256((row["content_md"] or "").encode("utf-8")).hexdigest()
+            if live != basis["content_hash"]:
+                raise HTTPException(status_code=409,
+                                    detail="The note changed since this was proposed — re-open it and re-propose.")
+        return row
+    note = notes_svc.get_by_title(conn, title)
+    if note is None and lists:
+        note = notes_svc.get_by_title(conn, notes_svc.root_title(title, "lists"))
+    if note is None:
+        raise HTTPException(status_code=404, detail=f"No note titled '{title}'")
+    return note
+
+
 def preview_action(conn, t: str, p: dict) -> dict | None:
     """A uniform before→after for a staged action — what apply WILL change — without
     writing. Mirrors _apply_action's resolution so the diff matches the real outcome.
@@ -57,7 +83,8 @@ def preview_action(conn, t: str, p: dict) -> dict | None:
         if t == "RENAME":
             cur = (p.get("title") or "").strip()
             note = notes_svc.get_by_title(conn, cur)
-            root = "kb" if (note and note["kind"] == "kb") else "notes"
+            root = ("kb" if (note and note["kind"] == "kb")
+                    else "loc" if (note and note["kind"] == "place") else "notes")
             return {"kind": "fields", "before": {"Title": cur},
                     "after": {"Title": notes_svc.root_title((p.get("new_title") or "").strip(), root)},
                     "label": "Rename note"}
@@ -165,6 +192,9 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             else:
                 root = "notes"
             title = notes_svc.root_title(title, root)
+            # create_only never clobbers: a colliding title is disambiguated to a new
+            # note (a deliberate, tested design — a stale CREATE/UPDATE must not
+            # overwrite an intervening note). See test_staged_create_does_not_clobber.
             notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True,
                                   kind=payload.get("kind"), **kw)
     elif action_type == "LINK":
@@ -172,25 +202,32 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         target_title = (payload.get("target_title") or "").strip()
         if not source_title or not target_title:
             raise HTTPException(status_code=400, detail="LINK action needs source_title and target_title")
-        source = notes_svc.get_by_title(conn, source_title)
-        if source and f"[[{target_title}]]" not in source["content_md"]:
-            new_content = source["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
-            notes_svc.upsert_note(conn, source["title"], new_content, **kw)
+        source_note = notes_svc.get_by_title(conn, source_title)
+        if source_note is None:
+            # Don't silently mark a no-op as 'applied' — the link was never created.
+            raise HTTPException(status_code=404, detail=f"No note titled '{source_title}' to link from")
+        if f"[[{target_title}]]" not in source_note["content_md"]:
+            new_content = source_note["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
+            notes_svc.upsert_note(conn, source_note["title"], new_content, **kw)
     elif action_type == "RENAME":
         cur_title = (payload.get("title") or "").strip()
         new_title = (payload.get("new_title") or "").strip()
         if not cur_title or not new_title:
             raise HTTPException(status_code=400, detail="RENAME needs the current title and a new_title")
-        note = notes_svc.get_by_title(conn, cur_title)
-        if note is None:
-            raise HTTPException(status_code=404, detail=f"No note titled '{cur_title}' to rename")
-        # Keep the note under its proper root (notes/ vs kb/) regardless of how the
-        # new title was phrased; rename in place (id-targeted) so inbound [[links]]
-        # are rewritten and the kind is preserved.
-        root = "kb" if note["kind"] == "kb" else "notes"
+        note = _resolve_basis_note(conn, payload, cur_title)
+        # Keep the note under its proper root (notes/ vs kb/ vs loc/) regardless of how
+        # the new title was phrased; rename in place (id-targeted) so inbound [[links]]
+        # are rewritten and the kind is preserved (loc/ notes must not become entries).
+        if note["kind"] == "kb":
+            root = "kb"
+        elif note["kind"] == "place":
+            root = "loc"
+        else:
+            root = "notes"
         new_title = notes_svc.root_title(new_title, root)
         try:
-            notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], **kw)
+            notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"],
+                                  kind=note["kind"], **kw)
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="A note with that title already exists.")
     elif action_type == "LIST_REMOVE_ITEM":
@@ -213,19 +250,17 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             raise HTTPException(status_code=409, detail=str(e))
         undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
     elif action_type == "DELETE_LIST":
-        # Resolve by the title as given, then under lists/ — don't force-re-root or
-        # require kind='list' (the user confirmed deleting this note).
+        # Resolve by basis id (refusing a stale/identity-swapped target), else by the
+        # title as given then under lists/ — don't force-re-root or require kind='list'.
         raw = (payload.get("list_title") or payload.get("title") or "").strip()
-        note = notes_svc.get_by_title(conn, raw) or notes_svc.get_by_title(conn, notes_svc.root_title(raw, "lists"))
-        if note is None:
-            raise HTTPException(status_code=404, detail=f"No list titled '{raw}' to delete")
+        note = _resolve_basis_note(conn, payload, raw, lists=True)
         notes_svc.soft_delete(conn, note["id"])
         undo = {"op": "restore_note", "note_id": note["id"]}
     elif action_type == "DELETE":
         title = (payload.get("title") or "").strip()
-        note = notes_svc.get_by_title(conn, title)
-        if note is None:
-            raise HTTPException(status_code=404, detail=f"No note titled '{title}' to delete")
+        # Resolve by basis id when available so a re-created same-title note (identity
+        # swap) or a since-edited note isn't deleted out from under the user.
+        note = _resolve_basis_note(conn, payload, title)
         notes_svc.soft_delete(conn, note["id"])
         undo = {"op": "restore_note", "note_id": note["id"]}
     elif action_type == "ADD_PLACE":
@@ -271,9 +306,12 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
                                           note_id=note["id"], source="user", kind="place")
                     nslug = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
                     conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (nslug["slug"], pid))
-        if payload.get("lat") is not None and payload.get("lon") is not None:
-            conn.execute("UPDATE places SET lat = ?, lon = ? WHERE id = ?",
-                         (payload["lat"], payload["lon"], pid))
+        # Update lat/lon independently (matching the preview), so a payload that
+        # carries only one coordinate isn't silently dropped.
+        if payload.get("lat") is not None:
+            conn.execute("UPDATE places SET lat = ? WHERE id = ?", (payload["lat"], pid))
+        if payload.get("lon") is not None:
+            conn.execute("UPDATE places SET lon = ? WHERE id = ?", (payload["lon"], pid))
         if payload.get("radius_m") is not None:
             conn.execute("UPDATE places SET radius_m = ? WHERE id = ?",
                          (max(20, min(int(payload["radius_m"]), 20000)), pid))
@@ -427,7 +465,13 @@ def undo_action(action_id: int):
         conn.execute("UPDATE share_links SET status='revoked', revoked_at=datetime('now') WHERE token=?",
                      (undo.get("token"),))
     elif op == "reactivate_share":
-        if undo.get("token"):
+        # Reactivate exactly the tokens this revoke touched (precise undo). Older
+        # rows may carry a single token or a note title (back-compat).
+        tokens = undo.get("tokens")
+        if tokens:
+            conn.executemany("UPDATE share_links SET status='active', revoked_at=NULL WHERE token=?",
+                             [(t,) for t in tokens])
+        elif undo.get("token"):
             conn.execute("UPDATE share_links SET status='active', revoked_at=NULL WHERE token=?", (undo["token"],))
         elif undo.get("title"):
             note = notes_svc.get_by_title(conn, undo["title"])

@@ -116,17 +116,23 @@ def run_now(wf_id: int):
 @router.get("/{wf_id}/run-status")
 def run_status(wf_id: int):
     """Latest run's state: status is 'running' until the job finishes, then
-    'ok' | 'error' | 'skipped'."""
+    'ok' | 'error' | 'skipped'. `step_since`/`now` let the watch modal show how long
+    the CURRENT step has been running (a long LLM step looks frozen otherwise) and
+    survive a modal reopen / page reload mid-run."""
+    from datetime import datetime, timezone
     row = get_conn().execute(
         "SELECT id, started_at, status, detail FROM workflow_runs "
         "WHERE workflow_id = ? ORDER BY id DESC LIMIT 1",
         (wf_id,),
     ).fetchone()
     if not row:
-        return {"status": "none", "detail": "", "events": []}
+        return {"status": "none", "detail": "", "events": [], "step_since": None, "now": None}
     d = dict(row)
     prog = wf_svc.run_progress(row["id"])          # live step trace for the watch modal
-    d["events"] = [e["name"] for e in prog["events"]] if prog else []
+    evs = prog["events"] if prog else []
+    d["events"] = [e["name"] for e in evs]
+    d["step_since"] = evs[-1]["at"] if evs else None   # when the latest step began
+    d["now"] = datetime.now(timezone.utc).isoformat()  # server clock (avoids skew)
     return d
 
 

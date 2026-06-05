@@ -27,6 +27,11 @@ export default function TalkPanel({ slug }: { slug: string }) {
 
   const open = items.filter((t) => !t.resolved_at);
   const done = items.filter((t) => t.resolved_at);
+  // Keep the actionable items (owner directives, conflicts/questions/todos) up top; fold
+  // the inert informational 'note'/'decision' logs behind a summary so they never crowd them.
+  const PRIORITY = new Set(["directive", "conflict", "question", "todo"]);
+  const primary = open.filter((t) => PRIORITY.has(t.kind) || t.author === "user");
+  const minor = open.filter((t) => !PRIORITY.has(t.kind) && t.author !== "user");
 
   return (
     <div style={{ marginTop: 20 }}>
@@ -37,13 +42,27 @@ export default function TalkPanel({ slug }: { slug: string }) {
         Add a directive to steer the next pass.
       </p>
 
-      {open.map((t) => (
+      {primary.map((t) => (
         <div key={t.id} className="talk-item">
           <span title={t.kind}>{KIND_ICON[t.kind] || "•"}</span>
           <span className="talk-text">{t.body}{t.author === "user" && <em className="muted"> — you</em>}</span>
         </div>
       ))}
       {open.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No open items.</p>}
+
+      {minor.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
+            {minor.length} note{minor.length > 1 ? "s" : ""}
+          </summary>
+          {minor.map((t) => (
+            <div key={t.id} className="talk-item muted">
+              <span title={t.kind}>{KIND_ICON[t.kind] || "•"}</span>
+              <span className="talk-text">{t.body}</span>
+            </div>
+          ))}
+        </details>
+      )}
 
       <div className="talk-add">
         <select className="modal-select" value={kind} onChange={(e) => setKind(e.target.value)}>

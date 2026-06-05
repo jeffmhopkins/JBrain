@@ -15,6 +15,46 @@ _initialized = False
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
+# --- Read-only connection authorizer ----------------------------------------
+# Engine-level (not text-level) defense for the ad-hoc SQL path. Immune to the
+# keyword-bypass tricks the regex filter can miss (e.g. the `pragma_table_*`
+# table-valued functions, or `char()`-encoded identifiers). Complements both the
+# keyword filter and PRAGMA query_only=ON.
+
+# Internal/secret tables: no read is ever legitimate through ad-hoc SQL.
+_RO_DENY_TABLES = {
+    "meta", "prompt_overrides", "staging_actions", "workflows", "workflow_runs",
+    "action_defs", "review_items", "guided_specs", "guided_sessions",
+    "research_specs", "research_sessions", "push_subscriptions",
+}
+# Secret columns on otherwise-readable content tables (capability tokens / keys).
+_RO_DENY_COLUMNS = {
+    ("share_links", "token"), ("share_links", "bind_secret"),
+    ("people", "location_key"),
+}
+# Schema-introspection pragmas (incl. the `pragma_*` TVF form) — full-schema recon.
+_RO_DENY_PRAGMAS = {
+    "table_list", "table_info", "table_xinfo", "index_list", "index_info",
+    "index_xinfo", "database_list", "function_list", "module_list",
+    "collation_list", "foreign_key_list", "stats",
+}
+
+
+def _ro_authorizer(action, arg1, arg2, db_name, trigger):
+    """SQLite authorizer for the read-only ad-hoc connection. Denies schema-recon
+    pragmas and reads of secret tables/columns; everything else is allowed (writes
+    are already blocked by PRAGMA query_only=ON)."""
+    if action == sqlite3.SQLITE_PRAGMA and (arg1 or "").lower() in _RO_DENY_PRAGMAS:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_READ:
+        table = (arg1 or "").lower()
+        if table in _RO_DENY_TABLES:
+            return sqlite3.SQLITE_DENY
+        if (table, (arg2 or "").lower()) in _RO_DENY_COLUMNS:
+            return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def _connect(*, query_only: bool = False) -> sqlite3.Connection:
     settings = get_settings()
     Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +73,9 @@ def _connect(*, query_only: bool = False) -> sqlite3.Connection:
         # filter, so ad-hoc SELECTs can never mutate the DB even if the filter is
         # bypassed. (PRAGMA itself is rejected by the filter, so it can't be undone.)
         conn.execute("PRAGMA query_only=ON")
+        # Engine-level authorizer (set AFTER setup pragmas): blocks schema-recon
+        # pragmas and secret table/column reads that the keyword filter can miss.
+        conn.set_authorizer(_ro_authorizer)
     return conn
 
 
@@ -618,8 +661,8 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
-def get_meta(key: str, default: str | None = None) -> str | None:
-    row = get_conn().execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+def get_meta(key: str, default: str | None = None, conn: sqlite3.Connection | None = None) -> str | None:
+    row = (conn or get_conn()).execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
 
 

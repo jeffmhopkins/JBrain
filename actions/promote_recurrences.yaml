@@ -65,11 +65,13 @@ steps:
           - do: write_note
             with: { title: "{{ item.title }}", content_md: "{{ item.content_md }}", kind: kb, version_note: "recurring pattern" }
 
-      # Mark the cluster's entries consumed (whether staged or written) so they're
-      # never re-clustered. (Rejecting a staged pattern is your call, not a loss —
-      # the pattern WAS surfaced.)
+      # Mark the cluster's entries consumed ONLY when actually written (auto_apply).
+      # On the staging path we leave them un-consumed so that REJECTING a staged
+      # pattern doesn't permanently bury its source entries — they resurface on the
+      # next run until the pattern is genuinely accepted. (This action is manual, so
+      # re-surfacing an un-actioned pattern is the intended behaviour, not spam.)
       - do: mark_promoted
-        when: "{{ checked.valid }}"
+        when: "{{ config.auto_apply and checked.valid }}"
         with: { ids: "{{ item.member_ids }}" }
 
   - do: create_review

@@ -33,7 +33,7 @@ modes:
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place, reverse_geocode, forward_geocode, drug_reference, list_trips, trip_detail, add_list_item, read_list,
             set_item_checked, set_item_priority, add_sublist, log_entry,
-            set_tags, create_share_link, create_guided_share,
+            set_tags, save_place, create_share_link, create_guided_share,
             create_research_share, list_share_links, revoke_share_link, kb_coverage_check,
             kb_citation_cleanup, kb_audit, kb_promote_recurrences, kb_taxonomy_health,
             kb_needed_links, kb_research_links, kb_read_talk, kb_add_directive, propose_actions]
@@ -156,6 +156,7 @@ tools:
   entries_at_place: "When the user asks what they noted AT a place ('what have I jotted at the gym', 'notes from the office last month'): entries whose capture coordinate is within range of a saved place / note / 'lat,lon', optionally filtered by capture time and kind. Read-only — this is place∩time, which nearby_notes (radius only) and a plain query can't combine."
   reverse_geocode: "When the user wants the STREET ADDRESS for a coordinate — 'what's the address where I am / where I was at noon', or for a given lat/lon: returns a SUSPECTED address from OpenStreetMap. It's external and a best guess, so present it as 'suspected'/'looks like', never assert it as fact. Omit lat/lon to use the location shared in this conversation. If a saved place sits on the spot it's shown too (that's the authoritative local label — prefer it). Results are cached. For raw coordinates use location_fixes; for distance use geo_distance."
   forward_geocode: "When the user gives an ADDRESS or place name and wants its COORDINATES ('where is 500 Main St', 'find the lat/lon of City Hall', 'put this address on the map'): returns ranked SUSPECTED coordinate matches from OpenStreetMap — present them as candidates, not certainty. Useful to locate an address or to seed a saved place. Read-only; results are cached."
+  save_place: "When the owner wants to SAVE a place so JBrain tracks visits/trail there ('save Portland VA Hospital as a place', 'add the gym to my places', 'remember this hospital as a place'): forward-geocodes the name and creates a saved geofence (+ its loc/ page). An already-saved name is reported as-is; a wrong location can be deleted on the Map. Use only when they clearly want to SAVE/track a place — for a one-off 'where is X' lookup use forward_geocode instead."
   drug_reference: "When the user asks for authoritative info or a reference link for a MEDICATION ('what is metformin', 'link me the MedlinePlus page for my Tylenol', 'official info on lisinopril'): returns the MedlinePlus consumer drug page, resolved via RxNorm (NLM, public domain). It's a LINK to a reputable source, not medical advice — present it as such and never substitute your own clinical claims. An approximate name match is flagged as such. Read-only; cached."
   list_trips: "When the user asks about TRIPS / journeys / drives / their commute ('my trips this week', 'where did Allan drive yesterday', 'how was my commute', 'longest trip last month'): the server has already detected and measured each trip (a journey between two stops), so this returns them ready-made — start→end places, distance, duration, max speed — newest first. Pass `person` for someone other than the owner and optional `since`/`until` (owner's local time). Prefer this over re-deriving from raw fixes. Read-only. Use trip_detail with a trip's #id for its stops and full speed breakdown."
   trip_detail: "Full breakdown of ONE trip by its #id (from list_trips): exact distance vs straight-line, duration, avg + max speed, and every geofence it passed through with dwell time. Read-only."
@@ -275,8 +276,8 @@ actions:
         your own training. If the notes just mention a topic, a one-line STUB is the correct
         article; do not pad it into a full encyclopedia entry. The shapes below are a target
         ONLY for sections your sources actually support; leave the rest out. When a topic
-        deserves general background you don't have, keep the stub and flag it for an external
-        reference (a talk todo: "External reference needed: <topic>").
+        deserves general background you don't have, just keep the stub — do NOT add a talk
+        item about it (a separate audit handles external fills).
 
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
@@ -444,6 +445,13 @@ actions:
     Groups article for a recurring shared workplace/organisation too. Make a People
     article for each recurring person, a Places article for each recurring place, etc.
 
+    SAVED PLACES — the owner's geofenced places (their authoritative names):
+    {saved_places}
+    For any of these the notes discuss, title the article kb/Places/<exact saved name> and
+    route EVERY mention of that location (however the notes phrase it — "the house", "work",
+    an address) to that one article. NEVER fork a second, differently-named Places article
+    for a place that already has a saved name.
+
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
     {instructions}
@@ -466,8 +474,9 @@ actions:
     history, dosages or any "common knowledge" from your own training — even if you know it
     and it would make the entry look complete. If the notes touch a topic only lightly,
     write a SHORT STUB; a stub is the correct, faithful result, not a failure. When a
-    Reference topic clearly deserves general background the notes don't provide, keep it a
-    stub and add a talk todo: "External reference needed: <topic>". Never pad.
+    Reference topic clearly deserves general background the notes don't provide, just keep
+    it a stub — do NOT add a talk item about it (a separate audit handles external fills).
+    Never pad.
 
     CROSS-LINKS — link everything that has a home, invent nothing. You may write [[...]]
     ONLY for: (a) the exact source-note titles below (for citations), and (b) an article in
@@ -490,14 +499,18 @@ actions:
     drifting value AND its anchor (e.g. a birthdate), encode it as a token rather than
     copying the stale number.
 
-    TALK (optional): if you made a notable choice (a merge, an exclusion), found the
-    sources in CONFLICT, or have an open question worth revisiting later, append AFTER the
-    article a fenced block:
+    TALK (optional): append a block ONLY for something someone could ACT ON — a notable
+    choice you made (a merge, an exclusion), a real CONFLICT between sources, or a question
+    a FUTURE source could plausibly answer. Append AFTER the article a fenced block:
     ```talk
-    [{"kind": "decision|conflict|question|todo", "body": "one concise sentence"}]
+    [{"kind": "decision|conflict|question|todo|note", "body": "one concise sentence"}]
     ```
-    Keep it to genuinely useful entries; omit the block entirely if there's nothing worth
-    noting. It is recorded separately and stripped from the article.
+    NEVER raise an item that merely observes the article is a stub, thin, or minimal, that
+    more / richer / additional source notes are needed, or to "revisit when more notes
+    exist" — a stub is the correct, faithful result, NOT a problem, and there is nothing to
+    do about it. If you must log such an observation at all, use kind "note" (an inert log),
+    never "todo"/"question". Most articles need NO talk block; omit it when in doubt. It is
+    recorded separately and stripped from the article.
 
     HOUSE STYLE
     {general_guide}
@@ -615,8 +628,14 @@ actions:
     CLOSES only if its outcome is answered, applied, reconciled, or moot; outcome
     "unresolvable" (or a missing/unknown outcome) leaves it OPEN for a later pass — so use
     "unresolvable" with a one-line `how` whenever the sources still don't let you settle it.
-    "new" is optional — raise it for something genuinely worth a later look, including a
-    split/fold/merge hint as a "restructure" per above.
+    "new" is optional — raise it ONLY for something actionable: a real source conflict, a
+    question a future source could answer, or a split/fold/merge hint as a "restructure" per
+    above. NEVER add an item that merely says the article is a stub / thin / minimal, that
+    more or richer source notes are needed, or to "revisit when more notes arrive" — that is
+    not a conflict, question, or directive and there is nothing to do about it; prefer adding
+    nothing. If an OPEN item you examined is itself only such a "stub / needs more notes /
+    revisit later" observation (not a real conflict, answerable question, or owner directive),
+    resolve it "moot" — it should never have been open.
 
     HOUSE STYLE
     {general_guide}

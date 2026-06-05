@@ -18,6 +18,7 @@ import EntitiesPage from "./pages/EntitiesPage";
 import SqlConsole from "./pages/SqlConsole";
 import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
+import NotificationHistoryPage from "./pages/NotificationHistoryPage";
 import AdvancedHome from "./pages/AdvancedHome";
 import ActionsPage from "./pages/ActionsPage";
 import SystemPage from "./pages/SystemPage";
@@ -153,6 +154,7 @@ export default function App() {
                 <Route path="/flows" element={<WorkflowsPage />} />
                 <Route path="/system" element={<SystemPage />} />
                 <Route path="/review" element={<ReviewPage />} />
+                <Route path="/notifications" element={<NotificationHistoryPage />} />
                 <Route path="/sql" element={<SqlConsole />} />
                 <Route path="*" element={<Navigate to="/chat" replace />} />
               </Routes>

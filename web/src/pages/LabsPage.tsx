@@ -124,6 +124,7 @@ export default function LabsPage() {
           </button>
         ))}
       </div>
+      <div style={{ margin: "2px 0 10px" }}><LabShareCreator analytes={analytes} /></div>
 
       {cur && series && win && (
         <div className="lab-chart-wrap">
@@ -182,8 +183,6 @@ export default function LabsPage() {
           </details>
         </div>
       )}
-
-      <LabShareCreator analytes={analytes} />
     </div>
   );
 }

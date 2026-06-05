@@ -119,3 +119,23 @@ def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
         conn.commit()
     preview = "\n".join(f"{d['old']}  →  {d['new']}" for d in done[:25])
     return {"count": len(done), "dry_run": dry_run, "sample": done[:20], "preview": preview}
+
+
+def title_one(conn, note_id: int) -> str | None:
+    """Title ONE note if it's a bare dated leaf (notes/YYYY/MM/DD/N -> '… - generated title').
+    The per-note version of title_batch (for the note-view reanalyze button). No-op (returns
+    None) for an already-titled note, a non-dated/kb note, or with no LLM. Does NOT commit."""
+    if not llm.has_credentials():
+        return None
+    r = conn.execute(
+        "SELECT id, title, content_md, kind FROM notes WHERE id=? AND deleted_at IS NULL", (note_id,)
+    ).fetchone()
+    if not r or r["kind"] not in ("entry", "daily") or not _BARE_DATED.match(r["title"]):
+        return None
+    gen = _gen_title(r["content_md"])
+    if not gen:
+        return None
+    new_title = f"{r['title']} - {gen}"
+    notes_svc.upsert_note(conn, new_title, r["content_md"] or "", note_id=r["id"],
+                          version_note="titled: generated leaf title")
+    return new_title

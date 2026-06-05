@@ -1325,6 +1325,32 @@ def test_note_analysis_force_refresh_endpoint(client, monkeypatch):
     assert client.get(f"/api/notes/{slug}/analysis").json()["entities"][0]["type"] == "animal"
 
 
+def test_reanalyze_endpoint_also_titles_bare_dated_note(client, monkeypatch):
+    """The reanalyze button folds in the title check: a bare dated note with no prior
+    analysis gets BOTH a generated title (rename) and a fresh analysis in one call."""
+    import json
+    from app.db import get_conn
+    from app.services import llm
+    conn = get_conn()
+    r = client.post("/api/notes", json={"title": "notes/2026/06/04/01", "content_md": "Rex is my dog."}).json()
+    slug = r["slug"]
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+
+    def fake_complete(messages, **kw):
+        if kw.get("max_tokens") == 40:                    # title generation call
+            return "Rex the dog"
+        return json.dumps({"gist": "Rex", "facts": ["Rex is a dog"],          # analysis call
+                           "entities": [{"type": "animal", "name": "Rex"}], "domain": "People", "dates": []})
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    out = client.post(f"/api/notes/{slug}/analysis").json()
+    assert out["title"] == "notes/2026/06/04/01 - Rex the dog"   # title check renamed it
+    assert out["slug"] != slug                                   # → new slug for the panel to follow
+    assert out["entities"][0]["type"] == "animal"               # and analysis ran fresh
+    assert client.get(f"/api/notes/{out['slug']}/analysis").json()["domain"] == "People"
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

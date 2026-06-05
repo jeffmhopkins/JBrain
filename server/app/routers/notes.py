@@ -134,8 +134,10 @@ def note_analysis(slug: str):
 @router.post("/{slug}/analysis")
 def refresh_note_analysis(slug: str):
     """Force-recompute THIS note's analysis sidecar (ignoring the content-hash cache) — the
-    per-note 'reanalyze' button. Re-aggregates the entity index when it changes, so the
-    note's entities/types update everywhere. Returns the fresh analysis (or {} with no LLM)."""
+    per-note 'reanalyze' button. Also runs the title check (a bare dated note gets a
+    generated leaf title) so the two passes don't have to be run separately, and re-aggregates
+    the entity index when the analysis changes. Returns the fresh analysis plus the note's
+    (possibly renamed) slug/title."""
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -143,11 +145,15 @@ def refresh_note_analysis(slug: str):
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")
     from ..services import note_analysis as na
-    from ..services import entity_index
+    from ..services import entity_index, note_normalize
+    note_normalize.title_one(conn, row["id"])          # title check first (may rename the note)
     if na.analyze(conn, row["id"], force=True):
-        entity_index.rebuild(conn)            # rebuild commits; refresh browse/search too
+        entity_index.rebuild(conn)                     # rebuild commits; refresh browse/search too
     conn.commit()
-    return na.get(conn, row["id"]) or {}
+    cur = conn.execute("SELECT slug, title FROM notes WHERE id = ?", (row["id"],)).fetchone()
+    out = na.get(conn, row["id"]) or {}
+    out["slug"], out["title"] = cur["slug"], cur["title"]
+    return out
 
 
 class TalkIn(BaseModel):

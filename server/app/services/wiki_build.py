@@ -1127,30 +1127,89 @@ def _apply_maintain(conn, out: dict, version_note: str) -> tuple[bool, int]:
     return changed, closed
 
 
+_MAINT_WATERMARK = "kb_maintain:since"
+
+
+def _now_sec(conn) -> str:
+    # article_talk.created_at is SECOND precision (datetime('now')); take the watermark at
+    # the same precision so the `>=` gate below is exact, never off by a sub-second.
+    return conn.execute("SELECT strftime('%Y-%m-%d %H:%M:%S','now') AS n").fetchone()["n"]
+
+
 def maintain_batch(conn, limit: int = 20) -> dict:
-    """Run the maintenance pass over articles that have open talk items. Applies a valid
-    revision (versioned), resolves the items the model addressed (recording HOW), and
-    records any new items. Returns a summary."""
-    rows = conn.execute(
-        "SELECT DISTINCT t.article_title AS title FROM article_talk t "
+    """Run the maintenance pass — but only over articles with a talk item raised SINCE the
+    last pass (a watermark), not every article with any open item. This is the compute gate:
+    an article whose only open items are old unsettled ones with no new directive gets
+    skipped (its sources changing is update_batch's job — that pass re-examines all its open
+    items). So maintenance specifically picks up NEW owner directives / writer-raised items.
+
+    Applies each valid revision (versioned), closes the items the model genuinely settled
+    (recording HOW), records any new items, and advances the watermark.
+
+    Watermark discipline (mirrors update_batch): advance only over the LEADING run of new
+    items whose article succeeded — a failed (or deferred-by-cap) article holds the watermark
+    at that item, so nothing is silently skipped; the next run retries from there. First run
+    drains the whole existing backlog of open items once, then gates on newness thereafter."""
+    from ..db import get_meta, set_meta
+    since = get_meta(_MAINT_WATERMARK)
+    if since is None:
+        since = ""                       # first run: every currently-open item qualifies
+    if not llm.has_credentials():
+        # Don't advance with no key, or these items would be skipped forever.
+        return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0,
+                "kept_open": 0, "failed": 0, "skipped": "no LLM credentials"}
+
+    # Open items raised at/after the watermark second (oldest first), each tied to a live kb
+    # article. `>=` (with a second-precision watermark) is at-least-once: an item created in
+    # the watermark's own second is re-examined rather than risk being skipped.
+    items = conn.execute(
+        "SELECT t.id, t.created_at, t.article_title AS title FROM article_talk t "
         "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive') "
+        "AND t.created_at >= ? "
         "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
-        "ORDER BY t.article_title LIMIT ?",
-        (int(limit),)).fetchall()
+        "ORDER BY t.created_at, t.id",
+        (since,)).fetchall()
+    if not items:
+        # Quiet night (no new items): no LLM spent — just advance the clock so it keeps moving.
+        set_meta(conn, _MAINT_WATERMARK, _now_sec(conn)); conn.commit()
+        return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0, "kept_open": 0, "failed": 0}
+
+    # Distinct articles in item-creation order, capped at `limit`; the rest are deferred and
+    # (like failures) hold the watermark so they're picked up next run.
+    seen, ordered = set(), []
+    for it in items:
+        if it["title"] not in seen:
+            seen.add(it["title"]); ordered.append(it["title"])
+    deferred = set(ordered[int(limit):])
+    work = ordered[:int(limit)]
+
     known = _known_titles(conn)
     changed = resolved = examined = failed = 0
-    for row in rows:
-        out = maintain_one(conn, row["title"], known)
+    bad = set(deferred)
+    for title in work:
+        out = maintain_one(conn, title, known)
         if not out["ok"]:
             failed += 1
+            bad.add(title)
             continue
         did_change, n_closed = _apply_maintain(conn, out, "maintenance pass")
         changed += 1 if did_change else 0
         resolved += n_closed
         examined += len(out["resolved"])
+
+    # Advance over the leading run of items whose article succeeded; stop at the first item
+    # belonging to a failed/deferred article so it (and everything after) is retried. On a
+    # fully-clean run, jump to now so old processed items don't re-qualify next pass.
+    new_wm = _now_sec(conn)
+    for it in items:
+        if it["title"] in bad:
+            new_wm = it["created_at"]
+            break
+    set_meta(conn, _MAINT_WATERMARK, new_wm)
     conn.commit()
-    return {"articles": len(rows), "changed": changed, "resolved": resolved,
-            "examined": examined, "kept_open": examined - resolved, "failed": failed}
+    return {"articles": len(work), "changed": changed, "resolved": resolved,
+            "examined": examined, "kept_open": examined - resolved,
+            "failed": failed, "deferred": len(deferred)}
 
 
 def _articles_citing(conn, note_id: int) -> set[str]:

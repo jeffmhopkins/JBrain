@@ -1902,6 +1902,49 @@ def test_wiki_maintain_keeps_unsettled_items_open(client, monkeypatch):
     assert not talk[q2]["resolved_at"]      # answered-but-no-edit → downgraded, stays open
 
 
+def test_wiki_maintain_change_gated(client, monkeypatch):
+    """The maintenance pass only spends LLM calls on articles with a talk item raised SINCE
+    the last run (a watermark). A first run drains the existing backlog; a second run with no
+    new items is a true no-op (it must NOT re-grind the same still-open items) — and a freshly
+    added directive after that re-arms exactly one article."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src3", "Cy volunteers around town.")
+    ns.upsert_note(conn, "kb/People/Cy",
+                   "# Cy\nCy is a long-time community volunteer in town.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/src3]] — 2026-06-01\n", kind="kb")
+    qid = article_talk.add(conn, "kb/People/Cy", "question", "Which organizations does Cy serve?")
+    # Pin the backlog item to a clearly-past second so the watermark advances cleanly past it
+    # (in real life items are raised during the day and maintenance runs at night).
+    conn.execute("UPDATE article_talk SET created_at='2026-01-01 00:00:00' WHERE id=?", (qid,))
+    conn.commit()
+
+    calls = {"n": 0}
+
+    def fake_complete(*a, **k):
+        calls["n"] += 1
+        return ("# Cy\nCy is a long-time community volunteer in town.[^s1]\n\n"
+                "## References\n[^s1]: [[notes/src3]] — 2026-06-01\n"
+                '\n```maintain\n{"resolved": []}\n```\n')
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    r1 = wiki_build.maintain_batch(conn, limit=10)           # first run: drains the backlog
+    assert r1["articles"] == 1 and calls["n"] >= 1
+    n_after_first = calls["n"]
+
+    r2 = wiki_build.maintain_batch(conn, limit=10)           # nothing new → no-op, no LLM call
+    assert r2["articles"] == 0 and calls["n"] == n_after_first
+
+    # A new directive (created after the watermark) re-arms exactly this article.
+    article_talk.add(conn, "kb/People/Cy", "directive", "Mention how long Cy has volunteered.")
+    conn.commit()
+    r3 = wiki_build.maintain_batch(conn, limit=10)
+    assert r3["articles"] == 1 and calls["n"] > n_after_first
+
+
 def test_review_open_talk_opens_session(client):
     """The build's review step posts a Review card per article with unresolved talk items,
     so they're worked through the inbox instead of ticked off in the panel."""

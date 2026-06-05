@@ -1,11 +1,13 @@
 # Knowledge-base MAINTENANCE — runs nightly at 03:00, after the incremental update (02:00).
 #
-# Addresses the OPEN talk items on existing articles (the owner's directives + the
-# conflicts/questions the writer raised — including any the 2am update just surfaced)
-# against each article's sources, rather than rebuilding the whole KB. Edits are
-# versioned/undoable; items it settles are closed with a note of how, and anything left
-# open becomes a Review card. It only spends LLM calls when there are open items, so a
-# quiet night is a no-op.
+# Addresses talk items raised SINCE THE LAST PASS on existing articles (the owner's new
+# directives + the conflicts/questions the writer raised — including any the 2am update just
+# surfaced) against each article's sources, rather than rebuilding the whole KB. A watermark
+# gates the work: an article whose only open items are old/unsettled ones with no new
+# directive is skipped (its sources changing is the 2am update's job — that pass re-examines
+# all of an article's open items). Edits are versioned/undoable; items it settles are closed
+# with a note of how, and anything left open becomes a Review card. It only spends LLM calls
+# when there are NEW items, so a quiet night is a true no-op.
 #
 # Requires an Anthropic key; no-ops cleanly without one. Also runnable on demand from the
 # Workflows page.

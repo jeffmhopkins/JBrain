@@ -261,10 +261,11 @@ def _p_wiki_maintain(ctx, limit=20):
     return wiki_build.maintain_batch(ctx.conn, int(limit))
 
 
-def _p_wiki_update(ctx, limit=40):
+def _p_wiki_update(ctx, limit=40, new_subject_min=2, reference_subject_min=1):
     """Component 3 (incremental): flow notes changed since the watermark into existing articles."""
     from . import wiki_build
-    return wiki_build.update_batch(ctx.conn, int(limit))
+    return wiki_build.update_batch(ctx.conn, int(limit), new_subject_min=int(new_subject_min),
+                                   ref_subject_min=int(reference_subject_min))
 
 
 def _p_flag_ungrounded_reference(ctx):
@@ -1314,7 +1315,9 @@ _PRIMITIVE_META: dict[str, dict] = {
     "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",
                       "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_update": {"summary": "Flow notes changed since the watermark into existing articles (incremental).",
-                    "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+                    "inputs": [{"name": "limit", "type": "int"},
+                               {"name": "new_subject_min", "type": "int"},
+                               {"name": "reference_subject_min", "type": "int"}], "output": "dict"},
     "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
                                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",

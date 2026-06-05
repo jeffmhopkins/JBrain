@@ -13,11 +13,18 @@
 #
 # config keys:
 #   limit  — max changed notes to process per run (default 40; re-run/schedule drains more)
+#   new_subject_min — mentions before a new person/place/group/thing earns its own article
+#                     (default 2; one mention is usually noise)
+#   reference_subject_min — same, for Reference concepts (condition/medication/procedure/
+#                     concept). Default 1: a single pasted definition is article-worthy; the
+#                     structure lint still turns a thin one-off into a nudge, not a junk page.
 #   review — post a review summary + reopen sessions for anything still open (default true)
 type: wiki_update
 category: Knowledge base
 config:
   - { key: limit, label: Max changed notes per run, type: number, default: 40 }
+  - { key: new_subject_min, label: Mentions before a new subject gets an article, type: number, default: 2 }
+  - { key: reference_subject_min, label: Mentions before a Reference concept gets an article, type: number, default: 1 }
   - { key: review, label: Post review cards, type: review, default: true }
 steps:
   # 0. Make sure changed notes are analyzed + the entity index reflects them (for routing).
@@ -33,7 +40,10 @@ steps:
   # 1. Flow the changes into the existing articles.
   - id: upd
     do: wiki_update
-    with: { limit: "{{ config.limit | default(40) }}" }
+    with:
+      limit: "{{ config.limit | default(40) }}"
+      new_subject_min: "{{ config.new_subject_min | default(2) }}"
+      reference_subject_min: "{{ config.reference_subject_min | default(1) }}"
 
   # 1b. Reconcile cross-article state after the changes (cheap, no LLM): refresh the
   #     disambiguation pages against the re-aggregated entities, then sweep any [[link]]

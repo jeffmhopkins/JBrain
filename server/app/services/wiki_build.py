@@ -864,6 +864,17 @@ _TYPE_DOMAIN = {"person": "People", "animal": "People", "org": "Groups", "place"
 _REF_SUB = {"condition": "Medicine/Conditions", "medication": "Medicine/Medications",
             "procedure": "Medicine/Procedures", "event": "Events"}
 
+# Reference concepts (a pasted condition/medication/procedure/concept) are DELIBERATE — one
+# note about them is article-worthy, unlike a person/place mentioned once (likely noise). So
+# these spawn at a lower mention threshold; the structure lint still gates quality, turning a
+# thin one-off into a stub→nudge rather than a junk article. 'event' is excluded — events are
+# often one-off and incidental, so they keep the normal threshold.
+_REF_MIN_TYPES = {"condition", "medication", "procedure", "concept"}
+
+
+def _subject_min(typ: str | None, default_min: int, ref_min: int) -> int:
+    return ref_min if (typ or "").lower() in _REF_MIN_TYPES else default_min
+
 
 def create_article(conn, subject: str, etype: str | None = None, min_notes: int = 2) -> dict:
     """Create ONE new-subject kb article from its notes — what the incremental loop used to
@@ -1292,7 +1303,8 @@ def _articles_for_note_entities(conn, note_id: int) -> set[str]:
 _WATERMARK = "kb_incremental:since"
 
 
-def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: int = 25) -> dict:
+def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: int = 25,
+                 ref_subject_min: int = 1) -> dict:
     """Incremental update: flow notes changed since the last pass into the EXISTING KB.
     Routes each change to its articles (cite-based for edits/deletes ∪ entity-based for new
     facts), refreshes each affected article once, nudges a Review card for brand-new
@@ -1371,7 +1383,7 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
     # Brand-new recurring subjects: CREATE their articles now — maintenance owns this, no
     # waiting for a full rebuild. create_article dedups/folds and refuses thin subjects; a
     # creation that fails the lint falls back to a Review card for the owner.
-    subj = _create_new_subjects(conn, orphans, new_subject_min)
+    subj = _create_new_subjects(conn, orphans, new_subject_min, ref_subject_min)
 
     # Advance over the leading run of changes whose targets all succeeded; stop at the first
     # change that touched a failed/deferred article so it (and everything after) is retried.
@@ -1425,11 +1437,12 @@ def taxonomy_health(conn, post_card: bool = True) -> dict:
     return report
 
 
-def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
-    """Recurring subjects (≥ min_notes notes) that changed but have no article yet: CREATE
-    them (create_article dedups/folds + refuses thin stubs). A creation that fails the lint
-    falls back to a Review card so the owner sees it — maintenance no longer defers new
-    subjects to a full rebuild. Returns {created, nudged}."""
+def _create_new_subjects(conn, orphans: list[dict], min_notes: int, ref_min: int = 1) -> dict:
+    """Subjects that changed but have no article yet: CREATE them (create_article dedups/folds
+    + refuses thin stubs). The mention threshold is per-type — Reference concepts spawn at
+    `ref_min` (a single pasted definition is article-worthy), people/places/etc. at `min_notes`
+    (one mention is likely noise). A creation that fails the lint falls back to a Review card,
+    so maintenance no longer defers new subjects to a full rebuild. Returns {created, nudged}."""
     from . import reviews as reviews_svc
     tally: dict[tuple, int] = {}
     for ch in orphans:
@@ -1440,9 +1453,10 @@ def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
             tally[key] = tally.get(key, 0) + 1
     created = nudged = 0
     for (typ, name), c in tally.items():
-        if c < int(min_notes):
+        thr = _subject_min(typ, int(min_notes), int(ref_min))
+        if c < thr:
             continue
-        res = create_article(conn, name, etype=typ, min_notes=int(min_notes))
+        res = create_article(conn, name, etype=typ, min_notes=thr)
         if res.get("created"):
             created += 1
         elif res.get("folded"):

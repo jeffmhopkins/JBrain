@@ -1269,6 +1269,42 @@ def test_pet_routes_to_people_domain(client, monkeypatch):
     assert res["ok"] and res.get("created") and res["title"] == "kb/People/Buddy"
 
 
+def test_subject_min_per_type():
+    """Reference concepts spawn at the lower threshold; people/places/events keep the normal one."""
+    from app.services.wiki_build import _subject_min
+    for t in ("condition", "medication", "procedure", "concept", "Condition"):  # case-insensitive
+        assert _subject_min(t, 2, 1) == 1
+    for t in ("person", "place", "org", "thing", "event", None, ""):            # event excluded by design
+        assert _subject_min(t, 2, 1) == 2
+
+
+def test_reference_single_note_articles_but_person_needs_two(client, monkeypatch):
+    """Approach D end-to-end: on the incremental path, a single pasted Reference concept earns
+    its article (ref threshold 1), while a person mentioned once does not (noise guard)."""
+    import json
+    from app.db import get_conn
+    from app.services import wiki_build, entity_index as ei
+    from app.services import notes as ns
+    conn = get_conn()
+    cond = ns.upsert_note(conn, "n/ttp", "**Thrombotic Thrombocytopenic Purpura (TTP)** is a rare blood disorder.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (cond, "hc", json.dumps([{"type": "condition", "name": "Thrombotic Thrombocytopenic Purpura"}])))
+    per = ns.upsert_note(conn, "n/guy", "Met some guy named Random Person once.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (per, "hp", json.dumps([{"type": "person", "name": "Random Person"}])))
+    conn.commit()
+    ei.rebuild(conn)
+    # Deterministic + offline: whatever article the writer is asked for "succeeds".
+    monkeypatch.setattr(wiki_build, "write_one",
+                        lambda conn, art, *a, **k: {"ok": True, "talk": [],
+                                                    "content_md": f"# {art['title'].split('/')[-1]}\nx."})
+    res = wiki_build._create_new_subjects(conn, [{"id": cond}, {"id": per}], min_notes=2, ref_min=1)
+    titles = [r[0] for r in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL")]
+    assert "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura" in titles  # 1 note → article
+    assert not any(t.startswith("kb/People/") for t in titles)                                # 1 mention → none
+    assert res["created"] == 1
+
+
 def test_entity_embeddings_and_entities_mode(client):
     """Entities get a semantic vector on rebuild; semantic search + the 'entities' scope use it."""
     import json

@@ -379,13 +379,41 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
     return _untrusted("search-results", "\n".join(lines))
 
 
-def _render_note_body(row) -> str:
+def _note_extras(conn, note_id: int) -> str:
+    """The note's AI-derived sidecars — image summaries, the analysis (gist/facts/dates) and
+    its entities — so a tool reading a note gets the WHOLE picture, not just the prose. Each
+    piece is bounded so a batch read (up to 12 notes) can't blow the budget. @t[...] tokens
+    are expanded for consistency with the body."""
+    from . import image_analysis, note_analysis
+    out = []
+    img = image_analysis.block_for_note(conn, note_id, cap=1500)
+    if img:
+        out.append("AI image analysis:\n" + clock.expand_tokens(img))
+    a = note_analysis.get(conn, note_id)
+    if a:
+        bits = []
+        if a.get("gist"):
+            bits.append("Gist: " + clock.expand_tokens(a["gist"]))
+        if a.get("facts"):
+            bits.append("Facts:\n" + "\n".join(f"- {clock.expand_tokens(f)}" for f in a["facts"][:10]))
+        if a.get("dates"):
+            bits.append("Dates:\n" + "\n".join(f"- {d}" for d in a["dates"][:10]))
+        if a.get("entities"):
+            bits.append("Entities: " + ", ".join(
+                f"{e.get('name')} ({e.get('type')})" for e in a["entities"][:20] if e.get("name")))
+        if bits:
+            out.append("AI analysis (auto-extracted):\n" + "\n".join(bits))
+    return ("\n\n" + "\n\n".join(out)) if out else ""
+
+
+def _render_note_body(conn, row) -> str:
     # Expand @t[...] live values so the agent reads "40", not the raw token.
     body = f"# {row['title']}\n\n{clock.expand_tokens(row['content_md'])}"
     if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
         body += f"\n\nLocation: {row['lat']:.5f}, {row['lon']:.5f}"
         if row["location_label"]:
             body += f" ({row['location_label']})"
+    body += _note_extras(conn, row["id"])
     return body
 
 
@@ -393,7 +421,7 @@ def _tool_read_note(conn, title: str) -> str:
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
-    return _untrusted("note", _render_note_body(row))
+    return _untrusted("note", _render_note_body(conn, row))
 
 
 def _tool_read_notes(conn, titles: list[str]) -> str:
@@ -406,7 +434,7 @@ def _tool_read_notes(conn, titles: list[str]) -> str:
     for t in titles:
         row = notes_svc.get_by_title(conn, t)
         if row:
-            parts.append(_render_note_body(row))
+            parts.append(_render_note_body(conn, row))
         else:
             missing.append(t)
     if not parts:

@@ -91,7 +91,13 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     ).fetchone()
     if not row:
         return False
-    h = content_hash(row["title"], row["content_md"])
+    # Fold in any AI image-summary sidecars so the gist/facts/ENTITIES capture what's in the
+    # photos too (image-only captures otherwise analyze to nothing now that the summary lives
+    # off-body). Part of the hash so a new/changed image summary re-triggers analysis.
+    from . import image_analysis
+    img = image_analysis.block_for_note(conn, note_id, cap=2000)
+    eff = (row["content_md"] or "") if not img else ((row["content_md"] or "") + "\n\n" + img)
+    h = content_hash(row["title"], eff)
     if not force:
         cur = conn.execute(
             "SELECT content_hash FROM note_analysis WHERE note_id = ?", (note_id,)
@@ -103,11 +109,10 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     # RAW content — do NOT expand @t[...] tokens. Keep live tokens intact so an extracted
     # fact stays current (the analysis is hash-keyed, so a frozen value would never be
     # recomputed) and the panel can render it live, consistent with how articles treat time.
-    body = row["content_md"] or ""
     from . import people
     template = prompts.get("actions.note_analysis", _DEFAULT_PROMPT)
     prompt = (template.replace("{owner}", people.owner_name(conn))
-              .replace("{title}", row["title"]).replace("{body}", body[:6000]))
+              .replace("{title}", row["title"]).replace("{body}", eff[:6000]))
     try:
         text = llm.complete([{"role": "user", "content": prompt}],
                             model=llm.model_for("cheap"), max_tokens=900)

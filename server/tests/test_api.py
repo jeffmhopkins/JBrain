@@ -602,6 +602,44 @@ def test_read_note_expands_time_tokens_for_agent(client):
     assert "Jeff is " in out
 
 
+def test_read_note_includes_ai_sidecars(client):
+    """A chat read pulls the WHOLE picture — the note body PLUS its AI image summary and the
+    AI analysis (gist/entities) — so the agent isn't blind to image-derived facts that no
+    longer live in the body."""
+    import json as _json
+    from app.db import get_conn
+    from app.services import architect
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "notes/trip", "Beach day.")
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, sha256, byte_size, analysis_md, analysis_status) "
+                 "VALUES (?,?,?,?,?,?, 'done')", (nid, "surf.png", "image/png", "h", 9, "A blue surfboard on sand."))
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, gist, entities_json) VALUES (?,?,?,?)",
+                 (nid, "h", "A day at the beach.", _json.dumps([{"type": "place", "name": "Cocoa Beach"}])))
+    conn.commit()
+    out = architect._tool_read_note(conn, "notes/trip")
+    assert "Beach day." in out                       # body
+    assert "A blue surfboard on sand." in out        # image analysis sidecar
+    assert "A day at the beach." in out              # AI gist
+    assert "Cocoa Beach" in out                       # entity
+
+
+def test_pipeline_read_note_stays_raw(client):
+    """The pipeline read primitive must return RAW content_md — generate_tags feeds it
+    straight to the tagger, so enriching it would pollute auto-tagging."""
+    from app.db import get_conn
+    from app.services import pipeline
+    from app.services import notes as ns
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "notes/raw", "Just the prose.")
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, sha256, byte_size, analysis_md, analysis_status) "
+                 "VALUES (?,?,?,?,?,?, 'done')", (nid, "x.png", "image/png", "h2", 9, "Image-derived text."))
+    conn.commit()
+    out = pipeline._PRIMITIVES["read_note"](pipeline._Ctx(conn, None, None), title="notes/raw")
+    assert out["content_md"] == "Just the prose."
+    assert "Image-derived text." not in out["content_md"]
+
+
 def test_entry_block_snapshots_time_tokens_for_synthesis(monkeypatch):
     from app.services import workflows as wf
     monkeypatch.setenv("TZ", "UTC")

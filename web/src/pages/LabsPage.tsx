@@ -19,6 +19,16 @@ const PRESETS: { label: string; years: number | null }[] = [
   { label: "1y", years: 1 }, { label: "5y", years: 5 }, { label: "All", years: null },
 ];
 
+// Remember the last-viewed analyte + time window across navigation, so leaving the Labs page
+// and coming back returns to the same place. localStorage (survives reloads); best-effort.
+const LS_SEL = "jbrain.labs.sel", LS_WIN = "jbrain.labs.win";
+function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
+function savedWin(): { from: string; to: string } | null {
+  try { const r = lsGet(LS_WIN); const w = r && JSON.parse(r); return (w && w.from && w.to) ? w : null; }
+  catch { return null; }
+}
+
 // A small coloured/shaped status pip — dual-encoded so it reads without colour.
 function Pip({ status }: { status: string }) {
   const c = OUT.has(status) ? "var(--danger)" : status === "normal" ? "var(--ok)" : "var(--text-dim)";
@@ -28,10 +38,10 @@ function Pip({ status }: { status: string }) {
 
 export default function LabsPage() {
   const [analytes, setAnalytes] = useState<LabAnalyte[]>([]);
-  const [sel, setSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(() => lsGet(LS_SEL));   // restore last-viewed analyte
   const [series, setSeries] = useState<LabSeries | null>(null);
   const [q, setQ] = useState("");
-  const [win, setWin] = useState<{ from: string; to: string } | null>(null);
+  const [win, setWin] = useState<{ from: string; to: string } | null>(savedWin);   // restore last window
   const [picked, setPicked] = useState<LabPoint | null>(null);
   const [showTable, setShowTable] = useState(false);   // persists across analyte switches
   const [pending, setPending] = useState<{ note_slug: string; note_title: string }[]>([]);
@@ -41,9 +51,15 @@ export default function LabsPage() {
   useEffect(() => {
     getLabAnalytes().then(({ analytes }) => {
       setAnalytes(analytes);
-      if (analytes.length && !sel) setSel(analytes[0].analyte);
+      // Keep the restored analyte if it still exists; otherwise fall back to the first.
+      setSel((cur) => (cur && analytes.some((a) => a.analyte === cur)) ? cur
+        : (analytes.length ? analytes[0].analyte : null));
     }).catch(() => setErr("Couldn't load labs."));
   }, []);
+
+  // Persist the selection + window so a return to the page lands in the same place.
+  useEffect(() => { if (sel) lsSet(LS_SEL, sel); }, [sel]);
+  useEffect(() => { if (win) lsSet(LS_WIN, JSON.stringify(win)); }, [win]);
 
   useEffect(() => {
     if (!sel) return;

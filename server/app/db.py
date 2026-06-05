@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 
 def init_db() -> None:
@@ -612,6 +612,52 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # twice-daily draws. schema.sql carries the identical columns for fresh DBs.
         _add_column(conn, "lab_results", "source", "TEXT")
         _add_column(conn, "lab_results", "collected_time", "TEXT")
+
+    if current < 42:
+        # Lab-share links (kind='labs'): an owner shares a SCOPED set of lab trends (+ optional
+        # scoped AI chat). The spec's analytes_json is the allow-list (the ONLY boundary); the
+        # link is inert until the owner activates it. schema.sql carries the identical block.
+        conn.executescript(_LABSHARE_SCHEMA_SQL)
+
+
+# Lab-share schema — kept identical to the "Lab share" section of schema.sql.
+_LABSHARE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS labshare_specs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  status            TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+  analytes_json     TEXT NOT NULL DEFAULT '[]',     -- owner-approved analyte allow-list (THE boundary)
+  window_from       TEXT,                            -- optional date clamp (inclusive)
+  window_to         TEXT,
+  allow_chat        INTEGER NOT NULL DEFAULT 1,      -- 1 = scoped AI chat; 0 = charts only
+  persona_voice     TEXT NOT NULL DEFAULT '',        -- optional tone; can't countermand the rules
+  topics            TEXT NOT NULL DEFAULT '',
+  intro             TEXT NOT NULL DEFAULT '',        -- recipient consent-landing text
+  bind              INTEGER NOT NULL DEFAULT 1,      -- PHI: lock to first device (default ON)
+  single_use        INTEGER NOT NULL DEFAULT 0,
+  max_turns         INTEGER NOT NULL DEFAULT 30,
+  max_total_replies INTEGER NOT NULL DEFAULT 120,
+  reply_count       INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_labshare_specs_link ON labshare_specs(share_link_id);
+
+CREATE TABLE IF NOT EXISTS labshare_sessions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  secret            TEXT NOT NULL,                   -- httponly cookie tying this browser to the session
+  name              TEXT,
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
+  transcript_json   TEXT NOT NULL DEFAULT '[]',
+  charted_json      TEXT NOT NULL DEFAULT '[]',      -- audit: analytes charted/served to this session
+  denied_count      INTEGER NOT NULL DEFAULT 0,      -- audit: out-of-scope attempts
+  turn_count        INTEGER NOT NULL DEFAULT 0,
+  client_ip         TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  last_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_labshare_sessions_link ON labshare_sessions(share_link_id);
+"""
 
 
 # The medical schema, factored out so the migration (existing DBs) and schema.sql

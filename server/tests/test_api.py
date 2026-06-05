@@ -331,6 +331,38 @@ def test_lab_staging_lifecycle(client, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0   # approval cleared
 
 
+def test_labshare_lifecycle_and_defaults(client):
+    # Lab-share link lifecycle: mint -> draft (inert) -> scope -> activate (approval gate).
+    # PHI defaults: bind ON + finite TTL; activation refuses an empty allow-list (default-deny).
+    from app.db import get_conn
+    from app.services import labshare, share as share_svc
+    conn = get_conn()
+    token, link_id = labshare.create(conn, analytes=["wbc", "creatinine"], window_from="2024-01-01")
+    conn.commit()
+    link = conn.execute("SELECT * FROM share_links WHERE id=?", (link_id,)).fetchone()
+    assert link["kind"] == "labs" and link["scope"] == "view" and link["note_id"] is None
+    assert link["bind"] == 1 and link["expires_at"] is not None        # PHI: bind ON + finite TTL
+
+    spec = labshare.get_spec(conn, link_id)
+    assert spec["status"] == "draft"                                   # inert until activated
+    assert labshare.allowed_analytes(spec) == {"wbc", "creatinine"}
+
+    # Can't activate an EMPTY allow-list (default-deny).
+    labshare.set_scope(conn, link_id, analytes=[])
+    assert labshare.activate(conn, link_id) is False
+    assert labshare.get_spec(conn, link_id)["status"] == "draft"
+
+    labshare.set_scope(conn, link_id, analytes=["wbc"])
+    assert labshare.activate(conn, link_id) is True
+    assert labshare.get_spec(conn, link_id)["status"] == "active"
+    assert labshare.allowed_analytes(labshare.get_spec(conn, link_id)) == {"wbc"}
+
+    # The link resolves while active; revoke kills it.
+    assert share_svc.resolve_active_link(conn, token) is not None
+    share_svc.revoke_link(conn, link_id); conn.commit()
+    assert share_svc.resolve_active_link(conn, token) is None
+
+
 def test_lab_image_results_survive_a_scan_text_layer(client, monkeypatch):
     # A scanned 'abstract' PDF often carries a thin header text layer (name/date/facility) but
     # NOT the tabular values. Image-derived (vision) results are faithfulness-checked against the

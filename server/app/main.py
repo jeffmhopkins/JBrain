@@ -155,6 +155,19 @@ async def lifespan(app: FastAPI):
             pass
     asyncio.create_task(_warm_embeddings())
 
+    # Warm the local speech-to-text model too, so the FIRST audio attachment doesn't
+    # block on its one-time (~hundreds of MB) download/load. Best-effort and fully
+    # decoupled: if faster-whisper isn't installed it raises (caught), and audio simply
+    # transcribes on demand instead. Runs off the event loop; nothing waits on it.
+    async def _warm_audio():
+        try:
+            from .services import audio_transcription
+            await asyncio.to_thread(audio_transcription._get_model)
+            print("[audio] speech-to-text model warmed", flush=True)
+        except Exception as exc:  # noqa: BLE001 — missing dep / download failure is non-fatal
+            print(f"[audio] transcription model not warmed: {str(exc)[:120]}", flush=True)
+    asyncio.create_task(_warm_audio())
+
     task = asyncio.create_task(_scheduler_loop())
     try:
         yield

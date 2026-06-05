@@ -153,11 +153,12 @@ docker compose logs -f           # follow logs
 docker compose down              # stop
 ```
 
-> First boot downloads the local embedding model (a few hundred MB) from
-> Hugging Face and loads it into memory — it's warmed in the background, so the
-> server is usable immediately and only the very first semantic search may wait.
-> Needs runtime network egress on first boot and **≥ 2 GB RAM**. Semantic search
-> works without any embedding API key.
+> First boot downloads the local embedding model (a few hundred MB) and the local
+> speech-to-text model (`AUDIO_MODEL`, ~140 MB for `base`) from Hugging Face and
+> loads them into memory — both are warmed in the background, so the server is
+> usable immediately and only the very first semantic search / audio transcription
+> may wait. Needs runtime network egress on first boot and **≥ 2 GB RAM** (set
+> `AUDIO_MODEL=tiny` on a tight box). Both run without any external API key.
 >
 > Running a **fork**? Set `JBRAIN_REPO=owner/name` in `.env` so the in-app update
 > checker points at your repo. The auto-update sidecar (`COMPOSE_PROFILES=autoupdate`)

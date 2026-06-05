@@ -44,6 +44,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [thumbs, setThumbs] = useState<Record<number, string>>({});   // attachment id -> object URL for inline image previews
   const [thumbErr, setThumbErr] = useState<Record<number, string>>({});   // why a preview failed (surfaced inline)
   const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});   // attachment id -> blob URL for the inline <audio>/<video> player
+  const [mediaErr, setMediaErr] = useState<Record<number, string>>({});   // attachment id -> the player couldn't render (CSP/codec)
   const inputRef = useRef<HTMLInputElement>(null);
   const polling = useRef<Set<number>>(new Set());
   const alive = useRef(true);
@@ -243,14 +244,24 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
               Couldn’t show image — {thumbErr[a.id]}
             </div>
           )}
-          {isVideo(a.mime, a.filename) && mediaUrls[a.id] && (
+          {isVideo(a.mime, a.filename) && mediaUrls[a.id] && !mediaErr[a.id] && (
             // eslint-disable-next-line jsx-a11y/media-has-caption -- user-uploaded media.
-            <video controls src={mediaUrls[a.id]} className="att-video" style={{ width: "100%", marginTop: 8, borderRadius: 8 }} />
+            <video controls src={mediaUrls[a.id]} className="att-video" style={{ width: "100%", marginTop: 8, borderRadius: 8 }}
+                   onError={() => setMediaErr((m) => ({ ...m, [a.id]: "playback" }))} />
           )}
-          {isAudio(a.mime, a.filename) && !isVideo(a.mime, a.filename) && mediaUrls[a.id] && (
+          {isAudio(a.mime, a.filename) && !isVideo(a.mime, a.filename) && mediaUrls[a.id] && !mediaErr[a.id] && (
             // eslint-disable-next-line jsx-a11y/media-has-caption -- user-uploaded media; the
             // transcript below is the caption.
-            <audio controls src={mediaUrls[a.id]} style={{ width: "100%", marginTop: 8 }} />
+            <audio controls src={mediaUrls[a.id]} style={{ width: "100%", marginTop: 8 }}
+                   onError={() => setMediaErr((m) => ({ ...m, [a.id]: "playback" }))} />
+          )}
+          {isMedia(a) && mediaErr[a.id] && (
+            // The blob loaded but the element refused it — almost always the server's CSP is
+            // missing `media-src 'self' blob:` (older Caddyfile), or the codec is unsupported.
+            // Say so plainly instead of showing a dead player; Download always works.
+            <div style={{ fontSize: 11, color: "var(--danger)", margin: "8px 0 2px" }}>
+              Can’t play inline — use Download. If self-hosted, add <code>media-src 'self' blob:</code> to your Caddy CSP and restart.
+            </div>
           )}
           {isMedia(a) && !mediaUrls[a.id] && (
             // Larger media (> auto-load cap): fetch the bytes only when asked.

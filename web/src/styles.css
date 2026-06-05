@@ -857,3 +857,9 @@ table.sql-result th { background: var(--bg-elev-2); }
 .lab-table table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
 .lab-table th, .lab-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .lab-table th { color: var(--text-dim); font-weight: 600; }
+
+/* Inline lab chart card (rendered in chat by the AI). */
+.lab-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin: 8px 0; background: var(--bg-elev); }
+.lab-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.lab-card-head .lab-src { margin-left: auto; }
+.lab-card-foot { font-size: 11px; margin-top: 4px; }

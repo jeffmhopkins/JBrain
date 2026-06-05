@@ -309,7 +309,8 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
 }
 
 export interface ChatEvent {
-  type: "token" | "tool" | "staging" | "applied" | "done" | "error";
+  type: "token" | "tool" | "staging" | "applied" | "chart" | "done" | "error";
+  chart?: { analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string };
   text?: string;
   tool?: string;
   actions?: any[];

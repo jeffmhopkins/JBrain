@@ -42,7 +42,8 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference", "list_trips", "trip_detail", "add_list_item", "read_list",
+                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
+                 "list_abnormal_labs", "show_lab_chart", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry",
                  "set_tags", "save_place", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -54,11 +55,22 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference"],
+                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
+                 "list_abnormal_labs", "show_lab_chart"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
 _TOOL_SCHEMAS = {
+    "list_abnormal_labs": {"type": "object", "properties": {
+        "from": {"type": "string", "description": "Optional ISO date lower bound (e.g. one year ago)."},
+        "to": {"type": "string", "description": "Optional ISO date upper bound."},
+        "limit": {"type": "integer", "default": 8, "description": "Max analytes (capped 12)."}}},
+    "show_lab_chart": {"type": "object", "properties": {
+        "analyte": {"type": "string", "description": "The analyte_key from list_abnormal_labs (e.g. 'wbc', "
+                    "'creatinine') — NEVER a free-text lab name; if unsure, call list_abnormal_labs first."},
+        "unit": {"type": "string", "description": "Optional: pin one unit when the analyte was recorded in several."},
+        "from": {"type": "string", "description": "Optional ISO date lower bound for the displayed window."},
+        "to": {"type": "string", "description": "Optional ISO date upper bound."}}, "required": ["analyte"]},
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
@@ -1335,6 +1347,49 @@ def _tool_kb_add_directive(conn, conversation_id, title, directive):
     return f"Added a standing directive to {title}: “{directive}”. Maintenance will apply it on its next pass.", None
 
 
+def _record_chart(conn, conversation_id, spec: dict) -> dict:
+    """Persist a thin chart MARKER (role='event') so the card re-renders on reload; the UI
+    re-fetches the live series from the spec, so no lab values are copied into messages and a
+    later-corrected/deleted result self-heals."""
+    if conversation_id is not None:
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'event', ?)",
+            (conversation_id, json.dumps({"chart": spec})))
+        conn.commit()
+    return {"type": "chart", "chart": spec}
+
+
+def _tool_list_abnormal_labs(conn, dfrom=None, dto=None, limit=8) -> str:
+    from . import lab_series
+    rows = lab_series.abnormal_analytes(conn, dfrom, dto, limit)
+    if not rows:
+        span = (f" between {dfrom} and {dto}" if dfrom and dto else
+                f" since {dfrom}" if dfrom else f" through {dto}" if dto else "")
+        return _untrusted("lab-abnormal", f"No out-of-range lab results found{span}. "
+                          "(This means none on file were flagged or out of range — NOT that anything is 'normal' "
+                          "in a clinical sense.)")
+    lines = [f"- {r['test_name']} (analyte_key '{r['analyte']}'): {r['count']} out-of-range, "
+             f"latest {r['last_at']} ({r['last_status']})" for r in rows]
+    return _untrusted("lab-abnormal", "Out-of-range analytes, most recent first — chart any with show_lab_chart "
+                      "using its analyte_key:\n" + "\n".join(lines))
+
+
+def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, dfrom=None, dto=None):
+    from . import lab_series
+    s = lab_series.series(conn, analyte, unit)
+    if not s["points"]:
+        return _untrusted("lab-chart", f"No results on file for analyte '{analyte}'."), None
+    pts = s["points"]
+    abn = sum(1 for p in pts if p["status"] in ("high", "low", "abnormal"))
+    latest, dom = pts[-1], s["domain"]
+    summary = (f"Charted {s['test_name']} ({s['unit'] or 'no unit'}): {len(pts)} results from "
+               f"{dom['from']} to {dom['to']}; latest {latest['vtext']} (the lab/range marked it "
+               f"'{latest['status']}'); {abn} out-of-range. The chart is shown to the user — describe only "
+               "these counts/dates, do NOT restate individual values and do NOT interpret clinically.")
+    spec = {"analyte": analyte, "unit": s["unit"], "from": dfrom, "to": dto, "title": s["test_name"]}
+    return _untrusted("lab-chart", summary), _record_chart(conn, conversation_id, spec)
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -1574,6 +1629,11 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     # real enforcement of research mode's read-only guarantee, not just omission.
     if name not in _mode_tool_names(mode):
         return f"Tool '{name}' is not available in {mode} mode.", None
+    if name == "list_abnormal_labs":
+        return _tool_list_abnormal_labs(conn, args.get("from"), args.get("to"), args.get("limit", 8)), None
+    if name == "show_lab_chart":
+        return _tool_show_lab_chart(conn, conversation_id, args["analyte"], args.get("unit"),
+                                    args.get("from"), args.get("to"))
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":

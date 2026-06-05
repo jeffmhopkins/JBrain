@@ -128,9 +128,13 @@ def stage_attachment(conn, attachment_id: int) -> dict:
         return {"status": "image_unparsed", "doc_type": "image_unparsed", "n": 0, "analytes": 0,
                 "skipped": payload["skipped"]}
 
-    # Faithfulness corpus: prefer the VISIBLE-words text the parser saw (P2 — defeats hidden /
-    # white-on-white injected text), falling back to the stored extract_text for image rows.
-    text = parsed.get("visible_text") or att["content_text"] or ""
+    # Faithfulness corpus for the DETERMINISTIC text-PDF path: the VISIBLE words the parser saw
+    # (P2 — defeats hidden / white-on-white injected text). Image-derived results (lab_vision)
+    # are NOT re-checked here: parse_lab_image already did their faithfulness against the page OCR
+    # (corroborated -> medium, unconfirmed -> kept+flagged low). Re-filtering vision values
+    # against a SCAN's own text layer — often just a header (name/date) with none of the tabular
+    # values — would wrongly drop every correct value ("not found verbatim in document").
+    text = "" if parsed["doc_type"] == "lab_image" else (parsed.get("visible_text") or att["content_text"] or "")
     results = []
     skips = list(parsed.get("skips", []))              # extractor-level drops (e.g. OCR cross-read)
     for r in parsed["results"]:

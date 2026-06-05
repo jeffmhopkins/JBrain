@@ -40,9 +40,16 @@ REPO = Path(__file__).resolve().parents[2]            # …/JBrain
 SERVER = REPO / "server"
 
 
-def _bridge(model_default: str, model_cheap: str):
+# Block every tool so `claude -p` is a pure single-shot completion — it can't wander off
+# into file/web tools and return prose-with-no-answer (which, on the big outline prompt,
+# silently parsed to zero articles and — with kb_reset — wiped a day's KB).
+_NO_TOOLS = ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task"]
+
+
+def _bridge(model_default: str, model_cheap: str, retries: int = 3):
     """Patch JBrain's llm layer to answer via the local `claude` CLI. cheap-tier calls
-    (tagging, analysis, summaries) use the fast model; everything else the default."""
+    (tagging, analysis, summaries) use the fast model; everything else the default. Retries
+    on an empty/errored response so a single flaky call can't break a build."""
     from app.services import llm
 
     def complete(messages, *, system=None, model=None, max_tokens=1024):
@@ -52,12 +59,19 @@ def _bridge(model_default: str, model_cheap: str):
             if isinstance(c, list):                    # vision/content blocks → text only
                 c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
             parts.append(str(c))
-        mdl = model_cheap if (model and "haiku" in str(model)) else model_default
-        r = subprocess.run(["claude", "-p", "--model", mdl], input="\n\n".join(parts),
-                           capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
-            raise RuntimeError(f"claude CLI failed ({mdl}): {r.stderr[:300]}")
-        return r.stdout.strip()
+        prompt, mdl = "\n\n".join(parts), (model_cheap if (model and "haiku" in str(model)) else model_default)
+        last = "no output"
+        for _ in range(retries):
+            try:
+                r = subprocess.run(["claude", "-p", "--model", mdl, "--disallowedTools", *_NO_TOOLS],
+                                   input=prompt, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                last = "timeout"; continue
+            out = (r.stdout or "").strip()
+            if r.returncode == 0 and out:
+                return out
+            last = (r.stderr or "empty output")[:300]
+        raise RuntimeError(f"claude CLI failed after {retries} tries ({mdl}): {last}")
 
     llm.complete = complete
     llm.has_credentials = lambda: True

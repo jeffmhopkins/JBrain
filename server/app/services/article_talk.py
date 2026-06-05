@@ -16,6 +16,8 @@ or resolve entries from the article's panel.
 """
 from __future__ import annotations
 
+import re
+
 _KINDS = {"decision", "conflict", "question", "todo", "directive", "note", "restructure"}
 # Kinds that represent unfinished work — what maintenance should act on. `restructure`
 # (split/merge/fold hints) is deliberately NOT here: a per-article maintain pass can't do
@@ -39,16 +41,26 @@ def add(conn, article_title: str, kind: str, body: str, author: str = "ai") -> i
 # RE-EMERGE after being resolved (a conflict that comes back), so they dedup against OPEN only.
 _LOG_KINDS = {"note", "decision"}
 
+_WS = re.compile(r"\s+")
+_NOTE_CAP = 6   # keep at most this many OPEN, ai-authored 'note' rows per article (newest win)
+
+
+def _norm(body: str) -> str:
+    """Dedup key for a body: lowercased, whitespace-collapsed, trailing punctuation dropped —
+    so a reworded-but-identical observation ('still a stub.' vs 'Still a  stub') dedups."""
+    return _WS.sub(" ", (body or "").lower()).strip().rstrip(".!?,;:- ")
+
 
 def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
     """Add a batch of {kind, body} entries. Log entries (note/decision) dedup against ALL
     history so they don't pile up each run; actionable entries (conflict/question/todo/
     directive) dedup against OPEN only, so a genuinely re-emerged issue can resurface after
-    an earlier resolution. Returns how many were added."""
+    an earlier resolution. Dedup is on a NORMALIZED body (case/whitespace/punctuation
+    insensitive). Returns how many were added."""
     rows = conn.execute("SELECT kind, body, resolved_at FROM article_talk WHERE article_title=?",
                         (article_title,)).fetchall()
-    all_keys = {(r["kind"], r["body"]) for r in rows}
-    open_keys = {(r["kind"], r["body"]) for r in rows if r["resolved_at"] is None}
+    all_keys = {(r["kind"], _norm(r["body"])) for r in rows}
+    open_keys = {(r["kind"], _norm(r["body"])) for r in rows if r["resolved_at"] is None}
     n = 0
     for e in entries or []:
         if not isinstance(e, dict):
@@ -58,12 +70,54 @@ def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
         body = str(e.get("body") or "").strip()
         if not body:
             continue
+        key = (kind, _norm(body))
         seen = all_keys if kind in _LOG_KINDS else open_keys
-        if (kind, body) in seen:
+        if key in seen:
             continue
         add(conn, article_title, kind, body, author)
-        all_keys.add((kind, body)); open_keys.add((kind, body))
+        all_keys.add(key); open_keys.add(key)
         n += 1
+    if n:
+        _cap_notes(conn, article_title)
+    return n
+
+
+def _cap_notes(conn, article_title: str) -> None:
+    """Bound clutter: keep only the newest _NOTE_CAP OPEN, ai-authored 'note' rows per article
+    (they're informational logs, not actionable). NEVER touches actionable kinds, owner
+    directives, user-authored rows, or resolved history."""
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM article_talk WHERE article_title=? AND kind='note' AND author='ai' "
+        "AND resolved_at IS NULL ORDER BY created_at DESC, id DESC", (article_title,)).fetchall()]
+    extra = ids[_NOTE_CAP:]
+    if extra:
+        conn.execute(f"DELETE FROM article_talk WHERE id IN ({','.join('?' * len(extra))})", extra)
+
+
+# Phrases that mark a NON-ACTIONABLE "this is a stub / needs more source notes / revisit
+# later" observation. These belong in the inert log, never as actionable items that nag the
+# maintenance pass and post Review cards — a stub is the correct result, nothing to act on.
+_STUB_LIKE = ["%stub%", "%more source%", "%additional source%", "%more notes become available%",
+              "%richer sourc%", "%revisit when%", "External reference needed%",
+              "%no information about%", "%remain undocumented%", "%background remain%"]
+
+
+def demote_stub_notes(conn, article_title: str | None = None) -> int:
+    """Reclassify ai-authored, unresolved 'todo'/'question' items that merely observe the
+    article is a stub / needs more source notes / should be revisited later into inert
+    'note' logs (then cap), so they stop driving maintenance + Review cards. NEVER touches
+    conflicts, owner directives, user items, or resolved rows. Returns how many were demoted."""
+    like = " OR ".join(["body LIKE ?"] * len(_STUB_LIKE))
+    where = f"kind IN ('todo','question') AND author='ai' AND resolved_at IS NULL AND ({like})"
+    args = list(_STUB_LIKE)
+    if article_title:
+        where += " AND article_title=?"
+        args.append(article_title)
+    n = conn.execute(f"UPDATE article_talk SET kind='note' WHERE {where}", args).rowcount
+    if n:
+        for r in conn.execute("SELECT DISTINCT article_title FROM article_talk "
+                              "WHERE kind='note' AND author='ai' AND resolved_at IS NULL").fetchall():
+            _cap_notes(conn, r["article_title"])
     return n
 
 

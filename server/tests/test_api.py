@@ -1471,6 +1471,40 @@ def test_medref_medications(client, monkeypatch):
     assert "medlineplus.gov" in txt and "rxcui 6809" in txt
 
 
+def test_talk_dedup_cap_and_demote(client):
+    """Talk-item pileup controls: normalized dedup, per-article AI-note cap, and demoting
+    non-actionable 'stub/needs-more-notes' todos to inert notes (sparing real items)."""
+    from app.db import get_conn
+    from app.services import article_talk as at
+    conn = get_conn()
+    art = "kb/People/Allan"
+
+    # Normalized dedup: a reworded-lite duplicate (case/whitespace/punctuation) is NOT re-added.
+    assert at.record(conn, art, [{"kind": "note", "body": "Still a stub."}]) == 1
+    assert at.record(conn, art, [{"kind": "note", "body": "still a  stub"}]) == 0
+
+    # Per-article cap: ai-authored OPEN 'note' rows are bounded to the newest few.
+    for i in range(12):
+        at.record(conn, art, [{"kind": "note", "body": f"distinct observation number {i}"}])
+    open_ai_notes = [t for t in at.open_for(conn, art) if t["kind"] == "note" and t["author"] == "ai"]
+    assert len(open_ai_notes) <= at._NOTE_CAP
+
+    # Demote: stub/needs-more-notes todo/question -> note; conflicts + owner directives untouched.
+    b = "kb/People/Bob"
+    at.add(conn, b, "todo", "Article remains a minimal stub — revisit when more source notes become available.", "ai")
+    at.add(conn, b, "question", "Source notes contain almost no information about Bob.", "ai")
+    at.add(conn, b, "conflict", "Two sources give different birthdates.", "ai")
+    at.add(conn, b, "directive", "Always refer to him as Bob.", "user")
+    conn.commit()
+    assert at.demote_stub_notes(conn) == 2
+    opens = at.open_for(conn, b)
+    kind_of = lambda sub: next(t["kind"] for t in opens if sub in t["body"])
+    assert kind_of("different birthdates") == "conflict"      # real conflict kept actionable
+    assert kind_of("refer to him as Bob") == "directive"      # owner directive untouched
+    assert kind_of("remains a minimal stub") == "note"        # stub todo demoted
+    assert kind_of("almost no information") == "note"         # stub question demoted
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

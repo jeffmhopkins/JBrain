@@ -88,6 +88,9 @@ steps:
   # 6d. Flag any dangling cross-links (now that every article is saved + links reconciled).
   - id: deadlinks
     do: flag_dead_links
+  # 6d2. Demote non-actionable "stub / needs more notes / revisit later" talk todos to inert
+  #      notes (and cap clutter) so they stop nagging maintenance + Review cards.
+  - do: tidy_talk
   # 6e. Flag Reference articles padded with general "common knowledge" instead of your notes.
   - id: grounding
     do: flag_ungrounded_reference

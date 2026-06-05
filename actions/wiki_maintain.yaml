@@ -39,6 +39,10 @@ steps:
   #     link-only; exact -> auto-link, approximate -> a talk todo to confirm). Cached, no LLM.
   - do: link_medications
 
+  # 1d. Demote any non-actionable "stub / needs more notes / revisit later" talk todos to
+  #     inert notes (+ cap) so they stop nagging the maintenance pass and posting Review cards.
+  - do: tidy_talk
+
   # 2. Summary card of what the pass did.
   - do: create_review
     when: "{{ config.review != false }}"

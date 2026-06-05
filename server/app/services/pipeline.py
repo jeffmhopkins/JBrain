@@ -274,6 +274,16 @@ def _p_link_medications(ctx, limit=200):
     return medref.link_medications(ctx.conn, int(limit))
 
 
+def _p_tidy_talk(ctx):
+    """Demote non-actionable 'stub / needs-more-notes / revisit-later' talk todos to inert
+    notes and cap clutter — stops them nagging maintenance + Review cards, and retires the
+    existing backlog. Never touches conflicts, owner directives, or user items."""
+    from . import article_talk
+    demoted = article_talk.demote_stub_notes(ctx.conn)
+    ctx.conn.commit()
+    return {"demoted": demoted}
+
+
 def _p_redate_notes(ctx, limit=2000, dry_run=False):
     """File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N."""
     from . import note_normalize
@@ -1171,6 +1181,7 @@ _PRIMITIVES = {
     "wiki_update": _p_wiki_update,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
+    "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
     "seed_kb_watermark": _p_seed_kb_watermark,
@@ -1303,6 +1314,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "tidy_talk": {"summary": "Demote non-actionable stub/needs-more-notes talk todos to notes + cap clutter.",
+                  "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",
                      "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
     "title_notes": {"summary": "Give bare dated notes a generated leaf title (notes/<date>/N - title).",

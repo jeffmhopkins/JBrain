@@ -278,8 +278,8 @@ actions:
         your own training. If the notes just mention a topic, a one-line STUB is the correct
         article; do not pad it into a full encyclopedia entry. The shapes below are a target
         ONLY for sections your sources actually support; leave the rest out. When a topic
-        deserves general background you don't have, keep the stub and flag it for an external
-        reference (a talk todo: "External reference needed: <topic>").
+        deserves general background you don't have, just keep the stub — do NOT add a talk
+        item about it (a separate audit handles external fills).
 
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
@@ -469,8 +469,9 @@ actions:
     history, dosages or any "common knowledge" from your own training — even if you know it
     and it would make the entry look complete. If the notes touch a topic only lightly,
     write a SHORT STUB; a stub is the correct, faithful result, not a failure. When a
-    Reference topic clearly deserves general background the notes don't provide, keep it a
-    stub and add a talk todo: "External reference needed: <topic>". Never pad.
+    Reference topic clearly deserves general background the notes don't provide, just keep
+    it a stub — do NOT add a talk item about it (a separate audit handles external fills).
+    Never pad.
 
     CROSS-LINKS — link everything that has a home, invent nothing. You may write [[...]]
     ONLY for: (a) the exact source-note titles below (for citations), and (b) an article in
@@ -493,14 +494,18 @@ actions:
     drifting value AND its anchor (e.g. a birthdate), encode it as a token rather than
     copying the stale number.
 
-    TALK (optional): if you made a notable choice (a merge, an exclusion), found the
-    sources in CONFLICT, or have an open question worth revisiting later, append AFTER the
-    article a fenced block:
+    TALK (optional): append a block ONLY for something someone could ACT ON — a notable
+    choice you made (a merge, an exclusion), a real CONFLICT between sources, or a question
+    a FUTURE source could plausibly answer. Append AFTER the article a fenced block:
     ```talk
-    [{"kind": "decision|conflict|question|todo", "body": "one concise sentence"}]
+    [{"kind": "decision|conflict|question|todo|note", "body": "one concise sentence"}]
     ```
-    Keep it to genuinely useful entries; omit the block entirely if there's nothing worth
-    noting. It is recorded separately and stripped from the article.
+    NEVER raise an item that merely observes the article is a stub, thin, or minimal, that
+    more / richer / additional source notes are needed, or to "revisit when more notes
+    exist" — a stub is the correct, faithful result, NOT a problem, and there is nothing to
+    do about it. If you must log such an observation at all, use kind "note" (an inert log),
+    never "todo"/"question". Most articles need NO talk block; omit it when in doubt. It is
+    recorded separately and stripped from the article.
 
     HOUSE STYLE
     {general_guide}
@@ -618,8 +623,14 @@ actions:
     CLOSES only if its outcome is answered, applied, reconciled, or moot; outcome
     "unresolvable" (or a missing/unknown outcome) leaves it OPEN for a later pass — so use
     "unresolvable" with a one-line `how` whenever the sources still don't let you settle it.
-    "new" is optional — raise it for something genuinely worth a later look, including a
-    split/fold/merge hint as a "restructure" per above.
+    "new" is optional — raise it ONLY for something actionable: a real source conflict, a
+    question a future source could answer, or a split/fold/merge hint as a "restructure" per
+    above. NEVER add an item that merely says the article is a stub / thin / minimal, that
+    more or richer source notes are needed, or to "revisit when more notes arrive" — that is
+    not a conflict, question, or directive and there is nothing to do about it; prefer adding
+    nothing. If an OPEN item you examined is itself only such a "stub / needs more notes /
+    revisit later" observation (not a real conflict, answerable question, or owner directive),
+    resolve it "moot" — it should never have been open.
 
     HOUSE STYLE
     {general_guide}

@@ -331,6 +331,38 @@ def test_lab_staging_lifecycle(client, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0   # approval cleared
 
 
+def test_lab_approve_idempotent_for_identical_files(client, monkeypatch):
+    # Importing the SAME lab export twice (e.g. a byte-identical re-upload) must not 500 on the
+    # identity_key unique index — the duplicate rows are already in the trends, so approve is
+    # idempotent: the second one adds 0 and is reported as duplicates.
+    from app.db import get_conn
+    from app.services import lab_parse
+    conn = get_conn()
+    rows = [{"test_name": "WBC", "analyte_key": "wbc", "value_text": "6.20", "value_num": 6.2,
+             "unit": "thou/cumm", "ref_low": 3.9, "ref_high": 11.2, "ref_text": "3.9-11.2",
+             "collected_at": "2025-01-05"}]
+    monkeypatch.setattr(lab_parse, "parse_lab_pdf",
+                        lambda b: {"doc_type": "lab_trend_export", "confidence": 1.0, "results": rows, "pages": 1})
+
+    def add(slug):  # two notes, two attachments, SAME file sha256 (identical content)
+        note = client.post("/api/notes/entry", json={"text": slug, "dest": "Labs"}).json()
+        nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+        aid = conn.execute(
+            "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+            "VALUES (?,?,?,?,?,?,?) RETURNING id",
+            (nid, f"{slug}.pdf", "application/pdf", "WBC 6.20 thou/cumm", b"%PDF dup", 8, "sha-identical")).fetchone()["id"]
+        conn.commit()
+        client.post(f"/api/medical/notes/{note['slug']}/extract-labs")
+        return aid
+
+    a1, a2 = add("cbc-a"), add("cbc-b")
+    assert client.post(f"/api/medical/attachments/{a1}/labs/approve").json()["approved"] == 1
+    r2 = client.post(f"/api/medical/attachments/{a2}/labs/approve")
+    assert r2.status_code == 200                                  # no 500 on the unique index
+    assert r2.json() == {"approved": 0, "duplicates": 1}          # already in trends -> idempotent
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 1
+
+
 def test_lab_legacy_imported_attachment_is_manageable(client):
     # An attachment with rows imported under the OLD auto-apply path (no lab_status) must still
     # be surfaced so the note can Remove / Re-analyze it — the missing 'manage already-imported'.

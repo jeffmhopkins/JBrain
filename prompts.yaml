@@ -795,6 +795,16 @@ actions:
       then note people/objects/scene, counts, numbers, dates, places, or anything a
       future search might key on. Mark uncertainty with "appears to".
 
+    If the main subject is a living thing that can be named to a species — above all
+    a FISH, but also other animals, birds, or plants — add a final
+    "**Species identification**" line: your best-effort common name and (when you
+    know it) scientific name, a rough confidence (high / medium / low), and the
+    visible features that justify it (body shape, fins, colouration, markings).
+    Offer alternatives when unsure ("most likely X; possibly Y"). NEVER assert a
+    species you cannot justify from what is visible — say "unsure" instead. If a
+    capture location is provided below, use it as a REGIONAL prior to favour species
+    native to that area, but never let it override what you actually see.
+
     If the image is unreadable or blank, say so in one line instead.
 
     You may also be given the text of the note this image is attached to, as

@@ -187,7 +187,9 @@ def test_labs_series_and_analytes(client):
 
     analytes = client.get("/api/medical/labs/analytes").json()["analytes"]
     wbc = next(a for a in analytes if a["analyte"] == "wbc")
-    assert wbc["test_name"] == "WBC" and wbc["n"] == 8
+    # n counts DISTINCT (date,value): the exact same-day dup collapses (F2), so 8 rows -> 7
+    # (matching the dup-collapse the series above already does; a re-export can't inflate it).
+    assert wbc["test_name"] == "WBC" and wbc["n"] == 7
 
 
 def test_lab_chart_tools(client):

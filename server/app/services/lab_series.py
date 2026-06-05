@@ -74,8 +74,11 @@ def _modal(conn, analyte: str, col: str) -> str | None:
 def list_analytes(conn) -> list[dict]:
     """One entry per analyte that has dated results: display name (modal test_name), unit,
     point count, date span, and the latest value + its status — for the picker."""
+    # COUNT DISTINCT (date,value): identical points from an overlapping re-export must not
+    # inflate the picker count — match the read-time dedup series()/stat() already apply (F2).
     rows = conn.execute(
-        "SELECT analyte_key, COUNT(*) AS n, MIN(collected_at) AS first_at, MAX(collected_at) AS last_at "
+        "SELECT analyte_key, COUNT(DISTINCT collected_at || '|' || COALESCE(value_text,'')) AS n, "
+        "       MIN(collected_at) AS first_at, MAX(collected_at) AS last_at "
         "FROM lab_results WHERE analyte_key IS NOT NULL AND collected_at IS NOT NULL "
         f"AND {_LIVE_NOTE} GROUP BY analyte_key").fetchall()
     out = []
@@ -83,7 +86,7 @@ def list_analytes(conn) -> list[dict]:
         latest = conn.execute(
             "SELECT value_text, value_num, flag, ref_low, ref_high FROM lab_results "
             f"WHERE analyte_key = ? AND collected_at IS NOT NULL AND {_LIVE_NOTE} "
-            "ORDER BY collected_at DESC, id DESC LIMIT 1",
+            "ORDER BY collected_at DESC, collected_time DESC, id DESC LIMIT 1",
             (r["analyte_key"],)).fetchone()
         out.append({
             "analyte": r["analyte_key"],
@@ -141,10 +144,15 @@ def abnormal_analytes(conn, dfrom: str | None = None, dto: str | None = None, li
     if dto:
         where += " AND date(collected_at) <= date(?)"; params.append(dto)
     rows = conn.execute(
-        f"SELECT analyte_key, value_num, flag, ref_low, ref_high, collected_at "
+        f"SELECT analyte_key, value_text, value_num, flag, ref_low, ref_high, collected_at "
         f"FROM lab_results WHERE {where}", params).fetchall()
     agg: dict[str, dict] = {}
-    for r in rows:
+    seen: set = set()                          # dedup identical re-exports (F2) — but key on FLAG too
+    for r in rows:                             # so an 'H'-flagged row is never suppressed by an
+        ident = (r["analyte_key"], r["collected_at"], r["value_text"], r["flag"])   # 'N' duplicate
+        if ident in seen:
+            continue
+        seen.add(ident)
         if _status(r["flag"], r["value_num"], r["ref_low"], r["ref_high"]) not in ("high", "low", "abnormal"):
             continue
         a = agg.setdefault(r["analyte_key"], {"analyte": r["analyte_key"], "count": 0, "last_at": ""})
@@ -165,11 +173,11 @@ def series(conn, analyte: str, unit: str | None = None) -> dict:
     target_unit = unit or _modal(conn, analyte, "unit")
     target_norm = _unit_norm(target_unit)
     rows = conn.execute(
-        "SELECT lr.collected_at, lr.value_text, lr.value_num, lr.unit, lr.flag, lr.ref_low, "
-        "       lr.ref_high, lr.ref_text, lr.encounter_id, lr.note_id, n.slug AS note_slug, n.title AS note_title "
+        "SELECT lr.collected_at, lr.collected_time, lr.value_text, lr.value_num, lr.unit, lr.flag, lr.ref_low, "
+        "       lr.ref_high, lr.ref_text, lr.source, lr.encounter_id, lr.note_id, n.slug AS note_slug, n.title AS note_title "
         "FROM lab_results lr LEFT JOIN notes n ON n.id = lr.note_id "
         "WHERE lr.analyte_key = ? AND lr.collected_at IS NOT NULL AND n.deleted_at IS NULL "
-        "ORDER BY lr.collected_at, lr.id",
+        "ORDER BY lr.collected_at, lr.collected_time, lr.id",   # collected_time orders twice-daily draws (P4)
         (analyte,)).fetchall()
 
     points: list[dict] = []
@@ -185,7 +193,8 @@ def series(conn, analyte: str, unit: str | None = None) -> dict:
             continue
         seen.add(key)
         points.append({
-            "t": r["collected_at"], "v": r["value_num"], "vtext": r["value_text"], "unit": r["unit"],
+            "t": r["collected_at"], "time": r["collected_time"], "source": r["source"],
+            "v": r["value_num"], "vtext": r["value_text"], "unit": r["unit"],
             "status": _status(r["flag"], r["value_num"], r["ref_low"], r["ref_high"]),
             "censored": r["value_num"] is None,
             "ref_low": r["ref_low"], "ref_high": r["ref_high"], "ref_text": r["ref_text"], "flag": r["flag"],
@@ -209,7 +218,7 @@ def series_from_results(results: list[dict], analyte: str, unit: str | None = No
     """Build the same series payload as series() but from STAGED parser results (no DB) — for
     previewing a lab import before it's approved. No flag/encounter/note context is available."""
     rows = [r for r in results if r.get("analyte_key") == analyte and r.get("collected_at")]
-    rows.sort(key=lambda r: r["collected_at"])
+    rows.sort(key=lambda r: (r["collected_at"], r.get("collected_time") or ""))
     import collections
     name = (collections.Counter(r["test_name"] for r in rows if r.get("test_name")).most_common(1) or [(analyte,)])[0][0]
     units = collections.Counter(r["unit"] for r in rows if r.get("unit"))
@@ -227,7 +236,8 @@ def series_from_results(results: list[dict], analyte: str, unit: str | None = No
             continue
         seen.add(key)
         points.append({
-            "t": r["collected_at"], "v": r["value_num"], "vtext": r["value_text"], "unit": r["unit"],
+            "t": r["collected_at"], "time": r.get("collected_time"), "source": r.get("source"),
+            "v": r["value_num"], "vtext": r["value_text"], "unit": r["unit"],
             "status": _status(None, r["value_num"], r["ref_low"], r["ref_high"]),
             "censored": r["value_num"] is None,
             "ref_low": r["ref_low"], "ref_high": r["ref_high"], "ref_text": r.get("ref_text"), "flag": None,
@@ -256,6 +266,7 @@ def _slim(p: dict | None) -> dict | None:
     if p is None:
         return None
     return {"value": p["v"], "value_text": p["vtext"], "unit": p["unit"], "collected_at": p["t"],
+            "collected_time": p.get("time"), "source": p.get("source"),
             "status": p["status"], "ref_low": p["ref_low"], "ref_high": p["ref_high"],
             "ref_text": p["ref_text"], "flag": p["flag"], "note_slug": p["note_slug"],
             "note_title": p["note_title"]}

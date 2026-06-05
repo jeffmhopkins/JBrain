@@ -260,9 +260,10 @@ export default function LabChart({ series, from, to, height, onPick, onViewChang
             <text x={10} y={20} fontSize={14} fill="var(--text)" fontWeight={600}>
               {selP.vtext}{selP.unit ? " " + selP.unit : ""} · {selP.status}
             </text>
-            <text x={10} y={38} fontSize={12} fill="var(--text-dim)">{selP.t}
+            <text x={10} y={38} fontSize={12} fill="var(--text-dim)">{selP.t}{selP.time ? " " + selP.time : ""}
               {selP.ref_text ? `  (ref ${selP.ref_text})` : ""}</text>
-            <text x={10} y={52} fontSize={12} fill="var(--accent)">{selP.note_title || ""}</text>
+            <text x={10} y={52} fontSize={12} fill="var(--accent)">{selP.note_title || ""}
+              {selP.source === "lab_image" ? "  · from a photo — verify" : ""}</text>
           </g>
         );
       })()}

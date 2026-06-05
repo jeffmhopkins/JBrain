@@ -62,6 +62,36 @@ def set_destinations(body: DestsIn):
     return {"names": out}
 
 
+class OwnerIn(BaseModel):
+    name: str = ""
+    dob: str = ""           # ISO 'YYYY-MM-DD'; used to flag a wrong-patient lab upload
+
+
+@router.get("/owner")
+def get_owner():
+    """The configured owner identity used to flag wrong-patient lab uploads (P1). Optional."""
+    raw = get_meta("medical_owner")
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@router.put("/owner")
+def set_owner(body: OwnerIn):
+    # Normalize the DOB to a validated ISO date so the wrong-patient check compares like with
+    # like (a typed '07/04/1990' must not read as different from a document's '1990-07-04').
+    from ..services import lab_parse
+    dob_raw = body.dob.strip()
+    dob = lab_parse.normalize_dob(dob_raw) or ""
+    if dob_raw and not dob:
+        raise HTTPException(status_code=422, detail="DOB must be a real date (YYYY-MM-DD or MM/DD/YYYY).")
+    conn = get_conn()
+    set_meta(conn, "medical_owner", json.dumps({"name": body.name.strip(), "dob": dob}))
+    conn.commit()
+    return {"name": body.name.strip(), "dob": dob}
+
+
 @router.post("/notes/{slug}/extract-labs")
 def extract_labs(slug: str):
     """STAGE any lab-result PDF(s) on this note for review (deterministic, no LLM). Nothing

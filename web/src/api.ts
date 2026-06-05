@@ -375,7 +375,8 @@ export interface LabAnalyte {
   n: number; first_at: string; last_at: string; last_value: string | null; last_status: string;
 }
 export interface LabPoint {
-  t: string; v: number | null; vtext: string; unit: string | null; status: string; censored: boolean;
+  t: string; time?: string | null; source?: string | null;
+  v: number | null; vtext: string; unit: string | null; status: string; censored: boolean;
   ref_low: number | null; ref_high: number | null; ref_text: string | null; flag: string | null;
   note_id: number | null; note_slug: string | null; note_title: string | null; encounter_id: number | null;
 }
@@ -393,7 +394,17 @@ export const getLabSeries = (analyte: string, unit?: string) =>
     (unit ? `&unit=${encodeURIComponent(unit)}` : ""));
 
 // Staged lab ingestion (extract -> preview -> approve/revoke/re-analyze, per attachment).
-export interface StagedLab { status: string | null; imported?: number; doc_type?: string; results: LabPoint[] & any[]; skipped?: number; }
+export interface LabSkip { analyte: string; date: string | null; value: string; reason: string; }
+export interface LabIdentity { name?: string; dob?: string; }
+export interface StagedLab {
+  status: string | null; imported?: number; doc_type?: string; results: LabPoint[] & any[];
+  skipped?: number; skips?: LabSkip[]; low_confidence?: number;
+  identity?: LabIdentity; identity_state?: "" | "mismatch" | "unverified";
+}
+export interface MedicalOwner { name?: string; dob?: string; }
+export const getMedicalOwner = () => get<MedicalOwner>("/api/medical/owner");
+export const setMedicalOwner = (name: string, dob: string) =>
+  put<MedicalOwner>("/api/medical/owner", { name, dob });
 export const getAttachmentLabs = (id: number) => get<StagedLab>(`/api/medical/attachments/${id}/labs`);
 export const getAttachmentLabSeries = (id: number, analyte: string, unit?: string) =>
   get<LabSeries>(`/api/medical/attachments/${id}/labs/series?analyte=${encodeURIComponent(analyte)}` +

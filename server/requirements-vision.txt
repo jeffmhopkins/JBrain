@@ -1,0 +1,16 @@
+# OPTIONAL — image/screenshot/scanned-PDF lab intake (server/app/services/lab_vision.py).
+# Install only if you want to import labs from photos, patient-portal screenshots, or scanned
+# (image-only) PDFs. WITHOUT these the deterministic text-PDF path still works fully; image
+# inputs degrade visibly to an "image_unparsed" status (never a silent no-op), and the note
+# tells you OCR + a renderer are needed.
+#
+# Install with:
+#   pip install -r requirements.txt -r requirements-vision.txt
+# AND the system Tesseract binary (pytesseract shells out to it), e.g. on Debian/Ubuntu:
+#   apt-get install -y tesseract-ocr
+#
+# Faithfulness note: pytesseract is the INDEPENDENT OCR reader that gates the vision model —
+# a value is staged only if Tesseract also saw it. It is what makes the vision path trustworthy,
+# not an optional nicety; the path refuses to stage ungated model output when it's absent.
+pytesseract==0.3.13   # local OCR; requires the system `tesseract-ocr` binary
+pypdfium2==4.30.0     # render scanned/image-only PDF pages to images for OCR + vision

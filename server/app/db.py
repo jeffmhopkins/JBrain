@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 
 def init_db() -> None:
@@ -602,6 +602,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         _add_column(conn, "attachments", "lab_status", "TEXT")
         _add_column(conn, "attachments", "lab_json", "TEXT")
         _add_column(conn, "attachments", "lab_extracted_at", "TEXT")
+
+    if current < 41:
+        # Lab provenance (P3) + intra-day ordering (P4). `source` records HOW a row was
+        # extracted (lab_trend_export | lab_report | lab_image | NULL=legacy auto-applied),
+        # so a vision-derived value is distinguishable from a deterministically-parsed one.
+        # `collected_time` carries HH:MM when the document shows it (kept separate from the
+        # date-only collected_at, which the chart x-axis and dedup rely on) to order genuine
+        # twice-daily draws. schema.sql carries the identical columns for fresh DBs.
+        _add_column(conn, "lab_results", "source", "TEXT")
+        _add_column(conn, "lab_results", "collected_time", "TEXT")
 
 
 # The medical schema, factored out so the migration (existing DBs) and schema.sql

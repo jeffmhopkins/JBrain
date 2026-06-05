@@ -7,12 +7,13 @@ import { renderWikiLinks, stripSummarySentinels } from "../util";
 import { fmtTs, expandTimeTokens } from "../time";
 import GuidedChat from "../components/GuidedChat";
 import ResearchChat from "../components/ResearchChat";
+import LabShareView from "../components/LabShareView";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
-  requires_claim?: boolean;
+  requires_claim?: boolean; allow_chat?: boolean;
   kind?: string; intro?: string; consent?: string; goal?: string;
   scope: "view" | "edit"; can_edit: boolean; brain_name: string; app_tz?: string; bound_name?: string | null;
   note?: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
@@ -63,6 +64,12 @@ export default function SharePage() {
   // --- Research Q&A: scope-bounded question answering ----------------------
   if (data.kind === "research") {
     return <ResearchChat token={token} brainName={data.brain_name} intro={data.intro} />;
+  }
+
+  // --- Lab share: scoped trend charts (+ optional scoped chat) -------------
+  if (data.kind === "labs") {
+    return <LabShareView token={token} brainName={data.brain_name} intro={data.intro}
+                         consent={data.consent} allowChat={data.allow_chat} />;
   }
 
   // --- Consent landing for a not-yet-accepted bind link --------------------

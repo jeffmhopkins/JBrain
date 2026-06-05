@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn
+from ..services import labshare as labshare_svc
 from ..services import notes as notes_svc
 from ..services import research as research_svc
 from ..services import share as share_svc
@@ -350,6 +351,40 @@ def guided_reject(sid: int):
 
 
 # --- Research links -----------------------------------------------------------
+
+class LabShareIn(BaseModel):
+    analytes: list[str] = []
+    window_from: str | None = None
+    window_to: str | None = None
+    allow_chat: bool = True
+    intro: str = ""
+    label: str | None = None
+    ttl_days: int = 14
+
+
+@router.post("/labs")
+def create_lab_share(body: LabShareIn):
+    """Mint + ACTIVATE a lab-share link in one step. The analyte allow-list is the boundary;
+    refusing an empty list is enforced in labshare.activate (default-deny)."""
+    conn = get_conn()
+    analytes = [a for a in (body.analytes or []) if a]
+    if not analytes:
+        raise HTTPException(status_code=400, detail="Select at least one result to share.")
+    token, link_id = labshare_svc.create(
+        conn, analytes=analytes, window_from=body.window_from, window_to=body.window_to,
+        allow_chat=body.allow_chat, intro=(body.intro or "").strip()[:1000],
+        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, bind=True)
+    if not labshare_svc.activate(conn, link_id):
+        raise HTTPException(status_code=400, detail="Couldn't activate (need at least one result).")
+    conn.commit()
+    return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
+
+
+@router.get("/labs/{link_id}/audit")
+def lab_share_audit(link_id: int):
+    """Owner audit: per recipient session, which analytes were shown and when."""
+    return {"sessions": labshare_svc.audit(get_conn(), link_id)}
+
 
 class MintResearchIn(BaseModel):
     label: str | None = None

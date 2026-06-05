@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { LabAnalyte, LabPoint, LabSeries, getLabAnalytes, getLabSeries, getPendingLabs } from "../api";
 import LabChart from "../components/LabChart";
+import LabShareCreator from "../components/LabShareCreator";
 import { Icon } from "../components/Icon";
 
 const OUT = new Set(["high", "low", "abnormal"]);
@@ -181,6 +182,8 @@ export default function LabsPage() {
           </details>
         </div>
       )}
+
+      <LabShareCreator analytes={analytes} />
     </div>
   );
 }

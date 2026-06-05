@@ -9,8 +9,10 @@ import { Icon } from "../components/Icon";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
-// but excluded from the LLM history server-side.
-interface Msg { role: "user" | "assistant" | "event"; content: string; }
+// but excluded from the LLM history server-side. `id` (when present) tags an
+// optimistic turn's user/assistant rows so the stream can target them by identity
+// instead of by position — robust to anything else mutating the list mid-send.
+interface Msg { role: "user" | "assistant" | "event"; content: string; id?: number; }
 type Mode = "entry" | "medical" | "assisted" | "research";
 
 // Render an applied-action summary with any URL made clickable (so a freshly-minted
@@ -153,6 +155,8 @@ export default function Chat() {
   const convIdRef = useRef<number | null>(null);
   const convPromiseRef = useRef<Promise<number> | null>(null);
   const entrySeq = useRef(0);   // unique id for optimistic capture-mode entry rows
+  const turnSeq = useRef(0);    // unique id for optimistic chat message rows (user/assistant)
+  const activeAsstRef = useRef<number | null>(null);   // id of the assistant bubble the stream is painting
 
   // Typewriter reveal for the active assistant turn. The reply arrives over SSE in
   // bursty chunks; we accumulate the full received-so-far into `bufRef` and reveal
@@ -170,13 +174,17 @@ export default function Chat() {
       ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
       : false,
   );
-  // Write the revealed slice onto the last (assistant) message bubble.
+  // Write the revealed slice onto THIS turn's assistant bubble (by id), so a concurrent
+  // setMessages (a restore/toggle reload, a future event row) can't make us paint the
+  // wrong row. No-ops if that bubble is gone (e.g. already re-synced from the server).
   function paint(n: number) {
     const text = bufRef.current.slice(0, n);
+    const id = activeAsstRef.current;
     setMessages((m) => {
-      if (m.length === 0 || m[m.length - 1].role !== "assistant") return m;
+      const i = m.findIndex((x) => x.id === id);
+      if (i < 0) return m;
       const c = [...m];
-      c[c.length - 1] = { role: "assistant", content: text };
+      c[i] = { ...c[i], content: text };
       return c;
     });
   }
@@ -353,6 +361,15 @@ export default function Chat() {
     setUndone((s) => new Set(s).add(id));
   }
 
+  // Shared failure handling for an optimistic send: put the user's text/attachment back
+  // (but never clobber something they retyped into the now-empty composer) and tell them.
+  // Each caller still removes its own optimistic artifact (entry row / chat bubble) first.
+  function rollbackComposer(text: string, file: File | null, err: unknown, prefix: string) {
+    setInput((cur) => cur.trim() ? cur : text);
+    if (file) setPendingFile((cur) => cur || file);
+    alert(`${prefix}: ` + (err instanceof Error ? err.message : "please try again."));
+  }
+
   async function send(e?: FormEvent) {
     e?.preventDefault();
     const text = input.trim();
@@ -401,12 +418,9 @@ export default function Chat() {
           ? { id: enId, text: bubble + labMsg, title: r.title, slug: r.slug }
           : en));
       } catch (err) {
-        // Don't silently lose the entry: drop the optimistic row, restore the composer
-        // (only if the user hasn't typed something new), and tell them.
+        // Don't silently lose the entry: drop the optimistic row, restore the composer.
         setEntries((xs) => xs.filter((en) => en.id !== enId));
-        setInput((cur) => cur.trim() ? cur : text);
-        if (file) setPendingFile((cur) => cur || file);
-        alert("Couldn't save entry: " + (err instanceof Error ? err.message : "please try again."));
+        rollbackComposer(text, file, err, "Couldn't save entry");
       } finally { setBusy(false); setUploadPct(null); sendingRef.current = false; }
       return;
     }
@@ -415,7 +429,10 @@ export default function Chat() {
     // even before the conversation id resolves — then queue the actual send behind
     // ensureConversation() so a turn fired before convId is set is never dropped.
     atBottomRef.current = true;   // sending re-engages follow, so you see your message + reply
-    setMessages((m) => [...m, { role: "user", content: bubble }, { role: "assistant", content: "" }]);
+    const userId = ++turnSeq.current;
+    const asstId = ++turnSeq.current;
+    activeAsstRef.current = asstId;   // paint()/the error handler target this bubble by id
+    setMessages((m) => [...m, { role: "user", content: bubble, id: userId }, { role: "assistant", content: "", id: asstId }]);
     let bubbleShown = true;
     // Reset the typewriter cleanly for this new turn.
     bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = true;
@@ -423,12 +440,12 @@ export default function Chat() {
     setStatus("Thinking…");
     let errored = false;
     let cid: number | null = null;
-    // Remove the optimistic [user, empty-assistant] pair (only if still present) so a throw
-    // before any token is delivered doesn't leave a dangling half-turn on screen.
+    // Remove THIS turn's optimistic rows (by id) so a throw before any token is delivered
+    // doesn't leave a dangling half-turn — and never deletes some other row by position.
     const dropOptimisticBubble = () => {
       if (!bubbleShown) return;
       bubbleShown = false;
-      setMessages((m) => (m.length >= 2 ? m.slice(0, -2) : m));
+      setMessages((m) => m.filter((x) => x.id !== userId && x.id !== asstId));
     };
     try {
       cid = await ensureConversation();
@@ -441,14 +458,8 @@ export default function Chat() {
         await uploadAttachment(r.slug, file, setUploadPct, false);
         setUploadPct(null);
         extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
-        // Fold the saved-note reference into the already-shown user bubble (it sits just
-        // before the empty assistant placeholder).
-        setMessages((m) => {
-          const c = [...m];
-          const ui = c.length - 2;
-          if (ui >= 0 && c[ui].role === "user") c[ui] = { role: "user", content: (text + extra).trim() };
-          return c;
-        });
+        // Fold the saved-note reference into this turn's user bubble (by id).
+        setMessages((m) => m.map((x) => x.id === userId ? { ...x, content: (text + extra).trim() } : x));
       }
       const msg = (text + extra).trim();
       const coords = await coordsP;   // resolved (or null) by now; bounded by GEO_MAX_WAIT
@@ -475,13 +486,10 @@ export default function Chat() {
         } else if (ev.type === "error") {
           errored = true;
           // Show the error immediately — don't typewriter-drip it. Clear the buffer
-          // so the reveal loop won't overwrite the ⚠️ message.
+          // so the reveal loop won't overwrite the ⚠️ message. Target this turn's
+          // assistant bubble by id.
           bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
-          setMessages((m) => {
-            const c = [...m];
-            c[c.length - 1] = { role: "assistant", content: `⚠️ ${ev.message}` };
-            return c;
-          });
+          setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
       }, coords, mode === "research" ? "research" : "assisted");
       // Stream finished delivering: let the typewriter reveal the remaining buffered
@@ -504,11 +512,10 @@ export default function Chat() {
       // Roll back so nothing is lost: drop the optimistic bubble, restore the composer.
       errored = true;
       dropOptimisticBubble();
-      setInput((cur) => cur.trim() ? cur : text);
-      if (file) setPendingFile((cur) => cur || file);
-      alert("Couldn't send: " + (err instanceof Error ? err.message : "please try again."));
+      rollbackComposer(text, file, err, "Couldn't send");
     } finally {
       streamActiveRef.current = false;
+      activeAsstRef.current = null;
       setStreaming(false);
       setStatus("");
       setUploadPct(null);

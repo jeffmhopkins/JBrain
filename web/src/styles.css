@@ -858,6 +858,21 @@ table.sql-result th { background: var(--bg-elev-2); }
 .model-row .model-label { font-size: 13px; }
 .model-row select { min-width: 200px; }
 
+/* Settings fields — a reusable column of labelled controls for a settings card
+   (label → control → help, stacked). Robust at any card width: nothing wraps
+   raggedly the way an inline label+control+label row does on a narrow card. */
+.set-fields { display: flex; flex-direction: column; gap: 16px; margin: 14px 0; }
+.set-field { display: flex; flex-direction: column; gap: 6px; }
+.set-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.set-control { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.set-control select, .set-control input { flex: 1 1 150px; min-width: 0; max-width: 260px; width: auto; }
+.set-control.narrow select, .set-control.narrow input { flex: 0 1 140px; }
+/* Bare <select> isn't covered by the global input rule — match the inputs beside it. */
+.set-control select { font: inherit; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 10px; }
+.set-control select:focus { outline: none; border-color: var(--accent); }
+.set-sub { font-size: 12px; color: var(--text-dim); line-height: 1.4; margin: 0; }
+
 /* ---- Labs (trend chart) ------------------------------------------------- */
 .lab-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; max-height: 168px; overflow-y: auto; }
 .lab-pick {

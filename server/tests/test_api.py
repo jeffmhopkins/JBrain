@@ -4425,6 +4425,31 @@ def test_image_analysis_empty_note_sends_no_context(client, monkeypatch):
     assert captured["n_text"] == 1   # instruction only; no empty context block
 
 
+def test_image_analysis_feeds_capture_location_as_hint(client, monkeypatch):
+    # A note's capture location is passed to the vision model as a regional hint
+    # (helps species ID, e.g. of a fish), labelled as DATA, not instructions.
+    from app.services import image_analysis as ia, llm
+    from app.db import get_conn
+    captured = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def fake_complete(messages, **k):
+        captured["texts"] = [b["text"] for b in messages[0]["content"] if b["type"] == "text"]
+        return "Desc.\n\n**Salient facts**\n- z"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    _inline_threads(monkeypatch, ia)
+
+    client.post("/api/notes", json={"title": "Catch", "content_md": ""})
+    get_conn().execute(
+        "UPDATE notes SET lat = ?, lon = ?, location_label = ? WHERE slug = 'catch'",
+        (30.0, -97.0, "Lake Travis, Texas"))
+    get_conn().commit()
+    client.post("/api/notes/catch/attachments", files={"file": ("fish.png", _png_bytes(), "image/png")})
+
+    joined = "\n".join(captured["texts"])
+    assert "Lake Travis, Texas" in joined          # the place reached the model
+    assert "regional hint" in joined               # framed as a hint, not an instruction
+
+
 def test_strip_all_summary_blocks_preserves_prose_between_blocks():
     from app.services import image_analysis as ia
     md = ("A\n\n<!-- jbrain:image-summary att=1 -->\nx\n<!-- /jbrain:image-summary att=1 -->\n\n"

@@ -150,13 +150,18 @@ export default function NotePage() {
   if (!note) return <div className="content muted">Loading…</div>;
   const sourceLines = note.content_md.split("\n");   // for mapping rendered checkboxes back to source lines
 
+  // Lab extraction is a medical-domain affordance: offer it only on notes filed under
+  // notes/medical/<dest>/ (the medical-capture tree), never on ordinary entries — so a
+  // random PDF/photo on a non-medical note never shows an "Extract lab values" option.
+  const isMedical = note.title.toLowerCase().startsWith("notes/medical/");
+
   const rail = (
     <>
       <h3 style={{ marginTop: 0 }}>Attachments</h3>
       <Attachments slug={note.slug} onNoteChanged={reload} />
 
       {note.kind !== "kb" && <AiAnalysisPanel slug={note.slug} />}
-      {note.kind !== "kb" && <LabImportPanel slug={note.slug} />}
+      {note.kind !== "kb" && isMedical && <LabImportPanel slug={note.slug} />}
       {note.kind === "kb" && !note.title.includes("/_") && <TalkPanel slug={note.slug} />}
 
       <h3 style={{ marginTop: 20 }}>Backlinks</h3>

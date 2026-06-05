@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 
 def init_db() -> None:
@@ -535,6 +535,173 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # of note bodies into it.
         _add_column(conn, "attachments", "analysis_md", "TEXT")
         _migrate_image_summaries(conn)
+
+    if current < 38:
+        # Medical logging: the `encounters` spine + structured projections (labs,
+        # vitals, diagnoses, procedures, medications, clinical documents) and the
+        # read VIEWS over them. A queryable SIDECAR of note/attachment content
+        # (note stays source of truth, like note_analysis/entities) — never lossy,
+        # always re-derivable. Self-contained tables FK'ing only to existing tables
+        # (notes/attachments/entities/people), so indexes are safe inline here.
+        # schema.sql carries the identical block for fresh DBs.
+        conn.executescript(_MEDICAL_SCHEMA_SQL)
+
+
+# The medical schema, factored out so the migration (existing DBs) and schema.sql
+# (fresh DBs) stay in lockstep — keep this identical to the "Medical logging"
+# section of schema.sql.
+_MEDICAL_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS encounters (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind         TEXT NOT NULL DEFAULT 'visit'
+                 CHECK (kind IN ('admission','visit','er','procedure','telehealth','lab_only','other')),
+  person_id    INTEGER REFERENCES people(id) ON DELETE SET NULL,
+  facility     TEXT, reason TEXT, started_at TEXT, ended_at TEXT, summary TEXT, note_slug TEXT,
+  identity_key TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_encounters_identity ON encounters(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_encounters_person_time ON encounters(person_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_encounters_started ON encounters(started_at);
+
+CREATE TABLE IF NOT EXISTS clinical_documents (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  doc_type      TEXT NOT NULL, title TEXT, authored_at TEXT, author TEXT, identity_key TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clinical_docs_identity ON clinical_documents(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_clinical_docs_encounter ON clinical_documents(encounter_id);
+
+CREATE TABLE IF NOT EXISTS lab_results (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id   INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id        INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id  INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  test_name      TEXT NOT NULL, analyte_key TEXT, loinc TEXT,
+  value_text     TEXT, value_num REAL, unit TEXT, canonical_unit TEXT, canonical_num REAL,
+  ref_low        REAL, ref_high REAL, ref_text TEXT, flag TEXT,
+  collected_at   TEXT, resulted_at TEXT, identity_key TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lab_results_identity ON lab_results(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lab_results_analyte_time ON lab_results(analyte_key, collected_at);
+CREATE INDEX IF NOT EXISTS idx_lab_results_encounter ON lab_results(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_lab_results_note ON lab_results(note_id);
+
+CREATE TABLE IF NOT EXISTS vitals (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  kind          TEXT NOT NULL, value_num REAL, unit TEXT, measured_at TEXT, identity_key TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vitals_identity ON vitals(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_vitals_kind_time ON vitals(kind, measured_at);
+CREATE INDEX IF NOT EXISTS idx_vitals_encounter ON vitals(encounter_id);
+
+CREATE TABLE IF NOT EXISTS diagnoses (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL, code TEXT, code_system TEXT, status TEXT,
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+  diagnosed_at  TEXT, identity_key TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnoses_identity ON diagnoses(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_diagnoses_encounter ON diagnoses(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_diagnoses_entity ON diagnoses(entity_id);
+
+CREATE TABLE IF NOT EXISTS procedures (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL, code TEXT, code_system TEXT,
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+  performed_at  TEXT, identity_key TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_procedures_identity ON procedures(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_procedures_encounter ON procedures(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_procedures_entity ON procedures(entity_id);
+
+CREATE TABLE IF NOT EXISTS medications (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  encounter_id  INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id       INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL,
+  entity_id     INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+  rxcui         TEXT, dose TEXT, route TEXT, frequency TEXT, status TEXT,
+  started_at    TEXT, stopped_at TEXT, identity_key TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_medications_identity ON medications(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_medications_encounter ON medications(encounter_id);
+CREATE INDEX IF NOT EXISTS idx_medications_entity ON medications(entity_id);
+
+CREATE TABLE IF NOT EXISTS med_administrations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  medication_id   INTEGER REFERENCES medications(id) ON DELETE CASCADE,
+  encounter_id    INTEGER REFERENCES encounters(id) ON DELETE SET NULL,
+  note_id         INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id   INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  dose            TEXT, route TEXT, administered_at TEXT, identity_key TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_med_admin_identity ON med_administrations(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_med_admin_med ON med_administrations(medication_id);
+CREATE INDEX IF NOT EXISTS idx_med_admin_encounter ON med_administrations(encounter_id);
+
+CREATE VIEW IF NOT EXISTS v_encounters AS
+  SELECT e.id AS encounter_id, e.kind, e.facility, e.reason,
+         e.started_at AS admitted_at, e.ended_at AS discharged_at,
+         CASE WHEN e.started_at IS NOT NULL AND e.ended_at IS NOT NULL
+              THEN ROUND(julianday(e.ended_at) - julianday(e.started_at), 2) END AS length_of_stay_days,
+         e.summary, e.note_slug, p.name AS person
+  FROM encounters e LEFT JOIN people p ON p.id = e.person_id;
+
+CREATE VIEW IF NOT EXISTS v_lab_trend AS
+  SELECT l.analyte_key AS analyte, l.test_name, l.value_num, l.unit,
+         l.ref_low, l.ref_high, l.flag, l.collected_at,
+         l.encounter_id, l.note_id, n.title AS note_title
+  FROM lab_results l LEFT JOIN notes n ON n.id = l.note_id
+  WHERE l.value_num IS NOT NULL;
+
+CREATE VIEW IF NOT EXISTS v_abnormal_labs AS
+  SELECT l.analyte_key AS analyte, l.test_name, l.value_num, l.unit, l.flag,
+         l.ref_low, l.ref_high, l.collected_at, l.encounter_id, l.note_id
+  FROM lab_results l
+  WHERE (l.flag IS NOT NULL AND l.flag NOT IN ('N',''))
+     OR (l.value_num IS NOT NULL AND l.ref_low  IS NOT NULL AND l.value_num < l.ref_low)
+     OR (l.value_num IS NOT NULL AND l.ref_high IS NOT NULL AND l.value_num > l.ref_high);
+
+CREATE VIEW IF NOT EXISTS v_current_medications AS
+  SELECT m.name, m.dose, m.route, m.frequency, m.status, m.started_at, m.stopped_at,
+         m.rxcui, m.encounter_id, m.note_id
+  FROM medications m
+  WHERE m.stopped_at IS NULL AND (m.status IS NULL OR m.status <> 'discontinued');
+
+CREATE VIEW IF NOT EXISTS v_encounter_timeline AS
+  SELECT encounter_id, collected_at AS event_at, 'lab' AS event_type, test_name AS label,
+         COALESCE(value_text, CAST(value_num AS TEXT)) || COALESCE(' ' || unit, '') AS detail, note_id
+    FROM lab_results WHERE collected_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, measured_at, 'vital', kind,
+         COALESCE(CAST(value_num AS TEXT), '') || COALESCE(' ' || unit, ''), note_id
+    FROM vitals WHERE measured_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, performed_at, 'procedure', name, COALESCE(code, ''), note_id
+    FROM procedures WHERE performed_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, diagnosed_at, 'diagnosis', name, COALESCE(status, ''), note_id
+    FROM diagnoses WHERE diagnosed_at IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, COALESCE(started_at, stopped_at), 'medication', name, COALESCE(dose, ''), note_id
+    FROM medications WHERE COALESCE(started_at, stopped_at) IS NOT NULL
+  UNION ALL
+  SELECT encounter_id, authored_at, 'document', COALESCE(title, doc_type), doc_type, note_id
+    FROM clinical_documents WHERE authored_at IS NOT NULL;
+"""
 
 
 def _migrate_image_summaries(conn: sqlite3.Connection) -> None:

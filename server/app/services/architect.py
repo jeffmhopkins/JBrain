@@ -273,7 +273,9 @@ def _schema_tables(conn) -> str:
     """Live, user-facing table list for the research prompt (excludes fts/vec
     shadows and secret/internal tables)."""
     try:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name"
+        ).fetchall()
         names = [r[0] for r in rows
                  if not r[0].startswith("sqlite_") and "fts" not in r[0]
                  and not r[0].startswith("vec_") and r[0] not in _NON_CONTENT_TABLES]

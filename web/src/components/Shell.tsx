@@ -204,16 +204,33 @@ export default function Shell({ children }: { children: ReactNode }) {
   const goBackRef = useRef(goBack);
   goBackRef.current = goBack;
 
-  // The OS/browser back gesture would otherwise drop out of the PWA. A same-URL history
-  // sentinel makes it fire popstate instead, which we route down the tree via goBack().
+  // We fully own the back gesture. To stop the OS/browser back from ever tunnelling out of
+  // the PWA — or double-stepping (popping a real forward entry AND running goBack) — we pin
+  // browser history to a constant depth of two: a fixed floor entry plus a same-URL sentinel.
+  // We do that by intercepting react-router's PUSH navigations (it calls window.history.
+  // pushState at navigate time, so this one hook covers every nav() and <Link>) and turning
+  // them into REPLACE: in-app forward moves swap the top entry instead of growing history, so
+  // the in-memory `stackRef` above is the single source of truth for back. The OS back gesture
+  // then always pops the sentinel → fires popstate (caught here) → we re-arm it and step the
+  // logical stack down exactly one level, never escaping the app.
   useEffect(() => {
-    window.history.pushState(null, "");
+    const realPush = window.history.pushState.bind(window.history);
+    let armed = false;                                  // our own sentinel pushes set this
+    const arm = () => { armed = true; try { realPush(null, ""); } finally { armed = false; } };
+    window.history.pushState = function (data: any, unused: string, url?: string | URL | null) {
+      return armed ? realPush(data, unused, url) : window.history.replaceState(data, unused, url);
+    } as typeof window.history.pushState;
+
+    arm();                                              // seed the depth-2 trap entry
     function onPop() {
-      window.history.pushState(null, "");   // re-arm for the next back
+      arm();                                            // re-arm for the next back
       goBackRef.current();
     }
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.history.pushState = realPush;              // restore the native method
+    };
   }, []);   // install once
 
   const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean; edgeStart: boolean } | null>(null);

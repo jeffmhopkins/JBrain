@@ -8,13 +8,16 @@ import hmac
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from ..db import get_conn
 from ..services import attachments as att_svc
 from ..services import guided as guided_svc
+from ..services import lab_share_scope
+from ..services import labshare as labshare_svc
+from ..services import labshare_ai
 from ..services import research as research_svc
 from ..services import share as share_svc
 
@@ -110,6 +113,8 @@ def share_read(token: str, request: Request):
         return _guided_landing(conn, link)   # NEVER returns note content
     if link["kind"] == "research":
         return _research_landing(conn, link)   # NEVER returns note content
+    if link["kind"] == "labs":
+        return _labs_landing(conn, link)       # consent only; charts/series need a started session
     st = _bind_status(link, request)
     if st == "locked":
         raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
@@ -318,6 +323,121 @@ def research_turn(token: str, body: ResearchTurnIn, request: Request):
     if session is None or session["status"] != "active":
         raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
     return research_svc.answer(conn, link, spec, session, body.message)
+
+
+# --- Lab-share links (kind='labs') ------------------------------------------
+# A recipient views a SCOPED set of lab trend charts (+ optional scoped AI chat). All lab data
+# comes through lab_share_scope (allow-list + identity-stripped); series responses are no-store.
+
+def _labs_landing(conn, link) -> dict:
+    spec = labshare_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return {
+        "kind": "labs",
+        "brain_name": get_settings().brain_name,
+        "owner": get_settings().brain_name,
+        "intro": spec["intro"],
+        "allow_chat": bool(spec["allow_chat"]) and llm_ready(),
+        "consent": (f"You’re viewing a selection of lab results {get_settings().brain_name} chose to share. "
+                    "It’s a fixed selection, not their full records, and may not be current. "
+                    "This is not medical advice or a diagnosis. Views are logged for them."),
+    }
+
+
+def _labs_cookie(response: Response, token: str, link_id: int, secret: str) -> None:
+    domain = (get_settings().jbrain_domain or "").lower()
+    secure = not (domain == "" or domain.startswith("localhost") or domain.startswith("127."))
+    # samesite='strict': the session cookie never rides a cross-site navigation (PHI hardening).
+    response.set_cookie(f"jb_labs_{link_id}", secret, max_age=7 * 24 * 3600, httponly=True,
+                        samesite="strict", secure=secure, path=f"/api/share/{token}")
+
+
+def _resolve_labs(conn, request, token):
+    link = _resolve_or_404(conn, request, token)
+    if link["kind"] != "labs":
+        raise HTTPException(status_code=404, detail="Not found.")
+    spec = labshare_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    return link, spec
+
+
+def _labs_session(conn, link, request):
+    return labshare_svc.session_for(conn, link["id"], request.cookies.get(f"jb_labs_{link['id']}") or "")
+
+
+class LabsStartIn(BaseModel):
+    name: str | None = None
+
+
+class LabsTurnIn(BaseModel):
+    message: str = Field("", max_length=8000)
+
+
+@router.post("/{token}/labs/start")
+def labs_start(token: str, body: LabsStartIn, request: Request, response: Response):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, spec = _resolve_labs(conn, request, token)
+    # A bind link locks to the FIRST browser that accepts it (PHI: a forwarded link can't open
+    # a fresh view from another device).
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
+    existing = _labs_session(conn, link, request)
+    analytes = [{"analyte": a["analyte"], "test_name": a["test_name"], "unit": a["unit"]}
+                for a in lab_share_scope.list_analytes_scoped(conn, labshare_svc.allowed_analytes(spec))]
+    out = {"name": (existing["name"] if existing else (body.name or "").strip()[:80]) or None,
+           "allow_chat": bool(spec["allow_chat"]) and llm_ready(), "analytes": analytes,
+           "window": {"from": spec["window_from"], "to": spec["window_to"]}}
+    if existing and existing["status"] == "active":
+        import json as _json
+        out["transcript"] = _json.loads(existing["transcript_json"] or "[]")
+        return out
+    if link["bind"] and st == "unclaimed":                 # claim it to this browser
+        secret = share_svc.mint_token()
+        conn.execute("UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=?",
+                     (secret, link["id"]))
+        _bind_cookie(response, token, link["id"], secret)
+    sid, sess_secret = labshare_svc.start_session(conn, link["id"], name=body.name, client_ip=_client_ip(request))
+    share_svc.touch(conn, link["id"]); conn.commit()
+    _labs_cookie(response, token, link["id"], sess_secret)
+    out["transcript"] = []
+    return out
+
+
+@router.get("/{token}/labs/series")
+def labs_series(token: str, analyte: str, request: Request):
+    """Scoped series for ONE analyte — only if it's in the allow-list (independent re-check, so a
+    forged chart spec still 404s), identity-stripped, and never cached on the recipient device."""
+    conn = get_conn()
+    link, spec = _resolve_labs(conn, request, token)
+    _require_access(link, request)
+    session = _labs_session(conn, link, request)
+    if session is None or session["status"] != "active":
+        raise HTTPException(status_code=403, detail="Start the session first.")
+    s = lab_share_scope.series_scoped(conn, analyte, allowed=labshare_svc.allowed_analytes(spec),
+                                      dfrom=spec["window_from"], dto=spec["window_to"])
+    if s is None:                                          # out-of-scope analyte — defense in depth
+        raise HTTPException(status_code=404, detail="Not available.")
+    return JSONResponse(s, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
+
+@router.post("/{token}/labs/turn")
+def labs_turn(token: str, body: LabsTurnIn, request: Request):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, spec = _resolve_labs(conn, request, token)
+    if not (spec["allow_chat"] and llm_ready()):
+        raise HTTPException(status_code=403, detail="Chat isn’t enabled for this link.")
+    _require_access(link, request)
+    session = _labs_session(conn, link, request)
+    if session is None or session["status"] != "active":
+        raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
+    return labshare_ai.answer(conn, link, spec, session, body.message)
 
 
 # Only these render inline on the public page; everything else (esp. SVG/HTML,

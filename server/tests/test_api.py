@@ -373,6 +373,37 @@ def test_labshare_ai_scopes_charts_blocks_injection_and_audits(client, monkeypat
     assert aud and "creatinine" in aud[0]["charted"] and "hiv_ab" not in aud[0]["charted"]
 
 
+def test_labshare_public_recipient_flow_is_scoped(client):
+    # End-to-end public path: owner mints+activates -> recipient lands, starts, fetches scoped
+    # series (identity-stripped, no-store) -> an out-of-scope analyte 404s even via the raw endpoint.
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('m2','notes/medical/Name/labs','b') "
+                       "RETURNING id").fetchone()["id"]
+    for ak, name, vt, vn in [("creatinine", "Creatinine", "1.0", 1.0), ("creatinine", "Creatinine", "1.4", 1.4),
+                             ("hiv_ab", "HIV Ab", "0.1", 0.1)]:
+        conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,"
+                     "ref_low,ref_high,collected_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (nid, name, ak, vt, vn, "mg/dL", 0.6, 1.2, "2026-01-0%d" % (1 if ak == "hiv_ab" else 2)))
+    conn.commit()
+
+    r = client.post("/api/shares/labs", json={"analytes": ["creatinine"], "allow_chat": False}).json()
+    token = r["token"]
+    land = client.get(f"/api/share/{token}").json()
+    assert land["kind"] == "labs" and land["allow_chat"] is False
+    started = client.post(f"/api/share/{token}/labs/start", json={"name": "Dr Smith"}).json()
+    assert [a["analyte"] for a in started["analytes"]] == ["creatinine"]            # only the shared analyte
+    ser = client.get(f"/api/share/{token}/labs/series?analyte=creatinine")
+    assert ser.status_code == 200 and "no-store" in ser.headers.get("cache-control", "")
+    pts = ser.json()["points"]
+    assert pts and all("note_title" not in p and "note_id" not in p for p in pts)   # identity stripped
+    assert ser.json()["encounters"] == []
+    # An out-of-scope analyte is unreachable even by hitting the endpoint directly.
+    assert client.get(f"/api/share/{token}/labs/series?analyte=hiv_ab").status_code == 404
+    # Chat is disabled on this link.
+    assert client.post(f"/api/share/{token}/labs/turn", json={"message": "hi"}).status_code == 403
+
+
 def test_labshare_ai_is_import_isolated():
     # Structural invariant: the recipient AI reaches labs ONLY via the scoped boundary — it must
     # not import architect / lab_series / notes / embeddings / sqlsafe (no path to the whole brain).

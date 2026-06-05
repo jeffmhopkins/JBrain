@@ -121,6 +121,18 @@ export const researchStart = <T = any>(token: string, name?: string) =>
   publicApi<T>(`/api/share/${encodeURIComponent(token)}/research/start`, { method: "POST", body: JSON.stringify({ name }) });
 export const researchTurn = <T = any>(token: string, message: string) =>
   publicApi<T>(`/api/share/${encodeURIComponent(token)}/research/turn`, { method: "POST", body: JSON.stringify({ message }) });
+// Lab-share links (kind='labs') — recipient side. Series come ONLY through the token-scoped,
+// allow-list-rechecked, no-store endpoint (never the owner /api/medical/* path).
+export const labsStart = <T = any>(token: string, name?: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/labs/start`, { method: "POST", body: JSON.stringify({ name }) });
+export const labsTurn = <T = any>(token: string, message: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/labs/turn`, { method: "POST", body: JSON.stringify({ message }) });
+export const getShareLabSeries = (token: string, analyte: string) =>
+  publicApi<LabSeries>(`/api/share/${encodeURIComponent(token)}/labs/series?analyte=${encodeURIComponent(analyte)}`);
+// Lab-share — owner management.
+export const createLabShare = (analytes: string[], opts: { window_from?: string | null; window_to?: string | null;
+    allow_chat?: boolean; intro?: string; label?: string }) =>
+  post<{ token: string; link_id: number; url: string }>("/api/shares/labs", { analytes, ...opts });
 // Research links — owner management.
 export const researchDetail = <T = any>(linkId: number) => get<T>(`/api/shares/research/${linkId}`);
 export const researchSetScope = (linkId: number, prefixes: string[], kinds: string[] = []) =>

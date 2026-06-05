@@ -14,6 +14,7 @@ import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
 import ListEditor from "../components/ListEditor";
+import ShareOptions from "../components/ShareOptions";
 import { Parsed, parseList, serialize } from "../lists";
 
 interface Note {
@@ -236,27 +237,15 @@ export default function NotePage() {
                 </div>
               </div>
 
-              <div className="share-row">
-                <label className="share-row-label" htmlFor="share-ttl">Expires</label>
-                <div className="share-control">
-                  <select id="share-ttl" className="modal-select" value={shareTtl}
-                          onChange={(e) => setShareTtl(Number(e.target.value))}>
-                    <option value={0}>Never</option>
-                    <option value={1}>In 1 day</option>
-                    <option value={7}>In 7 days</option>
-                    <option value={30}>In 30 days</option>
-                  </select>
+              <div className="share-row" style={{ display: "block" }}>
+                <ShareOptions value={{ bind: shareBind, single_use: false, ttl_days: shareTtl }}
+                              show={{ singleUse: false }}
+                              onChange={(p) => { if (p.ttl_days !== undefined) setShareTtl(p.ttl_days);
+                                                 if (p.bind !== undefined) setShareBind(p.bind); }} />
+                <div className="share-help" style={{ marginTop: 4 }}>
+                  Lock ties the link to the first browser that opens it; others get a resettable lock page. Friction against re-sharing, not strong security.
                 </div>
               </div>
-
-              <label className="share-row share-toggle" htmlFor="share-bind">
-                <div className="share-row-label">Lock to first device</div>
-                <input id="share-bind" className="share-check" type="checkbox" checked={shareBind}
-                       onChange={(e) => setShareBind(e.target.checked)} />
-                <div className="share-help share-toggle-help">
-                  Ties the link to the first browser that opens it; others get a resettable lock page. Friction against re-sharing, not strong security.
-                </div>
-              </label>
 
               <div className="share-actions">
                 <button className="ghost" onClick={() => setSharing(false)}>Cancel</button>

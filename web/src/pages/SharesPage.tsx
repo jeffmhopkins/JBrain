@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedDeleteSession, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSession, guidedSessions, guidedSetDetails, setLinkExpiry, post } from "../api";
+import ShareOptions from "../components/ShareOptions";
 import ResearchLinks from "../components/ResearchLinks";
 import ConversationView from "../components/ConversationView";
 import { useAuth } from "../App";
@@ -273,12 +274,10 @@ export default function SharesPage() {
               </button>
               {openPrompt === g.id && <GuidedEditor g={g} onSaved={load} />}
               <div className="row" style={{ marginTop: 8, gap: 18, flexWrap: "wrap", alignItems: "center" }}>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                  <input className="share-check" type="checkbox" checked={!!g.bind} onChange={() => toggleGuidedOpt(g, "bind")} /> Lock to first device
-                </label>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                  <input className="share-check" type="checkbox" checked={!!g.single_use} onChange={() => toggleGuidedOpt(g, "single_use")} /> Single use (run once)
-                </label>
+                <ShareOptions value={{ bind: !!g.bind, single_use: !!g.single_use, ttl_days: 0 }}
+                              show={{ singleUse: true, expiry: false }}
+                              onChange={(p) => { if ("bind" in p) toggleGuidedOpt(g, "bind");
+                                                 if ("single_use" in p) toggleGuidedOpt(g, "single_use"); }} />
                 {!!g.bind && g.started > 0 && (
                   <button className="ghost" style={{ fontSize: 12 }} onClick={() => resetGuidedBind(g)}>Reset lock</button>
                 )}

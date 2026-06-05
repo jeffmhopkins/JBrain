@@ -3557,20 +3557,23 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
 
     ia.analyze(att["id"])   # run worker synchronously (own-thread codepath, same conn in tests)
 
+    # The summary lands on the attachment sidecar, NOT the note body (which is left clean).
     body = client.get("/api/notes/photo-host").json()["content_md"]
-    assert "AI image summary" in body and "A solid square (call 1)" in body
-    assert "Trip photos." in body            # user content preserved
+    assert "AI image summary" not in body and "A solid square" not in body
+    assert body.strip() == "Trip photos."     # user content untouched
+    atts = client.get("/api/notes/photo-host/attachments").json()
+    assert "A solid square (call 1)" in atts[0]["analysis_md"]
     status = client.get(f"/api/attachments/{att['id']}/analysis-status").json()
     assert status["status"] == "done"
 
-    # Re-run replaces the block rather than stacking it.
+    # Re-run replaces the summary rather than stacking it (and never touches the body).
     ia.analyze(att["id"])
-    body2 = client.get("/api/notes/photo-host").json()["content_md"]
-    assert body2.count("AI image summary") == 1
-    assert "A solid square (call 2)" in body2 and "call 1" not in body2
+    atts2 = client.get("/api/notes/photo-host/attachments").json()
+    assert "A solid square (call 2)" in atts2[0]["analysis_md"] and "call 1" not in atts2[0]["analysis_md"]
+    assert "A solid square" not in client.get("/api/notes/photo-host").json()["content_md"]
 
 
-def test_image_analysis_strips_block_on_attachment_delete(client, monkeypatch):
+def test_image_analysis_sidecar_and_delete(client, monkeypatch):
     from app.services import image_analysis as ia, llm
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "Desc.\n\n**Salient facts**\n- x")
@@ -3579,11 +3582,43 @@ def test_image_analysis_strips_block_on_attachment_delete(client, monkeypatch):
                       data={"analyze": "false"},   # drive analyze() manually for determinism
                       files={"file": ("p.png", _png_bytes(), "image/png")}).json()
     ia.analyze(att["id"])
-    assert "AI image summary" in client.get("/api/notes/del-host").json()["content_md"]
+    # Summary on the sidecar, body untouched.
+    assert "Keep me." == client.get("/api/notes/del-host").json()["content_md"].strip()
+    assert "Desc." in client.get("/api/notes/del-host/attachments").json()[0]["analysis_md"]
 
+    # Deleting the attachment removes its sidecar with it; the note body stays clean.
     client.delete(f"/api/attachments/{att['id']}")
-    after = client.get("/api/notes/del-host").json()["content_md"]
-    assert "AI image summary" not in after and "Keep me." in after
+    assert client.get("/api/notes/del-host/attachments").json() == []
+    assert "Keep me." in client.get("/api/notes/del-host").json()["content_md"]
+
+
+def test_migrate_image_summaries_to_sidecar(client):
+    """Migration 37 backfill: an existing inline AI-summary block is lifted into the
+    attachment's analysis_md and stripped from the body; a block whose attachment is gone is
+    left in place (no silent loss)."""
+    from app.db import get_conn, _migrate_image_summaries
+    from app.services import image_analysis as ia
+    from app.services import notes as ns
+    conn = get_conn()
+    # A note whose body carries an inline summary for a real attachment (att A) and an
+    # orphaned one (att 99999, no such attachment).
+    nid = ns.upsert_note(conn, "notes/legacy", "User prose.\n")
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, sha256, byte_size, analyzed_at) "
+                 "VALUES (?,?,?,?,?,datetime('now'))", (nid, "shot.png", "image/png", "h1", 10))
+    att_a = conn.execute("SELECT id FROM attachments WHERE note_id=?", (nid,)).fetchone()["id"]
+    legacy = (f"User prose.\n\n{ia._open(att_a)}\n**AI image summary** (shot.png)\n\nA red square.\n{ia._close(att_a)}\n"
+              f"\n{ia._open(99999)}\n**AI image summary** (gone.png)\n\nOrphan text.\n{ia._close(99999)}\n")
+    conn.execute("UPDATE notes SET content_md=? WHERE id=?", (legacy, nid))
+    conn.commit()
+
+    _migrate_image_summaries(conn)
+    conn.commit()
+
+    body = conn.execute("SELECT content_md FROM notes WHERE id=?", (nid,)).fetchone()["content_md"]
+    assert "A red square." not in body and "User prose." in body      # real block lifted out
+    assert "Orphan text." in body                                     # orphan left in place
+    md = conn.execute("SELECT analysis_md FROM attachments WHERE id=?", (att_a,)).fetchone()["analysis_md"]
+    assert md.strip() == "A red square."                              # header dropped, body kept
 
 
 def test_image_analysis_non_image_and_unsupported(client, monkeypatch):
@@ -3622,7 +3657,9 @@ def test_image_upload_auto_analyzes_by_default(client, monkeypatch):
     up = client.post("/api/notes/auto-host/attachments",
                      files={"file": ("auto.png", _png_bytes(), "image/png")}).json()   # no data={analyze}
     assert up.get("analysis", {}).get("status") in ("pending", "done")
-    assert "Auto desc." in client.get("/api/notes/auto-host").json()["content_md"]
+    # Auto-analysis fills the sidecar, not the body.
+    assert "Auto desc." not in client.get("/api/notes/auto-host").json()["content_md"]
+    assert "Auto desc." in client.get("/api/notes/auto-host/attachments").json()[0]["analysis_md"]
 
 
 def test_image_upload_opt_out_skips_analysis(client, monkeypatch):

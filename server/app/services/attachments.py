@@ -171,7 +171,7 @@ def delete_attachment(conn, att_id: int) -> None:
 def list_for_note(conn, note_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT id, filename, mime, byte_size, created_at, "
-        "analysis_status, analysis_detail, analyzed_at FROM attachments "
+        "analysis_status, analysis_detail, analyzed_at, analysis_md FROM attachments "
         "WHERE note_id = ? ORDER BY created_at DESC",
         (note_id,),
     ).fetchall()

@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 def init_db() -> None:
@@ -528,6 +528,53 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     if current < 36:
         # Cache key for an entity's semantic embedding (skip re-embedding when unchanged).
         _add_column(conn, "entities", "embed_hash", "TEXT")
+
+    if current < 37:
+        # AI image analysis moves OUT of the note body into a read-only sidecar column on
+        # the attachment. Add the column, then lift any existing inline summary blocks out
+        # of note bodies into it.
+        _add_column(conn, "attachments", "analysis_md", "TEXT")
+        _migrate_image_summaries(conn)
+
+
+def _migrate_image_summaries(conn: sqlite3.Connection) -> None:
+    """Migration 37 backfill: lift inline AI image-summary blocks out of note bodies into
+    attachments.analysis_md (+ the attachment FTS), then strip them from the body. A block
+    whose attachment no longer exists is LEFT IN PLACE — never silently dropped. Bodies are
+    edited in place (no new version row, no updated_at bump): this only relocates
+    machine-generated cruft, and an affected note simply re-analyzes on its next pass."""
+    import re as _re
+    from .services import image_analysis as ia
+    from .services import attachments as att_svc
+    from .services.notes import _sync_fts
+    block_re = _re.compile(
+        r"<!-- jbrain:image-summary att=(\d+) -->\n?(.*?)<!-- /jbrain:image-summary att=\1 -->",
+        _re.DOTALL)
+    header_re = _re.compile(r"^\*\*AI image summary\*\*[^\n]*\n+")
+    rows = conn.execute(
+        "SELECT id, title, content_md FROM notes WHERE content_md LIKE '%jbrain:image-summary att=%'"
+    ).fetchall()
+    for r in rows:
+        original = r["content_md"] or ""
+        body = original
+        for m in block_re.finditer(original):
+            att_id = int(m.group(1))
+            att = conn.execute(
+                "SELECT note_id, filename, analysis_md FROM attachments WHERE id = ?", (att_id,)
+            ).fetchone()
+            if not att:
+                continue                                  # orphaned block → leave it in the body
+            if not (att["analysis_md"] or "").strip():
+                summary = header_re.sub("", m.group(2).strip()).strip()
+                conn.execute(
+                    "UPDATE attachments SET analysis_md = ?, "
+                    "analysis_status = COALESCE(analysis_status, 'done') WHERE id = ?",
+                    (summary, att_id))
+                att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], summary)
+            body = ia.strip_summary_block(body, att_id)    # remove just this (existing) block
+        if body != original:
+            conn.execute("UPDATE notes SET content_md = ? WHERE id = ?", (body, r["id"]))
+            _sync_fts(conn, r["id"], r["title"], body)
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:

@@ -1,17 +1,18 @@
 """AI vision analysis of image attachments.
 
 When the user opts in, an image attachment is sent to the vision model, which
-returns a summary + salient facts. The result is appended back into the parent
-note's markdown as a clearly-marked, idempotent block anchored to the attachment
-id, and the attachment's analysis_status is tracked so the UI can poll.
+returns a summary + salient facts. The result is stored as a READ-ONLY SIDECAR on
+the attachment row (attachments.analysis_md) and indexed into the attachment FTS —
+it is NOT written into the note body, so it shows in the image panel, never
+pollutes the prose, and re-analysis doesn't churn note versions. The read paths
+(chat tools, KB source loader, note analysis) re-assemble it from the sidecar so
+nothing the body used to carry is lost.
 
 Runs on a background daemon thread (the vision call is multi-second and must not
-block the upload response or the 120s LLM request budget). The note write-back is
-the only part that takes the SQLite write lock: it reads the freshest content and
-re-appends inside one BEGIN IMMEDIATE transaction, so a concurrent user edit waits
-(busy_timeout) rather than racing. The append is additive and anchored, so the
-worst case under a genuine collision is last-committed-write-wins — never silent
-loss of user prose. No optimistic-concurrency is added to the note PUT path.
+block the upload response or the 120s LLM request budget). The write-back is a
+small attachment-row update (summary + status) inside one BEGIN IMMEDIATE
+transaction; it no longer touches the note, so a concurrent note edit is never
+blocked by analysis.
 
 In-image text is treated as untrusted DATA by the prompt (it can later be read by
 wiki synthesis, which feeds note content to the synthesis LLM); see prompts.yaml
@@ -26,7 +27,6 @@ import threading
 
 from ..db import get_conn
 from . import llm, prompts
-from . import notes as notes_svc
 
 # Anthropic accepts jpeg/png/gif/webp; we always re-encode to JPEG or PNG. No
 # benefit beyond ~1568px on the long edge, and it keeps the payload well under
@@ -90,6 +90,26 @@ def _note_context(content_md: str | None) -> str | None:
     text = text[:_CONTEXT_MAX_CHARS]
     from .architect import _untrusted   # lazy: reuse the fence primitive without a heavy top-level import
     return _untrusted("note-context", text)
+
+
+def for_note(conn, note_id: int) -> list[tuple[str, str]]:
+    """[(filename, analysis_md)] for this note's analyzed image attachments (in upload
+    order). The sidecar the read paths re-assemble in place of the old in-body block."""
+    if note_id is None:
+        return []
+    rows = conn.execute(
+        "SELECT filename, analysis_md FROM attachments WHERE note_id = ? "
+        "AND analysis_md IS NOT NULL AND analysis_md != '' ORDER BY id",
+        (note_id,)).fetchall()
+    return [(r["filename"], r["analysis_md"]) for r in rows]
+
+
+def block_for_note(conn, note_id: int, cap: int = 1500) -> str:
+    """A compact, bounded text block of this note's image analyses for feeding to a
+    reader/LLM, or "" if none. Each image is labelled so the model knows it's vision output."""
+    parts = [f"[AI image summary — {fn}]\n{md.strip()}" for fn, md in for_note(conn, note_id)]
+    text = "\n\n".join(parts)
+    return text[:cap] if (cap and len(text) > cap) else text
 
 
 def append_summary_block(md: str, att_id: int, filename: str, body: str) -> str:
@@ -196,25 +216,19 @@ def analyze(att_id: int) -> None:
             _mark_error(conn, att_id, str(exc))
             return
 
-        # Read-modify-write of the note + status flip, atomically.
+        # Store the summary on the ATTACHMENT (read-only sidecar) + flip status, atomically.
+        # No note write-back: the body is left untouched.
         conn.execute("BEGIN IMMEDIATE")
-        note = conn.execute(
-            "SELECT title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
-            (note_id,),
-        ).fetchone() if note_id is not None else None
-        still_there = conn.execute(
-            "SELECT 1 FROM attachments WHERE id = ?", (att_id,)
+        att = conn.execute(
+            "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if not still_there:
+        if not att:
             conn.rollback()  # attachment was deleted mid-analysis; nothing to record
             return
-        if note:
-            new_md = append_summary_block(note["content_md"], att_id, filename, body)
-            notes_svc.upsert_note(
-                conn, note["title"], new_md, note_id=note_id,
-                source="image-analysis",
-                version_note=f"AI image summary for attachment {att_id}",
-            )
+        conn.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
+        # Keep transcribed in-image text searchable now that it's no longer in the note body.
+        from . import attachments as att_svc
+        att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], body)
         _set_status(conn, att_id, "done")
         conn.commit()
     except Exception as exc:  # never let the worker thread die silently

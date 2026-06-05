@@ -202,7 +202,8 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   analysis_status TEXT,                      -- NULL|pending|done|error (AI image analysis)
   analysis_detail TEXT,                      -- error message surfaced to the UI
-  analyzed_at  TEXT                          -- when analysis last completed
+  analyzed_at  TEXT,                         -- when analysis last completed
+  analysis_md  TEXT                          -- AI vision summary (read-only sidecar; not in the note body)
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_note ON attachments(note_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_sha  ON attachments(note_id, sha256);

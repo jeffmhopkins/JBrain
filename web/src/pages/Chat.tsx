@@ -39,7 +39,6 @@ const TOOL_LABELS: Record<string, string> = {
   search_attachments: "Searching attachments…",
   read_attachment: "Reading an attachment…",
   list_recent_notes: "Looking at recent notes…",
-  read_inbox: "Checking the inbox…",
   query_sql: "Querying the database…",
   current_location: "Checking your location…",
   geo_distance: "Measuring distance…",

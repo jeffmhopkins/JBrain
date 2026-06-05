@@ -1,10 +1,10 @@
 """Additive quick-task operations (Phase 2).
 
 These are the ONLY writes the architect performs without confirmation, and they
-are *structurally* additive — append a line, create-if-missing, or capture to
-the inbox — so the worst case is an extra line, fully reversible via Undo. There
-is no destructive auto-apply tool, by design (see ROADMAP for complete/remove,
-which stay confirm-gated and need fail-closed matching).
+are *structurally* additive — append a line or create-if-missing — so the worst
+case is an extra line, fully reversible via Undo. There is no destructive
+auto-apply tool, by design (see ROADMAP for complete/remove, which stay
+confirm-gated and need fail-closed matching).
 """
 from __future__ import annotations
 
@@ -177,17 +177,6 @@ def append_log(
         conversation_id=conversation_id, version_note="log entry", **_loc_kwargs(location),
     )
     return {"note_title": target, "block": block, "created": created}
-
-
-def capture_inbox(conn, content: str, source_label: str = "architect-capture") -> int:
-    cur = conn.execute(
-        "INSERT INTO inbox (source, content) VALUES (?, ?)", (source_label, content.strip())
-    )
-    return cur.lastrowid
-
-
-def mark_inbox_processed(conn, ids: list[int]) -> None:
-    conn.executemany("UPDATE inbox SET processed = 1 WHERE id = ?", [(i,) for i in ids])
 
 
 # --- Undo helpers (used by the staging /undo endpoint) ----------------------

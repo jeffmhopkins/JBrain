@@ -47,8 +47,6 @@ and a graph.
 - **SQL access** — a built-in read-only SQL console, plus full `sqlite3` CLI.
 - **PWA** — installable, responsive (first-class phone *and* desktop layouts),
   with offline reading of notes you've already viewed.
-- **Quick-capture inbox** — a tiny `/api/capture` endpoint so a phone shortcut
-  or a Wear OS tile can dictate thoughts the architect folds in later.
 - **Workflows** — trigger→action automations defined as repo YAML (`workflows/`),
   ingested into the DB on boot and editable in the PWA. Triggers: app **events**,
   fixed **intervals**, or **cron** (`"0 7 * * *"`, in the server timezone). The
@@ -226,24 +224,6 @@ docker compose cp api:/data/brain-backup.db ./brain-backup.db
 docker compose cp ./brain-backup.db api:/data/brain.db
 docker compose restart api
 ```
-
-## Dictate from a watch / phone shortcut
-
-Wear OS can't run the PWA, so capture goes through `POST /api/capture` with a
-JSON body `{"content": "..."}` and the same access key as a header:
-
-```
-POST https://<your-domain>/api/capture
-Authorization: Bearer <your-access-key>
-Content-Type: application/json
-
-{"content": "remember to follow up on the budget idea"}
-```
-
-Wire it up with a phone shortcut, a share-sheet target, or a Wear tile via
-Tasker/AutoWear (add a static `Authorization` header). Captures land in an inbox
-the architect reviews in your next chat. A polished native Wear OS app is a
-planned v2 add-on.
 
 ## Development
 

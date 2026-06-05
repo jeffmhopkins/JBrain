@@ -61,7 +61,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 
 def init_db() -> None:
@@ -138,8 +138,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         )
 
     if current < 6:
-        # Location (+ time is already created_at) on entries and their sources.
-        for table in ("notes", "messages", "inbox"):
+        # Location (+ time is already created_at) on entries and their sources. (The
+        # quick-capture `inbox` table also got these columns historically; it's dropped
+        # in migration 38, so it's no longer migrated here.)
+        for table in ("notes", "messages"):
             _add_column(conn, table, "lat", "REAL")
             _add_column(conn, table, "lon", "REAL")
             _add_column(conn, table, "location_label", "TEXT")
@@ -535,6 +537,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # of note bodies into it.
         _add_column(conn, "attachments", "analysis_md", "TEXT")
         _migrate_image_summaries(conn)
+
+    if current < 38:
+        # The quick-capture inbox feature was removed; drop its now-unused table.
+        conn.execute("DROP TABLE IF EXISTS inbox")
 
 
 def _migrate_image_summaries(conn: sqlite3.Connection) -> None:

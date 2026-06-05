@@ -722,11 +722,6 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .tag-editor .tag-x { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 1px; }
 .tag-editor .tag-x:hover { color: var(--danger); }
 .tag-editor .tag-add { width: 80px; font-size: 12px; padding: 2px 8px; border: 1px dashed var(--border); border-radius: 999px; background: transparent; }
-/* Inbox review list */
-.inbox-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-.inbox-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--bg-elev); }
-.inbox-item.done { opacity: 0.55; }
-.inbox-content { white-space: pre-wrap; margin-bottom: 4px; }
 .wikilink-flat { color: var(--text-dim); }
 
 /* Interactive task-list checkboxes inside rendered note markdown. */

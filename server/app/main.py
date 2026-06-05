@@ -125,6 +125,11 @@ async def lifespan(app: FastAPI):
     for w in architect.validate_agent_config(get_conn()):
         print(f"[agent] config warning: {w}", flush=True)
 
+    # Release-blocker: the lab-share recipient tool set must never include an owner tool
+    # (query_sql / notes / search). Fail fast at boot if that invariant is ever broken.
+    from .services import lab_share_scope
+    lab_share_scope.assert_recipient_tools_safe()
+
     from .services import pipeline
     for w in pipeline.validate_action_defs():
         print(f"[pipeline] action warning: {w}", flush=True)

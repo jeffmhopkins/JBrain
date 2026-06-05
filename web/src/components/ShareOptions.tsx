@@ -17,8 +17,9 @@ export const DEFAULT_SHARE_OPTIONS: ShareCommonOptions = {
 export default function ShareOptions({ value, onChange, show, disabled }: {
   value: ShareCommonOptions;
   onChange: (patch: Partial<ShareCommonOptions>) => void;
-  // Which controls to show + constraints. `ttlMin > 0` removes the "never" option (e.g. PHI links).
-  show?: { singleUse?: boolean; caps?: boolean; ttlMin?: number };
+  // Which controls to show + constraints. `ttlMin > 0` removes the "never" option (e.g. PHI links);
+  // `expiry: false` hides the expiry control (for surfaces that manage it elsewhere, e.g. guided).
+  show?: { singleUse?: boolean; caps?: boolean; ttlMin?: number; expiry?: boolean };
   disabled?: boolean;
 }) {
   const s = show || {};
@@ -34,10 +35,12 @@ export default function ShareOptions({ value, onChange, show, disabled }: {
             <input type="checkbox" style={{ width: "auto" }} checked={value.single_use} disabled={disabled}
                    onChange={(e) => onChange({ single_use: e.target.checked })} /> Single use</label>
         )}
-        <label className="row" style={{ gap: 6 }}>Expires in
-          <input type="number" min={ttlMin} style={{ width: 64 }} value={value.ttl_days} disabled={disabled}
-                 onChange={(e) => onChange({ ttl_days: Math.max(ttlMin, +e.target.value) })} />
-          days{ttlMin > 0 ? "" : " (0 = never)"}</label>
+        {s.expiry !== false && (
+          <label className="row" style={{ gap: 6 }}>Expires in
+            <input type="number" min={ttlMin} style={{ width: 64 }} value={value.ttl_days} disabled={disabled}
+                   onChange={(e) => onChange({ ttl_days: Math.max(ttlMin, +e.target.value) })} />
+            days{ttlMin > 0 ? "" : " (0 = never)"}</label>
+        )}
       </div>
       {s.caps && (
         <details style={{ marginTop: 6 }}>

@@ -35,38 +35,52 @@ export default function MediaSettings() {
   return (
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Media &amp; transcription</h3>
-      <p className="muted" style={{ fontSize: 13 }}>
+      <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         Local speech-to-text (no API key) for audio &amp; video, and how video frames are sampled
-        for the vision summary. Applies to new transcriptions immediately.
+        for the vision summary. Changes apply to new transcriptions immediately.
       </p>
 
-      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
-        <label style={{ minWidth: 130, fontSize: 13 }}>Transcription model</label>
-        <select value={s.audio_model} onChange={(e) => upd("audio_model", e.target.value)} style={{ flex: 1, minWidth: 140 }}>
-          {s.audio_model_options.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-        <select value={s.audio_compute_type} onChange={(e) => upd("audio_compute_type", e.target.value)} style={{ minWidth: 120 }}>
-          {s.compute_type_options.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-      </div>
-      <p className="muted" style={{ fontSize: 11, margin: "0 0 10px" }}>
-        Larger = more accurate but more RAM/slower. Use <code>tiny</code> on a tight (2&nbsp;GB) box.
-      </p>
+      <div className="set-fields">
+        <div className="set-field">
+          <label className="set-label">Transcription model</label>
+          <div className="set-control">
+            <select value={s.audio_model} onChange={(e) => upd("audio_model", e.target.value)}>
+              {s.audio_model_options.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <select value={s.audio_compute_type} onChange={(e) => upd("audio_compute_type", e.target.value)}>
+              {s.compute_type_options.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <p className="set-sub">
+            Whisper model + precision. Larger = more accurate but more RAM/slower; use <code>tiny</code> with{" "}
+            <code>int8</code> on a tight (2&nbsp;GB) box.
+          </p>
+        </div>
 
-      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
-        <label style={{ minWidth: 130, fontSize: 13 }}>Video frames</label>
-        <input value={s.video_frame_interval} onChange={(e) => upd("video_frame_interval", e.target.value)}
-               placeholder="30s or 25%" style={{ width: 110 }} title="Cadence: a time interval like 30s, or a percent step like 25%" />
-        <span className="muted" style={{ fontSize: 12 }}>every</span>
-        <input type="number" min={0} value={s.video_frame_max}
-               onChange={(e) => upd("video_frame_max", e.target.value === "" ? 0 : Number(e.target.value))}
-               style={{ width: 80 }} title="Max frames per video = your cost ceiling (all frames ride in one vision call)" />
-        <span className="muted" style={{ fontSize: 12 }}>max frames</span>
+        <div className="set-field">
+          <label className="set-label">Frame sampling</label>
+          <div className="set-control narrow">
+            <input value={s.video_frame_interval} onChange={(e) => upd("video_frame_interval", e.target.value)}
+                   placeholder="30s or 25%" />
+          </div>
+          <p className="set-sub">
+            How often to grab a video frame for the vision summary — a time interval like <code>30s</code>, or a
+            percent step like <code>25%</code> (a frame at 0/25/50/75/100%).
+          </p>
+        </div>
+
+        <div className="set-field">
+          <label className="set-label">Max frames per video</label>
+          <div className="set-control narrow">
+            <input type="number" min={0} value={s.video_frame_max}
+                   onChange={(e) => upd("video_frame_max", e.target.value === "" ? 0 : Number(e.target.value))} />
+          </div>
+          <p className="set-sub">
+            Cost cap — every frame rides in one vision call, so this is your ceiling. Set to <code>0</code> to turn
+            off frame analysis (transcript only). Needs an LLM key.
+          </p>
+        </div>
       </div>
-      <p className="muted" style={{ fontSize: 11, margin: "0 0 10px" }}>
-        Interval = cadence (e.g. <code>30s</code> or <code>25%</code>); max frames is the cost cap (all frames go in one
-        vision call). Set max to <code>0</code> to turn off video frame analysis (transcript only). Needs an LLM key.
-      </p>
 
       <div className="row">
         <button className="primary" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>

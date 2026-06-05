@@ -6383,3 +6383,34 @@ def test_transcription_completion_refreshes_note_analysis(client, monkeypatch):
     at.transcribe(aid)                                   # completes → auto-refreshes analysis
     assert "Buy milk and call Colin" in seen.get("prompt", "")   # transcript reached the analyzer
     assert (na.get(conn, nid) or {}).get("gist", "").startswith("about a memo")
+
+
+def test_video_transcription_includes_frame_vision_summary(client, monkeypatch):
+    # A video's enrichment combines the audio transcript with a vision summary of frames
+    # sampled across the clip (both searchable + in the sidecar). Audio-only skips frames.
+    from app.db import get_conn
+    from app.services import audio_transcription as at, image_analysis, llm
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "clip", "title": "Clip"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+                       "VALUES (?,?,?,?,?,?,?) RETURNING id",
+                       (nid, "clip.mp4", "video/mp4", "", b"\x00\x00\x00\x18ftyp", 8, "sha-vid")).fetchone()["id"]
+    conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(at, "_transcribe", lambda raw: "Hello from the clip.")
+    monkeypatch.setattr(at, "_extract_frames", lambda raw, **k: [b"jpeg1", b"jpeg2", b"jpeg3", b"jpeg4", b"jpeg5"])
+    grabbed = {}
+
+    def fake_frames(frames, filename=""):
+        grabbed["n"] = len(frames)
+        return "A person waving at a desk."
+    monkeypatch.setattr(image_analysis, "vision_summary_frames", fake_frames)
+
+    at.transcribe(aid)
+    row = conn.execute("SELECT analysis_status, analysis_md, content_text FROM attachments WHERE id = ?", (aid,)).fetchone()
+    assert row["analysis_status"] == "done"
+    assert grabbed.get("n") == 5                              # frames at 0/25/50/75/100%
+    assert "A person waving" in row["analysis_md"] and "Hello from the clip" in row["analysis_md"]
+    assert "Visual summary" in row["analysis_md"] and "Transcript" in row["analysis_md"]
+    assert "A person waving" in row["content_text"]           # visual summary is searchable too

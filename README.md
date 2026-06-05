@@ -43,7 +43,9 @@ and a graph.
   extracted automatically: text/code files are decoded, **PDFs** are text-extracted,
   **image EXIF/metadata** is pulled, **images** get an AI vision summary, and **audio &
   video** are **transcribed locally** (faster-whisper, no API key — video via its audio
-  track) — all indexed for keyword + semantic search and available to the AI. The per-note
+  track). **Video** additionally has **frames sampled every 25% and described by the vision
+  model**, so its on-screen content is captured too — all indexed for keyword + semantic
+  search and available to the AI. The per-note
   **AI analysis** sidecar folds in this attachment text (PDF/document text, transcripts,
   image summaries) too, so its gist/facts/entities reflect what's in your files.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no

@@ -194,7 +194,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
-        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline and are transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
+        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline and are transcribed locally (no API key).{hasLlm ? " Images are summarized by AI, and video frames are sampled and described too." : ""}
       </p>
       {progress && (
         <div className="upload-progress">
@@ -271,7 +271,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             // The enrich button (below) refreshes it.
             <details className="att-summary" style={{ marginTop: 6 }}>
               <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
-                {isTranscribable(a) ? "📝 Transcript" : "✦ AI summary"}
+                {isVideo(a.mime, a.filename) ? "📝 Transcript & visual summary" : isAudio(a.mime, a.filename) ? "📝 Transcript" : "✦ AI summary"}
               </summary>
               <div className="md" style={{ fontSize: 13, marginTop: 4 }}>
                 <ReactMarkdown>{a.analysis_md}</ReactMarkdown>

@@ -21,6 +21,7 @@ import os
 import threading
 
 from ..db import get_conn
+from . import llm
 
 # Container/codec extensions we route to the transcriber even when the browser
 # sends a vague mime (voice memos commonly arrive as audio/mp4 or octet-stream).
@@ -79,6 +80,45 @@ def _get_model():
     return _model
 
 
+def _extract_frames(raw: bytes, fractions=(0.0, 0.25, 0.5, 0.75, 1.0), max_edge: int = 1568) -> list[bytes]:
+    """Grab JPEG frames sampled across a video (default: every 25%). Best-effort; returns []
+    if the bytes aren't a decodable video. Uses PyAV (bundled with faster-whisper)."""
+    import io
+    try:
+        import av
+    except ImportError:
+        return []
+    out: list[bytes] = []
+    try:
+        with av.open(io.BytesIO(raw)) as c:
+            if not c.streams.video:
+                return []
+            vs = c.streams.video[0]
+            dur = (c.duration / av.time_base) if c.duration else (
+                float(vs.duration * vs.time_base) if (vs.duration and vs.time_base) else 0.0)
+            fracs = fractions if dur > 0 else (0.0,)
+            for f in fracs:
+                try:
+                    if dur > 0:
+                        target = max(0.0, min(f, 0.999)) * dur
+                        c.seek(int(target / vs.time_base), stream=vs, backward=True)
+                    img = None
+                    for frame in c.decode(vs):
+                        img = frame.to_image()
+                        break
+                    if img is None:
+                        continue
+                    img.thumbnail((max_edge, max_edge))
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, format="JPEG", quality=85)
+                    out.append(buf.getvalue())
+                except Exception:  # noqa: BLE001 — skip an unseekable/undecodable position
+                    continue
+    except Exception:  # noqa: BLE001 — not a decodable video
+        return []
+    return out
+
+
 def _transcribe(raw: bytes) -> str:
     model = _get_model()
     try:
@@ -126,32 +166,48 @@ def transcribe(att_id: int) -> None:
             _mark_error(conn, att_id, "Not an audio or video file.")
             return
 
+        raw = bytes(row["content_blob"])
         # Slow part, before any write lock.
         try:
-            text = _transcribe(bytes(row["content_blob"]))
+            text = _transcribe(raw)
         except TranscriptionUnavailable as exc:
             _mark_error(conn, att_id, str(exc))
             return
 
-        body = text or "(No speech detected.)"
+        # For video, also sample frames every 25% and send them through the vision model for a
+        # visual summary (what's on screen, not just what's said). Needs an LLM key; best-effort
+        # so a vision hiccup never loses the transcript.
+        visual = ""
+        if is_video(row["mime"], row["filename"]) and llm.has_credentials():
+            try:
+                from . import image_analysis
+                visual = image_analysis.vision_summary_frames(_extract_frames(raw), row["filename"]).strip()
+            except Exception:  # noqa: BLE001
+                visual = ""
+
+        searchable = "\n\n".join(p for p in (text, visual) if p)
+        if visual:
+            body = f"**Visual summary**\n\n{visual}\n\n**Transcript**\n\n{text or '_(no speech detected)_'}"
+        else:
+            body = text or "(No speech detected.)"
         # Pre-compute chunk vectors outside the write path so the embed compute doesn't
         # hold a write lock; upsert_attachment_embeddings then just (re)writes the rows.
         from . import attachments as att_svc
         from . import embeddings
-        chunks = att_svc.chunk_text(text)
+        chunks = att_svc.chunk_text(searchable)
 
         att = conn.execute(
             "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
         if not att:  # deleted mid-transcription
             return
-        # Transcript IS the searchable content for audio: store it as content_text,
-        # the FTS body, and chunk embeddings, plus the human-readable sidecar.
+        # Transcript (+ any visual summary) IS the searchable content: store it as content_text,
+        # the FTS body, and chunk embeddings, plus the human-readable sidecar (body).
         conn.execute(
             "UPDATE attachments SET analysis_md = ?, content_text = ? WHERE id = ?",
-            (body, text, att_id),
+            (body, searchable, att_id),
         )
-        att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], text)
+        att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], searchable)
         embeddings.upsert_attachment_embeddings(conn, att_id, att["note_id"], chunks)
         _set_status(conn, att_id, "done")
         conn.commit()

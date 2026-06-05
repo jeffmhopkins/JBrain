@@ -7,18 +7,13 @@ import { Icon } from "../components/Icon";
 const OUT = new Set(["high", "low", "abnormal"]);
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
 const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
-// Keep the chosen window when switching analytes: preserve its span, shifted to fit the new
-// analyte's data (so it stays identical when the analytes share dates, e.g. one blood draw).
-function clampWin(w: { from: string; to: string } | null, domain: { from: string; to: string } | null) {
-  if (!domain) return w;
-  if (!w) return { from: domain.from, to: domain.to };
-  const dlo = ms(domain.from), dhi = ms(domain.to);
-  let from = ms(w.from), to = ms(w.to);
-  const span = Math.min(Math.max(1, to - from), Math.max(1, dhi - dlo));
-  if (from < dlo) { from = dlo; to = dlo + span; }
-  if (to > dhi) { to = dhi; from = dhi - span; }
-  if (from < dlo) from = dlo;
-  return { from: iso(from), to: iso(to) };
+// Keep the SAME time window when switching analytes, so flipping through labs doesn't move
+// the view. Keep the exact [from,to] whenever this analyte has any results inside it; only
+// fall back to its full range when the window would otherwise be empty (or on first load).
+function keepWin(w: { from: string; to: string } | null, s: LabSeries) {
+  if (!s.domain) return w;
+  if (!w) return { from: s.domain.from, to: s.domain.to };
+  return s.points.some((p) => p.t >= w.from && p.t <= w.to) ? w : { from: s.domain.from, to: s.domain.to };
 }
 const PRESETS: { label: string; years: number | null }[] = [
   { label: "1y", years: 1 }, { label: "5y", years: 5 }, { label: "All", years: null },
@@ -55,7 +50,7 @@ export default function LabsPage() {
     setSeries(null); setPicked(null);
     getLabSeries(sel).then((s) => {
       setSeries(s);
-      setWin((w) => clampWin(w, s.domain));   // keep the current date range across switches
+      setWin((w) => keepWin(w, s));   // keep the exact time window across analyte switches
     }).catch(() => setErr("Couldn't load that analyte."));
   }, [sel]);
 

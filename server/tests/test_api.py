@@ -5373,3 +5373,136 @@ def test_cluster_chatter_promotes_only_multi_day_patterns(client, monkeypatch):
     assert set(p["member_ids"]) == {1, 2, 3} and p["distinct_days"] == 3
     # the taxes pair (2 entries, same day) is NOT a multi-day pattern
     assert all(set(c2["member_ids"]) != {4, 5} for c2 in out["promotable"])
+
+
+# --- Multi-agent tools/actions review: regression tests for the fixes ---------
+
+def test_sql_guard_blocks_pragma_tvf_and_secret_tables(client):
+    # pragma_* table-valued functions (schema recon) and internal/secret tables are
+    # rejected by the keyword filter; legitimate content searches are NOT.
+    client.post("/api/notes/entry", json={"text": "a study", "title": "meta-analysis"})
+    assert client.post("/api/sql", json={"sql": "SELECT * FROM pragma_table_list"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT * FROM pragma_table_info('notes')"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT value FROM prompt_overrides"}).status_code == 400
+    # Content searches mentioning formerly-blocked words inside string literals are
+    # no longer false-positives (the literal is neutralised before the keyword scan).
+    for q in ("SELECT title FROM notes WHERE title = 'meta-analysis'",
+              "SELECT title FROM notes WHERE content_md LIKE '%create%'",
+              "SELECT title FROM notes WHERE content_md LIKE '%meta%'"):
+        assert client.post("/api/sql", json={"sql": q}).status_code == 200, q
+
+
+def test_sql_authorizer_denies_secret_columns_and_meta(client):
+    # The engine-level authorizer blocks secret columns/tables even though the table
+    # name itself is queryable (share_links.token), and any pragma TVF that slips the
+    # text filter. meta (access-key hash) stays unreadable.
+    assert client.post("/api/sql", json={"sql": "SELECT label FROM share_links"}).status_code in (200, 400)
+    # token column is denied by the authorizer (DatabaseError -> 400)
+    assert client.post("/api/sql", json={"sql": "SELECT token FROM share_links"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT value FROM meta"}).status_code == 400
+
+
+def test_staged_link_missing_source_errors_not_silent(client):
+    # A LINK whose source note doesn't exist must 404 (and stay pending), not be
+    # silently marked applied.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('LINK', ?)",
+                 (_json.dumps({"type": "LINK", "source_title": "notes/Nope",
+                               "target_title": "notes/Other", "summary": "s"}),))
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 404
+    # still pending (not consumed)
+    assert any(p["id"] == aid for p in client.get("/api/staging").json())
+
+
+def test_staged_rename_of_place_note_keeps_loc_root_and_kind(client):
+    # Renaming a loc/ (place) note must keep it under loc/ and preserve kind='place',
+    # not re-root to notes/ and demote it to an entry.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Cafe', 1.0, 2.0, 100)")
+    pid = conn.execute("SELECT id FROM places WHERE name='Cafe'").fetchone()["id"]
+    from app.services import places as places_svc
+    places_svc.ensure_note(conn, pid)
+    conn.commit()
+    cur = conn.execute("SELECT title FROM notes WHERE kind='place' LIMIT 1").fetchone()
+    assert cur and cur["title"].startswith("loc/")
+    conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('RENAME', ?)",
+                 (_json.dumps({"type": "RENAME", "title": cur["title"], "new_title": "Bistro", "summary": "s"}),))
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    row = conn.execute("SELECT title, kind FROM notes WHERE id=(SELECT id FROM notes WHERE kind='place' LIMIT 1)").fetchone()
+    assert row["kind"] == "place" and row["title"].startswith("loc/")
+
+
+def test_staged_delete_with_basis_refuses_identity_swap(client):
+    # A DELETE proposed via the architect captures a basis (note_id); if the original
+    # note is replaced by a different note under the same title, apply must refuse.
+    from app.db import get_conn
+    from app.services import architect, notes as notes_svc
+    conn = get_conn()
+    client.post("/api/notes/entry", json={"text": "original", "title": "Dupe"})
+    architect._tool_propose_actions(conn, None, [{"type": "DELETE", "title": "notes/Dupe", "summary": "s"}])
+    conn.commit()
+    # Simulate identity swap: delete original, create a new note under the same title.
+    orig = notes_svc.get_by_title(conn, "notes/Dupe")
+    notes_svc.soft_delete(conn, orig["id"])
+    conn.commit()   # commit so the request thread's connection sees it (no lock)
+    client.post("/api/notes/entry", json={"text": "DIFFERENT note", "title": "Dupe"})
+    aid = client.get("/api/staging").json()[0]["id"]
+    # basis note_id no longer live -> 409, the new note survives.
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 409
+    assert notes_svc.get_by_title(conn, "notes/Dupe") is not None
+
+
+def test_propose_actions_validates_required_fields(client):
+    # A proposed action missing fields apply needs is rejected up front (nothing
+    # staged), not staged-then-rejected with a cryptic 400 at approval time.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    msg, event = architect._tool_propose_actions(conn, None, [{"type": "RENAME", "summary": "s"}])
+    assert event is None and "Nothing staged" in msg
+    assert client.get("/api/staging").json() == []
+
+
+def test_propose_actions_rollback_on_bad_action(client):
+    # A malformed action must not leave half-staged rows that a later commit flushes.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    # First action valid, second missing required 'title' for DELETE -> validated out
+    # before any INSERT, so nothing is staged.
+    msg, event = architect._tool_propose_actions(
+        conn, None, [{"type": "CREATE", "title": "X", "content": "c", "summary": "s"},
+                     {"type": "DELETE", "summary": "s"}])
+    assert event is None
+    assert client.get("/api/staging").json() == []
+
+
+def test_location_fixes_redacts_third_party_raw_coords(client, monkeypatch):
+    # The owner gets raw coords; a NON-owner registered person is degraded to place
+    # labels (no consent layer for third-party raw GPS).
+    from app.db import get_conn
+    from app.services import architect, geotrail, people as people_svc
+    conn = get_conn()
+    owner = people_svc.owner(conn)
+    if owner is None:
+        conn.execute("INSERT INTO people (name, is_default) VALUES ('Me', 1)")
+        conn.commit()
+        owner = people_svc.owner(conn)
+    conn.execute("INSERT INTO people (name, is_default) VALUES ('Allan', 0)")
+    conn.commit()
+    monkeypatch.setattr(geotrail, "fixes", lambda *a, **k: [
+        {"lat": 12.345678, "lon": 98.765432, "accuracy_m": None,
+         "recorded_at": "2026-06-01 12:00:00", "source": "x"}])
+    monkeypatch.setattr(geotrail, "label_point", lambda *a, **k: "Downtown")
+    owner_out = architect._tool_location_fixes(conn, person=owner["name"])
+    third_out = architect._tool_location_fixes(conn, person="Allan")
+    assert "12.345678" in owner_out                                  # owner: raw precision
+    assert "12.345678" not in third_out and "Downtown" in third_out  # third party: label only

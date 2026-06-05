@@ -26,7 +26,7 @@ steps:
     do: analyze_pending
     with:
       limit: "{{ config.batch_limit | default(80) }}"
-      force: "{{ config.force != false }}"
+      force: "{{ config.force | default(false) }}"
     stop_when_empty: "no notes need analysis"
 
   - id: done
@@ -35,7 +35,7 @@ steps:
       - do: analyze_note
         with:
           id: "{{ item }}"
-          force: "{{ config.force != false }}"
+          force: "{{ config.force | default(false) }}"
 
   # Refresh the canonical entity index so the browse view + next build stay current.
   - do: rebuild_entity_index

@@ -54,6 +54,7 @@ export default defineConfig({
               url.pathname.startsWith("/api/notes") ||
               url.pathname.startsWith("/api/graph") ||
               url.pathname.startsWith("/api/search") ||
+              url.pathname.startsWith("/api/medical") ||
               (url.pathname.startsWith("/api/attachments") && !url.pathname.endsWith("/download"))
             ),
             handler: "NetworkFirst",

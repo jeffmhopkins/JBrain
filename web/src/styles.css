@@ -835,3 +835,25 @@ table.sql-result th { background: var(--bg-elev-2); }
 .model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .model-row .model-label { font-size: 13px; }
 .model-row select { min-width: 200px; }
+
+/* ---- Labs (trend chart) ------------------------------------------------- */
+.lab-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; max-height: 168px; overflow-y: auto; }
+.lab-pick {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; font-size: 13px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 999px; color: var(--text);
+}
+.lab-pick:hover { border-color: var(--accent); }
+.lab-pick.active { background: var(--accent-soft); border-color: var(--accent); }
+.lab-pick-name { font-weight: 600; }
+.lab-chart-wrap { border-top: 1px solid var(--border); padding-top: 12px; }
+.lab-head { margin-bottom: 8px; }
+.lab-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.lab-controls input[type="date"] { width: auto; padding: 5px 8px; font-size: 13px; }
+.chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--bg-elev-2); }
+.chip:hover { border-color: var(--accent); }
+.lab-detail { margin-top: 8px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lab-src { margin-left: auto; color: var(--accent); font-size: 13px; }
+.lab-table { margin-top: 12px; }
+.lab-table table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.lab-table th, .lab-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.lab-table th { color: var(--text-dim); font-weight: 600; }

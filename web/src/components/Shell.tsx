@@ -213,25 +213,35 @@ export default function Shell({ children }: { children: ReactNode }) {
   // the in-memory `stackRef` above is the single source of truth for back. The OS back gesture
   // then always pops the sentinel → fires popstate (caught here) → we re-arm it and step the
   // logical stack down exactly one level, never escaping the app.
+  //
+  // TWO THINGS THIS GETS RIGHT (earlier versions didn't):
+  //  • The sentinel re-pushes window.history.STATE, not null. react-router tracks its position
+  //    via an `idx` it stores in history.state; a null sentinel wiped that, skewing its
+  //    back/forward accounting and producing inconsistent results. Preserving the state keeps
+  //    react-router coherent.
+  //  • The install is idempotent (a `__jbReal` marker on the wrapper): a remount re-attaches
+  //    the popstate listener but never double-wraps pushState or re-seeds the trap (which would
+  //    grow history past depth two). We deliberately leave the wrapper installed for the page's
+  //    life — tearing it down on a transient unmount could let a forward nav grow history.
   useEffect(() => {
-    const realPush = window.history.pushState.bind(window.history);
-    let armed = false;                                  // our own sentinel pushes set this
-    const arm = () => { armed = true; try { realPush(null, ""); } finally { armed = false; } };
-    window.history.pushState = function (data: any, unused: string, url?: string | URL | null) {
-      return armed ? realPush(data, unused, url) : window.history.replaceState(data, unused, url);
-    } as typeof window.history.pushState;
-
-    arm();                                              // seed the depth-2 trap entry
+    const h = window.history;
+    const firstInstall = !(h.pushState as any).__jbReal;
+    const realPush: History["pushState"] = (h.pushState as any).__jbReal || h.pushState.bind(h);
+    if (firstInstall) {
+      const wrapped = function (data: any, unused: string, url?: string | URL | null) {
+        return h.replaceState(data, unused, url);   // react-router push → replace (no growth)
+      } as History["pushState"];
+      (wrapped as any).__jbReal = realPush;          // expose the native push for our sentinel
+      h.pushState = wrapped;
+      realPush(h.state, "");                         // seed the depth-2 trap once, preserving idx
+    }
     function onPop() {
-      arm();                                            // re-arm for the next back
+      realPush(window.history.state, "");            // re-arm the trap (preserve react-router idx)
       goBackRef.current();
     }
     window.addEventListener("popstate", onPop);
-    return () => {
-      window.removeEventListener("popstate", onPop);
-      window.history.pushState = realPush;              // restore the native method
-    };
-  }, []);   // install once
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean; edgeStart: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {

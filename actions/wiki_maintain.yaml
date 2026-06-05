@@ -43,6 +43,9 @@ steps:
   #     inert notes (+ cap) so they stop nagging the maintenance pass and posting Review cards.
   - do: tidy_talk
 
+  # 1e. Keep saved geofences reconciled with their kb/Places articles (location box + cross-link).
+  - do: link_places
+
   # 2. Summary card of what the pass did.
   - do: create_review
     when: "{{ config.review != false }}"

@@ -447,6 +447,13 @@ actions:
     Groups article for a recurring shared workplace/organisation too. Make a People
     article for each recurring person, a Places article for each recurring place, etc.
 
+    SAVED PLACES — the owner's geofenced places (their authoritative names):
+    {saved_places}
+    For any of these the notes discuss, title the article kb/Places/<exact saved name> and
+    route EVERY mention of that location (however the notes phrase it — "the house", "work",
+    an address) to that one article. NEVER fork a second, differently-named Places article
+    for a place that already has a saved name.
+
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
     {instructions}

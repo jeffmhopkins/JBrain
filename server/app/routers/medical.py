@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn, get_meta, set_meta
+from ..services import lab_series
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/medical", tags=["medical"], dependencies=[CurrentUser])
@@ -58,3 +59,16 @@ def set_destinations(body: DestsIn):
     set_meta(conn, _META_KEY, json.dumps(out))
     conn.commit()
     return {"names": out}
+
+
+@router.get("/labs/analytes")
+def labs_analytes():
+    """The lab-chart picker feed: one entry per analyte with a value, latest value + status."""
+    return {"analytes": lab_series.list_analytes(get_conn())}
+
+
+@router.get("/labs/series")
+def labs_series(analyte: str, unit: str | None = None):
+    """One analyte's trend: points (incl. censored), stepped reference-band segments, the
+    date domain/value range, and overlapping encounters — for the hand-rolled SVG chart."""
+    return lab_series.series(get_conn(), analyte, unit)

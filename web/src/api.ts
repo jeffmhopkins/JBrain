@@ -368,6 +368,29 @@ export const getLocations = (since?: string, until?: string) => {
 // (The PWA no longer logs a continuous trail — the native tracker owns that. Posts
 // are still location-STAMPED via useGeo's coords at capture time.)
 
+// ---- Labs (trend chart) ----------------------------------------------------
+export interface LabAnalyte {
+  analyte: string; test_name: string; unit: string | null;
+  n: number; first_at: string; last_at: string; last_value: string | null; last_status: string;
+}
+export interface LabPoint {
+  t: string; v: number | null; vtext: string; unit: string | null; status: string; censored: boolean;
+  ref_low: number | null; ref_high: number | null; ref_text: string | null; flag: string | null;
+  note_id: number | null; note_slug: string | null; note_title: string | null; encounter_id: number | null;
+}
+export interface LabSegment { from: string; to: string; low: number | null; high: number | null; }
+export interface LabEncounter { id: number; kind: string; label: string; from: string; to: string | null; }
+export interface LabSeries {
+  analyte: string; test_name: string; unit: string | null;
+  points: LabPoint[]; segments: LabSegment[];
+  domain: { from: string; to: string } | null; value_range: { min: number; max: number } | null;
+  encounters: LabEncounter[]; other_units: string[];
+}
+export const getLabAnalytes = () => get<{ analytes: LabAnalyte[] }>("/api/medical/labs/analytes");
+export const getLabSeries = (analyte: string, unit?: string) =>
+  get<LabSeries>(`/api/medical/labs/series?analyte=${encodeURIComponent(analyte)}` +
+    (unit ? `&unit=${encodeURIComponent(unit)}` : ""));
+
 export const createEntry = <T = any>(
   text: string, title?: string, loc?: { lat: number; lon: number } | null, dest?: string,
 ) =>

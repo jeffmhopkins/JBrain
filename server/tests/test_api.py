@@ -146,6 +146,50 @@ def test_medical_destinations_settings(client):
     assert client.get("/api/medical/destinations").json()["names"] == []
 
 
+def test_labs_series_and_analytes(client):
+    # The lab-chart read API: stepped reference band (ranges change over time), flag-
+    # authoritative point status, censored values kept, same-day dup collapsed, a non-
+    # equivalent unit split out, and an overlapping encounter surfaced for shading.
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?",
+                       (client.post("/api/notes/entry", json={"text": "labs"}).json()["slug"],)).fetchone()["id"]
+    eid = conn.execute(
+        "INSERT INTO encounters (kind, summary, started_at, ended_at) VALUES "
+        "('admission','March stay','2023-05-15','2023-06-20') RETURNING id").fetchone()["id"]
+
+    def add(date, vtext, vnum, unit, low, high, flag=None, enc=None):
+        conn.execute(
+            "INSERT INTO lab_results (note_id, encounter_id, test_name, analyte_key, value_text, "
+            "value_num, unit, ref_low, ref_high, flag, collected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (nid, enc, "WBC", "wbc", vtext, vnum, unit, low, high, flag, date))
+    add("2022-01-01", "6.0", 6.0, "thou/cumm", 4.0, 11.0)              # normal (computed)
+    add("2022-06-01", "12.0", 12.0, "thou/cumm", 4.0, 11.0)           # high (computed)
+    add("2023-01-01", "3.0", 3.0, "thou/cumm", 4.0, 10.0)             # low; range CHANGED -> new segment
+    add("2023-01-01", "3.0", 3.0, "thou/cumm", 4.0, 10.0)             # exact same-day dup -> collapsed
+    add("2023-06-01", "8.0", 8.0, "thou/cumm", 4.0, 10.0, flag="L", enc=eid)  # flag wins: LOW though in range
+    add("2024-01-01", "<0.01", None, "thou/cumm", 4.0, 10.0)          # censored: kept, value_num NULL
+    add("2024-06-01", "5.0", 5.0, "Thousand/uL", 4.0, 10.0)          # equivalent unit -> co-plotted
+    add("2021-01-01", "99", 99.0, "mg/dL", None, None)               # different unit -> excluded
+    conn.commit()
+
+    s = client.get("/api/medical/labs/series", params={"analyte": "wbc"}).json()
+    assert s["test_name"] == "WBC" and s["other_units"] == ["mg/dL"]
+    assert len(s["points"]) == 6                                      # dup collapsed, mg/dL excluded
+    by = {(p["t"], p["vtext"]): p for p in s["points"]}
+    assert by[("2022-06-01", "12.0")]["status"] == "high"
+    assert by[("2023-06-01", "8.0")]["status"] == "low"              # flag-authoritative
+    assert by[("2024-01-01", "<0.01")]["censored"] is True and by[("2024-01-01", "<0.01")]["v"] is None
+    # Two band segments (range 4-11 then 4-10), stepped at the change.
+    assert [(seg["low"], seg["high"]) for seg in s["segments"]] == [(4.0, 11.0), (4.0, 10.0)]
+    assert s["domain"] == {"from": "2022-01-01", "to": "2024-06-01"}
+    assert len(s["encounters"]) == 1 and s["encounters"][0]["label"] == "March stay"
+
+    analytes = client.get("/api/medical/labs/analytes").json()["analytes"]
+    wbc = next(a for a in analytes if a["analyte"] == "wbc")
+    assert wbc["test_name"] == "WBC" and wbc["n"] == 8
+
+
 def test_entry_via_person_location_key(client):
     # A family phone holding only its scoped per-person location key can drop a watch
     # dictation: filed as a dated note, attributed to that person, even though that key

@@ -28,9 +28,10 @@ def test_normalize_coerces_to_lab_parse_schema():
     assert "glucose" not in by and len(rows) == 3
 
 
-def test_ocr_cross_read_gates_unconfirmed_values(monkeypatch):
-    """The model proposes three values; OCR independently 'sees' only two. The unconfirmed one
-    must be dropped into skips with a reason, never staged."""
+def test_ocr_corroboration_tiers_confidence_without_dropping(monkeypatch):
+    """The model proposes three values; OCR independently 'sees' only two. OCR is a corroborator,
+    not a filter: confirmed values -> 'medium', the unconfirmed one is KEPT but flagged 'low'
+    (verify against the image) — a noisy scan must not silently lose a real, correct value."""
     monkeypatch.setattr(lab_vision, "_ocr_corpus", lambda imgs: "Auto WBC 4.27 thou/cumm  Platelets 291")
     monkeypatch.setattr(lab_vision, "_vision_rows", lambda imgs: [
         {"test_name": "Auto WBC", "value_text": "4.27", "collected_at": "2026-05-21"},
@@ -39,11 +40,13 @@ def test_ocr_cross_read_gates_unconfirmed_values(monkeypatch):
     ])
     out = lab_vision.parse_lab_image([b"fake-image-bytes"])
     assert out["doc_type"] == "lab_image"
-    kept = {r["analyte_key"]: r for r in out["results"]}
-    assert set(kept) == {"wbc", "platelets"}            # hemoglobin dropped: OCR didn't confirm it
-    assert all(r["confidence"] == "medium" for r in out["results"])   # model-derived, never auto-trusted
-    reasons = [s["reason"] for s in out["skips"]]
-    assert any("OCR" in r for r in reasons)
+    kept = {r["analyte_key"]: r["confidence"] for r in out["results"]}
+    assert set(kept) == {"wbc", "platelets", "hemoglobin"}     # nothing dropped
+    assert kept["wbc"] == "medium" and kept["platelets"] == "medium"   # OCR-corroborated
+    assert kept["hemoglobin"] == "low"                         # unconfirmed -> flagged, not lost
+    assert out["ocr_unconfirmed"] == 1
+    hgb = next(r for r in out["results"] if r["analyte_key"] == "hemoglobin")
+    assert any("NOT confirmed by OCR" in s for s in hgb["confidence_reasons"])
 
 
 def test_empty_model_result_is_not_a_lab_not_unreadable(monkeypatch):

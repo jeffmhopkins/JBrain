@@ -95,6 +95,11 @@ function AttachmentLabs({ id, filename, onChange }: { id: number; filename: stri
                 : s.identity_state === "unverified" ? " — no DOB to match against the owner. Confirm before approving." : ""}
             </p>
           )}
+          {s.doc_type === "lab_image" && (
+            <p style={{ fontSize: 12, margin: "2px 0 6px", color: "#b06f00" }}>
+              📷 Read from a photo/scan by AI — check the values against the original, especially any flagged below.
+            </p>
+          )}
           <p className="muted" style={{ fontSize: 12, margin: "2px 0 8px" }}>
             {s.results.length} results · {analytes.length} analytes
             {s.low_confidence ? ` · ${s.low_confidence} need a look` : ""}

@@ -393,7 +393,7 @@ export const getLabSeries = (analyte: string, unit?: string) =>
     (unit ? `&unit=${encodeURIComponent(unit)}` : ""));
 
 // Staged lab ingestion (extract -> preview -> approve/revoke/re-analyze, per attachment).
-export interface StagedLab { status: string | null; doc_type?: string; results: LabPoint[] & any[]; skipped?: number; }
+export interface StagedLab { status: string | null; imported?: number; doc_type?: string; results: LabPoint[] & any[]; skipped?: number; }
 export const getAttachmentLabs = (id: number) => get<StagedLab>(`/api/medical/attachments/${id}/labs`);
 export const getAttachmentLabSeries = (id: number, analyte: string, unit?: string) =>
   get<LabSeries>(`/api/medical/attachments/${id}/labs/series?analyte=${encodeURIComponent(analyte)}` +

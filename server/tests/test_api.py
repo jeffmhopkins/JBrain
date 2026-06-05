@@ -329,6 +329,29 @@ def test_lab_staging_lifecycle(client, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0   # approval cleared
 
 
+def test_lab_legacy_imported_attachment_is_manageable(client):
+    # An attachment with rows imported under the OLD auto-apply path (no lab_status) must still
+    # be surfaced so the note can Remove / Re-analyze it — the missing 'manage already-imported'.
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?",
+                       (client.post("/api/notes/entry", json={"text": "old"}).json()["slug"],)).fetchone()["id"]
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "cmp.pdf", "application/pdf", "x", b"%PDF", 4, "sha-old")).fetchone()["id"]
+    conn.execute("INSERT INTO lab_results (note_id, attachment_id, test_name, analyte_key, value_text, "
+                 "value_num, unit, ref_low, ref_high, collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                 (nid, aid, "Sodium", "sodium", "140", 140.0, "mmol/L", 136.0, 145.0, "2026-01-01"))
+    conn.commit()
+
+    s = client.get(f"/api/medical/attachments/{aid}/labs").json()
+    assert s["status"] is None and s["imported"] == 1   # legacy rows surfaced despite no stage
+    # Remove deletes the legacy rows.
+    assert client.post(f"/api/medical/attachments/{aid}/labs/revoke").json()["removed"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0
+
+
 def test_entry_via_person_location_key(client):
     # A family phone holding only its scoped per-person location key can drop a watch
     # dictation: filed as a dated note, attributed to that person, even though that key

@@ -33,11 +33,32 @@ function AttachmentLabs({ id, filename, onChange }: { id: number; filename: stri
     getAttachmentLabSeries(id, sel).then(setSeries).catch(() => setSeries(null));
   }, [id, sel, s]);
 
-  if (!s || !s.status) return null;
+  if (!s) return null;
 
   async function act(fn: () => Promise<any>) {
     setBusy(true);
     try { await fn(); await load(); onChange(); } finally { setBusy(false); }
+  }
+
+  // Never staged for review. If rows were imported under the old auto-apply path, surface them
+  // so they can be Re-analyzed (remove + re-extract) or Removed; otherwise offer a quiet extract.
+  if (!s.status) {
+    const imported = s.imported || 0;
+    return (
+      <div className="lab-import">
+        <div className="lab-import-head">
+          {imported > 0 && <span className="lab-badge ok">in your trends</span>}
+          <span className="muted" style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{filename}</span>
+        </div>
+        {imported > 0 && <p className="muted" style={{ fontSize: 13, margin: "2px 0 8px" }}>
+          {imported} lab results from this PDF are in your trends (imported before review existed).</p>}
+        <div className="lab-import-actions">
+          <button className="primary" disabled={busy} onClick={() => act(() => reanalyzeLabs(id))}>
+            {imported > 0 ? "Re-analyze (remove & re-extract)" : "Extract lab values"}</button>
+          {imported > 0 && <button className="ghost" disabled={busy} onClick={() => act(() => revokeLabs(id))}>Remove</button>}
+        </div>
+      </div>
+    );
   }
 
   const approved = s.status === "approved";

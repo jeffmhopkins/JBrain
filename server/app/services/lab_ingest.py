@@ -75,18 +75,23 @@ def stage_attachment(conn, attachment_id: int) -> dict:
 
 
 def staged(conn, attachment_id: int) -> dict | None:
-    """The staged extraction for an attachment (decoded), or None if it has no lab status."""
+    """The lab state of an attachment: its staged extraction (decoded) AND how many rows it has
+    in lab_results. Returns a dict for ANY existing attachment — `status` is None when it was
+    never staged for review (e.g. imported under the old auto-apply path), and `imported`
+    surfaces those legacy rows so the note can offer Re-analyze / Remove."""
     att = conn.execute(
         "SELECT id, note_id, lab_status, lab_json, lab_extracted_at FROM attachments WHERE id = ?",
         (attachment_id,)).fetchone()
-    if not att or not att["lab_status"]:
+    if not att:
         return None
+    imported = conn.execute(
+        "SELECT COUNT(*) AS c FROM lab_results WHERE attachment_id = ?", (attachment_id,)).fetchone()["c"]
     try:
         payload = json.loads(att["lab_json"]) if att["lab_json"] else {"results": []}
     except Exception:  # noqa: BLE001
         payload = {"results": []}
     return {"attachment_id": att["id"], "note_id": att["note_id"], "status": att["lab_status"],
-            "extracted_at": att["lab_extracted_at"], "doc_type": payload.get("doc_type"),
+            "imported": imported, "extracted_at": att["lab_extracted_at"], "doc_type": payload.get("doc_type"),
             "results": payload.get("results", []), "skipped": payload.get("skipped", 0)}
 
 

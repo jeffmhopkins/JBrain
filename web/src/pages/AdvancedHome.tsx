@@ -1,4 +1,3 @@
-import { TouchEvent, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "../components/Icon";
 
@@ -43,22 +42,9 @@ const SECTIONS: { name: string; cards: Card[] }[] = [
 export default function AdvancedHome() {
   const nav = useNavigate();
 
-  // The carousel is just two stops: Chat ⇄ Advanced. A horizontal swipe here returns to
-  // chat WITHOUT changing the mode — entry/assisted/research are one window and switch only
-  // via the mode button (swipe direction must not pick a mode).
-  const start = useRef<{ x: number; y: number } | null>(null);
-  function onTouchStart(e: TouchEvent) { const t = e.touches[0]; start.current = { x: t.clientX, y: t.clientY }; }
-  function onTouchEnd(e: TouchEvent) {
-    const s = start.current; start.current = null;
-    if (!s) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - s.x, dy = t.clientY - s.y;
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    nav("/chat");
-  }
-
+  // Swipe-down → Chat is handled by the shell body; the cards just navigate on tap.
   return (
-    <div className="adv-home" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+    <div className="adv-home">
       {SECTIONS.map((s) => (
         <div key={s.name}>
           <div className="adv-section">{s.name}</div>

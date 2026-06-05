@@ -1,4 +1,4 @@
-import { FormEvent, TouchEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { createEntry, get, post, streamChat, uploadAttachment } from "../api";
@@ -159,27 +159,8 @@ export default function Chat() {
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
 
-  // A horizontal swipe across the conversation shuttles to Advanced — the carousel is
-  // just two stops now: Chat ⇄ Advanced. (Modes change via the mode button, not swipe,
-  // since entry/assisted/research share this one window.)
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  // Swipe navigation lives on the shell body (vertical-only); pages don't wire touch handlers.
   const slideFrom = useRef(16);   // px the mode-flash slides in from (button mode-change)
-  function onTouchStart(e: TouchEvent) {
-    const t = e.touches[0];
-    touchStart.current = { x: t.clientX, y: t.clientY };
-  }
-  function onTouchEnd(e: TouchEvent) {
-    const s = touchStart.current;
-    touchStart.current = null;
-    if (!s) return;
-    // Ignore swipes that start in the OS edge gutter (system back/forward).
-    if (s.x <= 30 || s.x >= window.innerWidth - 30) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - s.x, dy = t.clientY - s.y;
-    // Require a clear, mostly-horizontal swipe so it doesn't fight vertical scroll.
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    navigate("/advanced");
-  }
 
   // Brief sliding mode-name flash on every switch (swipe or menu).
   const [flashKey, setFlashKey] = useState(0);
@@ -347,8 +328,7 @@ export default function Chat() {
           <Icon name={cur.icon} size={16} /> {cur.label}
         </div>
       )}
-      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}
-           onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}>
         {/* ONE shared view for every mode. The conversation thread always shows; entry
             just SAVES (no AI turn) and appends its saved-note chips here too. */}
         {messages.length === 0 && entries.length === 0 && (

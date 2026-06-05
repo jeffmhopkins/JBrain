@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { get, refreshNoteAnalysis } from "../api";
-import { markReplaceNav } from "../nav";
 import { Icon } from "./Icon";
 import { expandTimeTokens } from "../time";
 
@@ -43,10 +42,9 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
     setBusy(true);
     try {
       const r = await refreshNoteAnalysis(slug);
-      // The title check may have renamed the note (new slug) — follow it to the fresh URL.
-      // Mark it a replace so Shell's back-stack swaps the top instead of stacking the dead
-      // old slug (otherwise back would land on the pre-rename note → 404).
-      if (r?.slug && r.slug !== slug) { markReplaceNav(); navigate(`/note/${r.slug}`, { replace: true }); return; }
+      // The title check may have renamed the note (new slug) — follow it to the fresh URL,
+      // replacing so back doesn't land on the dead pre-rename slug (→ 404).
+      if (r?.slug && r.slug !== slug) { navigate(`/note/${r.slug}`, { replace: true }); return; }
       setA(r && (r.gist || r.facts?.length || r.entities?.length) ? r : null);
     } catch { /* keep what we have */ }
     finally { setBusy(false); }

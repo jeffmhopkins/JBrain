@@ -1,7 +1,6 @@
 import { ReactNode, TouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
-import { takeReplaceNav } from "../nav";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
 import { useOnline } from "../hooks";
@@ -168,95 +167,25 @@ export default function Shell({ children }: { children: ReactNode }) {
   const advTool = !capture && !review && !advHome;   // a tool open full-screen
   const advanced = advHome || advTool;
 
-  // Swipes anchored on the composer text box (gating on the input, not the scroll
-  // position, means scrolling the message body never navigates — only a deliberate
-  // swipe from the box does):
-  //   chat:  ↑ from the text box → Lists;  ← → Search;  → → Wiki.
-  //   lists: ↓ from the top → chat.
-  // BACK = down the navigation tree. Chat is the root; every forward move (tap a card,
-  // open a note, swipe to a tool) pushes onto this stack, and back pops one level toward
-  // Chat — to where you actually came from, not a fixed hierarchy. Revisiting an ancestor
-  // (e.g. the bolt back to Chat) unwinds to it instead of growing the stack. Back from the
-  // root does NOTHING (we never drop out of the PWA). A cold deep-link (a note/tool opened
-  // directly) is seeded under Chat so back still lands somewhere sensible.
-  const stackRef = useRef<string[]>(path === "/chat" ? ["/chat"] : ["/chat", path]);
-  const poppingRef = useRef(false);
-  useEffect(() => {
-    if (poppingRef.current) { poppingRef.current = false; return; }   // a back-pop, not a forward move
-    const st = stackRef.current;
-    if (st[st.length - 1] === path) return;
-    if (takeReplaceNav()) { st[st.length - 1] = path; return; }   // a replace nav → swap the top, don't grow (e.g. a note rename)
-    const prior = st.lastIndexOf(path);
-    if (prior >= 0) st.length = prior + 1;   // navigated back to an ancestor → unwind to it
-    else st.push(path);                      // moved away → grow the tree
-  }, [path]);
+  // Back is plain browser/router history now — no trap, no in-memory stack, no history
+  // monkeypatch. The chevron and the device back gesture both just walk react-router history.
+  const goBack = () => nav(-1);
 
-  function goBack() {
-    const st = stackRef.current;
-    if (st.length <= 1) return;              // at the root (Chat) → never exit the PWA
-    st.pop();
-    poppingRef.current = true;
-    // Replace (not push) so neither the chevron nor the OS-back gesture grows browser
-    // history on the way down the tree — the popstate sentinel below keeps back trapped.
-    nav(st[st.length - 1], { replace: true });
-  }
-  // Keep a live handle so the install-once popstate listener always calls the latest goBack.
-  const goBackRef = useRef(goBack);
-  goBackRef.current = goBack;
-
-  // We fully own the back gesture. To stop the OS/browser back from ever tunnelling out of
-  // the PWA — or double-stepping (popping a real forward entry AND running goBack) — we pin
-  // browser history to a constant depth of two: a fixed floor entry plus a same-URL sentinel.
-  // We do that by intercepting react-router's PUSH navigations (it calls window.history.
-  // pushState at navigate time, so this one hook covers every nav() and <Link>) and turning
-  // them into REPLACE: in-app forward moves swap the top entry instead of growing history, so
-  // the in-memory `stackRef` above is the single source of truth for back. The OS back gesture
-  // then always pops the sentinel → fires popstate (caught here) → we re-arm it and step the
-  // logical stack down exactly one level, never escaping the app.
-  //
-  // TWO THINGS THIS GETS RIGHT (earlier versions didn't):
-  //  • The sentinel re-pushes window.history.STATE, not null. react-router tracks its position
-  //    via an `idx` it stores in history.state; a null sentinel wiped that, skewing its
-  //    back/forward accounting and producing inconsistent results. Preserving the state keeps
-  //    react-router coherent.
-  //  • The install is idempotent (a `__jbReal` marker on the wrapper): a remount re-attaches
-  //    the popstate listener but never double-wraps pushState or re-seeds the trap (which would
-  //    grow history past depth two). We deliberately leave the wrapper installed for the page's
-  //    life — tearing it down on a transient unmount could let a forward nav grow history.
-  useEffect(() => {
-    const h = window.history;
-    const firstInstall = !(h.pushState as any).__jbReal;
-    const realPush: History["pushState"] = (h.pushState as any).__jbReal || h.pushState.bind(h);
-    if (firstInstall) {
-      const wrapped = function (data: any, unused: string, url?: string | URL | null) {
-        return h.replaceState(data, unused, url);   // react-router push → replace (no growth)
-      } as History["pushState"];
-      (wrapped as any).__jbReal = realPush;          // expose the native push for our sentinel
-      h.pushState = wrapped;
-      realPush(h.state, "");                         // seed the depth-2 trap once, preserving idx
-    }
-    function onPop() {
-      realPush(window.history.state, "");            // re-arm the trap (preserve react-router idx)
-      goBackRef.current();
-    }
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
-
-  const swipe = useRef<{ y: number; x: number; fromComposer: boolean; atTop: boolean; edgeStart: boolean } | null>(null);
+  // Vertical-only swipe navigation (horizontal swipes were removed — they collided with the
+  // device's native back-swipe). All swipe handling lives here on the shell body, which wraps
+  // every page, so individual pages don't wire up their own touch handlers:
+  //   chat:     ↑ from the composer — left half → Lists, right half → Advanced
+  //   lists:    ↓ from the top → Chat
+  //   advanced: ↓ → Chat
+  const swipe = useRef<{ x: number; y: number; fromComposer: boolean; atTop: boolean } | null>(null);
   function onTouchStart(e: TouchEvent) {
     const t = e.touches[0];
     const el = e.target as HTMLElement;
     const sc = scrollParent(el);
     swipe.current = {
-      y: t.clientY, x: t.clientX,
+      x: t.clientX, y: t.clientY,
       fromComposer: !!el.closest(".composer-box"),
       atTop: !sc || sc.scrollTop <= 2,
-      // A horizontal swipe that STARTS in the OS edge gutter is the system back/
-      // forward gesture (Android uses both edges). The composer spans the full
-      // width at the bottom, so without this an edge-back lands on it and our
-      // nav() fires too — fighting the system back and dumping out of the PWA.
-      edgeStart: t.clientX <= 30 || t.clientX >= window.innerWidth - 30,
     };
   }
   function onTouchEnd(e: TouchEvent) {
@@ -264,18 +193,16 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (!s) return;
     const t = e.changedTouches[0];
     const dy = t.clientY - s.y, dx = t.clientX - s.x;
-    // Horizontal swipe from the text box: ← → Search, → → Wiki (deliberate swipe,
-    // started clear of the OS edge gutter so it can't collide with system back).
-    if (Math.abs(dx) >= 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      // Forward navs — the tree records Chat as their parent, so back returns to Chat.
-      if (s.fromComposer && !s.edgeStart) nav(dx < 0 ? "/search" : "/wiki");
-      else if (advHome && !s.edgeStart) nav("/chat");   // shuttle back: Advanced ⇄ Chat
-      return;
-    }
-    if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // a clear vertical swipe
+    if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // require a clear vertical swipe
     const down = dy > 0;
-    if (path === "/chat") { if (!down && s.fromComposer) nav("/lists"); }   // swipe up from the text box → Lists
-    else if (path === "/lists") { if (down && s.atTop) nav("/chat"); }
+    if (path === "/chat") {
+      // Swipe up from the composer text box: left half opens Lists, right half opens Advanced.
+      if (!down && s.fromComposer) nav(s.x < window.innerWidth / 2 ? "/lists" : "/advanced");
+    } else if (path === "/lists") {
+      if (down && s.atTop) nav("/chat");
+    } else if (advHome) {
+      if (down) nav("/chat");                  // swipe down anywhere on the Advanced grid → Chat
+    }
   }
 
   return (
@@ -283,7 +210,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <div className="utop">
         {advTool ? (
           <>
-            {/* Back down the navigation tree — to wherever you actually came from. */}
+            {/* Plain browser back. */}
             <button className="back" title="Back" onClick={goBack}><Icon name="chevron" size={20} /></button>
             <span className="tool-title">{toolTitle(path)}</span>
           </>

@@ -281,6 +281,13 @@ def _p_link_places(ctx):
     return places.link_places(ctx.conn)
 
 
+def _p_suggest_unsaved_places(ctx):
+    """List kb/Places articles that aren't saved geofences yet — candidates to 'save as a place'."""
+    from . import places
+    titles = places.unsaved_places(ctx.conn)
+    return {"titles": titles, "names": [t.split("/")[-1] for t in titles], "count": len(titles)}
+
+
 def _p_tidy_talk(ctx):
     """Demote non-actionable 'stub / needs-more-notes / revisit-later' talk todos to inert
     notes and cap clutter — stops them nagging maintenance + Review cards, and retires the
@@ -1189,6 +1196,7 @@ _PRIMITIVES = {
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
     "link_places": _p_link_places,
+    "suggest_unsaved_places": _p_suggest_unsaved_places,
     "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
@@ -1322,8 +1330,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
-    "link_places": {"summary": "Reconcile saved geofences with their kb/Places articles (location box + cross-link).",
+    "link_places": {"summary": "Reconcile saved geofences with their kb/Places articles (location box + cross-link + de-fork hint).",
                     "inputs": [], "output": "dict"},
+    "suggest_unsaved_places": {"summary": "List kb/Places articles that aren't saved geofences yet (save-as-a-place candidates).",
+                               "inputs": [], "output": "dict"},
     "tidy_talk": {"summary": "Demote non-actionable stub/needs-more-notes talk todos to notes + cap clutter.",
                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",

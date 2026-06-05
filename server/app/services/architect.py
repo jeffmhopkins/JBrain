@@ -44,7 +44,7 @@ _DEFAULT_MODE_TOOLS = {
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
-                 "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
+                 "mark_inbox_processed", "set_tags", "save_place", "create_share_link", "create_guided_share",
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
@@ -133,6 +133,9 @@ _TOOL_SCHEMAS = {
         "required": ["query"]},
     "drug_reference": {"type": "object", "properties": {
         "name": {"type": "string", "description": "A medication name (brand or generic), e.g. 'metformin' or 'Tylenol'."}},
+        "required": ["name"]},
+    "save_place": {"type": "object", "properties": {
+        "name": {"type": "string", "description": "The place to save as a geofence, e.g. 'Portland VA Hospital' or 'the gym'."}},
         "required": ["name"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     "list_tags": {"type": "object", "properties": {}},
@@ -956,6 +959,29 @@ def _tool_drug_reference(conn, name: str) -> str:
                       f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
 
 
+def _tool_save_place(conn, name: str) -> str:
+    """Save a place the owner names as a geofence (forward-geocoded) so visits get tracked.
+    Already-saved → reports it; else creates at the best match and reports the address."""
+    from . import places as places_svc, geocode
+    name = (name or "").strip()
+    if not name:
+        return "Give a place name to save."
+    gf = places_svc.geofence_for(conn, name)
+    if gf:
+        return _untrusted("place", f"“{name}” is already a saved place (at {gf['lat']:.5f}, {gf['lon']:.5f}).")
+    if not geocode.enabled():
+        return "Address lookup is off, so I can't locate the place — add it on the Map with coordinates."
+    cands = geocode.forward(conn, name, limit=3)
+    if not cands:
+        return _untrusted("place", f"Couldn't locate “{name}”. Add it on the Map with exact coordinates.")
+    c = cands[0]
+    places_svc.create_place(conn, name, c["lat"], c["lon"])
+    conn.commit()
+    more = " (best match — if the location's wrong, delete it on the Map and re-add with coords)" if len(cands) > 1 else ""
+    return _untrusted("place", f"Saved “{name}” as a place at {c.get('address')} "
+                               f"({c['lat']:.5f}, {c['lon']:.5f}).{more}")
+
+
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     rows = embeddings.semantic_search_attachments(conn, query, limit)
     if not rows:
@@ -1542,6 +1568,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
     if name == "drug_reference":
         return _tool_drug_reference(conn, args["name"]), None
+    if name == "save_place":
+        return _tool_save_place(conn, args["name"]), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
     if name == "list_tags":

@@ -1538,6 +1538,43 @@ def test_places_reconcile_with_kb(client, monkeypatch):
     assert places_svc.link_places(conn)["linked"] == 0                        # idempotent
 
 
+def test_places_phase_c(client, monkeypatch):
+    """De-fork merge hint when two articles share a geofence; unsaved-place candidates; and the
+    save_place tool (forward-geocode → create geofence)."""
+    import json
+    from app.db import get_conn
+    from app.services import places as places_svc, geocode, entity_index as ei, architect, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Home', 28.40, -80.78, 150)")
+    ns.upsert_note(conn, "kb/Places/Home", "# Home\nx", kind="kb")
+    ns.upsert_note(conn, "kb/Places/The House", "# The House\ny", kind="kb")
+    nid = ns.upsert_note(conn, "notes/h", "dinner at the house")
+    conn.execute("UPDATE notes SET lat=28.4001, lon=-80.7802 WHERE id=?", (nid,))
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "place", "name": "the house"}])))
+    ns.upsert_note(conn, "kb/Places/Portland VA Hospital", "# Portland VA Hospital\nz", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+
+    # De-fork: 'The House' (resolves to Home by coords) gets a merge hint targeting 'Home'.
+    monkeypatch.setattr(geocode, "reverse", lambda c, lat, lon: {"address": "X"})
+    assert places_svc.link_places(conn)["merge_hints"] >= 1
+    hints = article_talk.list_for(conn, "kb/Places/The House")
+    assert any(t["kind"] == "restructure" and "merge" in t["body"] for t in hints)
+
+    # Unsaved candidate: the article-only place has no geofence; saved ones don't appear.
+    titles = places_svc.unsaved_places(conn)
+    assert "kb/Places/Portland VA Hospital" in titles and "kb/Places/Home" not in titles
+
+    # save_place tool: forward-geocode → create the geofence.
+    monkeypatch.setattr(geocode, "forward", lambda c, q, limit=3: [{"address": "1 VA Way", "lat": 45.5, "lon": -122.6}])
+    out, _ = architect._run_tool(conn, None, "save_place", {"name": "Portland VA Hospital"}, mode="assisted")
+    assert "Saved" in out and "1 VA Way" in out
+    assert conn.execute("SELECT 1 FROM places WHERE name='Portland VA Hospital'").fetchone()
+    assert "kb/Places/Portland VA Hospital" not in places_svc.unsaved_places(conn)   # now saved
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

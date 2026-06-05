@@ -23,7 +23,7 @@ from .lab_parse import is_faithful as _is_faithful   # hoisted to lab_parse (sha
 log = logging.getLogger("jbrain")
 
 _INSERT = (
-    "INSERT INTO lab_results (note_id, attachment_id, encounter_id, test_name, analyte_key, "
+    "INSERT OR IGNORE INTO lab_results (note_id, attachment_id, encounter_id, test_name, analyte_key, "
     "value_text, value_num, unit, ref_low, ref_high, ref_text, collected_at, collected_time, "
     "identity_key, source) "
     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
@@ -194,14 +194,19 @@ def approve_attachment(conn, attachment_id: int) -> dict:
     results = payload.get("results", [])
     source = payload.get("doc_type")                   # P3: how these rows were extracted
     conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att["id"],))
+    inserted = 0
     for r in results:
-        conn.execute(_INSERT, (
+        # INSERT OR IGNORE: a duplicate identity_key means this exact result is ALREADY in the
+        # trends (e.g. re-importing the same export, or a byte-identical file) — skip it rather
+        # than 500 on the unique index. Approve stays idempotent.
+        cur = conn.execute(_INSERT, (
             att["note_id"], att["id"], None, r["test_name"], r["analyte_key"], r["value_text"],
             r["value_num"], r["unit"], r["ref_low"], r["ref_high"], r["ref_text"],
             r["collected_at"], r.get("collected_time"), _identity_key(r, att["sha256"]), source))
+        inserted += cur.rowcount
     conn.execute("UPDATE attachments SET lab_status='approved' WHERE id=?", (att["id"],))
     conn.commit()
-    return {"approved": len(results)}
+    return {"approved": inserted, "duplicates": len(results) - inserted}
 
 
 def revoke_attachment(conn, attachment_id: int) -> dict:

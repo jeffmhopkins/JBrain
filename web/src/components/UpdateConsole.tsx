@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { get, u, getAccessKey } from "../api";
+import { useNowTick } from "../hooks";
+import { fmtElapsed } from "../time";
 
 // When the API is down (restarting / failed deploy), the API endpoint can't answer —
 // but Caddy stays up and serves the same captured files at /deploy-status/*, gated by
@@ -27,6 +29,7 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<string | null>(null);   // running | ok | failed
   const [phase, setPhase] = useState<string>("");            // fetching | building | restarting | health-checking
   const [at, setAt] = useState<string>("");                  // status timestamp (UTC ISO)
+  const [mtime, setMtime] = useState<number | null>(null);   // log file mtime (unix seconds)
   const [reachable, setReachable] = useState(true);          // is the API answering?
   const [copied, setCopied] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -44,12 +47,13 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
         setState(r.status?.state ?? null);
         setPhase(r.status?.phase ?? "");
         setAt(r.status?.at ?? "");
+        setMtime(typeof r.mtime === "number" ? r.mtime : null);
       } catch {
         // API unreachable (restarting / failed) → try Caddy's gated static copy.
         try {
           const r = await fetchViaCaddy();
           if (!alive) return;
-          if (r) { setReachable(true); setLog(r.log || ""); setState(r.status?.state ?? null); setPhase(r.status?.phase ?? ""); setAt(r.status?.at ?? ""); }
+          if (r) { setReachable(true); setLog(r.log || ""); setState(r.status?.state ?? null); setPhase(r.status?.phase ?? ""); setAt(r.status?.at ?? ""); setMtime(null); }
           else setReachable(false);
         } catch {
           if (alive) setReachable(false);
@@ -81,10 +85,16 @@ export default function UpdateConsole({ onClose }: { onClose: () => void }) {
   // as live (your "it says updating but the console says all good" confusion).
   const ageMs = at ? Date.now() - Date.parse(at) : Infinity;
   const stale = (state === "ok" || state === "failed") && ageMs > 120000;
+  // While a deploy runs, a long quiet phase (e.g. a slow `docker build` layer) can
+  // leave the log unchanged for a while — show how long since the last line so it
+  // reads as "still working", not "stopped". Ticks once a second while running.
+  const liveRunning = reachable && state === "running";
+  const now = useNowTick(liveRunning, 1000);
+  const quietFor = liveRunning && mtime != null ? now - mtime * 1000 : null;
   const ph = phase ? ` — ${phase}…` : "…";
   const status = !reachable
     ? { dot: "busy", text: "Server offline — restarting (or a failed deploy)…" }
-    : state === "running" ? { dot: "busy", text: `Updating${ph}` }
+    : state === "running" ? { dot: "busy", text: `Updating${ph}${quietFor != null && quietFor > 4000 ? ` · last output ${fmtElapsed(quietFor)} ago` : ""}` }
     : state === "ok" ? { dot: "ok", text: stale ? "Last deploy: complete" : "Update complete" }
     : state === "failed" ? { dot: "err", text: stale ? "Last deploy: failed" : "Update failed" }
     : { dot: "info", text: "No deploy recorded yet" };

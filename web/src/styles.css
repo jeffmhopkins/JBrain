@@ -441,7 +441,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .deploy-failed { margin-top: 10px; border: 1px solid var(--danger, #c08585); border-radius: var(--radius); padding: 10px 12px; background: var(--bg-elev-2); }
 .deploy-cmd { margin: 0 0 8px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; overflow-x: auto; color: var(--text); }
 /* Live update console (modal): a terminal-style scrolling view of the deploy output. */
-.console-view { margin: 0; height: 55vh; overflow: auto; background: #0b0d0e; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 6px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #cdd6da; }
+.console-view { margin: 0; height: 55vh; overflow: auto; background: #0b0d0e; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #cdd6da; }
 .geofence-card a { color: var(--accent); text-decoration: none; }
 .geofence-card a:hover { text-decoration: underline; }
 /* Inline image-attachment preview: capped so a huge photo never blows out the page. */
@@ -527,6 +527,9 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .watch-steps li.running { color: var(--text); font-weight: 500; }
 .watch-ico { width: 16px; flex: none; }
 .watch-steps li.running .watch-ico { animation: pulse 1.2s ease-in-out infinite; }
+/* Live "running for…" timer, pushed to the right of the current step. */
+.watch-elapsed { margin-left: auto; flex: none; padding-left: 8px; color: var(--text-dim);
+  font-weight: 400; font-size: 12px; font-variant-numeric: tabular-nums; }
 .watch-detail { margin-top: 10px; white-space: pre-wrap; }
 /* Entity browse rows */
 .entity-row { display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;

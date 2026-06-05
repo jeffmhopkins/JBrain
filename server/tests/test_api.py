@@ -1352,21 +1352,30 @@ def test_reanalyze_endpoint_also_titles_bare_dated_note(client, monkeypatch):
 
 
 def test_export_original_notes(client):
-    """The export returns each note's FIRST user-authored content — not AI edits, renames,
-    KB articles, or deleted notes."""
+    """The export returns the user's source material — original note content + guided
+    intakes + attachments — but not the synthesized KB, AI edits/renames, AI-only notes,
+    or deleted notes."""
+    import base64
     import json
     from app.db import get_conn
-    from app.services import notes as ns
+    from app.services import notes as ns, attachments as att
     conn = get_conn()
     # A user note, later AI-edited + renamed (only the original 'user' text should export).
     nid = ns.upsert_note(conn, "notes/Recipe", "MY ORIGINAL recipe text.", source="user")
     ns.upsert_note(conn, "notes/Recipe", "AI-polished recipe.", note_id=nid, source="architect")
     ns.upsert_note(conn, "notes/Grandma Recipe", "AI-polished recipe.", note_id=nid, source="rename")
+    att.add_attachment(conn, nid, "recipe.txt", "text/plain", b"secret recipe bytes")  # embedded as b64
     # A KB (synthesized) note — never user-authored → excluded.
     ns.upsert_note(conn, "kb/Reference/Cooking", "# synthesized", kind="kb", source="create")
     # A user note that was deleted → excluded.
     dead = ns.upsert_note(conn, "notes/Scratch", "throwaway", source="user")
     ns.soft_delete(conn, dead)
+    # A guided intake doc: AI-drafted (no user version), but linked from a guided share
+    # link → INCLUDED even though the user never authored it.
+    gid = ns.upsert_note(conn, "notes/Mom's recipes", "AI-drafted from the interview.", source="workflow")
+    conn.execute("INSERT INTO share_links (token, note_id, scope, kind) VALUES ('tok-g', ?, 'view', 'guided')", (gid,))
+    # A purely AI note (no user version, not guided, not kb) → excluded (e.g. a daily rollup).
+    ns.upsert_note(conn, "notes/AI Only", "machine-made, nobody asked.", source="workflow")
     conn.commit()
 
     raw = client.get("/api/system/export/original-notes").content
@@ -1376,6 +1385,14 @@ def test_export_original_notes(client):
     assert "notes/Grandma Recipe" not in titles                       # not the renamed/edited version
     assert "kb/Reference/Cooking" not in titles                       # KB excluded
     assert "notes/Scratch" not in titles                              # deleted excluded
+    assert titles.get("notes/Mom's recipes") == "AI-drafted from the interview."  # guided intake kept
+    assert "notes/AI Only" not in titles                              # AI-only note excluded
+    # Attachments are embedded (base64), round-tripping to the original bytes.
+    recipe = next(d for d in data if d["title"] == "notes/Recipe")
+    assert len(recipe["attachments"]) == 1
+    a0 = recipe["attachments"][0]
+    assert a0["filename"] == "recipe.txt" and a0["mime"] == "text/plain"
+    assert base64.b64decode(a0["content_b64"]) == b"secret recipe bytes"
 
 
 def test_gauntlet_fixes(client, monkeypatch):

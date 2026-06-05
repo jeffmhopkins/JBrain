@@ -1,12 +1,19 @@
 import { FormEvent, useRef, useState } from "react";
 import { downloadBackup, downloadOriginalNotes, post, restoreBackup } from "../api";
 
-// The query behind the "Export original notes" button — the first user-authored version of
-// each live note (its original title + content, before any AI edit/rename/KB synthesis).
+// The note selection behind the "Export original notes" button: each live note that is
+// user-authored OR a guided intake, excluding the synthesized KB, with its ORIGINAL content
+// (first user version, else earliest). The button's JSON also embeds attachments (base64),
+// which SQL can't show — this preview is just the note rows.
 const ORIGINAL_NOTES_SQL =
-  "SELECT nv.title, nv.content_md, nv.created_at FROM note_versions nv " +
-  "JOIN (SELECT note_id, MIN(id) AS fid FROM note_versions WHERE source='user' GROUP BY note_id) f " +
-  "ON f.fid = nv.id JOIN notes n ON n.id = nv.note_id AND n.deleted_at IS NULL ORDER BY nv.created_at";
+  "SELECT nv.title, nv.content_md, nv.created_at FROM notes n " +
+  "JOIN note_versions nv ON nv.id = COALESCE(" +
+  "(SELECT MIN(id) FROM note_versions u WHERE u.note_id=n.id AND u.source='user')," +
+  "(SELECT MIN(id) FROM note_versions u WHERE u.note_id=n.id)) " +
+  "WHERE n.deleted_at IS NULL AND n.kind != 'kb' AND (" +
+  "EXISTS (SELECT 1 FROM note_versions u WHERE u.note_id=n.id AND u.source='user') " +
+  "OR n.id IN (SELECT note_id FROM share_links WHERE kind='guided' AND note_id IS NOT NULL)) " +
+  "ORDER BY nv.created_at";
 
 const EXAMPLES = [
   "SELECT title, updated_at FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC",
@@ -78,8 +85,9 @@ export default function SqlConsole() {
           {backupMsg && <span className="muted" style={{ fontSize: 13 }}>{backupMsg}</span>}
         </div>
         <p className="muted" style={{ fontSize: 13, marginTop: 12, marginBottom: 4 }}>
-          Or export <strong>just your original note content</strong> — the first version you
-          wrote of each note, before any AI edit, rename, or KB synthesis (JSON).
+          Or export <strong>just your notes and guided intakes</strong>, with their
+          attachments — your original content, before any AI edit or rename, and without the
+          synthesized KB articles (JSON, attachments embedded).
         </p>
         <button className="ghost" onClick={doExportOriginal}>Export original notes</button>
       </div>

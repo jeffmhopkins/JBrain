@@ -5,6 +5,7 @@ volumes and are untouched; .env (access key, API keys) is a persistent file and
 is not regenerated; schema changes are applied by the migration runner on the
 next boot. See update.sh.
 """
+import base64
 import json
 import os
 import re
@@ -268,22 +269,48 @@ def update():
 
 @router.get("/export/original-notes")
 def export_original_notes():
-    """Download JUST the original note content the user uploaded — the FIRST user-authored
-    version of each (live) note, before any AI edit, rename, link-rewrite or KB synthesis.
-    Picks the earliest note_versions row with source='user' per note (so architect/import/
-    kb/rename/structural versions are excluded), as a JSON array [{title, content_md,
-    created_at}]."""
+    """Download the user's own source material — their notes and guided intakes with any
+    attachments — but NOT the synthesized KB layer.
+
+    Scope: every live note that is EITHER user-authored (has a source='user' version) OR a
+    guided-intake destination (linked from a kind='guided' share link), excluding kind='kb'.
+    This drops the AI-built encyclopedia (kb/*) while keeping guided documents even though
+    the AI drafted them. For each note we take its ORIGINAL content — the first user version
+    if there is one, otherwise the earliest version (the guided AI's draft) — so later AI
+    edits / renames / link-rewrites are excluded.
+
+    Each note's attachments (stored in-DB) are embedded as base64, so the export is a
+    complete, restorable copy. JSON array of
+    [{title, content_md, created_at, attachments:[{filename, mime, byte_size, sha256, content_b64}]}]."""
     conn = db_mod.get_conn()
     rows = conn.execute(
-        "SELECT nv.title, nv.content_md, nv.created_at "
-        "FROM note_versions nv "
-        "JOIN (SELECT note_id, MIN(id) AS fid FROM note_versions "
-        "      WHERE source = 'user' GROUP BY note_id) f ON f.fid = nv.id "
-        "JOIN notes n ON n.id = nv.note_id AND n.deleted_at IS NULL "
-        "ORDER BY nv.created_at, nv.note_id"
+        "SELECT n.id AS note_id, nv.title, nv.content_md, nv.created_at "
+        "FROM notes n "
+        # The note's ORIGINAL content: its first user-authored version, or — for a guided
+        # intake the user never edited — the earliest (AI-drafted) version.
+        "JOIN note_versions nv ON nv.id = COALESCE("
+        "    (SELECT MIN(id) FROM note_versions u WHERE u.note_id = n.id AND u.source = 'user'),"
+        "    (SELECT MIN(id) FROM note_versions u WHERE u.note_id = n.id)) "
+        "WHERE n.deleted_at IS NULL AND n.kind != 'kb' "
+        "  AND (EXISTS (SELECT 1 FROM note_versions u WHERE u.note_id = n.id AND u.source = 'user')"
+        "       OR n.id IN (SELECT note_id FROM share_links WHERE kind = 'guided' AND note_id IS NOT NULL)) "
+        "ORDER BY nv.created_at, n.id"
     ).fetchall()
-    data = [{"title": r["title"], "content_md": r["content_md"], "created_at": r["created_at"]}
-            for r in rows]
+    data = []
+    for r in rows:
+        atts = conn.execute(
+            "SELECT filename, mime, byte_size, sha256, content_blob FROM attachments "
+            "WHERE note_id = ? ORDER BY id", (r["note_id"],)
+        ).fetchall()
+        data.append({
+            "title": r["title"], "content_md": r["content_md"], "created_at": r["created_at"],
+            "attachments": [
+                {"filename": a["filename"], "mime": a["mime"], "byte_size": a["byte_size"],
+                 "sha256": a["sha256"],
+                 "content_b64": base64.b64encode(a["content_blob"]).decode("ascii") if a["content_blob"] is not None else None}
+                for a in atts
+            ],
+        })
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     fname = f"jbrain-original-notes-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
     return Response(content=payload, media_type="application/json",

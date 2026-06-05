@@ -273,8 +273,8 @@ export async function downloadBackup(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-// Download just the original user-uploaded note content (first user-authored version of
-// each note), as a JSON file — same auth+blob dance as the DB backup.
+// Download the user's notes and guided intakes (original content, KB excluded) with their
+// attachments embedded as base64, as a JSON file — same auth+blob dance as the DB backup.
 export async function downloadOriginalNotes(): Promise<void> {
   if (isDemo()) { alert("Demo mode — export is disabled."); return; }
   const headers: Record<string, string> = {};

@@ -44,7 +44,6 @@ const TOOL_LABELS: Record<string, string> = {
   list_recent_notes: "Looking at recent notes…",
   list_tags: "Listing tags…",
   notes_with_tag: "Finding tagged notes…",
-  read_inbox: "Checking the inbox…",
   search_attachments: "Searching attachments…",
   read_attachment: "Reading an attachment…",
   query_sql: "Querying the database…",
@@ -78,10 +77,8 @@ const TOOL_LABELS: Record<string, string> = {
   create_research_share: "Setting up a research share…",
   list_share_links: "Listing share links…",
   revoke_share_link: "Revoking a share link…",
-  // Capture & writes
+  // Writes
   log_entry: "Logging an entry…",
-  capture_inbox: "Capturing to the inbox…",
-  mark_inbox_processed: "Updating the inbox…",
   propose_actions: "Drafting proposed changes…",
   // Knowledge base
   kb_coverage_check: "Checking knowledge-base coverage…",

@@ -502,12 +502,6 @@ def undo_action(action_id: int):
                                           note_id=note["id"], source="user", kind="place")
                     nslug = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
                     conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (nslug["slug"], undo["id"]))
-    elif op == "delete_inbox":
-        conn.execute("DELETE FROM inbox WHERE id = ?", (undo["id"],))
-    elif op == "unmark_inbox":
-        conn.executemany(
-            "UPDATE inbox SET processed = 0 WHERE id = ?", [(i,) for i in undo.get("ids", [])]
-        )
     else:
         raise HTTPException(status_code=400, detail="Action cannot be undone")
 

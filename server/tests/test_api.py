@@ -3687,24 +3687,6 @@ def test_quicktask_log_entry(client):
     assert "5k easy" in body and "2026-05-31" in body
 
 
-def test_capture_inbox_and_undo(client):
-    import json as _json
-    from app.db import get_conn
-    from app.services import quicktasks
-    conn = get_conn()
-    iid = quicktasks.capture_inbox(conn, "remember milk")
-    conn.commit()
-    assert any(i["id"] == iid for i in client.get("/api/capture").json())
-
-    cur = conn.execute(
-        "INSERT INTO staging_actions (type, payload_json, status) VALUES ('CAPTURE', ?, 'applied')",
-        (_json.dumps({"summary": "x", "undo": {"op": "delete_inbox", "id": iid}}),),
-    )
-    conn.commit()
-    client.post(f"/api/staging/{cur.lastrowid}/undo")
-    assert not any(i["id"] == iid for i in client.get("/api/capture").json())
-
-
 def test_attachments_accepts_any_file(client):
     client.post("/api/notes", json={"title": "Host2", "content_md": "x"})
     # Any file type is accepted now (binary stored; no text extracted from junk).
@@ -4405,12 +4387,6 @@ def test_entry_created_not_fired_for_kb(client, monkeypatch):
     notes_svc.upsert_note(conn, "KB X", "body", kind="kb", source="workflow")
     conn.commit()
     assert calls["n"] == 0  # kb/workflow write did not fire the entry hook
-
-
-def test_capture_with_location(client):
-    client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
-    item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")
-    assert item["lat"] == 40.0 and item["lon"] == -73.0
 
 
 def test_staging_apply_stamps_location(client):

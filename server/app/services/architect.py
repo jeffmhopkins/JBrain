@@ -39,12 +39,12 @@ _FALLBACK_SYSTEM = {
 }
 _DEFAULT_MODE_TOOLS = {
     "assisted": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
-                 "list_recent_notes", "read_inbox", "search_attachments",
+                 "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference", "list_trips", "trip_detail", "add_list_item", "read_list",
-                 "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
-                 "mark_inbox_processed", "set_tags", "save_place", "create_share_link", "create_guided_share",
+                 "set_item_checked", "set_item_priority", "add_sublist", "log_entry",
+                 "set_tags", "save_place", "create_share_link", "create_guided_share",
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
@@ -142,7 +142,6 @@ _TOOL_SCHEMAS = {
     "notes_with_tag": {"type": "object", "properties": {
         "tag": {"type": "string", "description": "A tag name (from list_tags), with or without a leading #."},
         "limit": {"type": "integer", "default": 25}}, "required": ["tag"]},
-    "read_inbox": {"type": "object", "properties": {}},
     "add_list_item": {"type": "object", "properties": {
         "list_title": {"type": "string"},
         "item": {"type": "string", "description": "Item text, no bullet/checkbox/priority prefix."},
@@ -202,9 +201,6 @@ _TOOL_SCHEMAS = {
         "target": {"type": "string", "description": "Log note title."},
         "text": {"type": "string"},
         "date": {"type": "string", "description": "ISO date; defaults to today."}}, "required": ["target", "text"]},
-    "capture_inbox": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
-    "mark_inbox_processed": {"type": "object", "properties": {
-        "ids": {"type": "array", "items": {"type": "integer"}}}, "required": ["ids"]},
     "search_attachments": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
     "read_attachment": {"type": "object", "properties": {
@@ -1115,16 +1111,6 @@ def _tool_notes_with_tag(conn, tag: str, limit: int = 25) -> str:
     return _untrusted("tagged-notes", f"Tagged #{tag}:\n" + "\n".join(lines))
 
 
-def _tool_read_inbox(conn) -> str:
-    rows = conn.execute(
-        "SELECT id, content FROM inbox WHERE processed = 0 ORDER BY created_at LIMIT 50"
-    ).fetchall()
-    if not rows:
-        return "Inbox is empty."
-    body = "\n".join(f"- (#{r['id']}) {r['content']}" for r in rows)
-    return _untrusted("inbox", body)
-
-
 # Fields each proposed-action type needs to apply (the model's schema only requires
 # type+summary, so validate here to give immediate feedback instead of a cryptic
 # HTTP 400 at approval time). DELETE_LIST accepts list_title OR title.
@@ -1449,22 +1435,6 @@ def _tool_log_entry(conn, conversation_id, target, text, date=None):
     return f"applied: {display}", event
 
 
-def _tool_capture_inbox(conn, conversation_id, content):
-    iid = quicktasks.capture_inbox(conn, content)
-    display = f"Captured to inbox: “{content[:48]}”"
-    return f"applied: {display}", _record_applied(
-        conn, conversation_id, "CAPTURE", display, {"op": "delete_inbox", "id": iid}
-    )
-
-
-def _tool_mark_inbox_processed(conn, conversation_id, ids):
-    quicktasks.mark_inbox_processed(conn, ids)
-    display = f"Marked {len(ids)} inbox item(s) processed"
-    return f"applied: {display}", _record_applied(
-        conn, conversation_id, "MARK_PROCESSED", display, {"op": "unmark_inbox", "ids": ids}
-    )
-
-
 def _notify_share_created(kind: str, url: str) -> None:
     """Push the new share link to the owner's devices so it's easy to grab/forward
     from anywhere. Best-effort; deep-links to the Shares admin."""
@@ -1656,8 +1626,6 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_list_tags(conn), None
     if name == "notes_with_tag":
         return _tool_notes_with_tag(conn, args["tag"], args.get("limit", 25)), None
-    if name == "read_inbox":
-        return _tool_read_inbox(conn), None
     if name == "search_attachments":
         return _tool_search_attachments(conn, args["query"], args.get("limit", 6)), None
     if name == "read_attachment":
@@ -1694,10 +1662,6 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_revoke_share_link(conn, conversation_id, args.get("token"), args.get("title"))
     if name == "log_entry":
         return _tool_log_entry(conn, conversation_id, args["target"], args["text"], args.get("date"))
-    if name == "capture_inbox":
-        return _tool_capture_inbox(conn, conversation_id, args["content"])
-    if name == "mark_inbox_processed":
-        return _tool_mark_inbox_processed(conn, conversation_id, args["ids"])
     if name == "propose_actions":
         return _tool_propose_actions(conn, conversation_id, args["actions"])
     if name == "kb_coverage_check":

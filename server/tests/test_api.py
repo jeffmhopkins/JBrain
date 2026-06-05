@@ -2458,6 +2458,75 @@ def test_semantic_search_filters(monkeypatch):
     assert len(floored) < len(hits)                     # the off-topic note was cut
 
 
+def test_wiki_augment_sources(monkeypatch):
+    """PRR per-article re-retrieval: augment_sources unions focused, in-scope source
+    ENTRIES onto each outlined article — never other kb articles, never dropping the
+    outline's own assignments, bounded by per_article, and driven by the article's
+    scope so retrieval is article-specific. Deterministic vectors, no model download."""
+    import hashlib
+    os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "aug.db"),
+                      JBRAIN_ACCESS_KEY=TEST_KEY, BRAIN_NAME="Test Brain", JBRAIN_DOMAIN="localhost")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    import app.db as db
+    db._initialized = False
+    db._local.__dict__.clear()
+    db.init_db()
+    from app.services import embeddings, notes as ns, wiki_build, pipeline
+    dim = embeddings.EMBEDDING_DIM
+
+    def fake_embed(text):
+        v = [0.0] * dim
+        for tok in str(text).lower().split():
+            v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+        return v
+    monkeypatch.setattr(embeddings, "embed", fake_embed)
+    monkeypatch.setattr(embeddings, "embed_many", lambda ts: [fake_embed(t) for t in ts])
+
+    conn = db.get_conn()
+    a1 = ns.upsert_note(conn, "notes/lab/ferritin", "ferritin iron labs anemia result low", kind="entry")
+    a2 = ns.upsert_note(conn, "notes/lab/iron panel", "iron panel saturation ferritin labs anemia", kind="entry")
+    a3 = ns.upsert_note(conn, "notes/lab/cbc", "anemia ferritin iron cbc hemoglobin labs", kind="entry")
+    kbA = ns.upsert_note(conn, "kb/Health/Anemia", "anemia ferritin iron labs synthesized article", kind="kb")
+    m1 = ns.upsert_note(conn, "notes/music/patch", "eurorack oscillator filter envelope patch", kind="entry")
+    conn.commit()
+
+    # Floor between the on-topic entries and the off-topic note (augment builds the seed
+    # as "<leaf> — <scope>"; probe it the same way so the threshold is metric-agnostic).
+    probe = {h["id"]: h["distance"] for h in
+             embeddings.semantic_search(conn, "Anemia — ferritin iron labs anemia", 10, kind="entry")}
+    assert probe[a2] < probe[m1] and probe[a3] < probe[m1]
+    floor = (max(probe[a2], probe[a3]) + probe[m1]) / 2
+
+    # Article already carries a1 from the outline; scope is the focused query seed.
+    art = {"title": "kb/Health/Anemia", "scope": "ferritin iron labs anemia", "sources": [a1]}
+    res = wiki_build.augment_sources(conn, [art], per_article=5, max_distance=floor)
+    got = set(art["sources"])
+    assert a1 in got                                    # outline-assigned source is never dropped
+    assert {a2, a3} <= got                              # in-scope entries pulled in
+    assert kbA not in got                               # an article never cites the wiki itself
+    assert m1 not in got                                # off-topic note cut by the relevance floor
+    assert res["added"] == 2
+
+    # per_article bounds the additions (fresh article so the in-place mutation is clean).
+    art2 = {"title": "kb/Health/Anemia", "scope": "ferritin iron labs anemia", "sources": [a1]}
+    r2 = wiki_build.augment_sources(conn, [art2], per_article=1, max_distance=10.0)
+    assert r2["added"] == 1 and len(art2["sources"]) == 2
+
+    # The scope drives article-specific retrieval: a music article pulls the music note,
+    # not the anemia labs (nearest-first, capped at one).
+    artm = {"title": "kb/Music/Patch", "scope": "eurorack oscillator filter envelope", "sources": []}
+    wiki_build.augment_sources(conn, [artm], per_article=1, max_distance=10.0)
+    assert artm["sources"] == [m1]
+
+    # A tight floor pulls nothing; the disabled primitive is a pass-through no-op.
+    art3 = {"title": "kb/Health/Anemia", "scope": "ferritin iron labs anemia", "sources": [a1]}
+    assert wiki_build.augment_sources(conn, [art3], per_article=5, max_distance=-1.0)["added"] == 0
+    ctx = type("Ctx", (), {"conn": conn})()
+    off = pipeline._p_wiki_augment_sources(ctx, [{"title": "kb/X", "scope": "y", "sources": [a1]}], enabled=False)
+    assert off == {"articles": [{"title": "kb/X", "scope": "y", "sources": [a1]}], "added": 0}
+
+
 def test_geotrail_math(client):
     """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
     from app.db import get_conn

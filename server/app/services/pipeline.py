@@ -373,6 +373,19 @@ def _p_wiki_write_batch(ctx, articles, instructions=None):
     return wiki_build.write_batch(ctx.conn, list(articles or []), instructions, on_article=on_article)
 
 
+def _p_wiki_augment_sources(ctx, articles, enabled=True, per_article=5, max_distance=0.85):
+    """PRR per-section re-retrieval: enrich each outlined article's sources with a
+    focused, in-scope semantic search before drafting. Returns {articles, added};
+    a no-op (articles unchanged, added=0) when disabled, so the step's output shape
+    is identical either way and downstream steps don't need a guard."""
+    arts = list(articles or [])
+    if not enabled:
+        return {"articles": arts, "added": 0}
+    from . import wiki_build
+    return wiki_build.augment_sources(ctx.conn, arts, per_article=int(per_article),
+                                      max_distance=float(max_distance))
+
+
 def _p_validate_structure(ctx, title, content_md):
     """Lint one article against its domain guide's spec (lead, citations, PII firewall,
     required sections). Returns {ok, errors, warnings, stub, domain}."""
@@ -1176,6 +1189,7 @@ _PRIMITIVES = {
     "kb_reset": _p_kb_reset,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
+    "wiki_augment_sources": _p_wiki_augment_sources,
     "wiki_write_batch": _p_wiki_write_batch,
     "validate_structure": _p_validate_structure,
     "query_notes": _p_query_notes,
@@ -1319,6 +1333,11 @@ _PRIMITIVE_META: dict[str, dict] = {
     "wiki_outline": {"summary": "Survey -> entity-first taxonomy (articles + assigned sources + index).",
                      "inputs": [{"name": "digest", "type": "list", "required": True},
                                 {"name": "instructions", "type": "str"}], "output": "dict"},
+    "wiki_augment_sources": {"summary": "Per-article focused re-retrieval: union in-scope source notes onto each outlined article.",
+                             "inputs": [{"name": "articles", "type": "list", "required": True},
+                                        {"name": "enabled", "type": "bool"},
+                                        {"name": "per_article", "type": "int"},
+                                        {"name": "max_distance", "type": "float"}], "output": "dict"},
     "wiki_write_batch": {"summary": "Write every planned article (draft + revise + lint); valid vs quarantined.",
                          "inputs": [{"name": "articles", "type": "list", "required": True},
                                     {"name": "instructions", "type": "str"}], "output": "dict"},

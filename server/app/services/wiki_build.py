@@ -187,6 +187,53 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
     return {"articles": grounded, "index_md": build_index_md(grounded), "dropped": dropped}
 
 
+def augment_sources(conn, articles: list[dict], *, per_article: int = 5,
+                    max_distance: float = 0.85) -> dict:
+    """PRR "retrieve per section": after the outline names each article and its scope,
+    run ONE focused semantic search per article to pull in source notes the survey /
+    entity assignment missed, then UNION them onto the article's existing sources.
+
+    Deliberately conservative so it adds signal, not noise:
+      - searches only 'entry'/'daily' notes — never other kb articles (an article must
+        not end up citing the wiki itself);
+      - a relevance floor (max_distance) so the KNN can't inject off-topic notes just
+        because it always returns SOMETHING;
+      - at most `per_article` additions, and existing (outline-assigned) sources are
+        never dropped — only added to.
+    Local embeddings only — no LLM call, so the whole pass is near-free. Returns the
+    same articles list (mutated in place) plus a count of sources added, for the card."""
+    from . import embeddings
+    added_total = 0
+    for art in articles:
+        existing = {int(i) for i in (art.get("sources") or [])}
+        leaf = str(art.get("title") or "").split("/")[-1]
+        seed = f"{leaf} — {art.get('scope', '')}".strip(" —")
+        if not seed:
+            continue
+        # 'entry' and 'daily' are both first-class sources (raw captures reach the KB via
+        # their daily rollup); pool both and take the globally NEAREST, so neither kind is
+        # arbitrarily preferred over the other.
+        cand: list[dict] = []
+        for kind in ("entry", "daily"):
+            try:
+                cand += embeddings.semantic_search(conn, seed, limit=per_article * 3,
+                                                   kind=kind, max_distance=max_distance)
+            except Exception:  # noqa: BLE001 — a retrieval miss must never break the build
+                pass
+        cand.sort(key=lambda h: h["distance"])
+        additions: list[int] = []
+        for h in cand:
+            nid = int(h["id"])
+            if nid not in existing and nid not in additions:
+                additions.append(nid)
+                if len(additions) >= per_article:
+                    break
+        if additions:
+            art["sources"] = sorted(existing | set(additions))
+            added_total += len(additions)
+    return {"articles": articles, "added": added_total}
+
+
 def _load_sources(conn, ids: list[int]) -> list[dict]:
     ids = [int(i) for i in ids if _isint(i)]
     if not ids:

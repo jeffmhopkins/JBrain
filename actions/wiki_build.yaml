@@ -1,8 +1,9 @@
 # Declarative action: REORGANIZE the knowledge base from scratch (rare, manual) (component 2).
 #
 # Backfill per-note analysis -> reset the KB -> survey the corpus -> outline the
-# entity-first taxonomy -> write the index -> write every article (draft + one
-# self-critique/revise pass + structure lint) -> save the ones that pass -> review.
+# entity-first taxonomy -> re-retrieve focused sources per article -> write the index
+# -> write every article (draft + one self-critique/revise pass + structure lint) ->
+# save the ones that pass -> review.
 #
 # Fully automatic, no per-article gate. The reset SOFT-deletes every kb/ article
 # except protected kb/_* pages (the guides + index), and is undoable (versioned).
@@ -13,11 +14,14 @@
 # a schedule. It runs only when you trigger it from the Workflows page.
 #
 # config keys:
-#   reset         — soft-delete existing kb/ before building (default true)
-#   analyze_limit — max notes to (re)analyze first, to enrich the survey (default 400)
-#   digest_limit  — max notes to survey (default 3000)
-#   instructions  — extra guidance for the outline + writer
-#   review        — post review cards (default true)
+#   reset                  — soft-delete existing kb/ before building (default true)
+#   analyze_limit          — max notes to (re)analyze first, to enrich the survey (default 400)
+#   digest_limit           — max notes to survey (default 3000)
+#   instructions           — extra guidance for the outline + writer
+#   reretrieve             — per-article focused re-retrieval before drafting (default ON)
+#   reretrieve_k           — max source notes to add per article (default 5)
+#   reretrieve_max_distance — relevance floor for re-retrieval; tighter = stricter (default 0.85)
+#   review                 — post review cards (default true)
 type: wiki_build
 category: Knowledge base
 config:
@@ -25,6 +29,9 @@ config:
   - { key: analyze_limit, label: Max notes to analyze first, type: number, default: 400 }
   - { key: digest_limit, label: Max notes to survey, type: number, default: 3000 }
   - { key: instructions, label: Extra guidance, type: textarea }
+  - { key: reretrieve, label: Re-retrieve sources per article, type: review, default: true }
+  - { key: reretrieve_k, label: Max sources added per article, type: number, default: 5 }
+  - { key: reretrieve_max_distance, label: Re-retrieval relevance floor, type: number, default: 0.85 }
   - { key: review, label: Post review cards, type: review, default: true }
 steps:
   # 0. Backfill analysis so the survey is rich (bounded; hash-guarded — only stale notes cost a call).
@@ -57,11 +64,23 @@ steps:
   - stop_when: "{{ not outline.articles }}"
     stop_message: "the outline produced no articles"
 
+  # 3b. PRR per-section re-retrieval: for each outlined article, run ONE focused, in-scope
+  #     semantic search and union the hits onto its sources — catching source notes the
+  #     corpus-wide survey under-weighted. Local vectors only (no LLM); a no-op that just
+  #     passes the articles through when reretrieve is turned off.
+  - id: augmented
+    do: wiki_augment_sources
+    with:
+      articles: "{{ outline.articles }}"
+      enabled: "{{ config.reretrieve != false }}"
+      per_article: "{{ config.reretrieve_k | default(5) }}"
+      max_distance: "{{ config.reretrieve_max_distance | default(0.85) }}"
+
   # 4. Write every article (draft + revise + lint). The index map is written AFTER, from
   #    only the articles that actually save, so it never links a quarantined article.
   - id: built
     do: wiki_write_batch
-    with: { articles: "{{ outline.articles }}", instructions: "{{ config.instructions | default(none) }}" }
+    with: { articles: "{{ augmented.articles }}", instructions: "{{ config.instructions | default(none) }}" }
 
   # 6. Save the ones that passed the structure lint.
   - id: save
@@ -75,7 +94,7 @@ steps:
 
   # 6a. Write the index map from the articles that actually saved (no links to quarantined).
   - do: write_kb_index
-    with: { articles: "{{ outline.articles }}", valid: "{{ built.valid }}" }
+    with: { articles: "{{ augmented.articles }}", valid: "{{ built.valid }}" }
   # 6b. Re-aggregate so each entity now links to its freshly-written article (cheap, no LLM).
   - do: rebuild_entity_index
   # 6b2. Link the default person ("me") to their People article so the owner page isn't orphaned.
@@ -97,7 +116,7 @@ steps:
     when: "{{ config.review != false }}"
     with:
       title: "Knowledge base rebuilt"
-      message: "Built {{ built.valid | length }} article(s) from {{ digest | length }} notes. Browse via kb/_index."
+      message: "Built {{ built.valid | length }} article(s) from {{ digest | length }} notes{{ ' (+' ~ augmented.added ~ ' sources via re-retrieval)' if augmented.added else '' }}. Browse via kb/_index."
       link_title: "kb/_index"
   - do: create_review
     when: "{{ built.quarantined }}"

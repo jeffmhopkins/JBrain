@@ -19,4 +19,5 @@ action:
   type: wiki_build
   config:
     reset: true
+    reretrieve: true   # per-article focused re-retrieval before drafting (local, no LLM)
     review: true

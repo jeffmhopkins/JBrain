@@ -81,3 +81,21 @@ def test_parse_single_report_geometry():
     assert got["wbc"]["collected_at"] == "2026-05-12"
     assert got["neutrophils_abs"]["value_text"] == "2942"      # 4-digit value parsed
     assert got["neutrophils_abs"]["ref_high"] == 7800.0
+
+
+def test_value_above_its_own_name_binds_correctly():
+    """A row whose value cells render slightly ABOVE its own label (the BUN/Creatinine Ratio
+    case) must bind to THAT analyte, not the one above it — nearest name by distance."""
+    words = []
+    words += line(10, ("Component", 56), ("Jul", 188), ("3,", 204), ("2022", 214))
+    words += line(40, ("Creatinine", 56))
+    words += line(54, ("Normal", 56), ("Range:", 92), ("0.70", 125), ("-", 146), ("0.81", 190))
+    words += line(68, ("1.20", 56), ("mg/dL", 83))     # creatinine high wrap (no value)
+    words += line(82, ("21", 190))                      # ratio value, rendered ABOVE its name
+    words += line(88, ("Ratio", 56))
+    words += line(102, ("Normal", 56), ("Range:", 92), ("10", 125), ("-", 138), ("20", 145))
+
+    rows = lab_parse._parse_page(words)
+    cre = [r["value_text"] for r in rows if r["analyte_key"] == "creatinine"]
+    rat = [r["value_text"] for r in rows if r["analyte_key"] == "ratio"]
+    assert cre == ["0.81"] and rat == ["21"]            # 21 is NOT mis-bound to creatinine

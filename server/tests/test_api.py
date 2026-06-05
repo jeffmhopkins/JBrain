@@ -256,9 +256,10 @@ def test_extract_labs_dedup_and_faithfulness(client, monkeypatch):
     r = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
     assert r["inserted"] == 2 and r["skipped"] == 1          # 'Ghost 1234' isn't in the document
     assert conn.execute("SELECT COUNT(*) c FROM lab_results WHERE note_id = ?", (nid,)).fetchone()["c"] == 2
-    # Re-running upserts in place (identity_key dedup) — no duplicate rows.
+    # Re-running is authoritative: it replaces this attachment's rows (re-import after a
+    # parser fix cleans up stale rows) — still no duplicates.
     r2 = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
-    assert r2["inserted"] == 0 and r2["updated"] == 2
+    assert r2["inserted"] == 2 and r2["removed"] == 2
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 2
     # The trend view exposes the typed values for retrieval.
     assert conn.execute("SELECT value_num FROM v_lab_trend WHERE analyte='wbc'").fetchone()["value_num"] == 6.2

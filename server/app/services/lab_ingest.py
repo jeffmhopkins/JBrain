@@ -25,10 +25,6 @@ _INSERT = (
     "value_text, value_num, unit, ref_low, ref_high, ref_text, collected_at, identity_key) "
     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
-_UPDATE = (
-    "UPDATE lab_results SET value_num=?, unit=?, ref_low=?, ref_high=?, ref_text=?, "
-    "test_name=? WHERE id=?"
-)
 
 
 def _identity_key(r: dict, source_sha: str) -> str:
@@ -62,25 +58,23 @@ def ingest_attachment(conn, attachment_id: int, *, encounter_id: int | None = No
         return {"doc_type": "unknown", "inserted": 0, "updated": 0, "skipped": 0}
 
     text = att["content_text"] or ""
-    inserted = updated = skipped = 0
+    # Re-ingestion is AUTHORITATIVE: drop this attachment's prior rows and re-derive, so a
+    # re-upload after a parser fix cleans up stale/mis-parsed rows (instead of upserting and
+    # leaving orphans behind). Rows from OTHER attachments are untouched.
+    removed = conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att["id"],)).rowcount
+    inserted = skipped = 0
     for r in parsed["results"]:
         # Faithfulness: never store a value the document doesn't literally contain.
         if text and r["value_text"] and r["value_text"] not in text:
             skipped += 1
             continue
         ik = _identity_key(r, att["sha256"])
-        existing = conn.execute("SELECT id FROM lab_results WHERE identity_key = ?", (ik,)).fetchone()
-        if existing:
-            conn.execute(_UPDATE, (r["value_num"], r["unit"], r["ref_low"], r["ref_high"],
-                                   r["ref_text"], r["test_name"], existing["id"]))
-            updated += 1
-        else:
-            conn.execute(_INSERT, (
-                att["note_id"], att["id"], encounter_id, r["test_name"], r["analyte_key"],
-                r["value_text"], r["value_num"], r["unit"], r["ref_low"], r["ref_high"],
-                r["ref_text"], r["collected_at"], ik))
-            inserted += 1
-    return {"doc_type": parsed["doc_type"], "inserted": inserted, "updated": updated,
+        conn.execute(_INSERT, (
+            att["note_id"], att["id"], encounter_id, r["test_name"], r["analyte_key"],
+            r["value_text"], r["value_num"], r["unit"], r["ref_low"], r["ref_high"],
+            r["ref_text"], r["collected_at"], ik))
+        inserted += 1
+    return {"doc_type": parsed["doc_type"], "inserted": inserted, "updated": 0, "removed": removed,
             "skipped": skipped, "analytes": len({r["analyte_key"] for r in parsed["results"]})}
 
 
@@ -90,24 +84,23 @@ def ingest_note(conn, note_id: int, *, post_review: bool = True) -> dict:
     from . import reviews as reviews_svc
     atts = conn.execute(
         "SELECT id FROM attachments WHERE note_id = ?", (note_id,)).fetchall()
-    total = {"doc_type": "unknown", "inserted": 0, "updated": 0, "skipped": 0, "analytes": 0}
+    total = {"doc_type": "unknown", "inserted": 0, "updated": 0, "removed": 0, "skipped": 0, "analytes": 0}
     for a in atts:
         s = ingest_attachment(conn, a["id"])
-        for k in ("inserted", "updated", "skipped"):
-            total[k] += s[k]
+        for k in ("inserted", "updated", "removed", "skipped"):
+            total[k] += s.get(k, 0)
         if s["doc_type"] not in ("unknown", "error"):
             total["doc_type"] = s["doc_type"]
             total["analytes"] = max(total["analytes"], s.get("analytes", 0))
-    if total["inserted"] or total["updated"]:
+    if total["inserted"]:
         conn.commit()
         if post_review:
             note = conn.execute("SELECT title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
             leaf = (note["title"] or "").split("/")[-1] if note else "note"
             reviews_svc.create_review_item(
                 conn, None, title=f"Imported {total['inserted']} lab results",
-                message=(f"{total['analytes']} analytes from {leaf} "
-                         f"({total['inserted']} new, {total['updated']} updated"
-                         + (f", {total['skipped']} skipped" if total["skipped"] else "") + ")."),
+                message=(f"{total['analytes']} analytes from {leaf}"
+                         + (f" ({total['skipped']} skipped)" if total["skipped"] else "") + "."),
                 link_slug=note["slug"] if note else None)
             conn.commit()
     return total

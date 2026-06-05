@@ -117,7 +117,7 @@ optional `review:` block on any action; surfaced in a PWA **Review** tab with a
 live count badge (`/api/reviews`).
 
 Still to do: **cron** schedules (v1 is interval-only — `croniter`), a richer/safer
-PWA editor (validation, dry-run), more event types (`note_saved`, `inbox_added`),
+PWA editor (validation, dry-run), more event types (`note_saved`),
 async embedding so workflow writes don't stall, and a "reset to repo" (unlock)
 action. Original design notes below.
 
@@ -129,7 +129,7 @@ summariser) and **push them to the server easily**.
 
 **Concept:**
 - A **workflow** = a trigger + an action. Triggers: schedule (cron-like), event
-  (on log rollover, on note tagged X, on inbox item, on attachment upload), or
+  (on log rollover, on note tagged X, on attachment upload), or
   manual. Actions: summarise, reorganise, tag, notify, call Claude with a prompt,
   etc.
 - A **registry** of workflows in the DB (`workflows` table: id, name, trigger
@@ -150,7 +150,7 @@ summariser) and **push them to the server easily**.
 **Safety:**
 - Workflows that mutate notes must respect the same guardrails as the architect:
   additive auto-apply vs. confirm-gated; everything versioned via `upsert_note`;
-  Claude prompts treat note/inbox/attachment content as untrusted data.
+  Claude prompts treat note/attachment content as untrusted data.
 - Rate-limit and log every workflow run (audit trail), with an enable/disable
   switch per workflow.
 

@@ -1568,6 +1568,43 @@ def test_places_reconcile_with_kb(client, monkeypatch):
     assert places_svc.link_places(conn)["linked"] == 0                        # idempotent
 
 
+def test_places_phase_c(client, monkeypatch):
+    """De-fork merge hint when two articles share a geofence; unsaved-place candidates; and the
+    save_place tool (forward-geocode → create geofence)."""
+    import json
+    from app.db import get_conn
+    from app.services import places as places_svc, geocode, entity_index as ei, architect, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Home', 28.40, -80.78, 150)")
+    ns.upsert_note(conn, "kb/Places/Home", "# Home\nx", kind="kb")
+    ns.upsert_note(conn, "kb/Places/The House", "# The House\ny", kind="kb")
+    nid = ns.upsert_note(conn, "notes/h", "dinner at the house")
+    conn.execute("UPDATE notes SET lat=28.4001, lon=-80.7802 WHERE id=?", (nid,))
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "place", "name": "the house"}])))
+    ns.upsert_note(conn, "kb/Places/Portland VA Hospital", "# Portland VA Hospital\nz", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+
+    # De-fork: 'The House' (resolves to Home by coords) gets a merge hint targeting 'Home'.
+    monkeypatch.setattr(geocode, "reverse", lambda c, lat, lon: {"address": "X"})
+    assert places_svc.link_places(conn)["merge_hints"] >= 1
+    hints = article_talk.list_for(conn, "kb/Places/The House")
+    assert any(t["kind"] == "restructure" and "merge" in t["body"] for t in hints)
+
+    # Unsaved candidate: the article-only place has no geofence; saved ones don't appear.
+    titles = places_svc.unsaved_places(conn)
+    assert "kb/Places/Portland VA Hospital" in titles and "kb/Places/Home" not in titles
+
+    # save_place tool: forward-geocode → create the geofence.
+    monkeypatch.setattr(geocode, "forward", lambda c, q, limit=3: [{"address": "1 VA Way", "lat": 45.5, "lon": -122.6}])
+    out, _ = architect._run_tool(conn, None, "save_place", {"name": "Portland VA Hospital"}, mode="assisted")
+    assert "Saved" in out and "1 VA Way" in out
+    assert conn.execute("SELECT 1 FROM places WHERE name='Portland VA Hospital'").fetchone()
+    assert "kb/Places/Portland VA Hospital" not in places_svc.unsaved_places(conn)   # now saved
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json
@@ -3680,24 +3717,6 @@ def test_quicktask_log_entry(client):
     assert "5k easy" in body and "2026-05-31" in body
 
 
-def test_capture_inbox_and_undo(client):
-    import json as _json
-    from app.db import get_conn
-    from app.services import quicktasks
-    conn = get_conn()
-    iid = quicktasks.capture_inbox(conn, "remember milk")
-    conn.commit()
-    assert any(i["id"] == iid for i in client.get("/api/capture").json())
-
-    cur = conn.execute(
-        "INSERT INTO staging_actions (type, payload_json, status) VALUES ('CAPTURE', ?, 'applied')",
-        (_json.dumps({"summary": "x", "undo": {"op": "delete_inbox", "id": iid}}),),
-    )
-    conn.commit()
-    client.post(f"/api/staging/{cur.lastrowid}/undo")
-    assert not any(i["id"] == iid for i in client.get("/api/capture").json())
-
-
 def test_attachments_accepts_any_file(client):
     client.post("/api/notes", json={"title": "Host2", "content_md": "x"})
     # Any file type is accepted now (binary stored; no text extracted from junk).
@@ -4166,6 +4185,35 @@ def test_workflow_creates_review_item_and_dismiss(client):
     assert client.get("/api/reviews/count").json()["pending"] == 0
 
 
+def test_reviews_history_window(client):
+    from app.db import get_conn
+
+    # A normally-created item we dismiss → shows up in the 24h history with a stamp.
+    rid = client.post("/api/reviews", json={"title": "Recent dismissed", "message": "x"}).json()["id"]
+    client.post(f"/api/reviews/{rid}/dismiss")
+
+    # A directly-inserted item dismissed >24h ago → outside the window, excluded.
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO review_items (title, message, status, dismissed_at) "
+        "VALUES ('Old dismissed', '', 'dismissed', datetime('now', '-2 days'))"
+    )
+    conn.commit()
+
+    history = client.get("/api/reviews/history").json()
+    titles = [h["title"] for h in history]
+    assert "Recent dismissed" in titles
+    assert "Old dismissed" not in titles
+
+    recent = next(h for h in history if h["title"] == "Recent dismissed")
+    assert recent["dismissed_at"] is not None
+    assert recent["status"] == "dismissed"
+
+    # The history endpoint must not surface still-pending items.
+    client.post("/api/reviews", json={"title": "Still pending"})
+    assert "Still pending" not in [h["title"] for h in client.get("/api/reviews/history").json()]
+
+
 def test_day_log_summary_workflow(client):
     from app.db import get_conn
     from app.services import quicktasks
@@ -4369,12 +4417,6 @@ def test_entry_created_not_fired_for_kb(client, monkeypatch):
     notes_svc.upsert_note(conn, "KB X", "body", kind="kb", source="workflow")
     conn.commit()
     assert calls["n"] == 0  # kb/workflow write did not fire the entry hook
-
-
-def test_capture_with_location(client):
-    client.post("/api/capture", json={"content": "at the park", "lat": 40.0, "lon": -73.0})
-    item = next(i for i in client.get("/api/capture").json() if i["content"] == "at the park")
-    assert item["lat"] == 40.0 and item["lon"] == -73.0
 
 
 def test_staging_apply_stamps_location(client):
@@ -5525,3 +5567,136 @@ def test_cluster_chatter_promotes_only_multi_day_patterns(client, monkeypatch):
     assert set(p["member_ids"]) == {1, 2, 3} and p["distinct_days"] == 3
     # the taxes pair (2 entries, same day) is NOT a multi-day pattern
     assert all(set(c2["member_ids"]) != {4, 5} for c2 in out["promotable"])
+
+
+# --- Multi-agent tools/actions review: regression tests for the fixes ---------
+
+def test_sql_guard_blocks_pragma_tvf_and_secret_tables(client):
+    # pragma_* table-valued functions (schema recon) and internal/secret tables are
+    # rejected by the keyword filter; legitimate content searches are NOT.
+    client.post("/api/notes/entry", json={"text": "a study", "title": "meta-analysis"})
+    assert client.post("/api/sql", json={"sql": "SELECT * FROM pragma_table_list"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT * FROM pragma_table_info('notes')"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT value FROM prompt_overrides"}).status_code == 400
+    # Content searches mentioning formerly-blocked words inside string literals are
+    # no longer false-positives (the literal is neutralised before the keyword scan).
+    for q in ("SELECT title FROM notes WHERE title = 'meta-analysis'",
+              "SELECT title FROM notes WHERE content_md LIKE '%create%'",
+              "SELECT title FROM notes WHERE content_md LIKE '%meta%'"):
+        assert client.post("/api/sql", json={"sql": q}).status_code == 200, q
+
+
+def test_sql_authorizer_denies_secret_columns_and_meta(client):
+    # The engine-level authorizer blocks secret columns/tables even though the table
+    # name itself is queryable (share_links.token), and any pragma TVF that slips the
+    # text filter. meta (access-key hash) stays unreadable.
+    assert client.post("/api/sql", json={"sql": "SELECT label FROM share_links"}).status_code in (200, 400)
+    # token column is denied by the authorizer (DatabaseError -> 400)
+    assert client.post("/api/sql", json={"sql": "SELECT token FROM share_links"}).status_code == 400
+    assert client.post("/api/sql", json={"sql": "SELECT value FROM meta"}).status_code == 400
+
+
+def test_staged_link_missing_source_errors_not_silent(client):
+    # A LINK whose source note doesn't exist must 404 (and stay pending), not be
+    # silently marked applied.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('LINK', ?)",
+                 (_json.dumps({"type": "LINK", "source_title": "notes/Nope",
+                               "target_title": "notes/Other", "summary": "s"}),))
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 404
+    # still pending (not consumed)
+    assert any(p["id"] == aid for p in client.get("/api/staging").json())
+
+
+def test_staged_rename_of_place_note_keeps_loc_root_and_kind(client):
+    # Renaming a loc/ (place) note must keep it under loc/ and preserve kind='place',
+    # not re-root to notes/ and demote it to an entry.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO places (name, lat, lon, radius_m) VALUES ('Cafe', 1.0, 2.0, 100)")
+    pid = conn.execute("SELECT id FROM places WHERE name='Cafe'").fetchone()["id"]
+    from app.services import places as places_svc
+    places_svc.ensure_note(conn, pid)
+    conn.commit()
+    cur = conn.execute("SELECT title FROM notes WHERE kind='place' LIMIT 1").fetchone()
+    assert cur and cur["title"].startswith("loc/")
+    conn.execute("INSERT INTO staging_actions (type, payload_json) VALUES ('RENAME', ?)",
+                 (_json.dumps({"type": "RENAME", "title": cur["title"], "new_title": "Bistro", "summary": "s"}),))
+    conn.commit()
+    aid = client.get("/api/staging").json()[0]["id"]
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    row = conn.execute("SELECT title, kind FROM notes WHERE id=(SELECT id FROM notes WHERE kind='place' LIMIT 1)").fetchone()
+    assert row["kind"] == "place" and row["title"].startswith("loc/")
+
+
+def test_staged_delete_with_basis_refuses_identity_swap(client):
+    # A DELETE proposed via the architect captures a basis (note_id); if the original
+    # note is replaced by a different note under the same title, apply must refuse.
+    from app.db import get_conn
+    from app.services import architect, notes as notes_svc
+    conn = get_conn()
+    client.post("/api/notes/entry", json={"text": "original", "title": "Dupe"})
+    architect._tool_propose_actions(conn, None, [{"type": "DELETE", "title": "notes/Dupe", "summary": "s"}])
+    conn.commit()
+    # Simulate identity swap: delete original, create a new note under the same title.
+    orig = notes_svc.get_by_title(conn, "notes/Dupe")
+    notes_svc.soft_delete(conn, orig["id"])
+    conn.commit()   # commit so the request thread's connection sees it (no lock)
+    client.post("/api/notes/entry", json={"text": "DIFFERENT note", "title": "Dupe"})
+    aid = client.get("/api/staging").json()[0]["id"]
+    # basis note_id no longer live -> 409, the new note survives.
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 409
+    assert notes_svc.get_by_title(conn, "notes/Dupe") is not None
+
+
+def test_propose_actions_validates_required_fields(client):
+    # A proposed action missing fields apply needs is rejected up front (nothing
+    # staged), not staged-then-rejected with a cryptic 400 at approval time.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    msg, event = architect._tool_propose_actions(conn, None, [{"type": "RENAME", "summary": "s"}])
+    assert event is None and "Nothing staged" in msg
+    assert client.get("/api/staging").json() == []
+
+
+def test_propose_actions_rollback_on_bad_action(client):
+    # A malformed action must not leave half-staged rows that a later commit flushes.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    # First action valid, second missing required 'title' for DELETE -> validated out
+    # before any INSERT, so nothing is staged.
+    msg, event = architect._tool_propose_actions(
+        conn, None, [{"type": "CREATE", "title": "X", "content": "c", "summary": "s"},
+                     {"type": "DELETE", "summary": "s"}])
+    assert event is None
+    assert client.get("/api/staging").json() == []
+
+
+def test_location_fixes_redacts_third_party_raw_coords(client, monkeypatch):
+    # The owner gets raw coords; a NON-owner registered person is degraded to place
+    # labels (no consent layer for third-party raw GPS).
+    from app.db import get_conn
+    from app.services import architect, geotrail, people as people_svc
+    conn = get_conn()
+    owner = people_svc.owner(conn)
+    if owner is None:
+        conn.execute("INSERT INTO people (name, is_default) VALUES ('Me', 1)")
+        conn.commit()
+        owner = people_svc.owner(conn)
+    conn.execute("INSERT INTO people (name, is_default) VALUES ('Allan', 0)")
+    conn.commit()
+    monkeypatch.setattr(geotrail, "fixes", lambda *a, **k: [
+        {"lat": 12.345678, "lon": 98.765432, "accuracy_m": None,
+         "recorded_at": "2026-06-01 12:00:00", "source": "x"}])
+    monkeypatch.setattr(geotrail, "label_point", lambda *a, **k: "Downtown")
+    owner_out = architect._tool_location_fixes(conn, person=owner["name"])
+    third_out = architect._tool_location_fixes(conn, person="Allan")
+    assert "12.345678" in owner_out                                  # owner: raw precision
+    assert "12.345678" not in third_out and "Downtown" in third_out  # third party: label only

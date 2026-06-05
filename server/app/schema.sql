@@ -85,18 +85,6 @@ CREATE TABLE IF NOT EXISTS staging_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_staging_status ON staging_actions(status);
 
--- Quick-capture inbox (e.g. dictation from a watch/phone) processed later.
-CREATE TABLE IF NOT EXISTS inbox (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  source     TEXT NOT NULL DEFAULT 'capture',
-  content    TEXT NOT NULL,
-  lat            REAL,
-  lon            REAL,
-  location_label TEXT,
-  processed  INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 -- Standalone full-text index (kept in sync manually on note save).
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   note_id UNINDEXED,
@@ -281,6 +269,8 @@ CREATE TABLE IF NOT EXISTS review_items (
   dismissed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_review_status ON review_items(status);
+-- Covers the Notification History query (dismissed items in a recent time window).
+CREATE INDEX IF NOT EXISTS idx_review_dismissed ON review_items(status, dismissed_at);
 
 -- Audit log of workflow executions.
 CREATE TABLE IF NOT EXISTS workflow_runs (

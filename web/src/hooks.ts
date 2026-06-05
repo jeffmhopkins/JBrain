@@ -71,6 +71,20 @@ export function useGeo() {
 // /api/locations while the app was open. The native tracker app now owns the trail,
 // so the PWA no longer logs location — it only STAMPS new posts via useGeo's coords.
 
+/** Re-render on an interval while `active`, returning Date.now() sampled each tick.
+ *  Drives the live "running for Xs" indicators in the watch modal and update console;
+ *  when inactive it holds no timer, so an idle/closed modal stays cheap. */
+export function useNowTick(active: boolean, intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [active, intervalMs]);
+  return now;
+}
+
 /** Track online/offline so the UI can show a banner and gate writes. */
 export function useOnline(): boolean {
   const [online, setOnline] = useState(() => navigator.onLine);

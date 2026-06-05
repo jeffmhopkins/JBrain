@@ -91,7 +91,10 @@ def _truthy(v) -> bool:
 # YAML can compose them but never bypass them.
 
 _MAX_CALL_DEPTH = 5     # call_action nesting depth
-_MAX_STEPS = 1000       # total steps executed per top-level run (runaway backstop)
+# Runaway backstop. Sized so the largest shipped recipe (wiki_build: ~414 + 2×articles
+# steps over a per-note for_each + a per-article save loop) completes for a big KB —
+# at 1000 it aborted mid-write past ~290 articles, leaving a partial KB + stale index.
+_MAX_STEPS = 5000       # total steps executed per top-level run
 
 
 class _Ctx:
@@ -252,13 +255,25 @@ def _p_link_owner(ctx):
 def _p_wiki_maintain(ctx, limit=20):
     """Component 3: address open talk items on existing articles against their sources."""
     from . import wiki_build
-    return wiki_build.maintain_batch(ctx.conn, int(limit))
+    # Hold the KB write lock so a nightly maintain can't interleave article writes with
+    # a concurrent manual op (rebuild/merge/split) or the update pass on the same article.
+    if not wiki_build.kb_lock_acquire(ctx.conn):
+        return {"articles": 0, "changed": 0, "skipped": "kb busy (another KB write is in progress)"}
+    try:
+        return wiki_build.maintain_batch(ctx.conn, int(limit))
+    finally:
+        wiki_build.kb_lock_release(ctx.conn)
 
 
 def _p_wiki_update(ctx, limit=40):
     """Component 3 (incremental): flow notes changed since the watermark into existing articles."""
     from . import wiki_build
-    return wiki_build.update_batch(ctx.conn, int(limit))
+    if not wiki_build.kb_lock_acquire(ctx.conn):
+        return {"articles": 0, "changed": 0, "skipped": "kb busy (another KB write is in progress)"}
+    try:
+        return wiki_build.update_batch(ctx.conn, int(limit))
+    finally:
+        wiki_build.kb_lock_release(ctx.conn)
 
 
 def _p_flag_ungrounded_reference(ctx):
@@ -279,6 +294,13 @@ def _p_link_places(ctx):
     address + loc/ link) + a back-link on the loc/ note. Deterministic, link-only."""
     from . import places
     return places.link_places(ctx.conn)
+
+
+def _p_suggest_unsaved_places(ctx):
+    """List kb/Places articles that aren't saved geofences yet — candidates to 'save as a place'."""
+    from . import places
+    titles = places.unsaved_places(ctx.conn)
+    return {"titles": titles, "names": [t.split("/")[-1] for t in titles], "count": len(titles)}
 
 
 def _p_tidy_talk(ctx):
@@ -436,7 +458,9 @@ def _p_query_entry_changes(ctx, since="", limit=20):
 
 
 def _p_get_meta(ctx, key, default=None):
-    return get_meta(key, default)
+    # Read through the pipeline's own connection so it sees this run's uncommitted
+    # watermark writes (every other primitive uses ctx.conn).
+    return get_meta(key, default, conn=ctx.conn)
 
 
 def _p_set_meta(ctx, key, value):
@@ -1189,6 +1213,7 @@ _PRIMITIVES = {
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
     "link_places": _p_link_places,
+    "suggest_unsaved_places": _p_suggest_unsaved_places,
     "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
@@ -1322,8 +1347,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
-    "link_places": {"summary": "Reconcile saved geofences with their kb/Places articles (location box + cross-link).",
+    "link_places": {"summary": "Reconcile saved geofences with their kb/Places articles (location box + cross-link + de-fork hint).",
                     "inputs": [], "output": "dict"},
+    "suggest_unsaved_places": {"summary": "List kb/Places articles that aren't saved geofences yet (save-as-a-place candidates).",
+                               "inputs": [], "output": "dict"},
     "tidy_talk": {"summary": "Demote non-actionable stub/needs-more-notes talk todos to notes + cap clutter.",
                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",

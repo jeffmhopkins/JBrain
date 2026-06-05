@@ -114,9 +114,14 @@ def _save_ids(conn, link_id: int, col: str, ids: set[int]) -> None:
 
 
 def approve(conn, link_id: int, ids: list[int]) -> None:
-    """Add notes to the exposed allowlist (and clear them from 'dismissed')."""
+    """Add notes to the exposed allowlist (and clear them from 'dismissed').
+
+    Intersect with the link's declared scope so approval can never widen exposure
+    beyond the folders/titles the link was scoped to — a code-enforced guarantee,
+    not just the owner-review UI filtering candidates."""
     spec = get_spec(conn, link_id)
-    add = {int(i) for i in ids}
+    in_scope = scope.filter_match_ids(conn, scope._scope(spec))
+    add = {int(i) for i in ids} & in_scope
     _save_ids(conn, link_id, "approved_ids_json", scope.approved_ids(spec) | add)
     _save_ids(conn, link_id, "dismissed_ids_json", scope._ids(spec, "dismissed_ids_json") - add)
 

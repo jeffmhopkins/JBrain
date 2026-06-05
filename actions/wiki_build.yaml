@@ -86,6 +86,9 @@ steps:
   # 6b4. Reconcile saved geofences with their kb/Places articles — add a location box (coords +
   #      address + loc/ link) and a back-link on the loc/ note, so a place doesn't fork. Link-only.
   - do: link_places
+  # 6b5. Find kb/Places articles that aren't saved geofences yet (candidates to "save as a place").
+  - id: unsaved_places
+    do: suggest_unsaved_places
   # 6c. Generate disambiguation pages for terms that resolve to multiple articles.
   - do: write_disambiguation
   # 6d. Flag any dangling cross-links (now that every article is saved + links reconciled).
@@ -113,6 +116,12 @@ steps:
     with:
       title: "Some articles need a look"
       message: "{{ built.bad }} article(s) failed structure checks and were NOT saved. Reasons: {{ built.report }}"
+  - do: create_review
+    when: "{{ config.review != false and unsaved_places.count }}"
+    with:
+      title: "Places you could save"
+      message: "{{ unsaved_places.count }} place(s) in your KB aren't saved geofences yet (so visits there aren't tracked): {{ unsaved_places.names[:12] | join(', ') }}{{ '…' if unsaved_places.count > 12 else '' }}. Ask the assistant to “save <name> as a place”, or add them on the Map."
+      link_title: "kb/_index"
   - do: create_review
     when: "{{ config.review != false and grounding.flagged }}"
     with:

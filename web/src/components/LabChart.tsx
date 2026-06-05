@@ -16,6 +16,7 @@ const MIN_SPAN = 7 * DAY;
 const GAP_MS = 1.5 * YR;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
+const isoOf = (t: number) => new Date(t).toISOString().slice(0, 10);
 
 const OUT = new Set(["high", "low", "abnormal"]);
 function fill(status: string) {
@@ -37,14 +38,15 @@ function Glyph({ x, y, status, sel }: { x: number; y: number; status: string; se
   return <>{ring}{shape}</>;
 }
 
-// Adaptive x ticks: years for wide spans, months (stepped) when zoomed in.
+// Adaptive x ticks: years when wide, months mid-range, and DAYS once zoomed in past ~3
+// months (labelled "Mon D", with the month shown when it changes).
 function xTicks(lo: number, hi: number): { t: number; label: string }[] {
   const span = hi - lo;
   const out: { t: number; label: string }[] = [];
   if (span > 2.5 * YR) {
     for (let y = new Date(lo).getUTCFullYear(); y <= new Date(hi).getUTCFullYear(); y++)
       out.push({ t: Date.UTC(y, 0, 1), label: String(y) });
-  } else {
+  } else if (span > 90 * DAY) {
     const step = span > 1.1 * YR ? 3 : 1;          // months between ticks
     const d0 = new Date(lo);
     let y = d0.getUTCFullYear(), m = d0.getUTCMonth();
@@ -54,13 +56,25 @@ function xTicks(lo: number, hi: number): { t: number; label: string }[] {
       out.push({ t: cur, label: dt.getUTCMonth() === 0 ? String(dt.getUTCFullYear()) : MONTHS[dt.getUTCMonth()] });
       cur = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + step, 1);
     }
+  } else {
+    const stepDays = Math.max(1, Math.round(span / DAY / 7));   // ~7 ticks across the view
+    const d0 = new Date(lo);
+    let cur = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate());
+    if (cur < lo) cur += DAY;
+    let lastMonth = -1;
+    for (; cur <= hi; cur += stepDays * DAY) {
+      const dt = new Date(cur), mo = dt.getUTCMonth();
+      out.push({ t: cur, label: mo !== lastMonth ? `${MONTHS[mo]} ${dt.getUTCDate()}` : String(dt.getUTCDate()) });
+      lastMonth = mo;
+    }
   }
   return out;
 }
 
-export default function LabChart({ series, from, to, height, onPick }: {
+export default function LabChart({ series, from, to, height, onPick, onViewChange }: {
   series: LabSeries; from?: string; to?: string; height?: number;
   onPick?: (p: LabPoint | null) => void;
+  onViewChange?: (from: string, to: string) => void;
 }) {
   const [sel, setSel] = useState<number | null>(null);
   const pts = series.points;
@@ -81,7 +95,8 @@ export default function LabChart({ series, from, to, height, onPick }: {
     return hi > lo ? { lo, hi } : { lo: dataLo, hi: dataHi };
   };
   const [win, setWin] = useState(initial);
-  useEffect(() => setWin(initial()), [series, from, to]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const winRef = useRef(win);                                // latest window, for reporting on gesture end
+  useEffect(() => { const w = initial(); winRef.current = w; setWin(w); }, [series, from, to]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const pointers = useRef<Map<number, number>>(new Map());
   const prevDist = useRef<number | null>(null);
@@ -99,7 +114,7 @@ export default function LabChart({ series, from, to, height, onPick }: {
     setWin((p) => {
       const span = p.hi - p.lo;
       const d = -dxPx * (VW / w) * (span / PW);
-      return clampPos(p.lo + d, p.hi + d);
+      return (winRef.current = clampPos(p.lo + d, p.hi + d));
     });
   }
   function zoomAt(midClientX: number, factor: number) {
@@ -111,9 +126,13 @@ export default function LabChart({ series, from, to, height, onPick }: {
       const anchor = p.lo + frac * span;
       const maxSpan = Math.max(MIN_SPAN, dataHi - dataLo);
       const newSpan = Math.max(MIN_SPAN, Math.min(span * factor, maxSpan));
-      return clampPos(anchor - frac * newSpan, anchor - frac * newSpan + newSpan);
+      return (winRef.current = clampPos(anchor - frac * newSpan, anchor - frac * newSpan + newSpan));
     });
   }
+  // Report the window UP only on gesture end (not mid-drag), so the parent can keep it when
+  // switching analytes; and so an active pan isn't fought by a prop round-trip.
+  function report() { onViewChange?.(isoOf(winRef.current.lo), isoOf(winRef.current.hi)); }
+  function resetView() { const w = { lo: dataLo, hi: dataHi }; winRef.current = w; setWin(w); report(); }
 
   function onDown(e: React.PointerEvent<SVGSVGElement>) {
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -139,6 +158,7 @@ export default function LabChart({ series, from, to, height, onPick }: {
   function onUp(e: React.PointerEvent<SVGSVGElement>) {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) { prevDist.current = null; if (svgRef.current) svgRef.current.style.touchAction = "pan-y"; }
+    if (pointers.current.size === 0 && dragged.current) report();   // persist the panned/zoomed view
   }
 
   const { lo, hi } = win;
@@ -183,7 +203,7 @@ export default function LabChart({ series, from, to, height, onPick }: {
          style={{ touchAction: "pan-y", userSelect: "none" }} role="img"
          aria-label={`${series.test_name} trend chart`}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-         onDoubleClick={() => setWin(initial())} onClick={() => pick(null)}>
+         onDoubleClick={resetView} onClick={() => pick(null)}>
       <rect x={M.l} y={M.t} width={PW} height={PH} fill="var(--danger)" fillOpacity={0.06} />
       {series.encounters.map((e) => {
         const x0 = clampX(ms(e.from)), x1 = clampX(e.to ? ms(e.to) : hi);

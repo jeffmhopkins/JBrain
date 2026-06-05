@@ -281,6 +281,18 @@ actions:
         deserves general background you don't have, just keep the stub — do NOT add a talk
         item about it (a separate audit handles external fills).
 
+      MEDICAL CONTENT — keep the split clean (this is the one most likely to leak PII):
+      - GENERAL medical knowledge (what a condition/medication/procedure IS, in the
+        abstract) lives HERE, foldered under kb/Reference/Medicine/Conditions/<Name>,
+        kb/Reference/Medicine/Medications/<Name>, or kb/Reference/Medicine/Procedures/<Name>.
+      - PERSONAL medical history — a specific person's (usually the owner's) diagnoses,
+        prescriptions, lab results, procedures, vitals and hospital encounters/admissions —
+        is PII. It belongs in THAT person's People article under a "## Health" section,
+        NEVER here. An encounter/admission is a personal event, not a Reference subject.
+      - Raw medical uploads are captured by the owner under notes/medical/… (Medical mode);
+        they synthesise into exactly these two homes — general → Reference/Medicine,
+        personal → People/<Name> ## Health — and never blur the line between them.
+
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
         Treatment, Prognosis. (A person's own diagnosis history stays in their People article.)
@@ -305,6 +317,12 @@ actions:
         affiliations (link the org as [[kb/Groups/...]]).
       - Sections as the person warrants: Background, Health, Preferences, Important dates,
         History/interactions.
+      - "## Health" is the HOME for this person's personal medical history — diagnoses,
+        prescriptions, lab results, procedures, vitals, and hospital encounters/admissions
+        (the PII that must NEVER appear in Reference). Link the GENERAL article for each
+        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>) for background,
+        but keep the person-specific facts (their values, doses, dates, stays) here. Cite
+        the source notes (these come from the owner's notes/medical/… captures).
       - Cross-link the groups they belong to, things they own, places tied to them.
       - Cite every fact to the note it came from.
 

@@ -368,8 +368,16 @@ export const getLocations = (since?: string, until?: string) => {
 // (The PWA no longer logs a continuous trail — the native tracker owns that. Posts
 // are still location-STAMPED via useGeo's coords at capture time.)
 
-export const createEntry = <T = any>(text: string, title?: string, loc?: { lat: number; lon: number } | null) =>
-  post<T>("/api/notes/entry", { text, title: title || undefined, lat: loc?.lat, lon: loc?.lon });
+export const createEntry = <T = any>(
+  text: string, title?: string, loc?: { lat: number; lon: number } | null, dest?: string,
+) =>
+  post<T>("/api/notes/entry", { text, title: title || undefined, dest: dest || undefined, lat: loc?.lat, lon: loc?.lon });
+
+// Medical-mode capture destinations (the picklist Medical mode offers; entries file
+// under notes/medical/<dest>/NN).
+export const getMedicalDests = () => get<{ names: string[] }>("/api/medical/destinations");
+export const setMedicalDests = (names: string[]) =>
+  put<{ names: string[] }>("/api/medical/destinations", { names });
 
 export async function streamChat(
   conversationId: number,

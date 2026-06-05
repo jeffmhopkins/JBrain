@@ -116,6 +116,36 @@ def test_entry_source_watch_is_recorded_and_clamped(client):
     assert client.get(f"/api/notes/{x['slug']}/versions").json()[0]["source"] == "user"
 
 
+def test_medical_mode_routes_to_dest_folder(client):
+    # Medical-mode capture files under notes/medical/<dest>/NN — its own browsable folder,
+    # not the daily tree — and numbers per-destination.
+    a = client.post("/api/notes/entry", json={"text": "Na 140 K 4.1", "dest": "Labs"}).json()
+    assert a["title"] == "notes/medical/Labs/01", a["title"]
+    b = client.post("/api/notes/entry", json={"text": "Hgb 9.8", "dest": "Labs"}).json()
+    assert b["title"] == "notes/medical/Labs/02"
+    # A different destination numbers independently.
+    c = client.post("/api/notes/entry", json={"text": "discharge summary", "dest": "Admissions"}).json()
+    assert c["title"] == "notes/medical/Admissions/01"
+    # Path-traversal in a dest name is sanitized away (never escapes notes/medical/).
+    d = client.post("/api/notes/entry", json={"text": "x", "dest": "../../etc/passwd"}).json()
+    assert d["title"].startswith("notes/medical/etc/passwd/"), d["title"]
+    # An explicit title takes precedence over dest (assisted-attachment path is unaffected).
+    e = client.post("/api/notes/entry", json={"text": "y", "title": "Idea", "dest": "Labs"}).json()
+    assert e["title"].startswith("notes/Idea")
+
+
+def test_medical_destinations_settings(client):
+    # Defaults are offered until edited; PUT sanitizes, de-dupes (case-insensitive), persists.
+    assert "Labs" in client.get("/api/medical/destinations").json()["names"]
+    saved = client.put("/api/medical/destinations",
+                       json={"names": ["  Cardiology  ", "cardiology", "", "2026-03 Admission"]}).json()["names"]
+    assert saved == ["Cardiology", "2026-03 Admission"]
+    assert client.get("/api/medical/destinations").json()["names"] == saved
+    # An explicit empty list sticks (no silent fallback to defaults).
+    assert client.put("/api/medical/destinations", json={"names": []}).json()["names"] == []
+    assert client.get("/api/medical/destinations").json()["names"] == []
+
+
 def test_entry_via_person_location_key(client):
     # A family phone holding only its scoped per-person location key can drop a watch
     # dictation: filed as a dated note, attributed to that person, even though that key

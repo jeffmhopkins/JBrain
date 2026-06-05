@@ -108,7 +108,7 @@ steps:
     when: "{{ config.review != false and grounding.flagged }}"
     with:
       title: "Reference needs grounding"
-      message: "{{ grounding.flagged }} Reference article(s) lean on general knowledge not in your notes — candidates for an approved external (Grokipedia) fill."
+      message: "{{ grounding.flagged }} Reference article(s) lean on general knowledge not in your notes — candidates for grounding from a reputable external reference."
       link_title: "kb/_index"
   - do: review_open_talk
     when: "{{ config.review != false }}"

@@ -1496,7 +1496,7 @@ def test_flag_ungrounded_reference(client):
     res = wiki_build.flag_ungrounded_reference(conn)
     assert res["flagged"] == 1
     ttp = article_talk.open_for(conn, "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura")
-    assert any("Grokipedia" in t["body"] for t in ttp)                       # padded → flagged
+    assert any("External reference needed" in t["body"] for t in ttp)        # padded → flagged
     assert not article_talk.open_for(conn, "kb/Reference/Medicine/Conditions/Anemia")  # stub → clean
 
 

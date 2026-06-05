@@ -609,8 +609,8 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
         slen = _cited_source_len(conn, body)
         if slen == 0 or blen / slen > ratio:
             article_talk.record(conn, r["title"], [{"kind": "note",
-                "body": "External reference needed (Grokipedia) — the general content here isn't "
-                        "grounded in your notes; awaiting an approved external fill."}], author="ai")
+                "body": "External reference needed — the general content here isn't grounded in "
+                        "your notes; awaiting an approved external reference."}], author="ai")
             flagged += 1
     conn.commit()
     return {"scanned": scanned, "flagged": flagged}

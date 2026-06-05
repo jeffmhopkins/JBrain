@@ -277,8 +277,8 @@ actions:
         your own training. If the notes just mention a topic, a one-line STUB is the correct
         article; do not pad it into a full encyclopedia entry. The shapes below are a target
         ONLY for sections your sources actually support; leave the rest out. When a topic
-        deserves general background you don't have, keep the stub and flag it for an approved
-        external fill (a talk todo: "External reference needed (Grokipedia): <topic>").
+        deserves general background you don't have, keep the stub and flag it for an external
+        reference (a talk todo: "External reference needed: <topic>").
 
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
@@ -469,7 +469,7 @@ actions:
     and it would make the entry look complete. If the notes touch a topic only lightly,
     write a SHORT STUB; a stub is the correct, faithful result, not a failure. When a
     Reference topic clearly deserves general background the notes don't provide, keep it a
-    stub and add a talk todo: "External reference needed (Grokipedia): <topic>". Never pad.
+    stub and add a talk todo: "External reference needed: <topic>". Never pad.
 
     CROSS-LINKS — link everything that has a home, invent nothing. You may write [[...]]
     ONLY for: (a) the exact source-note titles below (for citations), and (b) an article in

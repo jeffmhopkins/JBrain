@@ -129,8 +129,11 @@ export default function Chat() {
   // error. Keyed by a unique `id` so reconciliation never touches the wrong row.
   const [entries, setEntries] = useState<{ id: number; text: string; title: string; slug: string; pending?: boolean }[]>([]);
   const [input, setInput] = useState("");
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  // Files staged on the composer before Send. Plural so one capture can carry many
+  // attachments (the note page already supports this; this closes the compose-box gap).
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [uploadLabel, setUploadLabel] = useState("");   // "(2/3) photo.jpg" while a multi-file batch uploads
   const [streaming, setStreaming] = useState(false);
   const [status, setStatus] = useState("");   // live "thinking…/searching…" status while streaming
   const [busy, setBusy] = useState(false);
@@ -364,10 +367,26 @@ export default function Chat() {
   // Shared failure handling for an optimistic send: put the user's text/attachment back
   // (but never clobber something they retyped into the now-empty composer) and tell them.
   // Each caller still removes its own optimistic artifact (entry row / chat bubble) first.
-  function rollbackComposer(text: string, file: File | null, err: unknown, prefix: string) {
+  function rollbackComposer(text: string, files: File[], err: unknown, prefix: string) {
     setInput((cur) => cur.trim() ? cur : text);
-    if (file) setPendingFile((cur) => cur || file);
+    if (files.length) setPendingFiles((cur) => cur.length ? cur : files);
     alert(`${prefix}: ` + (err instanceof Error ? err.message : "please try again."));
+  }
+
+  // Upload a batch sequentially to one note, surfacing per-file progress. A single file's
+  // failure is non-fatal: the note + the files that did land are kept (attachments are
+  // additive), and the caller decides how to surface the skipped ones.
+  async function uploadAll(slug: string, files: File[], analyze: boolean): Promise<string[]> {
+    const errors: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      setUploadLabel(files.length > 1 ? `(${i + 1}/${files.length}) ${f.name}` : "");
+      try { await uploadAttachment(slug, f, setUploadPct, analyze); }
+      catch (e: any) { errors.push(`${f.name}: ${e?.message || "upload failed"}`); }
+      setUploadPct(null);
+    }
+    setUploadLabel("");
+    return errors;
   }
 
   async function send(e?: FormEvent) {
@@ -376,7 +395,7 @@ export default function Chat() {
     // streaming/busy gate the UI but are async React state; sendingRef is the synchronous
     // latch that blocks a second tap during this send's async pre-flight (GPS, conv-create,
     // upload) before that state has flushed.
-    if ((!text && !pendingFile) || streaming || busy || sendingRef.current || !online) return;
+    if ((!text && pendingFiles.length === 0) || streaming || busy || sendingRef.current || !online) return;
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
@@ -385,9 +404,10 @@ export default function Chat() {
     // see the instant they hit Send happens here, BEFORE we await anything: the composer
     // clears and the user's message/bubble appears immediately, regardless of how slow the
     // GPS fix or the network turns out to be.
-    const file = pendingFile;
-    const bubble = text || (file ? `📎 ${file.name}` : "");
-    setInput(""); setPendingFile(null);
+    const files = pendingFiles;
+    const fileLabel = files.length === 1 ? `📎 ${files[0].name}` : files.length ? `📎 ${files.length} files` : "";
+    const bubble = text || fileLabel;
+    setInput(""); setPendingFiles([]);
     // Best-effort location stamp: start it now (so it runs concurrently with the post) but
     // never block on it — capped at GEO_MAX_WAIT, resolves null if the radio is cold. The
     // post fires un-stamped rather than freezing; awaited just before each network call.
@@ -401,16 +421,19 @@ export default function Chat() {
       try {
         const dest = mode === "medical" ? (curDest || undefined) : undefined;
         const coords = await coordsP;
-        const r = await createEntry(text || (file ? file.name : "Untitled"), undefined, coords, dest);
+        const r = await createEntry(text || (files.length ? files[0].name : "Untitled"), undefined, coords, dest);
         let labMsg = "";
-        if (file) {
-          await uploadAttachment(r.slug, file, setUploadPct);
-          // Medical mode: if the upload was a lab PDF, STAGE its values for review on the note.
-          if (mode === "medical" && /\.pdf$/i.test(file.name)) {
+        if (files.length) {
+          // Images auto-analyze server-side (analyze defaults to true).
+          const errs = await uploadAll(r.slug, files, true);
+          if (errs.length) labMsg += ` · ${errs.length} file(s) couldn't attach`;
+          // Medical mode: if any upload was a lab PDF, STAGE its values for review. extractLabs
+          // is note-level — it stages every PDF on the note — so call it once after the batch.
+          if (mode === "medical" && files.some((f) => /\.pdf$/i.test(f.name))) {
             try {
               const lab = await extractLabs(r.slug);
-              if (lab.staged) labMsg = ` · ${lab.staged} lab results extracted — open the note to review & approve`;
-            } catch { /* non-fatal: the note + attachment are saved regardless */ }
+              if (lab.staged) labMsg += ` · ${lab.staged} lab results extracted — open the note to review & approve`;
+            } catch { /* non-fatal: the note + attachments are saved regardless */ }
           }
         }
         // Resolve the optimistic row in place (by id) → renders the "Saved:" chip.
@@ -420,7 +443,7 @@ export default function Chat() {
       } catch (err) {
         // Don't silently lose the entry: drop the optimistic row, restore the composer.
         setEntries((xs) => xs.filter((en) => en.id !== enId));
-        rollbackComposer(text, file, err, "Couldn't save entry");
+        rollbackComposer(text, files, err, "Couldn't save entry");
       } finally { setBusy(false); setUploadPct(null); sendingRef.current = false; }
       return;
     }
@@ -450,14 +473,18 @@ export default function Chat() {
     try {
       cid = await ensureConversation();
       let extra = "";
-      if (mode === "assisted" && file) {
-        // Save the file to a note so there's something to attach it to. Skip
-        // auto-analysis: this carrier note has no real content to inform it.
+      if (mode === "assisted" && files.length) {
+        // Save the file(s) to ONE carrier note so there's something to attach them to —
+        // many files become many attachments on a single note (not N notes), referenced by
+        // one wikilink. Skip auto-analysis: this carrier note has no real content to inform it.
         const coords = await coordsP;
-        const r = await createEntry(`Attached file: ${file.name}`, file.name.replace(/\.[^.]+$/, ""), coords);
-        await uploadAttachment(r.slug, file, setUploadPct, false);
-        setUploadPct(null);
-        extra = `\n\n(I attached a file, saved as [[${r.title}]].)`;
+        const single = files.length === 1;
+        const title = single ? files[0].name.replace(/\.[^.]+$/, "") : `Attached ${files.length} files`;
+        const body = single ? `Attached file: ${files[0].name}` : `Attached files:\n${files.map((f) => `- ${f.name}`).join("\n")}`;
+        const r = await createEntry(body, title, coords);
+        const errs = await uploadAll(r.slug, files, false);
+        extra = `\n\n(I attached ${single ? "a file" : `${files.length} files`}, saved as [[${r.title}]].`
+          + (errs.length ? ` ${errs.length} couldn't attach.` : "") + ")";
         // Fold the saved-note reference into this turn's user bubble (by id).
         setMessages((m) => m.map((x) => x.id === userId ? { ...x, content: (text + extra).trim() } : x));
       }
@@ -512,7 +539,7 @@ export default function Chat() {
       // Roll back so nothing is lost: drop the optimistic bubble, restore the composer.
       errored = true;
       dropOptimisticBubble();
-      rollbackComposer(text, file, err, "Couldn't send");
+      rollbackComposer(text, files, err, "Couldn't send");
     } finally {
       streamActiveRef.current = false;
       activeAsstRef.current = null;
@@ -620,15 +647,17 @@ export default function Chat() {
 
       {/* Compose box (rounded), shared across modes. */}
       <div className="composer-box">
-        {pendingFile && (
-          <div className="attach-chip">
-            <Icon name="clip" size={14} /> {pendingFile.name}
-            <button className="icon-btn" style={{ padding: 2 }} onClick={() => setPendingFile(null)}>✕</button>
+        {pendingFiles.map((f, i) => (
+          <div key={`${f.name}-${i}`} className="attach-chip">
+            <Icon name="clip" size={14} /> {f.name}
+            <button className="icon-btn" style={{ padding: 2 }}
+                    onClick={() => setPendingFiles((xs) => xs.filter((_, j) => j !== i))}>✕</button>
           </div>
-        )}
+        ))}
         {uploadPct !== null && (
           <div className="attach-chip">
-            <Icon name="clip" size={14} /> {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
+            <Icon name="clip" size={14} /> {uploadLabel ? `${uploadLabel} — ` : ""}
+            {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
           </div>
         )}
         {mode === "medical" && (
@@ -667,17 +696,20 @@ export default function Chat() {
           <span className="spacer" />
           {mode !== "research" && (
             <>
-              <input ref={fileRef} type="file" style={{ display: "none" }}
+              <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                      onChange={(e) => {
-                       const f = e.target.files?.[0];
-                       if (f) { if (f.size > 10 * 1024 * 1024) alert("File too large (10 MB max)."); else setPendingFile(f); }
+                       const picked = Array.from(e.target.files || []);
+                       const tooBig = picked.filter((f) => f.size > 10 * 1024 * 1024);
+                       const ok = picked.filter((f) => f.size <= 10 * 1024 * 1024);
+                       if (tooBig.length) alert(`Over 10 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
+                       if (ok.length) setPendingFiles((xs) => [...xs, ...ok]);
                        e.currentTarget.value = "";
                      }} />
               <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" /></button>
             </>
           )}
           <button className="icon-btn send" title="Send" onClick={() => send()}
-                  disabled={streaming || busy || !online || (!input.trim() && !pendingFile)}><Icon name="send" /></button>
+                  disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" /></button>
         </div>
       </div>
     </div>

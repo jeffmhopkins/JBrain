@@ -29,7 +29,7 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
 
     raw = await file.read()
     if len(raw) > att_svc.MAX_ATTACHMENT_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (10 MB max).")
+        raise HTTPException(status_code=413, detail="File too large (100 MB max).")
 
     mime = att_svc.resolve_mime(file.filename or "", file.content_type)
     result = att_svc.add_attachment(conn, note_id, file.filename, mime, raw)

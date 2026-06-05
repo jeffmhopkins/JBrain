@@ -20,10 +20,17 @@ function humanSize(n: number): string {
   return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 const isImage = (mime: string) => mime.startsWith("image/");
-const AUDIO_EXTS = /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|aiff?|amr|wma|weba|3gp|caf|mka)$/i;
+const AUDIO_EXTS = /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|aiff?|amr|wma|weba|caf|mka)$/i;
 const isAudio = (mime: string, filename = "") => mime.startsWith("audio/") || AUDIO_EXTS.test(filename);
-// Both image vision summaries and audio transcripts use the same analysis_* sidecar slot.
+const VIDEO_EXTS = /\.(mp4|m4v|webm|mov|ogv|mkv|avi|3gp|mpe?g)$/i;
+const isVideo = (mime: string, filename = "") => mime.startsWith("video/") || VIDEO_EXTS.test(filename);
+const isMedia = (a: { mime: string; filename: string }) => isAudio(a.mime, a.filename) || isVideo(a.mime, a.filename);
+// Image vision summaries and audio transcripts share the analysis_* sidecar slot.
 const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) || isAudio(a.mime, a.filename);
+// Auto-fetch a media file's bytes for inline playback only when it's small enough that the
+// eager download is cheap; above this, render a "Load player" button so opening a note never
+// pulls a big (now up to 100 MB) video just to show a player.
+const PLAYER_AUTOLOAD_MAX = 25 * 1024 * 1024;
 
 export default function Attachments({ slug, onNoteChanged }: { slug: string; onNoteChanged?: () => void }) {
   const { hasLlm } = useAuth();
@@ -34,14 +41,14 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [viewing, setViewing] = useState<Viewing>(null);
   const [thumbs, setThumbs] = useState<Record<number, string>>({});   // attachment id -> object URL for inline image previews
   const [thumbErr, setThumbErr] = useState<Record<number, string>>({});   // why a preview failed (surfaced inline)
-  const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});   // attachment id -> blob URL for the inline <audio> player
+  const [mediaUrls, setMediaUrls] = useState<Record<number, string>>({});   // attachment id -> blob URL for the inline <audio>/<video> player
   const inputRef = useRef<HTMLInputElement>(null);
   const polling = useRef<Set<number>>(new Set());
   const alive = useRef(true);
   const thumbsRef = useRef(thumbs);
   thumbsRef.current = thumbs;
-  const audioRef = useRef(audioUrls);
-  audioRef.current = audioUrls;
+  const mediaRef = useRef(mediaUrls);
+  mediaRef.current = mediaUrls;
 
   async function load() {
     try {
@@ -55,15 +62,15 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   useEffect(() => { load(); }, [slug]);
   useEffect(() => () => { alive.current = false; }, []);
 
-  // Inline image previews: fetch each image's bytes once (authed) into an object
-  // URL. Kept until unmount, then revoked. Big images are reined in by CSS, not by
-  // downloading less — attachments are capped at 10 MB, so this stays cheap.
+  // Inline image previews: fetch each image's bytes once (authed) into an object URL. Kept
+  // until unmount, then revoked. Display size is reined in by CSS; we only skip the eager
+  // fetch for unusually large images (use "View" instead) now that the cap is 100 MB.
   useEffect(() => () => { Object.values(thumbsRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       for (const a of items) {
-        if (!isImage(a.mime) || thumbsRef.current[a.id]) continue;
+        if (!isImage(a.mime) || thumbsRef.current[a.id] || a.byte_size > PLAYER_AUTOLOAD_MAX) continue;
         try {
           const url = await attachmentImageUrl(a.id, a.byte_size);
           if (cancelled) { URL.revokeObjectURL(url); return; }
@@ -77,19 +84,28 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   }, [items]);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
 
-  // Inline audio players: fetch each audio file's bytes once (authed) into a blob URL for
-  // an <audio controls> element. Kept until unmount, then revoked. (CSP allows media-src
-  // blob:.) On failure we stay silent — the Download button is always available.
-  useEffect(() => () => { Object.values(audioRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
+  // Inline players: fetch a media file's bytes once (authed) into a blob URL for an
+  // <audio>/<video controls> element. Kept until unmount, then revoked. (CSP allows
+  // media-src blob:.) Small files auto-load; bigger ones wait for a "Load player" tap so
+  // opening a note never eagerly pulls a large video. On failure we stay silent — Download works.
+  useEffect(() => () => { Object.values(mediaRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
+  async function loadPlayer(a: Attachment) {
+    if (mediaRef.current[a.id]) return;
+    try {
+      const url = await attachmentObjectUrl(a.id);
+      if (!alive.current) { URL.revokeObjectURL(url); return; }
+      setMediaUrls((u) => (u[a.id] ? (URL.revokeObjectURL(url), u) : { ...u, [a.id]: url }));
+    } catch (e: any) { setError(`Couldn’t load player for “${a.filename}” — ${attErr(e)}`); }
+  }
   useEffect(() => {
     let cancelled = false;
     (async () => {
       for (const a of items) {
-        if (!isAudio(a.mime, a.filename) || audioRef.current[a.id]) continue;
+        if (!isMedia(a) || mediaRef.current[a.id] || a.byte_size > PLAYER_AUTOLOAD_MAX) continue;
         try {
           const url = await attachmentObjectUrl(a.id);
           if (cancelled) { URL.revokeObjectURL(url); return; }
-          setAudioUrls((u) => ({ ...u, [a.id]: url }));
+          setMediaUrls((u) => ({ ...u, [a.id]: url }));
         } catch { /* download button still works */ }
       }
     })();
@@ -134,7 +150,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
       for (let i = 0; i < list.length; i++) {
         const f = list[i];
         const label = f.name + (list.length > 1 ? ` (${i + 1}/${list.length})` : "");
-        if (f.size > MAX_ATTACHMENT_BYTES) { setError(`${f.name} is over 10 MB.`); continue; }
+        if (f.size > MAX_ATTACHMENT_BYTES) { setError(`${f.name} is over 100 MB.`); continue; }
         setProgress({ name: label, pct: 0, processing: false });
         try {
           // Images auto-analyze server-side; the response carries analysis.status.
@@ -184,7 +200,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
-        Any file up to 10 MB. Text, PDFs, and image metadata are searchable. Audio is transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
+        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline. Audio is transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
       </p>
       {progress && (
         <div className="upload-progress">
@@ -225,10 +241,20 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
               Couldn’t show image — {thumbErr[a.id]}
             </div>
           )}
-          {isAudio(a.mime, a.filename) && audioUrls[a.id] && (
+          {isVideo(a.mime, a.filename) && mediaUrls[a.id] && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption -- user-uploaded media.
+            <video controls src={mediaUrls[a.id]} className="att-video" style={{ width: "100%", marginTop: 8, borderRadius: 8 }} />
+          )}
+          {isAudio(a.mime, a.filename) && !isVideo(a.mime, a.filename) && mediaUrls[a.id] && (
             // eslint-disable-next-line jsx-a11y/media-has-caption -- user-uploaded media; the
             // transcript below is the caption.
-            <audio controls src={audioUrls[a.id]} style={{ width: "100%", marginTop: 8 }} />
+            <audio controls src={mediaUrls[a.id]} style={{ width: "100%", marginTop: 8 }} />
+          )}
+          {isMedia(a) && !mediaUrls[a.id] && (
+            // Larger media (> auto-load cap): fetch the bytes only when asked.
+            <button className="ghost" style={{ fontSize: 11, padding: "4px 10px", marginTop: 8 }} onClick={() => loadPlayer(a)}>
+              ▶ Load {isVideo(a.mime, a.filename) ? "video" : "audio"} player ({humanSize(a.byte_size)})
+            </button>
           )}
           {isEnrichable(a) && a.analysis_status === "pending" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>

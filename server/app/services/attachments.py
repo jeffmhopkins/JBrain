@@ -10,7 +10,7 @@ import os
 
 from . import embeddings
 
-MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024  # 100 MB (audio/video can be large)
 
 CHUNK_CHARS = 1500
 CHUNK_OVERLAP = 200

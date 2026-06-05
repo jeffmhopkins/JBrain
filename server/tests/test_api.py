@@ -4192,10 +4192,11 @@ def test_attachments_accepts_any_file(client):
 
 
 def test_attachments_rejects_oversize(client):
+    from app.services import attachments as att_svc
     client.post("/api/notes", json={"title": "Host3", "content_md": "x"})
     big = client.post(
         "/api/notes/host3/attachments",
-        files={"file": ("big.bin", b"x" * (10 * 1024 * 1024 + 1), "application/octet-stream")},
+        files={"file": ("big.bin", b"x" * (att_svc.MAX_ATTACHMENT_BYTES + 1), "application/octet-stream")},
     )
     assert big.status_code == 413
 

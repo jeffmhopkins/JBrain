@@ -153,7 +153,7 @@ export const setLinkExpiry = (linkId: number, ttl_days: number) =>
 
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 // XHR (not fetch) so we get real upload progress. onProgress reports 0–100 for
 // bytes sent; the server then extracts text/embeds before responding, so callers
@@ -161,7 +161,7 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export function uploadAttachment<T = any>(
   slug: string, file: File, onProgress?: (pct: number) => void, analyze = true,
 ): Promise<T> {
-  if (file.size > MAX_ATTACHMENT_BYTES) return Promise.reject(new ApiError("File too large (10 MB max).", 413));
+  if (file.size > MAX_ATTACHMENT_BYTES) return Promise.reject(new ApiError("File too large (100 MB max).", 413));
   if (isDemo()) { onProgress?.(100); return Promise.resolve({ id: 1, filename: file.name } as T); }
   return new Promise<T>((resolve, reject) => {
     const fd = new FormData();

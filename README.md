@@ -37,13 +37,13 @@ and a graph.
   full **revision history**: every edit is versioned and attributed (you vs. the
   AI vs. a restore), with **line diffs** and one-click **restore** (which snapshots
   first, so history is never lost).
-- **Attachments** — attach **any number of files, up to 10 MB each**, to a note
+- **Attachments** — attach **any number of files, up to 100 MB each**, to a note
   (stored in the DB so backups stay complete) — both on a note's page and right from
-  the compose box while capturing. Searchable text is extracted automatically:
-  text/code files are decoded, **PDFs** are text-extracted, **image EXIF/metadata** is
-  pulled, **images** get an AI vision summary, and **audio** is **transcribed locally**
-  (faster-whisper, no API key — same as embeddings) — all indexed for keyword +
-  semantic search and available to the AI.
+  the compose box while capturing. **Audio & video play inline.** Searchable text is
+  extracted automatically: text/code files are decoded, **PDFs** are text-extracted,
+  **image EXIF/metadata** is pulled, **images** get an AI vision summary, and **audio**
+  is **transcribed locally** (faster-whisper, no API key — same as embeddings) — all
+  indexed for keyword + semantic search and available to the AI.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

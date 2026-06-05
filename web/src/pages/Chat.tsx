@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, extractLabs, get, getMedicalDests, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
+import { createEntry, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
@@ -708,9 +708,9 @@ export default function Chat() {
               <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                      onChange={(e) => {
                        const picked = Array.from(e.target.files || []);
-                       const tooBig = picked.filter((f) => f.size > 10 * 1024 * 1024);
-                       const ok = picked.filter((f) => f.size <= 10 * 1024 * 1024);
-                       if (tooBig.length) alert(`Over 10 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
+                       const tooBig = picked.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
+                       const ok = picked.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
+                       if (tooBig.length) alert(`Over 100 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
                        if (ok.length) setPendingFiles((xs) => [...xs, ...ok]);
                        e.currentTarget.value = "";
                      }} />

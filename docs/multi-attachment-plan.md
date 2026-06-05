@@ -213,7 +213,7 @@ analyses — already supported. The only watch-item is **fan-out cost/concurrenc
 1. **Dedup within one capture.** `add_attachment` dedupes by `(note_id, sha256)` and returns
    `duplicate: true`. Attaching the same file twice in one batch is a no-op on the second —
    correct, but the UI should *say* "already attached" rather than imply a second copy.
-2. **Partial-batch failure.** File 3 of 5 exceeds 10 MB or 500s. Keep 1–2, skip 3, continue
+2. **Partial-batch failure.** File 3 of 5 exceeds 100 MB or 500s. Keep 1–2, skip 3, continue
    4–5; never roll back the note. Surface a per-file error list. (Matches `Attachments.tsx`.)
 3. **Ordering.** `list_for_note` is `ORDER BY created_at DESC`. Sequential uploads in one
    second can tie on `created_at` (second granularity) → unstable order. Low-stakes, but
@@ -229,9 +229,12 @@ analyses — already supported. The only watch-item is **fan-out cost/concurrenc
 7. **Carrier-note title.** With one file, today's "filename" title is good. With many, use
    "Attached N files (2026-06-05)" or the first filename + "(+N more)"; keep it a real,
    findable title.
-8. **Size/quota.** Per-file 10 MB cap is enforced client- and server-side. Multi-upload
-   makes it *easy* to push tens of MB of blobs into SQLite per note. Not a blocker (backups
-   already carry blobs), but worth a soft per-note total warning later.
+8. **Size/quota.** Per-file cap is **100 MB** (raised from 10 MB for audio/video), enforced
+   client- and server-side. Multi-upload + the higher cap make it *easy* to push hundreds of
+   MB of blobs into SQLite per note; the whole-file `await file.read()` and the inline-player
+   blob fetch are both in-memory, so the UI only auto-fetches media/images under a 25 MB cap
+   (larger ones get a "Load player" / "View" affordance). Backups still carry blobs; a soft
+   per-note total warning is worth adding later.
 9. **FTS/embedding load.** Each attachment embeds independently (already true). A 10-file
    batch = 10 embedding passes; fine, they're local. No new index pressure.
 10. **Share exposure.** Share already emits the full array, and download is per-id with the

@@ -6414,3 +6414,21 @@ def test_video_transcription_includes_frame_vision_summary(client, monkeypatch):
     assert "A person waving" in row["analysis_md"] and "Hello from the clip" in row["analysis_md"]
     assert "Visual summary" in row["analysis_md"] and "Transcript" in row["analysis_md"]
     assert "A person waving" in row["content_text"]           # visual summary is searchable too
+
+
+def test_video_frame_sampling_is_configurable_by_percent_or_interval():
+    from app.services import audio_transcription as at
+    assert at._parse_frame_spec("25%") == ("percent", 25.0)
+    assert at._parse_frame_spec("30s") == ("interval", 30.0)
+    assert at._parse_frame_spec("45") == ("interval", 45.0)       # bare number → seconds
+    assert at._parse_frame_spec("") == ("percent", 25.0)          # fallback
+
+    # Percent step → 0/25/50/75/100% (duration-independent).
+    assert at._frame_positions(120.0, "percent", 25.0, 8) == [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Time interval → a frame every N seconds across the clip.
+    assert at._frame_positions(100.0, "interval", 30.0, 8) == [0.0, 0.3, 0.6, 0.9]
+    # Unknown duration in interval mode → a single frame, not a crash.
+    assert at._frame_positions(0.0, "interval", 30.0, 8) == [0.0]
+    # Too many for the cap → re-spaced evenly across the whole clip (count == cap).
+    capped = at._frame_positions(100.0, "percent", 5.0, 8)       # would be 21 frames
+    assert len(capped) == 8 and capped[0] == 0.0 and capped[-1] == 1.0

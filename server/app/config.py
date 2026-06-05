@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     audio_model: str = Field("base", validation_alias=AliasChoices("AUDIO_MODEL", "audio_model"))
     audio_compute_type: str = Field("int8", validation_alias=AliasChoices("AUDIO_COMPUTE_TYPE", "audio_compute_type"))
 
+    # How often to grab a video frame for the vision summary: a PERCENT step ("25%" → at
+    # 0/25/50/75/100% of the clip) or a TIME interval ("30s" → every 30 seconds). VIDEO_FRAME_MAX
+    # caps the count (frames are re-spaced evenly across the clip if the step would exceed it),
+    # bounding vision cost/payload on long videos.
+    video_frame_interval: str = Field("25%", validation_alias=AliasChoices("VIDEO_FRAME_INTERVAL", "video_frame_interval"))
+    video_frame_max: int = Field(8, validation_alias=AliasChoices("VIDEO_FRAME_MAX", "video_frame_max"))
+
     # Web Push (VAPID). Keys auto-generate on first boot into the DB `meta` table
     # if these are blank, so existing installs gain push with zero config. Set
     # them here only to pin a keypair across machines/restores. `vapid_subject` is

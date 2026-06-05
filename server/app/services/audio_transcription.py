@@ -80,14 +80,55 @@ def _get_model():
     return _model
 
 
-def _extract_frames(raw: bytes, fractions=(0.0, 0.25, 0.5, 0.75, 1.0), max_edge: int = 1568) -> list[bytes]:
-    """Grab JPEG frames sampled across a video (default: every 25%). Best-effort; returns []
-    if the bytes aren't a decodable video. Uses PyAV (bundled with faster-whisper)."""
+def _parse_frame_spec(spec: str) -> tuple[str, float]:
+    """Parse VIDEO_FRAME_INTERVAL → ('percent', step%) or ('interval', seconds).
+    Accepts "25%", "30s", or a bare number (seconds). Falls back to every-25%."""
+    s = (spec or "").strip().lower()
+    if s.endswith("%"):
+        try:
+            v = float(s[:-1])
+        except ValueError:
+            v = 0.0
+        return ("percent", v if v > 0 else 25.0)
+    if s.endswith("s"):
+        s = s[:-1].strip()
+    try:
+        v = float(s)
+    except ValueError:
+        return ("percent", 25.0)
+    return ("interval", v if v > 0 else 30.0)
+
+
+def _frame_positions(duration: float, kind: str, value: float, max_frames: int) -> list[float]:
+    """Sample positions as fractions of the clip [0,1]. Percent mode is duration-independent;
+    interval mode needs the duration (falls back to a single frame if unknown). If the step
+    would produce more than max_frames, re-space evenly across the whole clip instead."""
+    if kind == "percent":
+        step = max(value, 1.0) / 100.0
+        fracs = [min(i * step, 1.0) for i in range(int(1.0 / step) + 1)]
+    else:  # interval in seconds
+        if not duration or duration <= 0:
+            return [0.0]
+        fracs = [min((i * value) / duration, 1.0) for i in range(int(duration // max(value, 0.001)) + 1)]
+    fracs = sorted({round(f, 6) for f in fracs})
+    if max_frames and len(fracs) > max_frames:
+        return [0.0] if max_frames == 1 else [i / (max_frames - 1) for i in range(max_frames)]
+    return fracs
+
+
+def _extract_frames(raw: bytes, max_edge: int = 1568) -> list[bytes]:
+    """Grab JPEG frames sampled across a video, cadence from VIDEO_FRAME_INTERVAL (% or time).
+    Best-effort; returns [] if the bytes aren't a decodable video. Uses PyAV (bundled with
+    faster-whisper)."""
     import io
     try:
         import av
     except ImportError:
         return []
+    from ..config import get_settings
+    s = get_settings()
+    kind, value = _parse_frame_spec(s.video_frame_interval)
+    max_frames = max(1, int(s.video_frame_max))
     out: list[bytes] = []
     try:
         with av.open(io.BytesIO(raw)) as c:
@@ -96,8 +137,7 @@ def _extract_frames(raw: bytes, fractions=(0.0, 0.25, 0.5, 0.75, 1.0), max_edge:
             vs = c.streams.video[0]
             dur = (c.duration / av.time_base) if c.duration else (
                 float(vs.duration * vs.time_base) if (vs.duration and vs.time_base) else 0.0)
-            fracs = fractions if dur > 0 else (0.0,)
-            for f in fracs:
+            for f in _frame_positions(dur, kind, value, max_frames):
                 try:
                     if dur > 0:
                         target = max(0.0, min(f, 0.999)) * dur

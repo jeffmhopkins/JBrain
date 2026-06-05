@@ -331,6 +331,36 @@ def test_lab_staging_lifecycle(client, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0   # approval cleared
 
 
+def test_lab_image_results_survive_a_scan_text_layer(client, monkeypatch):
+    # A scanned 'abstract' PDF often carries a thin header text layer (name/date/facility) but
+    # NOT the tabular values. Image-derived (vision) results are faithfulness-checked against the
+    # page OCR inside parse_lab_image — stage_attachment must NOT re-filter them against that
+    # header text, or every correct value drops as 'not found verbatim in document'.
+    from app.db import get_conn
+    from app.services import lab_ingest
+    conn = get_conn()
+    header = "Patient Name DOE JANE  Date of Service 01/15/2025  URGENT CARE"   # no result values
+    note = client.post("/api/notes/entry", json={"text": "scan", "dest": "Labs"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "scan.pdf", "application/pdf", header, b"%PDF scan", 9, "sha-scan")).fetchone()["id"]
+    conn.commit()
+    monkeypatch.setattr(lab_ingest, "_extract", lambda att: {
+        "doc_type": "lab_image", "confidence": 1.0, "pages": 1, "skips": [],
+        "results": [{"test_name": "Glucose", "analyte_key": "glucose", "value_text": "83", "value_num": 83.0,
+                     "unit": "mg/dL", "ref_low": 65, "ref_high": 99, "ref_text": None,
+                     "collected_at": "2025-01-15", "collected_time": None,
+                     "confidence": "medium", "confidence_reasons": ["read from image"]}]})
+    s = lab_ingest.stage_attachment(conn, aid)
+    conn.commit()
+    assert s["status"] == "extracted" and s["n"] == 1          # value survived the header text layer
+    staged = client.get(f"/api/medical/attachments/{aid}/labs").json()
+    assert len(staged["results"]) == 1 and staged["results"][0]["value_text"] == "83"
+    assert staged["skips"] == []
+
+
 def test_lab_approve_idempotent_for_identical_files(client, monkeypatch):
     # Importing the SAME lab export twice (e.g. a byte-identical re-upload) must not 500 on the
     # identity_key unique index — the duplicate rows are already in the trends, so approve is

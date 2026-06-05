@@ -63,6 +63,24 @@ def is_protected(title: str) -> bool:
     return any(seg.startswith("_") for seg in (title or "").split("/"))
 
 
+def display_name(title: str) -> str:
+    """An article's heading name — the last segment of its kb/ path (kb/People/Allan → Allan)."""
+    return (title or "").rstrip("/").split("/")[-1].strip()
+
+
+def fix_article_h1(title: str, content: str) -> str:
+    """Force the H1 to the article's display name when the writer leaked the full kb/ path as
+    the heading ('# kb/People/Allan' → '# Allan'). Only a LEAKED path heading is rewritten — a
+    legitimately different H1 is left alone — and only the first one. No-op otherwise."""
+    name = display_name(title)
+    if not name or not content:
+        return content
+    def repl(m):
+        # the leak: the heading text IS the kb/ path; a real heading never starts with 'kb/'.
+        return f"# {name}" if m.group(1).strip().lower().startswith("kb/") else m.group(0)
+    return re.sub(r"(?m)^#[ \t]+(.+?)[ \t]*$", repl, content, count=1)
+
+
 def domain_for_title(title: str) -> str | None:
     """The taxonomy domain a kb article belongs to, from its path (kb/<Domain>/…)."""
     parts = (title or "").split("/")

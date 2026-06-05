@@ -1758,6 +1758,25 @@ def test_research_article_proposes_corroborated_reference_links(client, monkeypa
     assert wiki_build.research_article(conn, "kb/People/Sam")["proposals"] == []
 
 
+def test_fix_article_h1():
+    """The article H1 is forced to its display name when the writer leaks the full kb/ path
+    as the heading, and left untouched when it's already a real heading."""
+    from app.services import wiki_guides as wg
+    # leaked path heading → display name (the leaf), including deep paths with punctuation
+    assert wg.fix_article_h1("kb/People/Allan", "# kb/People/Allan\n\nAllan is…") == "# Allan\n\nAllan is…"
+    assert wg.fix_article_h1("kb/Places/Home — 701 W Cocoa Beach Cswy",
+                             "# kb/Places/Home — 701 W Cocoa Beach Cswy\n\nx") == "# Home — 701 W Cocoa Beach Cswy\n\nx"
+    # already-clean heading → unchanged
+    assert wg.fix_article_h1("kb/People/Harmony Hopkins", "# Harmony Hopkins\n\nx") == "# Harmony Hopkins\n\nx"
+    # a legitimately different (non-path) heading is left alone, not forced to the leaf
+    assert wg.fix_article_h1("kb/People/the owner", "# Jeff M. Hopkins\n\nx") == "# Jeff M. Hopkins\n\nx"
+    # only the FIRST H1 is touched; ## section headings are never matched
+    assert wg.fix_article_h1("kb/Things/Ford Truck", "# kb/Things/Ford Truck\n\n## Documents\n\nx") \
+        == "# Ford Truck\n\n## Documents\n\nx"
+    # no H1 → unchanged
+    assert wg.fix_article_h1("kb/People/X", "no heading here") == "no heading here"
+
+
 def test_taxonomy_health_flags_orphans_and_flat_reference(client):
     """The read-only report flags un-foldered Reference articles and orphans (no inbound link)."""
     from app.db import get_conn

@@ -381,6 +381,8 @@ def write_one(conn, art: dict, instructions: str | None = None,
                               "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
                              for t in bad]
 
+    # Heading guarantee: the H1 is the display name, never the leaked kb/ path.
+    draft = wiki_guides.fix_article_h1(title, draft)
     return {"title": title, "domain": domain, "content_md": draft, "talk": talk,
             "ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}
 
@@ -582,6 +584,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
             revised, v = r2, v2
         if not r2 or cur >= prev:
             break
+    revised = wiki_guides.fix_article_h1(article_title, revised)   # H1 = display name, not kb/ path
     by_id = {it["id"]: it for it in open_items}
     resolved = [{"id": int(r["id"]), "kind": by_id[int(r["id"])]["kind"],
                  "outcome": str(r.get("outcome") or "").strip().lower(),

@@ -460,7 +460,9 @@ actions:
     marker like [^s1] in the text, defined under a "## References" section as
         [^s1]: [[Exact Source Title]] — DATE
     Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
-    the article Markdown, starting with "# <name>".
+    the article Markdown, starting with its H1 heading. The H1 is the article's DISPLAY
+    NAME — the LAST segment of its title path "{title}" (e.g. "kb/People/Allan" → "# Allan").
+    NEVER use the full "kb/…" path as the heading.
     {instructions}
 
     GROUNDING — this is strict, especially for Reference. Include ONLY facts the source

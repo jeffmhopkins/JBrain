@@ -65,7 +65,7 @@ export default function ResearchChat({ token, brainName, intro }: {
     <div className="share-page"><div className="share-card">
       <div className="share-head">
         <span className="brand">{brainName}<span className="dot">.</span></span>
-        <span className="badge">Guided · Research</span>
+        <span className="badge">Shared · Research</span>
       </div>
       <h2 style={{ marginTop: 12 }}>Ask {brainName}’s records</h2>
       {intro && <p>{intro}</p>}
@@ -85,7 +85,7 @@ export default function ResearchChat({ token, brainName, intro }: {
     <div className="guided-wrap">
       <div className="guided-head">
         <span className="brand">{brainName}<span className="dot">.</span></span>
-        <span className="badge">Guided · Research</span>
+        <span className="badge">Shared · Research</span>
       </div>
       <div className="messages">
         {msgs.length === 0 && (
@@ -103,7 +103,7 @@ export default function ResearchChat({ token, brainName, intro }: {
           </div>
         )}
         {phase === "ended" && <div className="msg assistant muted">This conversation has ended. Thanks!</div>}
-        {err && <div className="msg assistant" style={{ color: "var(--danger)" }}>{err}</div>}
+        {err && <div className="msg assistant share-error">{err}</div>}
         <div ref={endRef} />
       </div>
       {phase !== "ended" && (

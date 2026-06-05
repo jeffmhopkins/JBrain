@@ -422,6 +422,28 @@ def test_labshare_create_honors_standard_options(client):
     assert spec["single_use"] == 1 and spec["max_total_replies"] == 50 and spec["max_turns"] == 7
 
 
+def test_labshare_owner_can_list_audit_and_revoke(client):
+    # The PHI surface must be manageable: a lab-share link shows up in /api/shares, its activity
+    # is auditable, and revoke kills it (so a misdirected link can be stopped from the UI).
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('m4','t4','b') RETURNING id").fetchone()["id"]
+    conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,collected_at) "
+                 "VALUES (?,?,?,?,?,?,?)", (nid, "WBC", "wbc", "6.0", 6.0, "x", "2026-01-01"))
+    conn.commit()
+    r = client.post("/api/shares/labs", json={"analytes": ["wbc"], "allow_chat": False}).json()
+    link_id = r["link_id"]
+
+    listed = client.get("/api/shares").json()["lab_links"]
+    mine = next(x for x in listed if x["id"] == link_id)
+    assert mine["analyte_count"] == 1 and mine["url"] and mine["expires_at"]      # listed + copyable
+
+    assert client.get(f"/api/shares/labs/{link_id}/audit").json()["sessions"] == []   # no views yet
+
+    client.post(f"/api/shares/{link_id}/revoke")                                  # revoke from the UI path
+    assert all(x["id"] != link_id for x in client.get("/api/shares").json()["lab_links"])
+
+
 def test_labshare_ai_is_import_isolated():
     # Structural invariant: the recipient AI reaches labs ONLY via the scoped boundary — it must
     # not import architect / lab_series / notes / embeddings / sqlsafe (no path to the whole brain).

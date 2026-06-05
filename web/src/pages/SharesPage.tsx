@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedDeleteSession, guidedOptions, guidedReject, guidedReopen, guidedResetBind, guidedSession, guidedSessions, guidedSetDetails, setLinkExpiry, post } from "../api";
 import ShareOptions from "../components/ShareOptions";
 import ResearchLinks from "../components/ResearchLinks";
+import LabShareLinks from "../components/LabShareLinks";
 import ConversationView from "../components/ConversationView";
 import { useAuth } from "../App";
 import { fmtTs, fmtTsShort } from "../time";
@@ -40,6 +41,7 @@ export default function SharesPage() {
   const [guidedEnded, setGuidedEnded] = useState<GuidedEnded[]>([]);
   const [guidedHistory, setGuidedHistory] = useState<GuidedHist[]>([]);
   const [researchLinks, setResearchLinks] = useState<any[]>([]);
+  const [labLinks, setLabLinks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [openDiff, setOpenDiff] = useState<number | null>(null);
@@ -55,6 +57,7 @@ export default function SharesPage() {
       setGuidedLinks(r.guided_links || []); setGuidedPending(r.guided_pending || []);
       setGuidedEnded(r.guided_ended || []); setGuidedHistory(r.guided_history || []);
       setResearchLinks(r.research_links || []);
+      setLabLinks(r.lab_links || []);
     } catch { /* ignore */ }
     setLoading(false);
   }
@@ -339,6 +342,8 @@ export default function SharesPage() {
       ))}
 
       <ResearchLinks links={researchLinks} reload={load} />
+
+      <LabShareLinks links={labLinks} reload={load} />
 
       {(history.length > 0 || guidedHistory.length > 0) && (
         <>

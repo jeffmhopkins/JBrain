@@ -105,7 +105,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
     <div className="share-page"><div className="share-card">
       <div className="share-head">
         <span className="brand">{brainName}<span className="dot">.</span></span>
-        <span className="badge">Guided · AI</span>
+        <span className="badge">Shared · Guided intake</span>
       </div>
       <h2 style={{ marginTop: 12 }}>{goal ? goal[0].toUpperCase() + goal.slice(1) : "A few questions"}</h2>
       {intro && <p>{intro}</p>}
@@ -122,7 +122,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
   const head = (
     <div className="guided-head">
       <span className="brand">{brainName}<span className="dot">.</span></span>
-      <span className="badge">Guided · AI</span>
+      <span className="badge">Shared · Guided intake</span>
     </div>
   );
 
@@ -152,7 +152,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
         {phase === "sent" && (
           <div className="msg assistant"><strong>Thank you, {name}!</strong><br />Your answers were sent to {brainName} for review.</div>
         )}
-        {err && <div className="msg assistant" style={{ color: "var(--danger)" }}>{err}</div>}
+        {err && <div className="msg assistant share-error">{err}</div>}
         <div ref={endRef} />
       </div>
 

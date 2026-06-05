@@ -673,6 +673,29 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 
 .share-url { width: 100%; font-size: 12px; }
 .share-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.share-error { color: var(--danger); font-size: 13px; margin: 6px 0 0; }
+
+/* Lab-share analyte checklist (the share modal). A real list — NOT the .lab-pick chip
+   row — so a checkbox + name + value align cleanly and rows stay full-width tap targets. */
+.lab-share-list { max-height: 46vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
+.lab-share-opt { display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer;
+  font-size: 13px; border-bottom: 1px solid var(--border); }
+.lab-share-opt:last-child { border-bottom: 0; }
+.lab-share-opt.sel { background: var(--accent-soft); }
+.lab-share-opt-val { margin-left: auto; font-size: 11px; white-space: nowrap; }
+
+/* Recipient lab-share trend TABLE (dates × analytes) — read exact values at any date. */
+.lab-share-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border);
+  border-radius: var(--radius); }
+.lab-share-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.lab-share-table th, .lab-share-table td { padding: 6px 10px; text-align: right; white-space: nowrap;
+  border-bottom: 1px solid var(--border); }
+.lab-share-table th:first-child, .lab-share-table td:first-child { text-align: left; position: sticky; left: 0;
+  background: var(--bg-elev); }
+.lab-share-table thead th { position: sticky; top: 0; background: var(--bg-elev-2); color: var(--text-dim);
+  font-weight: 600; }
+.lab-share-table tbody tr:last-child td { border-bottom: 0; }
 
 @media (max-width: 520px) {
   .share-row { flex-direction: column; align-items: stretch; }

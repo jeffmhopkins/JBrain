@@ -64,15 +64,67 @@ def set_destinations(body: DestsIn):
 
 @router.post("/notes/{slug}/extract-labs")
 def extract_labs(slug: str):
-    """Parse any lab-result PDF(s) attached to this note and upsert the values into
-    lab_results (deterministic, no LLM; dedup + faithfulness-guarded). Auto-applies and
-    posts a Review card. Idempotent — re-running upserts in place."""
+    """STAGE any lab-result PDF(s) on this note for review (deterministic, no LLM). Nothing
+    reaches lab_results until the owner approves; posts a Review card. Re-runs re-extract."""
     conn = get_conn()
     note = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    return lab_ingest.ingest_note(conn, note["id"])
+    return lab_ingest.stage_note(conn, note["id"])
+
+
+def _att_or_404(conn, attachment_id: int):
+    if conn.execute("SELECT 1 FROM attachments WHERE id = ?", (attachment_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+
+@router.get("/attachments/{attachment_id}/labs")
+def attachment_labs(attachment_id: int):
+    """The staged extraction for a PDF attachment (status + parsed results) — drives the
+    note's Lab Import preview. 404-free: returns {status: null} when it's not a lab PDF."""
+    _att_or_404(get_conn(), attachment_id)
+    return lab_ingest.staged(get_conn(), attachment_id) or {"status": None, "results": []}
+
+
+@router.get("/attachments/{attachment_id}/labs/series")
+def attachment_labs_series(attachment_id: int, analyte: str, unit: str | None = None):
+    """A trend built from one analyte's STAGED (unapproved) results — for the preview plot."""
+    s = lab_ingest.staged(get_conn(), attachment_id)
+    return lab_series.series_from_results((s or {}).get("results", []), analyte, unit)
+
+
+@router.post("/attachments/{attachment_id}/labs/approve")
+def approve_labs(attachment_id: int):
+    _att_or_404(get_conn(), attachment_id)
+    return lab_ingest.approve_attachment(get_conn(), attachment_id)
+
+
+@router.post("/attachments/{attachment_id}/labs/revoke")
+def revoke_labs(attachment_id: int):
+    _att_or_404(get_conn(), attachment_id)
+    return lab_ingest.revoke_attachment(get_conn(), attachment_id)
+
+
+@router.post("/attachments/{attachment_id}/labs/reanalyze")
+def reanalyze_labs(attachment_id: int):
+    """Re-parse the PDF and re-stage (supersedes any prior approval) — like re-running image
+    analysis from the note."""
+    _att_or_404(get_conn(), attachment_id)
+    conn = get_conn()
+    out = lab_ingest.stage_attachment(conn, attachment_id)
+    conn.commit()
+    return out
+
+
+@router.get("/labs/pending")
+def labs_pending():
+    """Attachments with extracted-but-unapproved labs, for the 'review imports' pointer."""
+    rows = get_conn().execute(
+        "SELECT a.id AS attachment_id, a.note_id, n.slug AS note_slug, n.title AS note_title "
+        "FROM attachments a JOIN notes n ON n.id = a.note_id "
+        "WHERE a.lab_status = 'extracted' AND n.deleted_at IS NULL ORDER BY a.lab_extracted_at DESC").fetchall()
+    return {"pending": [dict(r) for r in rows]}
 
 
 @router.get("/labs/analytes")

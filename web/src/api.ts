@@ -392,6 +392,18 @@ export const getLabSeries = (analyte: string, unit?: string) =>
   get<LabSeries>(`/api/medical/labs/series?analyte=${encodeURIComponent(analyte)}` +
     (unit ? `&unit=${encodeURIComponent(unit)}` : ""));
 
+// Staged lab ingestion (extract -> preview -> approve/revoke/re-analyze, per attachment).
+export interface StagedLab { status: string | null; doc_type?: string; results: LabPoint[] & any[]; skipped?: number; }
+export const getAttachmentLabs = (id: number) => get<StagedLab>(`/api/medical/attachments/${id}/labs`);
+export const getAttachmentLabSeries = (id: number, analyte: string, unit?: string) =>
+  get<LabSeries>(`/api/medical/attachments/${id}/labs/series?analyte=${encodeURIComponent(analyte)}` +
+    (unit ? `&unit=${encodeURIComponent(unit)}` : ""));
+export const approveLabs = (id: number) => post<{ approved: number }>(`/api/medical/attachments/${id}/labs/approve`);
+export const revokeLabs = (id: number) => post<{ removed: number }>(`/api/medical/attachments/${id}/labs/revoke`);
+export const reanalyzeLabs = (id: number) => post<{ status: string; n: number; analytes: number }>(`/api/medical/attachments/${id}/labs/reanalyze`);
+export const getPendingLabs = () =>
+  get<{ pending: { attachment_id: number; note_id: number; note_slug: string; note_title: string }[] }>("/api/medical/labs/pending");
+
 export const createEntry = <T = any>(
   text: string, title?: string, loc?: { lat: number; lon: number } | null, dest?: string,
 ) =>
@@ -404,7 +416,7 @@ export const setMedicalDests = (names: string[]) =>
   put<{ names: string[] }>("/api/medical/destinations", { names });
 // Parse any lab-result PDF(s) on a note into the lab_results table (deterministic, no LLM).
 export const extractLabs = (slug: string) =>
-  post<{ doc_type: string; inserted: number; updated: number; skipped: number; analytes: number }>(
+  post<{ doc_type: string; staged: number; skipped: number; analytes: number }>(
     `/api/medical/notes/${encodeURIComponent(slug)}/extract-labs`);
 
 export async function streamChat(

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { LabAnalyte, LabPoint, LabSeries, getLabAnalytes, getLabSeries } from "../api";
+import { LabAnalyte, LabPoint, LabSeries, getLabAnalytes, getLabSeries, getPendingLabs } from "../api";
 import LabChart from "../components/LabChart";
+import { Icon } from "../components/Icon";
 
 const OUT = new Set(["high", "low", "abnormal"]);
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
@@ -38,8 +39,10 @@ export default function LabsPage() {
   const [win, setWin] = useState<{ from: string; to: string } | null>(null);
   const [picked, setPicked] = useState<LabPoint | null>(null);
   const [showTable, setShowTable] = useState(false);   // persists across analyte switches
+  const [pending, setPending] = useState<{ note_slug: string; note_title: string }[]>([]);
   const [err, setErr] = useState("");
 
+  useEffect(() => { getPendingLabs().then((r) => setPending(r.pending)).catch(() => {}); }, []);
   useEffect(() => {
     getLabAnalytes().then(({ analytes }) => {
       setAnalytes(analytes);
@@ -72,17 +75,27 @@ export default function LabsPage() {
     setWin({ from: iso(from), to: iso(to) });
   }
 
+  const banner = pending.length > 0 && (
+    <div className="lab-pending-banner">
+      <Icon name="medical" size={15} />
+      <span style={{ flex: 1 }}>{pending.length} lab import{pending.length > 1 ? "s" : ""} awaiting review.</span>
+      <Link to={`/note/${pending[0].note_slug}`} className="lab-src">Review →</Link>
+    </div>
+  );
+
   if (err && !analytes.length) return <div className="tool-body"><p className="muted">{err}</p></div>;
   if (!analytes.length) return (
     <div className="tool-body">
-      <p className="muted" style={{ fontSize: 13 }}>No lab results yet. Upload a lab PDF in <strong>Medical</strong> mode
-        and its values appear here as trends.</p>
+      {banner}
+      <p className="muted" style={{ fontSize: 13 }}>{pending.length ? "Approve a lab import to see trends here."
+        : <>No lab results yet. Upload a lab PDF in <strong>Medical</strong> mode and approve it to see trends.</>}</p>
     </div>
   );
 
   const cur = analytes.find((a) => a.analyte === sel);
   return (
     <div className="tool-body">
+      {banner}
       <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
         Your own results over time, straight from the documents you uploaded. <strong>Not a diagnostic
         tool</strong> — always verify against your source reports; each point links to its.

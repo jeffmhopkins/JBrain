@@ -323,11 +323,11 @@ export default function Chat() {
         let labMsg = "";
         if (file) {
           await uploadAttachment(r.slug, file, setUploadPct);
-          // Medical mode: if the upload was a lab PDF, extract its values into lab_results.
+          // Medical mode: if the upload was a lab PDF, STAGE its values for review on the note.
           if (mode === "medical" && /\.pdf$/i.test(file.name)) {
             try {
               const lab = await extractLabs(r.slug);
-              if (lab.inserted || lab.updated) labMsg = ` · ${lab.inserted + lab.updated} lab results imported`;
+              if (lab.staged) labMsg = ` · ${lab.staged} lab results extracted — open the note to review & approve`;
             } catch { /* non-fatal: the note + attachment are saved regardless */ }
           }
         }

@@ -227,20 +227,20 @@ def test_lab_chart_tools(client):
     assert architect._run_tool(conn, None, "log_entry", {"text": "x"}, "research")[1] is None
 
 
-def test_extract_labs_dedup_and_faithfulness(client, monkeypatch):
-    # A lab PDF attached to a medical note: parsed rows are upserted into lab_results, with a
-    # faithfulness guard (a value not present in the document text is dropped) and idempotent
-    # re-runs (dedup by identity_key). The parser is stubbed so the test needs no real PDF.
+def test_lab_staging_lifecycle(client, monkeypatch):
+    # Staged ingestion: extract STAGES (nothing in lab_results yet, faithfulness-filtered);
+    # approve commits; revoke removes but keeps the stage; re-analyze re-stages and clears a
+    # prior approval. The parser is stubbed so the test needs no real PDF.
     from app.db import get_conn
     from app.services import lab_parse
     note = client.post("/api/notes/entry", json={"text": "CBC trend", "dest": "Labs"}).json()
     conn = get_conn()
     nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
     text = "WBC 6.20 thou/cumm  Platelets 250 thou/cumm"   # note: no '1234' anywhere
-    conn.execute(
+    aid = conn.execute(
         "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (nid, "cbc.pdf", "application/pdf", text, b"%PDF-1.4 fake", 12, "sha-cbc"))
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "cbc.pdf", "application/pdf", text, b"%PDF-1.4 fake", 12, "sha-cbc")).fetchone()["id"]
     conn.commit()
     rows = [
         {"test_name": "WBC", "analyte_key": "wbc", "value_text": "6.20", "value_num": 6.2,
@@ -253,17 +253,31 @@ def test_extract_labs_dedup_and_faithfulness(client, monkeypatch):
     monkeypatch.setattr(lab_parse, "parse_lab_pdf",
                         lambda b: {"doc_type": "lab_trend_export", "confidence": 1.0, "results": rows, "pages": 1})
 
+    # 1) Extract STAGES only — faithfulness drops 'Ghost 1234'; nothing in lab_results yet.
     r = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
-    assert r["inserted"] == 2 and r["skipped"] == 1          # 'Ghost 1234' isn't in the document
-    assert conn.execute("SELECT COUNT(*) c FROM lab_results WHERE note_id = ?", (nid,)).fetchone()["c"] == 2
-    # Re-running is authoritative: it replaces this attachment's rows (re-import after a
-    # parser fix cleans up stale rows) — still no duplicates.
-    r2 = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
-    assert r2["inserted"] == 2 and r2["removed"] == 2
+    assert r["staged"] == 2 and r["skipped"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0
+    staged = client.get(f"/api/medical/attachments/{aid}/labs").json()
+    assert staged["status"] == "extracted" and len(staged["results"]) == 2
+    # The preview plot is built from staged (unapproved) data.
+    assert client.get(f"/api/medical/attachments/{aid}/labs/series", params={"analyte": "wbc"}).json()["points"][0]["v"] == 6.2
+    assert len(client.get("/api/medical/labs/pending").json()["pending"]) == 1
+
+    # 2) Approve commits to lab_results; it now shows in the trend view + analyte list.
+    assert client.post(f"/api/medical/attachments/{aid}/labs/approve").json()["approved"] == 2
     assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 2
-    # The trend view exposes the typed values for retrieval.
     assert conn.execute("SELECT value_num FROM v_lab_trend WHERE analyte='wbc'").fetchone()["value_num"] == 6.2
-    assert conn.execute("SELECT COUNT(*) c FROM review_items WHERE title LIKE 'Imported%'").fetchone()["c"] >= 1
+    assert client.get("/api/medical/labs/pending").json()["pending"] == []   # no longer pending
+
+    # 3) Revoke removes the rows but keeps the staged extraction (re-approvable).
+    assert client.post(f"/api/medical/attachments/{aid}/labs/revoke").json()["removed"] == 2
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0
+    assert client.get(f"/api/medical/attachments/{aid}/labs").json()["status"] == "extracted"
+
+    # 4) Re-analyze re-stages (and would clear any prior approval).
+    client.post(f"/api/medical/attachments/{aid}/labs/approve")
+    assert client.post(f"/api/medical/attachments/{aid}/labs/reanalyze").json()["status"] == "extracted"
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 0   # approval cleared
 
 
 def test_entry_via_person_location_key(client):

@@ -43,7 +43,7 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
-                 "list_abnormal_labs", "show_lab_chart", "list_trips", "trip_detail", "add_list_item", "read_list",
+                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry",
                  "set_tags", "save_place", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -56,7 +56,7 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
-                 "list_abnormal_labs", "show_lab_chart"],
+                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -77,6 +77,22 @@ _TOOL_SCHEMAS = {
                   "use instead of from/to for relative asks. The chart opens to this window (the user can pan/zoom out)."},
         "from": {"type": "string", "description": "Optional explicit ISO date lower bound (overrides range)."},
         "to": {"type": "string", "description": "Optional explicit ISO date upper bound."}}, "required": ["analyte"]},
+    "lab_stat": {"type": "object", "properties": {
+        "analyte": {"type": "string", "description": "Lab name OR analyte_key (e.g. 'platelets', 'creatinine', "
+                    "'white blood cell'). Free text is resolved; if ambiguous the tool lists candidates."},
+        "unit": {"type": "string", "description": "Optional: pin one unit (extremes are never taken across non-equivalent units)."},
+        "range": {"type": "string", "enum": ["3mo", "6mo", "1y", "2y", "5y", "all"],
+                  "description": "Relative window ('over the past year' -> '1y'); resolved server-side."},
+        "from": {"type": "string", "description": "Optional ISO lower bound (overrides range)."},
+        "to": {"type": "string", "description": "Optional ISO upper bound."}}, "required": ["analyte"]},
+    "lab_value_at": {"type": "object", "properties": {
+        "analyte": {"type": "string", "description": "Lab name or analyte_key (resolved like lab_stat)."},
+        "which": {"type": "string", "enum": ["latest", "first", "first_out_of_range", "last_out_of_range",
+                  "first_cross", "last_cross"], "description": "Which point to return."},
+        "threshold": {"type": "number", "description": "For *_cross: the value to compare against."},
+        "direction": {"type": "string", "enum": ["above", "below"], "description": "For *_cross: cross above/below."},
+        "unit": {"type": "string"}, "range": {"type": "string", "enum": ["3mo", "6mo", "1y", "2y", "5y", "all"]},
+        "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["analyte", "which"]},
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
@@ -1422,6 +1438,87 @@ def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, rng=None, df
     return _untrusted("lab-chart", summary), _record_chart(conn, conversation_id, spec)
 
 
+def _resolve_analyte(conn, text: str):
+    """Resolve free text to an analyte_key the owner actually has. Returns (key, None) on a
+    confident match, or (None, candidates) when ambiguous / (None, []) when nothing matches."""
+    from . import lab_series, lab_parse
+    items = {a["analyte"]: a for a in lab_series.list_analytes(conn)}
+    t = " ".join((text or "").lower().split())
+    if t in items:
+        return t, None
+    k = lab_parse.analyte_key(text)                       # reuse the parser's colloquial synonyms
+    if k in items:
+        return k, None
+    matches = [a for a in items.values() if t and (t in a["test_name"].lower() or t in a["analyte"])]
+    if len(matches) == 1:
+        return matches[0]["analyte"], None
+    return None, matches
+
+
+def _fmt_point(p: dict) -> str:
+    """A faithful one-liner for a result row: value + unit + date + the lab/range status."""
+    return (f"{p['value_text']}{(' ' + p['unit']) if p['unit'] else ''} on {p['collected_at']} "
+            f"(status: {p['status']}{('; ref ' + p['ref_text']) if p['ref_text'] else ''})")
+
+
+_LAB_MUZZLE = (" Report the value, unit, and date exactly as given; do not infer a date, convert units, "
+               "or add values not in this result; no clinical interpretation, severity, or advice.")
+
+
+def _no_analyte_msg(text, candidates) -> str:
+    if candidates:
+        lst = "; ".join(f"{c['test_name']} (analyte_key '{c['analyte']}', {c['n']} results)" for c in candidates[:8])
+        return _untrusted("lab", f"'{text}' matches several labs — re-ask with the analyte_key: {lst}")
+    return _untrusted("lab", f"No lab named '{text}' is on file. (Absence of data is NOT a normal result.)")
+
+
+def _tool_lab_stat(conn, conversation_id, analyte, unit=None, rng=None, dfrom=None, dto=None):
+    from . import lab_series
+    key, cand = _resolve_analyte(conn, analyte)
+    if not key:
+        return _no_analyte_msg(analyte, cand), None
+    rf, rt = _resolve_range(rng, dfrom, dto)
+    s = lab_series.stat(conn, key, unit, rf, rt)
+    if s["count"] == 0:
+        return _untrusted("lab-stat", f"No {s['test_name']} results on file in that window."), None
+    parts = [f"{s['test_name']} ({s['unit'] or 'no unit'}): {s['count']} results"]
+    if s["domain"]:
+        parts.append(f"({s['domain']['from']}→{s['domain']['to']})")
+    bits = []
+    if s["min"]:
+        extra = f" (also {', '.join(d for d in s['min_dates'] if d != s['min']['collected_at'])})" if len(s["min_dates"]) > 1 else ""
+        bits.append("lowest " + _fmt_point(s["min"]) + extra)
+    if s["max"]:
+        extra = f" (also {', '.join(d for d in s['max_dates'] if d != s['max']['collected_at'])})" if len(s["max_dates"]) > 1 else ""
+        bits.append("highest " + _fmt_point(s["max"]) + extra)
+    if s["latest"]:
+        bits.append("latest " + _fmt_point(s["latest"]))
+    if s["mean"] is not None:
+        bits.append(f"mean {s['mean']}")
+    bits.append(f"{s['out_of_range_count']} of {s['count']} out of range")
+    msg = "; ".join(parts) + ". " + "; ".join(bits) + "."
+    if s["censored_count"]:
+        msg += f" ({s['censored_count']} censored result(s) excluded from min/max.)"
+    if s["other_units"]:
+        msg += f" (also recorded in {', '.join(s['other_units'])} — ask with unit= to include.)"
+    return _untrusted("lab-stat", msg + _LAB_MUZZLE), None
+
+
+def _tool_lab_value_at(conn, conversation_id, analyte, which, unit=None, threshold=None,
+                       direction="above", rng=None, dfrom=None, dto=None):
+    from . import lab_series
+    key, cand = _resolve_analyte(conn, analyte)
+    if not key:
+        return _no_analyte_msg(analyte, cand), None
+    rf, rt = _resolve_range(rng, dfrom, dto)
+    p = lab_series.point_at(conn, key, which, unit=unit, threshold=threshold,
+                            direction=direction, dfrom=rf, dto=rt)
+    name = lab_series.stat(conn, key, unit, rf, rt)["test_name"]
+    if not p:
+        return _untrusted("lab-value", f"No {name} result matches that ({which})."), None
+    return _untrusted("lab-value", f"{name}: {which.replace('_', ' ')} = {_fmt_point(p)}." + _LAB_MUZZLE), None
+
+
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
     """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
     cur = conn.execute(
@@ -1667,6 +1764,13 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "show_lab_chart":
         return _tool_show_lab_chart(conn, conversation_id, args["analyte"], args.get("unit"),
                                     args.get("range"), args.get("from"), args.get("to"))
+    if name == "lab_stat":
+        return _tool_lab_stat(conn, conversation_id, args["analyte"], args.get("unit"),
+                              args.get("range"), args.get("from"), args.get("to"))
+    if name == "lab_value_at":
+        return _tool_lab_value_at(conn, conversation_id, args["analyte"], args["which"], args.get("unit"),
+                                  args.get("threshold"), args.get("direction", "above"),
+                                  args.get("range"), args.get("from"), args.get("to"))
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":

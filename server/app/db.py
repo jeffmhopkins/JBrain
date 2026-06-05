@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 
 def init_db() -> None:
@@ -594,6 +594,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # (notes/attachments/entities/people), so indexes are safe inline here.
         # schema.sql carries the identical block for fresh DBs.
         conn.executescript(_MEDICAL_SCHEMA_SQL)
+
+    if current < 40:
+        # Staged lab ingestion: a per-attachment sidecar (mirrors the image-analysis
+        # columns). A lab PDF is EXTRACTED to lab_json for preview; rows reach lab_results
+        # only when the owner APPROVES. NULL|extracted|approved|error.
+        _add_column(conn, "attachments", "lab_status", "TEXT")
+        _add_column(conn, "attachments", "lab_json", "TEXT")
+        _add_column(conn, "attachments", "lab_extracted_at", "TEXT")
 
 
 # The medical schema, factored out so the migration (existing DBs) and schema.sql

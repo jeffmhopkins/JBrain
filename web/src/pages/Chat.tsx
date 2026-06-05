@@ -69,6 +69,8 @@ const TOOL_LABELS: Record<string, string> = {
   drug_reference: "Looking up a medication…",
   list_abnormal_labs: "Finding out-of-range labs…",
   show_lab_chart: "Charting lab results…",
+  lab_stat: "Checking lab values…",
+  lab_value_at: "Checking lab values…",
   // Lists & tags
   read_list: "Reading a list…",
   add_list_item: "Updating a list…",
@@ -323,11 +325,11 @@ export default function Chat() {
         let labMsg = "";
         if (file) {
           await uploadAttachment(r.slug, file, setUploadPct);
-          // Medical mode: if the upload was a lab PDF, extract its values into lab_results.
+          // Medical mode: if the upload was a lab PDF, STAGE its values for review on the note.
           if (mode === "medical" && /\.pdf$/i.test(file.name)) {
             try {
               const lab = await extractLabs(r.slug);
-              if (lab.inserted || lab.updated) labMsg = ` · ${lab.inserted + lab.updated} lab results imported`;
+              if (lab.staged) labMsg = ` · ${lab.staged} lab results extracted — open the note to review & approve`;
             } catch { /* non-fatal: the note + attachment are saved regardless */ }
           }
         }

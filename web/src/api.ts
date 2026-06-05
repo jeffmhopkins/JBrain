@@ -401,6 +401,10 @@ export const createEntry = <T = any>(
 export const getMedicalDests = () => get<{ names: string[] }>("/api/medical/destinations");
 export const setMedicalDests = (names: string[]) =>
   put<{ names: string[] }>("/api/medical/destinations", { names });
+// Parse any lab-result PDF(s) on a note into the lab_results table (deterministic, no LLM).
+export const extractLabs = (slug: string) =>
+  post<{ doc_type: string; inserted: number; updated: number; skipped: number; analytes: number }>(
+    `/api/medical/notes/${encodeURIComponent(slug)}/extract-labs`);
 
 export async function streamChat(
   conversationId: number,

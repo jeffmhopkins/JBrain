@@ -91,12 +91,13 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     ).fetchone()
     if not row:
         return False
-    # Fold in any AI image-summary sidecars so the gist/facts/ENTITIES capture what's in the
-    # photos too (image-only captures otherwise analyze to nothing now that the summary lives
-    # off-body). Part of the hash so a new/changed image summary re-triggers analysis.
-    from . import image_analysis
-    img = image_analysis.block_for_note(conn, note_id, cap=2000)
-    eff = (row["content_md"] or "") if not img else ((row["content_md"] or "") + "\n\n" + img)
+    # Fold in attachment content so the gist/facts/ENTITIES capture what's in the photos
+    # (vision summary), audio/video (transcript), AND documents (PDF / text / office extracted
+    # text) too — an image-only or document-only capture otherwise analyzes to nothing. Part of
+    # the hash so a new/changed attachment digest re-triggers analysis.
+    from . import attachments as att_svc
+    att_ctx = att_svc.context_block_for_note(conn, note_id, cap=2500)
+    eff = (row["content_md"] or "") if not att_ctx else ((row["content_md"] or "") + "\n\n" + att_ctx)
     h = content_hash(row["title"], eff)
     if not force:
         cur = conn.execute(

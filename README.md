@@ -41,9 +41,11 @@ and a graph.
   (stored in the DB so backups stay complete) — both on a note's page and right from
   the compose box while capturing. **Audio & video play inline.** Searchable text is
   extracted automatically: text/code files are decoded, **PDFs** are text-extracted,
-  **image EXIF/metadata** is pulled, **images** get an AI vision summary, and **audio**
-  is **transcribed locally** (faster-whisper, no API key — same as embeddings) — all
-  indexed for keyword + semantic search and available to the AI.
+  **image EXIF/metadata** is pulled, **images** get an AI vision summary, and **audio &
+  video** are **transcribed locally** (faster-whisper, no API key — video via its audio
+  track) — all indexed for keyword + semantic search and available to the AI. The per-note
+  **AI analysis** sidecar folds in this attachment text (PDF/document text, transcripts,
+  image summaries) too, so its gist/facts/entities reflect what's in your files.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

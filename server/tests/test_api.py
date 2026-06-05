@@ -6222,3 +6222,65 @@ def test_transcribe_endpoint_rejects_non_audio(client):
     conn.commit()
     r = client.post(f"/api/attachments/{aid}/transcribe")
     assert r.status_code == 200 and r.json()["status"] == "error"
+
+
+def test_note_analysis_folds_in_attachment_text(client, monkeypatch):
+    # PDF/document text (no analysis_md sidecar) is folded into the note-analysis prompt, so
+    # the gist/facts/entities reflect attachments — not just the typed note body.
+    from app.db import get_conn
+    from app.services import note_analysis as na, llm
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "Lab report attached", "title": "Report"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (nid, "report.pdf", "application/pdf", "Patient cholesterol is 190 mg/dL, within range.", b"%PDF", 4, "sha-rep"))
+    conn.commit()
+
+    captured = {}
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+
+    def fake_complete(messages, **k):
+        captured["prompt"] = messages[0]["content"]
+        return '{"gist":"x","facts":[],"entities":[],"domain":"Unsure","dates":[]}'
+    monkeypatch.setattr(llm, "complete", fake_complete)
+
+    assert na.analyze(conn, nid) is True
+    assert "report.pdf" in captured["prompt"]
+    assert "cholesterol is 190" in captured["prompt"]          # PDF body reached the model
+    assert "attachment text" in captured["prompt"]             # labeled, not "image summary"
+
+
+def test_attachment_context_block_labels_and_prefers_sidecar(client):
+    from app.db import get_conn
+    from app.services import attachments as att_svc
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "x", "title": "Mix"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, analysis_md, byte_size, sha256) "
+                 "VALUES (?,?,?,?,?,?,?)", (nid, "memo.m4a", "audio/mp4", "AUD", "AUD WORDS", 5, "s1"))
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, analysis_md, byte_size, sha256) "
+                 "VALUES (?,?,?,?,?,?,?)", (nid, "clip.mp4", "video/mp4", "VID", "VID WORDS", 5, "s2"))
+    conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, byte_size, sha256) "
+                 "VALUES (?,?,?,?,?,?)", (nid, "doc.pdf", "application/pdf", "PDF BODY", 5, "s3"))
+    conn.commit()
+    block = att_svc.context_block_for_note(conn, nid)
+    assert "[audio transcript — memo.m4a]" in block and "AUD WORDS" in block   # prefers sidecar
+    assert "[video transcript — clip.mp4]" in block
+    assert "[attachment text — doc.pdf]" in block and "PDF BODY" in block
+
+
+def test_video_is_transcribable_and_auto_starts(client, monkeypatch):
+    from app.services import audio_transcription as at
+    assert at.is_transcribable("video/mp4", "clip.mp4") and at.is_video("", "movie.mov")
+    started = []
+    monkeypatch.setattr(at, "start_transcription",
+                        lambda conn, aid, **k: (started.append(aid) or {"status": "pending"}))
+    note = client.post("/api/notes/entry", json={"text": "clip"}).json()
+    r = client.post(f"/api/notes/{note['slug']}/attachments",
+                    files={"file": ("clip.mp4", b"\x00\x00\x00\x18ftyp", "video/mp4")})
+    assert r.status_code == 200
+    assert r.json().get("analysis", {}).get("status") == "pending"
+    assert len(started) == 1

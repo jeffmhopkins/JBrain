@@ -40,10 +40,10 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     # assisted-attachment path, whose carrier note has no real content to inform it.
     if analyze and mime.startswith("image/") and llm.has_credentials():
         result["analysis"] = image_analysis.start_analysis(conn, result["id"])
-    # Audio auto-transcribes regardless of the analyze flag: it's local (no API key,
-    # no cost) and doesn't depend on the note body for context, so there's nothing to
-    # opt out of. The transcript lands on the attachment and becomes searchable.
-    elif audio_transcription.is_audio(mime, file.filename):
+    # Audio & video auto-transcribe regardless of the analyze flag: it's local (no API key,
+    # no cost) and doesn't depend on the note body for context, so there's nothing to opt out
+    # of. Video is transcribed via its audio track. The transcript lands on the attachment.
+    elif audio_transcription.is_transcribable(mime, file.filename):
         result["analysis"] = audio_transcription.start_transcription(conn, result["id"])
     return result
 

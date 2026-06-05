@@ -168,6 +168,41 @@ def delete_attachment(conn, att_id: int) -> None:
     conn.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
 
 
+def _att_label(mime: str | None, filename: str | None) -> str:
+    """Human label for an attachment's text in an LLM context block (so the model knows
+    what each block is, and transcripts/PDF text aren't mislabeled as image summaries)."""
+    from . import audio_transcription  # lazy: avoids an import cycle
+    if (mime or "").startswith("image/"):
+        return "AI image summary"
+    if audio_transcription.is_video(mime, filename):
+        return "video transcript"
+    if audio_transcription.is_audio(mime, filename):
+        return "audio transcript"
+    return "attachment text"
+
+
+def context_block_for_note(conn, note_id: int | None, cap: int = 2500, per_att_cap: int = 1500) -> str:
+    """A bounded, labelled text digest of a note's attachments for feeding an analyzer/LLM.
+    Per attachment, prefer the rich enrichment sidecar (image vision summary or audio/video
+    transcript in analysis_md); otherwise fall back to extracted content_text (PDF, text,
+    office). Returns "" if the note has no attachment text. This is what makes the note-analysis
+    sidecar (and the KB synthesis it feeds) aware of PDFs, transcripts, and text files."""
+    if note_id is None:
+        return ""
+    rows = conn.execute(
+        "SELECT filename, mime, analysis_md, content_text FROM attachments WHERE note_id = ? ORDER BY id",
+        (note_id,),
+    ).fetchall()
+    parts: list[str] = []
+    for r in rows:
+        body = (r["analysis_md"] or "").strip() or (r["content_text"] or "").strip()
+        if not body:
+            continue
+        parts.append(f"[{_att_label(r['mime'], r['filename'])} — {r['filename']}]\n{body[:per_att_cap]}")
+    text = "\n\n".join(parts)
+    return text[:cap] if (cap and len(text) > cap) else text
+
+
 def list_for_note(conn, note_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT id, filename, mime, byte_size, created_at, "

@@ -25,8 +25,10 @@ const isAudio = (mime: string, filename = "") => mime.startsWith("audio/") || AU
 const VIDEO_EXTS = /\.(mp4|m4v|webm|mov|ogv|mkv|avi|3gp|mpe?g)$/i;
 const isVideo = (mime: string, filename = "") => mime.startsWith("video/") || VIDEO_EXTS.test(filename);
 const isMedia = (a: { mime: string; filename: string }) => isAudio(a.mime, a.filename) || isVideo(a.mime, a.filename);
-// Image vision summaries and audio transcripts share the analysis_* sidecar slot.
-const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) || isAudio(a.mime, a.filename);
+// Audio AND video are transcribed (video via its audio track); both show transcript UI.
+const isTranscribable = (a: { mime: string; filename: string }) => isMedia(a);
+// Image vision summaries and audio/video transcripts share the analysis_* sidecar slot.
+const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) || isMedia(a);
 // Auto-fetch a media file's bytes for inline playback only when it's small enough that the
 // eager download is cheap; above this, render a "Load player" button so opening a note never
 // pulls a big (now up to 100 MB) video just to show a player.
@@ -136,7 +138,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
     setError("");
     const force = a.analysis_status === "done" || a.analysis_status === "error";
     try {
-      await (isAudio(a.mime, a.filename) ? transcribeAttachment(a.id, force) : analyzeAttachment(a.id, force));
+      await (isMedia(a) ? transcribeAttachment(a.id, force) : analyzeAttachment(a.id, force));
       setItems((xs) => xs.map((x) => (x.id === a.id ? { ...x, analysis_status: "pending" } : x)));
       startPoll(a.id);
     } catch (e: any) { setError(e.message || "Could not start."); }
@@ -200,7 +202,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
-        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline. Audio is transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
+        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline and are transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
       </p>
       {progress && (
         <div className="upload-progress">
@@ -258,23 +260,23 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
           )}
           {isEnrichable(a) && a.analysis_status === "pending" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
-              <span className="muted">{isAudio(a.mime, a.filename) ? "⏳ Transcribing audio…" : "⏳ Analyzing image…"}</span>
+              <span className="muted">{isTranscribable(a) ? "⏳ Transcribing…" : "⏳ Analyzing image…"}</span>
             </div>
           )}
           {isEnrichable(a) && a.analysis_status === "error" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
               <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>
-                {isAudio(a.mime, a.filename) ? "⚠ Transcription failed" : "⚠ AI analysis failed"}
+                {isTranscribable(a) ? "⚠ Transcription failed" : "⚠ AI analysis failed"}
               </span>
             </div>
           )}
           {isEnrichable(a) && a.analysis_md && (
-            // The vision summary (image) or transcript (audio), read-only, collapsed by
+            // The vision summary (image) or transcript (audio/video), read-only, collapsed by
             // default (it can be long) — a sidecar on the attachment, not in the note body.
             // The enrich button (below) refreshes it.
             <details className="att-summary" style={{ marginTop: 6 }}>
               <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
-                {isAudio(a.mime, a.filename) ? "📝 Transcript" : "✦ AI summary"}
+                {isTranscribable(a) ? "📝 Transcript" : "✦ AI summary"}
               </summary>
               <div className="md" style={{ fontSize: 13, marginTop: 4 }}>
                 <ReactMarkdown>{a.analysis_md}</ReactMarkdown>
@@ -284,7 +286,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
           <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => dl(a)}>Download</button>
-            {isAudio(a.mime, a.filename) && a.analysis_status !== "pending" && (
+            {isTranscribable(a) && a.analysis_status !== "pending" && (
               // Local transcription — no LLM key required, so not gated on hasLlm.
               <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => enrich(a)}>
                 {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-transcribe" : "Transcribe"}

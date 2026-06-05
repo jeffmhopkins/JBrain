@@ -201,18 +201,19 @@ def _load_sources(conn, ids: list[int]) -> list[dict]:
         f"WHERE id IN ({q}) AND deleted_at IS NULL ORDER BY created_at",
         ids,
     ).fetchall()
-    from . import image_analysis
+    from . import attachments as att_svc
     out = []
     for r in rows:
         # Pass RAW content (do NOT expand @t[...] tokens): the writer must see the live
         # tokens so it can carry them through into the evergreen article — expanding
         # here would freeze "Jeff is @t[age:1986-03-15]" into a literal that rots.
         content = (r["content_md"] or "")[:2000]
-        # Fold in image summaries (own bounded budget, after the body) — image-derived facts
-        # used to live in the body; keep them feeding synthesis now that they're a sidecar.
-        img = image_analysis.block_for_note(conn, r["id"], cap=1200)
-        if img:
-            content = (content + "\n\n" + img) if content else img
+        # Fold in attachment text (own bounded budget, after the body): image summaries,
+        # audio/video transcripts, and document (PDF/text/office) text — all keep feeding
+        # synthesis now that they live beside the note rather than in its body.
+        att = att_svc.context_block_for_note(conn, r["id"], cap=1200)
+        if att:
+            content = (content + "\n\n" + att) if content else att
         out.append({"title": r["title"], "date": (r["created_at"] or "")[:10], "content": content})
     return out
 

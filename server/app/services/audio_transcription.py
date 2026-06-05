@@ -1,7 +1,8 @@
-"""Local speech-to-text for audio attachments (faster-whisper, no API key).
+"""Local speech-to-text for audio AND video attachments (faster-whisper, no API key).
 
-When an audio file is attached, a background daemon thread transcribes it with a
-local Whisper model — the same "owned, no extra key" ethos as the local
+When an audio or video file is attached, a background daemon thread transcribes it with a
+local Whisper model (video via its audio track, decoded by PyAV) — the same "owned, no
+extra key" ethos as the local
 embeddings. The transcript is stored as a READ-ONLY SIDECAR on the attachment row
 (reusing attachments.analysis_md, the same slot the image vision summary uses — an
 attachment is either an image or audio, never both) and ALSO written to
@@ -25,8 +26,11 @@ from ..db import get_conn
 # sends a vague mime (voice memos commonly arrive as audio/mp4 or octet-stream).
 AUDIO_EXTS = {
     ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac",
-    ".aiff", ".aif", ".amr", ".wma", ".weba", ".3gp", ".caf", ".mka",
+    ".aiff", ".aif", ".amr", ".wma", ".weba", ".caf", ".mka",
 }
+# Video containers — faster-whisper/PyAV decodes the AUDIO track out of these, so a video
+# gets a transcript just like an audio file (silent videos resolve to "no speech detected").
+VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".mov", ".ogv", ".mkv", ".avi", ".3gp", ".mpeg", ".mpg", ".mpe"}
 
 _MAX_TRANSCRIPT_CHARS = 200_000   # parity with the PDF text cap
 
@@ -42,6 +46,17 @@ def is_audio(mime: str | None, filename: str | None) -> bool:
     if (mime or "").startswith("audio/"):
         return True
     return os.path.splitext((filename or "").lower())[1] in AUDIO_EXTS
+
+
+def is_video(mime: str | None, filename: str | None) -> bool:
+    if (mime or "").startswith("video/"):
+        return True
+    return os.path.splitext((filename or "").lower())[1] in VIDEO_EXTS
+
+
+def is_transcribable(mime: str | None, filename: str | None) -> bool:
+    """Audio OR video — both yield a transcript (video via its audio track)."""
+    return is_audio(mime, filename) or is_video(mime, filename)
 
 
 def _get_model():
@@ -107,8 +122,8 @@ def transcribe(att_id: int) -> None:
         if not row or row["content_blob"] is None:
             _mark_error(conn, att_id, "Attachment not found.")
             return
-        if not is_audio(row["mime"], row["filename"]):
-            _mark_error(conn, att_id, "Not an audio file.")
+        if not is_transcribable(row["mime"], row["filename"]):
+            _mark_error(conn, att_id, "Not an audio or video file.")
             return
 
         # Slow part, before any write lock.
@@ -156,8 +171,8 @@ def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
     ).fetchone()
     if not row:
         return {"status": "error", "detail": "Attachment not found."}
-    if not is_audio(row["mime"], row["filename"]):
-        return {"status": "error", "detail": "Not an audio file."}
+    if not is_transcribable(row["mime"], row["filename"]):
+        return {"status": "error", "detail": "Not an audio or video file."}
     if row["analysis_status"] == "pending":
         return {"status": "pending"}
     if row["analysis_status"] == "done" and not force:

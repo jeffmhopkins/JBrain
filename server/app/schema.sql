@@ -413,6 +413,45 @@ CREATE TABLE IF NOT EXISTS research_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_research_sessions_link ON research_sessions(share_link_id);
 
+-- Lab-share links (kind='labs'): an owner shares a SCOPED set of lab trends (+ optional
+-- scoped AI chat). analytes_json is the owner-approved allow-list (THE security boundary);
+-- the link is inert until activated. Kept identical to _LABSHARE_SCHEMA_SQL in db.py.
+CREATE TABLE IF NOT EXISTS labshare_specs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  status            TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active')),
+  analytes_json     TEXT NOT NULL DEFAULT '[]',     -- owner-approved analyte allow-list (THE boundary)
+  window_from       TEXT,                            -- optional date clamp (inclusive)
+  window_to         TEXT,
+  allow_chat        INTEGER NOT NULL DEFAULT 1,      -- 1 = scoped AI chat; 0 = charts only
+  persona_voice     TEXT NOT NULL DEFAULT '',        -- optional tone; can't countermand the rules
+  topics            TEXT NOT NULL DEFAULT '',
+  intro             TEXT NOT NULL DEFAULT '',        -- recipient consent-landing text
+  bind              INTEGER NOT NULL DEFAULT 1,      -- PHI: lock to first device (default ON)
+  single_use        INTEGER NOT NULL DEFAULT 0,
+  max_turns         INTEGER NOT NULL DEFAULT 30,
+  max_total_replies INTEGER NOT NULL DEFAULT 120,
+  reply_count       INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_labshare_specs_link ON labshare_specs(share_link_id);
+
+CREATE TABLE IF NOT EXISTS labshare_sessions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id     INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  secret            TEXT NOT NULL,                   -- httponly cookie tying this browser to the session
+  name              TEXT,
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
+  transcript_json   TEXT NOT NULL DEFAULT '[]',
+  charted_json      TEXT NOT NULL DEFAULT '[]',      -- audit: analytes charted/served to this session
+  denied_count      INTEGER NOT NULL DEFAULT 0,      -- audit: out-of-scope attempts
+  turn_count        INTEGER NOT NULL DEFAULT 0,
+  client_ip         TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  last_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_labshare_sessions_link ON labshare_sessions(share_link_id);
+
 -- Web Push subscriptions (one row per browser/device that opted in). The endpoint
 -- is a push-service capability URL; p256dh/auth are the client's encryption keys.
 CREATE TABLE IF NOT EXISTS push_subscriptions (

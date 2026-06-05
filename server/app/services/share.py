@@ -107,6 +107,21 @@ def create_research_link(conn, note_id: int | None = None, label: str | None = N
     return token, cur.lastrowid
 
 
+def create_labshare_link(conn, label: str | None = None, ttl_days: int = 14,
+                         bind: bool = True) -> tuple[str, int]:
+    """Mint a lab-share link (scope='view', kind='labs'). Backs NO note; it serves an
+    owner-approved scoped set of lab trends (spec attached via labshare.create), inert until
+    activated. PHI hardening: bind defaults ON and the TTL is ALWAYS finite (a medical link is
+    never a permanent bearer credential) — ttl_days<=0 falls back to 14."""
+    token = mint_token()
+    days = int(ttl_days) if ttl_days and int(ttl_days) > 0 else 14
+    cur = conn.execute(
+        "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
+        "VALUES (?, NULL, 'view', 'labs', ?, ?, datetime('now', ?))",
+        (token, label, 1 if bind else 0, f"+{days} days"))
+    return token, cur.lastrowid
+
+
 def reset_bind(conn, link_id: int) -> None:
     """Forget the bound browser (secret + claimer name) so the link can be accepted
     fresh (e.g. it locked to the wrong in-app browser)."""

@@ -19,6 +19,11 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* Kill the browser's own horizontal swipe-to-navigate (overscroll) history gesture. Without
+   this a carousel swipe (Chat ⇄ Advanced) doubles as a browser back/forward and races our
+   nav(), tunnelling out of the PWA — a tap on the bolt icon never triggers it, which is why
+   the swipe behaved differently from the icon. We own back; the browser must not navigate. */
+html, body { overscroll-behavior-x: none; }
 body {
   background: var(--bg); color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

@@ -23,6 +23,46 @@ const haversineM = (la1: number, lo1: number, la2: number, lo2: number) => {
   const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin(dLo / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
 };
+
+// Perpendicular distance (in lat/lon degree-space) from p to segment a–b, with the
+// projection clamped to the segment. Degree-space is fine: the DP tolerance below is
+// also in degrees, so the comparison is internally consistent and cheap. Zero-length
+// segments (a long dwell at one spot) fall back to the point distance — never NaN.
+const perpDist = (p: [number, number], a: [number, number], b: [number, number]) => {
+  const dy = b[0] - a[0], dx = b[1] - a[1];
+  const len2 = dy * dy + dx * dx;
+  let t = len2 ? ((p[0] - a[0]) * dy + (p[1] - a[1]) * dx) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const ey = p[0] - (a[0] + t * dy), ex = p[1] - (a[1] + t * dx);
+  return Math.sqrt(ey * ey + ex * ex);
+};
+// Iterative Douglas–Peucker (explicit stack, so 12k-point trails can't blow the call
+// stack). ALWAYS preserves the first and last vertex, so a simplified trail still ends
+// exactly on the person's newest fix — the head dot never detaches from the line.
+const simplifyDP = (pts: [number, number][], eps: number): [number, number][] => {
+  const n = pts.length;
+  if (n <= 2 || eps <= 0) return pts;
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack: [number, number][] = [[0, n - 1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop()!;
+    let maxD = 0, idx = -1;
+    for (let i = lo + 1; i < hi; i++) {
+      const d = perpDist(pts[i], pts[lo], pts[hi]);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (idx !== -1 && maxD > eps) { keep[idx] = 1; stack.push([lo, idx], [idx, hi]); }
+  }
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[i]);
+  return out;
+};
+// Map the settled zoom to a DP tolerance in degrees (~1.5 px of detail at that zoom).
+// Zoomed out we collapse aggressively; at z≥17 we disable simplification so a close-up
+// inspection sees the raw track. Re-runs whenever the zoom level changes.
+const epsilonForZoom = (zoom: number) => (zoom >= 17 ? 0 : (360 / 256 / 2 ** zoom) * 1.5);
+
 const noteIcon = L.divIcon({ className: "note-pin", html: "📍", iconSize: [22, 22], iconAnchor: [11, 22], popupAnchor: [0, -20] });
 
 // Location trail over a server-proxied map (browser only talks to /api/tiles, so the
@@ -65,6 +105,7 @@ export default function MapPage() {
   // People: colour the trail by who each fix belongs to (matched from its source).
   const [people, setPeople] = useState<Person[]>([]);
   const [hidden, setHidden] = useState<Set<number>>(new Set());   // person ids toggled off
+  const [zoomLevel, setZoomLevel] = useState(2);   // drives the trail's DP tolerance; updated on zoomend
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
 
@@ -132,7 +173,10 @@ export default function MapPage() {
 
   useEffect(() => {
     if (!mapEl.current || map.current) return;
-    const m = L.map(mapEl.current).setView([20, 0], 2);
+    // preferCanvas: render the trail polyline, head dots and geofence circles onto one
+    // shared <canvas> instead of a DOM node per shape — the big win for panning a long
+    // trail. (divIcon note pins stay DOM; leaflet.heat keeps its own canvas.)
+    const m = L.map(mapEl.current, { preferCanvas: true }).setView([20, 0], 2);
     L.tileLayer("/api/tiles/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
     m.on("click", (e: L.LeafletMouseEvent) => {
       // In "add place" mode a tap drops a place; otherwise a tap on empty map shows
@@ -160,6 +204,9 @@ export default function MapPage() {
       });
       L.popup().setLatLng(e.latlng).setContent(div).openOn(m);
     });
+    // Re-simplify the trail when the zoom settles (zoomend fires once per gesture, never
+    // on pan). Round + functional no-op so an unchanged level doesn't churn the overlay.
+    m.on("zoomend", () => { const z = Math.round(m.getZoom()); setZoomLevel((cur) => (cur === z ? cur : z)); });
     map.current = m;
     setTimeout(() => m.invalidateSize(), 200);
     return () => { m.remove(); map.current = null; };
@@ -325,9 +372,15 @@ export default function MapPage() {
         g.last = p;   // chronological order → ends on this person's newest fix
         byPerson.set(key, g);
       }
+      // Thin each person's track to ~1.5 px of detail for the current zoom before drawing.
+      // DP keeps the endpoints, so the line still ends on `last` (the head dot). Heat mode
+      // is left untouched below — it needs every fix for its dwell weighting. Read the live
+      // zoom (zoomLevel only triggers this rebuild) so the first paint after fitBounds is
+      // already at the right detail instead of flashing the zoom-2 (over-collapsed) track.
+      const eps = epsilonForZoom(m.getZoom());
       const group = L.layerGroup();
       for (const { color, pts } of byPerson.values()) {
-        L.polyline(pts, { color, weight: 3, opacity: 0.85 }).addTo(group);
+        L.polyline(eps > 0 ? simplifyDP(pts, eps) : pts, { color, weight: 3, opacity: 0.85 }).addTo(group);
       }
       overlay.current = group.addTo(m);
       // Each person's latest position as a white-ringed dot, labeled with their name.
@@ -355,7 +408,7 @@ export default function MapPage() {
           { radius: 4 + 10 * h[2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
       ).addTo(m);
     }
-  }, [points, mode, curTs, heat, heatLevel, personOf, hidden]);
+  }, [points, mode, curTs, heat, heatLevel, personOf, hidden, zoomLevel]);
 
   useEffect(() => {
     if (!playing || timeline.length < 2) return;

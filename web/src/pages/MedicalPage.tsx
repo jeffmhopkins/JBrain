@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMedicalDests, setMedicalDests } from "../api";
+import { getMedicalDests, setMedicalDests, getMedicalOwner, setMedicalOwner } from "../api";
 import { Icon } from "../components/Icon";
 
 // Manage the Medical-mode destination picklist. Medical-mode captures file under
@@ -9,8 +9,20 @@ export default function MedicalPage() {
   const [names, setNames] = useState<string[]>([]);
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ownerName, setOwnerName] = useState("");
+  const [ownerDob, setOwnerDob] = useState("");
+  const [ownerSaved, setOwnerSaved] = useState(false);
 
   useEffect(() => { getMedicalDests().then((r) => setNames(r.names)).catch(() => {}); }, []);
+  useEffect(() => { getMedicalOwner().then((o) => { setOwnerName(o.name || ""); setOwnerDob(o.dob || ""); }).catch(() => {}); }, []);
+
+  async function saveOwner() {
+    setBusy(true);
+    try { const o = await setMedicalOwner(ownerName.trim(), ownerDob.trim());
+          setOwnerName(o.name || ""); setOwnerDob(o.dob || ""); setOwnerSaved(true); setTimeout(() => setOwnerSaved(false), 2000); }
+    catch (e: any) { alert(e?.message || "Couldn’t save owner identity."); }
+    finally { setBusy(false); }
+  }
 
   async function save(next: string[]) {
     setBusy(true);
@@ -58,6 +70,22 @@ export default function MedicalPage() {
           </li>
         ))}
       </ul>
+
+      <h3 style={{ marginTop: 24, marginBottom: 4 }}>Whose labs are these?</h3>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        Set the patient these records belong to. When you import a lab PDF or photo, JBrain reads
+        the document’s patient and <strong>warns you in red if the date of birth doesn’t match</strong> —
+        so a family member’s or a stranger’s chart can’t be merged into your trends by accident.
+        Optional; leave blank to skip the check.
+      </p>
+      <div className="people-add" style={{ gap: 8, flexWrap: "wrap" }}>
+        <input placeholder="Name (as printed on results)" value={ownerName}
+               onChange={(e) => setOwnerName(e.target.value)} style={{ flex: "2 1 180px" }} />
+        <input placeholder="DOB — YYYY-MM-DD" value={ownerDob}
+               onChange={(e) => setOwnerDob(e.target.value)} style={{ flex: "1 1 130px" }} />
+        <button className="primary" disabled={busy} onClick={saveOwner}>
+          {ownerSaved ? "Saved ✓" : "Save"}</button>
+      </div>
     </div>
   );
 }

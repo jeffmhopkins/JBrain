@@ -656,9 +656,11 @@ CREATE TABLE IF NOT EXISTS lab_results (
   ref_high       REAL,
   ref_text       TEXT,                   -- raw reference range ("3.5-5.0", "Negative")
   flag           TEXT,                   -- 'H'|'L'|'HH'|'LL'|'A'|'N'|NULL (lab's own abnormal flag)
-  collected_at   TEXT,                   -- specimen collection datetime (UTC) — the trend x-axis
+  collected_at   TEXT,                   -- specimen collection DATE (ISO) — the trend x-axis
+  collected_time TEXT,                   -- HH:MM when the document shows it (intra-day ordering; P4)
   resulted_at    TEXT,                   -- when the result was reported
   identity_key   TEXT,
+  source         TEXT,                   -- how extracted: lab_trend_export|lab_report|lab_image|NULL=legacy (P3)
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lab_results_identity ON lab_results(identity_key) WHERE identity_key IS NOT NULL;

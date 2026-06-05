@@ -25,6 +25,8 @@ _MONTHS = {m: i for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
 
 _DATE_RE = re.compile(r"\b([A-Z][a-z]{2}) (\d{1,2}), (\d{4})\b")
+# A per-table caption line ('… (Table 2 of 7)'): its index digit must not be read as a value.
+_TABLE_CAPTION_RE = re.compile(r"\(Table \d+ of \d+\)")
 # A value cell: an optional inequality, then a number (the unit is a separate word/source).
 # Up to 6 integer digits so raw counts (e.g. 2942 cells/uL) parse, not just thousands.
 _VALUE_RE = re.compile(r"^([<>]=?)?(\d{1,6}(?:\.\d+)?)$")
@@ -70,15 +72,86 @@ def analyte_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", n).strip("_")
 
 
+def _iso(year: int, mon: int, day: int) -> str | None:
+    """ISO date string, or None for an impossible calendar date. Uses datetime so day-for-month
+    (and leap years) are validated — '2025-02-30' must never reach the DB, where date() would
+    silently normalize it to a DIFFERENT day than raw-string ORDER BY sees."""
+    import datetime
+    try:
+        return datetime.date(int(year), int(mon), int(day)).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_date(text: str) -> str | None:
-    """'Jul 3, 2022' -> '2022-07-03' (ISO date), or None."""
+    """'Jul 3, 2022' -> '2022-07-03' (ISO date), or None. The textual month is unambiguous."""
     m = _DATE_RE.search(text or "")
     if not m:
         return None
     mon = _MONTHS.get(m.group(1))
     if not mon:
         return None
-    return f"{int(m.group(3)):04d}-{mon:02d}-{int(m.group(2)):02d}"
+    return _iso(int(m.group(3)), mon, int(m.group(2)))
+
+
+def mdy_to_iso(a: int, b: int, year: int) -> str | None:
+    """Resolve a numeric 'a/b/year' date to ISO, never trusting MM/DD blindly. If the first
+    field is >12 it can only be a day (DD/MM); if the second is >12 it can only be a day
+    (MM/DD); otherwise default to US MM/DD. Returns None for impossible dates (validated as a
+    real calendar date) rather than emitting a malformed string the DB will silently shift."""
+    if a > 12 and b <= 12:           # DD/MM
+        day, mon = a, b
+    else:                            # MM/DD, or ambiguous (both <=12) -> assume US MM/DD
+        mon, day = a, b
+    return _iso(year, mon, day)
+
+
+def normalize_dob(raw: str) -> str | None:
+    """Normalize a human-typed or printed DOB ('Jul 4, 1990', '07/04/1990', '1990-07-04') to a
+    validated ISO date, or None. Used to compare a document's patient DOB against the configured
+    owner DOB on a common footing (no false 'different patient' from mere format drift)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", raw)
+    if m:
+        return _iso(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", raw)
+    if m:
+        return mdy_to_iso(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return parse_date(raw)
+
+
+_DOB_RE = re.compile(r"(?:Date of Birth|DOB)\s*:?\s*"
+                     r"([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4}|\d{1,2}/\d{1,2}/\d{4})")
+
+
+def parse_identity(text: str) -> dict:
+    """Best-effort extraction of the document's patient identity (name + DOB), so the reviewer
+    can catch a wrong-patient upload before it merges into the single owner's trends (P1). Pure
+    and tolerant: returns {} when nothing recognizable is found — never guesses."""
+    out: dict = {}
+    m = _DOB_RE.search(text or "")
+    if m:
+        iso = normalize_dob(m.group(1))
+        if iso:                          # only a VALID ISO DOB is kept — never a raw/garbage
+            out["dob"] = iso             # string that would force a false mismatch downstream
+        # Name: text BEFORE 'Date of Birth'/'DOB' on the same line (CBC), else the non-empty
+        # line just above (Quest 'LAST,FIRST' on its own line). Kept short and letter-bearing.
+        line = next((ln for ln in (text or "").splitlines() if m.group(0) in ln), "")
+        before = line[:line.find(m.group(0))].strip(" \t:-")
+        cand = before
+        if not cand:
+            lines = [ln.strip() for ln in (text or "").splitlines()]
+            try:
+                idx = next(i for i, ln in enumerate(lines) if m.group(0) in ln)
+                cand = next((lines[j] for j in range(idx - 1, -1, -1) if lines[j]), "")
+            except StopIteration:
+                cand = ""
+        cand = cand.strip()
+        if cand and re.search(r"[A-Za-z]", cand) and len(cand) <= 60:
+            out["name"] = cand
+    return out
 
 
 def parse_range(text: str) -> tuple[float | None, float | None, str | None, str | None]:
@@ -118,6 +191,36 @@ def _value(tok: str) -> tuple[str, float | None] | None:
     return tok, float(m.group(2))
 
 
+def is_faithful(value_text: str, text: str) -> bool:
+    """Word-boundary faithfulness (F1): the value must appear in the document as its OWN token,
+    not as a substring of a longer number ('12' must not match inside '120' or '12.5'). Bounded
+    by non-digit/non-decimal on both sides; a leading inequality ('<0.01') is fine. For an OCR
+    corpus we also accept a numerically-equal form (OCR '15' vs model '15.0', or '1,234' vs
+    '1234') so a trailing-zero/separator difference doesn't drop a real value — without ever
+    accepting a DIFFERENT number."""
+    if not text:
+        return True                                   # no corpus to check against
+    if not value_text:
+        return False
+    if re.search(r"(?<![\d.])" + re.escape(value_text) + r"(?![\d.])", text):
+        return True
+    # Numeric-equality fallback: same value written differently (trailing .0, thousands commas).
+    m = re.match(r"^[<>]=?(\d.*)$", value_text) or re.match(r"^(\d.*)$", value_text)
+    if not m:
+        return False
+    try:
+        target = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return False
+    for tok in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
+        try:
+            if float(tok.replace(",", "")) == target:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _lines(words: list[dict]) -> list[list[dict]]:
     """Group words into visual lines by rounded baseline, each sorted left-to-right."""
     rows: dict[int, list[dict]] = {}
@@ -146,6 +249,11 @@ def _parse_page(words: list[dict]) -> list[dict]:
 
     for ln in lines:
         text = " ".join(w["text"] for w in ln)
+        # Each table is introduced by a caption like 'Jan 6, 2025 - Feb 3, 2026 (Table 2 of 7)'.
+        # Skip it entirely: its index digit ('Table 2 of 7') sits in the first date column's
+        # x-band and would otherwise bind to the topmost analyte (Auto WBC) as a bogus value.
+        if _TABLE_CAPTION_RE.search(text):
+            continue
         # A new table header resets the column anchors/dates (and the name cursor) below it.
         if ln and ln[0]["text"] == "Component" and _DATE_RE.search(text):
             anchors = [w["x0"] for w in ln[1:] if w["text"][:3] in _MONTHS]
@@ -183,15 +291,18 @@ def _parse_page(words: list[dict]) -> list[dict]:
             v = _value(w["text"])
             if not v:
                 continue
+            dd = sorted(abs(w["x0"] - a) for a in anchors)
             j = min(range(len(anchors)), key=lambda k: abs(w["x0"] - anchors[k]))
-            if abs(w["x0"] - anchors[j]) > 60:                # outside any column band
+            if dd[0] > 60:                                    # outside any column band
                 continue
+            date_margin = (dd[1] - dd[0]) if len(dd) > 1 else 999.0  # how clear the column win was
             unit = None
             if idx + 1 < len(ln) and _is_unit(ln[idx + 1]["text"]):
                 unit = ln[idx + 1]["text"]
                 if unit == "/100" and idx + 2 < len(ln):
                     unit = "/100 " + ln[idx + 2]["text"]
-            cells.append({"top": w["top"], "date": dates[j], "vt": v[0], "vn": v[1], "unit": unit})
+            cells.append({"top": w["top"], "date": dates[j], "vt": v[0], "vn": v[1], "unit": unit,
+                          "date_margin": date_margin})
 
     for e in entries:
         e["low"], e["high"], e["unit"], e["ref_text"] = parse_range(e["range_text"])
@@ -212,57 +323,99 @@ def _parse_page(words: list[dict]) -> list[dict]:
         if not cand:
             continue
         e = min(cand, key=lambda en: abs(en["top"] - c["top"]))
+        dists = sorted(abs(en["top"] - c["top"]) for en in cand)
+        name_margin = (dists[1] - dists[0]) if len(dists) > 1 else 999.0  # clarity of the name win
         out.append({
             "test_name": e["name"], "analyte_key": analyte_key(e["name"]),
             "value_text": c["vt"], "value_num": c["vn"], "unit": c["unit"] or e["unit"],
             "ref_low": e["low"], "ref_high": e["high"], "ref_text": e["ref_text"],
-            "collected_at": c["date"],
+            "collected_at": c["date"], "collected_time": None,   # trend columns are date-only (P4)
+            "_name_margin": name_margin, "_date_margin": c["date_margin"],
         })
     return out
 
 
-_COLLECTED_RE = re.compile(r"Collected Date:\s*(\d{1,2})/(\d{1,2})/(\d{4})")
+_COLLECTED_RE = re.compile(r"Collected(?:\s+Date)?:\s*(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
 _DRANGE_RE = re.compile(r"(?:Desired|Reference)\s+Range:\s*(.*)$")
 _SPAN_RE = re.compile(r"([\d.]+)\s*-\s*([\d.]+)\s*(\S.*)?$")
+_ONESIDED_RE = re.compile(r"(?:Less than\s*)?([<>])=?\s*([\d.]+)\s*(\S.*)?$")
 
 
-def _parse_single_report(pages: list[list[dict]], collected: str | None) -> list[dict]:
-    """Single-encounter report (e.g. Quest/PWNHealth): a vertical list where each analyte is
-    a 'Name … value' line followed by a 'Desired Range: LOW-HIGH UNIT' line, all sharing one
-    collection date. Name+value are split by x (value is the far-right column)."""
+def _report_range(s: str) -> tuple[float | None, float | None, str | None, str | None]:
+    """Parse a single-report range string into (low, high, unit, raw). Handles a two-sided
+    'LOW - HIGH UNIT' and a one-sided '<0.4 BEU' / '>5 x' (the specialty-test form)."""
+    s = (s or "").strip()
+    m = _SPAN_RE.match(s)
+    if m:
+        return (float(m.group(1)), float(m.group(2)),
+                (m.group(3).strip() if m.group(3) else None), s or None)
+    m = _ONESIDED_RE.match(s)
+    if m:
+        val = float(m.group(2))
+        unit = m.group(3).strip() if m.group(3) else None
+        return (None, val, unit, s) if m.group(1) == "<" else (val, None, unit, s)
+    return None, None, None, (s or None)
+
+
+def _parse_single_report(pages: list[list[dict]], collected: str | None,
+                         collected_time: str | None = None) -> list[dict]:
+    """Single-encounter report (Quest/PWNHealth + specialty single-analyte reports). Each
+    analyte is a 'Name … value [flag]' row plus a 'Desired/Reference Range:' line; the range
+    sits just BELOW its value row (standard CBC) or ABOVE it (specialty). We anchor on the
+    report's own value-column header ('Result' / 'Value') — its x gives the value column and
+    its y separates the patient/address METADATA above from the data rows below, so an address
+    zip can't masquerade as a value. Each range binds to the nearest data row ABOVE it (the
+    standard case), falling back BELOW (specialty). One collection date for the whole report."""
     out: list[dict] = []
     for words in pages:
-        names: list[tuple[float, str]] = []                  # (y, analyte name)
-        values: list[tuple[float, str, float | None]] = []   # (y, value_text, value_num)
-        for ln in _lines(words):
+        lines = _lines(words)
+        # The value column + the metadata/data divider, from the report's own header.
+        valcol, header_y = 430.0, -1e9
+        for ln in lines:
+            hdr = [w for w in ln if w["text"] in ("Result", "Value")]
+            if hdr and len(ln) <= 4:
+                valcol, header_y = max(w["x0"] for w in hdr), ln[0]["top"]
+                break
+        names: list[tuple[float, str]] = []                     # (y, name)
+        values: list[tuple[float, str, float | None]] = []      # (y, value_text, value_num) in the value column
+        ranges: list[tuple[float, str]] = []                    # (y, range_text)
+        for ln in lines:
+            if ln[0]["top"] <= header_y:                        # above the header = metadata/address
+                continue
             text = " ".join(w["text"] for w in ln)
-            if _DRANGE_RE.search(text):
-                # The reference range anchors an analyte: name = nearest name line above,
-                # value = the value token nearest that name (robust to ±1px line splits).
-                m = _DRANGE_RE.search(text)
-                y = ln[0]["top"]
-                above = [n for n in names if n[0] < y]
-                if not above:
-                    continue
-                ny, nm = above[-1]
+            rm = _DRANGE_RE.search(text)
+            if rm:
+                ranges.append((ln[0]["top"], rm.group(1).strip()))
+                continue
+            if ":" in text:                                     # skip any footer/metadata label line
+                continue
+            # name = alphabetic tokens LEFT of the value column (so a trailing LOW/HIGH flag,
+            # printed further right, is excluded). Name and value can render on slightly
+            # different y-lines (a ±1px split), so they're collected SEPARATELY and matched by
+            # proximity below — never required on the same line.
+            name = " ".join(w["text"] for w in ln if w["x0"] < valcol - 40 and re.search(r"[A-Za-z]", w["text"]))
+            if name:
+                names.append((ln[0]["top"], name))
+            for w in ln:
+                if w["x0"] >= valcol - 40 and _value(w["text"]):
+                    values.append((w["top"], *_value(w["text"])))
+        for ry, rtext in ranges:
+            # Bind to the nearest name that HAS a colocated value, preferring above (standard:
+            # range sits below its value) then below (specialty: range above its value).
+            above = sorted((n for n in names if n[0] < ry), key=lambda n: -n[0])
+            below = sorted((n for n in names if n[0] >= ry), key=lambda n: n[0])
+            for ny, nm in [*above, *below]:
                 vs = [v for v in values if abs(v[0] - ny) < 14]
-                vt, vn = (vs[0][1], vs[0][2]) if vs else (None, None)
-                sm = _SPAN_RE.match(m.group(1).strip())
+                if not vs:
+                    continue
+                lo, hi, unit, rawr = _report_range(rtext)
                 out.append({
                     "test_name": nm, "analyte_key": analyte_key(nm),
-                    "value_text": vt, "value_num": vn,
-                    "unit": (sm.group(3).strip() if sm and sm.group(3) else None),
-                    "ref_low": float(sm.group(1)) if sm else None,
-                    "ref_high": float(sm.group(2)) if sm else None,
-                    "ref_text": m.group(1).strip() or None, "collected_at": collected,
+                    "value_text": vs[0][1], "value_num": vs[0][2], "unit": unit,
+                    "ref_low": lo, "ref_high": hi, "ref_text": rawr,
+                    "collected_at": collected, "collected_time": collected_time,
                 })
-                continue
-            nm = " ".join(w["text"] for w in ln if w["x0"] <= 430 and re.search(r"[A-Za-z]", w["text"]))
-            if nm and "Desired" not in nm and "Reference" not in nm:
-                names.append((ln[0]["top"], nm))
-            for w in ln:
-                if w["x0"] > 430 and _value(w["text"]):
-                    values.append((w["top"], *_value(w["text"])))
+                break
     return out
 
 
@@ -270,8 +423,13 @@ def _backfill(results: list[dict]) -> None:
     """Make each analyte's unit/range consistent across its rows. Units don't vary within an
     analyte, so adopt the modal unit everywhere (fixes per-table wrap quirks like 'U/'). For
     the reference range, only FILL nulls (the range can legitimately change over time, so a
-    row that parsed its own range keeps it)."""
-    import collections
+    row that parsed its own range keeps it).
+
+    Magnitude guard (F5): never stamp the modal unit onto a row whose value is orders of
+    magnitude off the analyte's median — a raw count (7200) wearing a 'thou/cumm' unit would
+    co-plot as a unit-consistent 1000x spike. Such rows keep their own unit and are tagged
+    `_magnitude_outlier` so the confidence pass can flag them instead of silently merging."""
+    import collections, statistics
     by_key: dict[str, list[dict]] = collections.defaultdict(list)
     for r in results:
         by_key[r["analyte_key"]].append(r)
@@ -284,9 +442,60 @@ def _backfill(results: list[dict]) -> None:
             for r in rows:
                 if r[col] is None:
                     r[col] = modal
-        if modal_unit:
-            for r in rows:
+        nums = [r["value_num"] for r in rows if r["value_num"] not in (None, 0)]
+        median = statistics.median(nums) if nums else None
+        for r in rows:
+            v = r["value_num"]
+            # >500x separates a 10^3 unit error (e.g. 7200 among 7.x 'thou/cumm' rows) from real
+            # biological spread (even platelets 5 -> 900 is only ~180x); only THAT gets guarded.
+            outlier = (median is not None and v not in (None, 0)
+                       and (v > median * 500 or v < median / 500))
+            r["_magnitude_outlier"] = bool(outlier)
+            if modal_unit and not outlier:
                 r["unit"] = modal_unit
+
+
+def _score_confidence(results: list[dict]) -> None:
+    """Replace the old hard-coded confidence=1.0 with a PER-ROW trust score (F3). A value can
+    satisfy the verbatim faithfulness check and still be wrong — bound to the wrong analyte or
+    date column, or off by an order of magnitude. We fold the geometry bind margins captured
+    during parsing together with a range-plausibility check into {high, medium, low} + reasons,
+    so the human reviewer's attention lands on the rows that need it. Pure heuristic; never
+    drops a row, only flags it. Margins are in PDF points (lines ~14pt, columns ~50-80px)."""
+    rank = {"high": 2, "medium": 1, "low": 0}
+    for r in results:
+        conf, reasons = "high", []
+
+        def demote(level: str, why: str):
+            nonlocal conf
+            if rank[level] < rank[conf]:
+                conf = level
+            reasons.append(why)
+
+        # Geometry bind margins are the RELIABLE signals — they catch the parser's actual
+        # failure modes (value bound to the wrong analyte / wrong date column). We deliberately
+        # do NOT demote on reference-range plausibility: a sick patient legitimately produces
+        # order-of-magnitude-abnormal labs (platelets of 5, nRBC of 60), so range-based flagging
+        # would bury exactly the critical values a reviewer most needs to trust. That kind of
+        # misread (a dropped decimal) is an OCR-path risk, caught there by the cross-read.
+        nm = r.pop("_name_margin", None)      # how much nearer the chosen analyte was than runner-up
+        dm = r.pop("_date_margin", None)      # how much nearer the chosen date column was than runner-up
+        if nm is not None and nm < 4:
+            demote("low", "ambiguous analyte bind")
+        elif nm is not None and nm < 10:
+            demote("medium", "near analyte bind")
+        if dm is not None and dm < 6:
+            demote("low", "ambiguous date column")
+        elif dm is not None and dm < 12:
+            demote("medium", "near date column")
+        # The magnitude guard fires only on the unmistakable 10^3 unit-corruption signature
+        # (>500x off the analyte median), well clear of biological spread — see _backfill.
+        if r.pop("_magnitude_outlier", False):
+            demote("low", "likely unit/scale error (far from analyte median)")
+        if r.get("collected_at") is None:
+            demote("low", "no collection date")
+        r["confidence"] = conf
+        r["confidence_reasons"] = reasons
 
 
 def parse_lab_pdf(pdf_bytes: bytes) -> dict:
@@ -306,6 +515,11 @@ def parse_lab_pdf(pdf_bytes: bytes) -> dict:
                 page_words.append(page.extract_words())
             except Exception:  # noqa: BLE001 — a bad page shouldn't sink the whole parse
                 page_words.append([])
+    # The faithfulness corpus is the VISIBLE words only (P2): extract_text can include hidden /
+    # white-on-white text, which an attacker could use to smuggle a value past a verbatim check.
+    # extract_words returns laid-out (visible) tokens, so a value matched against THIS cannot be
+    # satisfied by invisible injected text.
+    visible_text = " ".join(w["text"] for words in page_words for w in words)
 
     is_trend = "Result Trends" in full_text or "Normal Range:" in full_text
     is_report = ("Desired Range:" in full_text or "Reference Range:" in full_text)
@@ -316,10 +530,12 @@ def parse_lab_pdf(pdf_bytes: bytes) -> dict:
         doc_type = "lab_trend_export"
     elif is_report:
         cm = _COLLECTED_RE.search(full_text)
-        collected = f"{int(cm.group(3)):04d}-{int(cm.group(1)):02d}-{int(cm.group(2)):02d}" if cm else None
-        results = _parse_single_report(page_words, collected)
+        collected = mdy_to_iso(int(cm.group(1)), int(cm.group(2)), int(cm.group(3))) if cm else None
+        ctime = f"{int(cm.group(4)):02d}:{cm.group(5)}" if (cm and cm.group(4)) else None
+        results = _parse_single_report(page_words, collected, ctime)
         doc_type = "lab_report"
     _backfill(results)
+    _score_confidence(results)
     # De-dupe within the document (the same date column can repeat across overlapping tables).
     seen: set = set()
     uniq: list[dict] = []
@@ -332,4 +548,5 @@ def parse_lab_pdf(pdf_bytes: bytes) -> dict:
     if not uniq:
         doc_type = "unknown"
     confidence = 1.0 if doc_type != "unknown" else 0.0
-    return {"doc_type": doc_type, "confidence": confidence, "results": uniq, "pages": pages}
+    return {"doc_type": doc_type, "confidence": confidence, "results": uniq, "pages": pages,
+            "identity": parse_identity(full_text), "visible_text": visible_text}

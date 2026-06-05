@@ -15,3 +15,5 @@ pdfplumber==0.11.4   # geometry-aware PDF parsing (lab-result tables: map values
 Pillow==10.4.0   # fastembed 0.5.1 requires pillow <11.0.0,>=10.3.0
 pywebpush==2.0.0   # Web Push (VAPID signing + RFC8291 payload encryption); pulls py-vapid, http-ece
 # Test-only deps (pytest, httpx) live in requirements-dev.txt — not in the image.
+# OPTIONAL image/screenshot/scanned-PDF lab intake deps (pytesseract, pypdfium2 + the system
+# tesseract-ocr binary) live in requirements-vision.txt — the text-PDF path needs none of them.

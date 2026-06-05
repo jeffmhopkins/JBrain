@@ -36,6 +36,24 @@ export function fmtTsShort(raw: string, appTz?: string): string {
   });
 }
 
+// Compact elapsed duration for live "running for…" / "last output…" indicators:
+// "3s", "1m 05s", "2h 09m". Takes milliseconds; clamps negatives to 0.
+export function fmtElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m ${String(total % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+// Parse a stored/ISO UTC timestamp (with or without a zone suffix) to epoch ms,
+// or NaN if unparseable. Shared by the live elapsed indicators.
+export function parseUtcMs(raw?: string | null): number {
+  if (!raw) return NaN;
+  const hasZone = /[zZ]|[+-]\d\d:?\d\d$/.test(raw);
+  return new Date(raw.replace(" ", "T") + (hasZone ? "" : "Z")).getTime();
+}
+
 const TOKEN_RE = /@t\[(age|until|since):([^\]]+)\]/g;
 const UNITS: [string, number][] = [
   ["year", 31536000], ["month", 2592000], ["week", 604800],

@@ -146,6 +146,44 @@ def test_medical_destinations_settings(client):
     assert client.get("/api/medical/destinations").json()["names"] == []
 
 
+def test_extract_labs_dedup_and_faithfulness(client, monkeypatch):
+    # A lab PDF attached to a medical note: parsed rows are upserted into lab_results, with a
+    # faithfulness guard (a value not present in the document text is dropped) and idempotent
+    # re-runs (dedup by identity_key). The parser is stubbed so the test needs no real PDF.
+    from app.db import get_conn
+    from app.services import lab_parse
+    note = client.post("/api/notes/entry", json={"text": "CBC trend", "dest": "Labs"}).json()
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    text = "WBC 6.20 thou/cumm  Platelets 250 thou/cumm"   # note: no '1234' anywhere
+    conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (nid, "cbc.pdf", "application/pdf", text, b"%PDF-1.4 fake", 12, "sha-cbc"))
+    conn.commit()
+    rows = [
+        {"test_name": "WBC", "analyte_key": "wbc", "value_text": "6.20", "value_num": 6.2,
+         "unit": "thou/cumm", "ref_low": 3.9, "ref_high": 11.2, "ref_text": "3.9-11.2", "collected_at": "2025-01-05"},
+        {"test_name": "Platelets", "analyte_key": "platelets", "value_text": "250", "value_num": 250.0,
+         "unit": "thou/cumm", "ref_low": 140.0, "ref_high": 440.0, "ref_text": None, "collected_at": "2025-01-05"},
+        {"test_name": "Ghost", "analyte_key": "ghost", "value_text": "1234", "value_num": 1234.0,
+         "unit": None, "ref_low": None, "ref_high": None, "ref_text": None, "collected_at": "2025-01-05"},
+    ]
+    monkeypatch.setattr(lab_parse, "parse_lab_pdf",
+                        lambda b: {"doc_type": "lab_trend_export", "confidence": 1.0, "results": rows, "pages": 1})
+
+    r = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
+    assert r["inserted"] == 2 and r["skipped"] == 1          # 'Ghost 1234' isn't in the document
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results WHERE note_id = ?", (nid,)).fetchone()["c"] == 2
+    # Re-running upserts in place (identity_key dedup) — no duplicate rows.
+    r2 = client.post(f"/api/medical/notes/{note['slug']}/extract-labs").json()
+    assert r2["inserted"] == 0 and r2["updated"] == 2
+    assert conn.execute("SELECT COUNT(*) c FROM lab_results").fetchone()["c"] == 2
+    # The trend view exposes the typed values for retrieval.
+    assert conn.execute("SELECT value_num FROM v_lab_trend WHERE analyte='wbc'").fetchone()["value_num"] == 6.2
+    assert conn.execute("SELECT COUNT(*) c FROM review_items WHERE title LIKE 'Imported%'").fetchone()["c"] >= 1
+
+
 def test_entry_via_person_location_key(client):
     # A family phone holding only its scoped per-person location key can drop a watch
     # dictation: filed as a dated note, attributed to that person, even though that key

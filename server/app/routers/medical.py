@@ -7,11 +7,12 @@ so the list and the on-disk folders always agree.
 """
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn, get_meta, set_meta
+from ..services import lab_ingest
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/medical", tags=["medical"], dependencies=[CurrentUser])
@@ -58,3 +59,16 @@ def set_destinations(body: DestsIn):
     set_meta(conn, _META_KEY, json.dumps(out))
     conn.commit()
     return {"names": out}
+
+
+@router.post("/notes/{slug}/extract-labs")
+def extract_labs(slug: str):
+    """Parse any lab-result PDF(s) attached to this note and upsert the values into
+    lab_results (deterministic, no LLM; dedup + faithfulness-guarded). Auto-applies and
+    posts a Review card. Idempotent — re-running upserts in place."""
+    conn = get_conn()
+    note = conn.execute(
+        "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return lab_ingest.ingest_note(conn, note["id"])

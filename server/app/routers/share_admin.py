@@ -140,7 +140,23 @@ def list_shares():
         d["url"] = share_svc.share_url(d["token"])
         return d
 
+    # Lab-share links (the PHI surface) — so the owner can list, copy, audit, and REVOKE them.
+    lab_links = conn.execute(
+        "SELECT sl.id, sl.token, sl.label, sl.created_at, sl.expires_at, sl.bind, sl.bound_at, "
+        "       ls.allow_chat, ls.analytes_json, ls.reply_count, ls.max_total_replies, "
+        "       (SELECT COUNT(*) FROM labshare_sessions s WHERE s.share_link_id=sl.id) AS sessions "
+        "FROM share_links sl JOIN labshare_specs ls ON ls.share_link_id=sl.id "
+        "WHERE sl.kind='labs' AND sl.status='active' ORDER BY sl.created_at DESC"
+    ).fetchall()
+
+    def _ll(r):
+        d = dict(r)
+        d["analyte_count"] = len(json.loads(d.pop("analytes_json") or "[]"))
+        d["url"] = share_svc.share_url(d["token"])
+        return d
+
     return {
+        "lab_links": [_ll(r) for r in lab_links],
         "research_links": [_rl(r) for r in research_links],
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
         "proposals": [{**dict(r),

@@ -105,8 +105,8 @@ export default function Chat() {
   const geo = useGeo();
   const navigate = useNavigate();
   // Mode persists within a session (so navigating away from chat and back keeps it)
-  // but a fresh PWA launch starts a new session → empty → defaults to Entry capture.
-  const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem("jbrain_mode") as Mode) || "entry");
+  // but a fresh PWA launch starts a new session → empty → defaults to Research mode.
+  const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem("jbrain_mode") as Mode) || "research");
   const [menuOpen, setMenuOpen] = useState(false);
   // Medical-mode destination picklist (notes/medical/<dest>/…), lazily loaded the first
   // time Medical mode is used; the chosen destination persists per device.

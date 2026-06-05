@@ -211,7 +211,6 @@ export default function Chat() {
   // only the AI's permission changes per turn. One-time migration adopts the old
   // per-mode conversation (assisted preferred) into jbrain_conv_chat.
   useEffect(() => {
-    if (mode === "entry") return;
     if (convId) return;                       // already in a thread → keep it across toggles
     let id = localStorage.getItem(CHAT_CONV_KEY);
     if (!id) {
@@ -222,8 +221,10 @@ export default function Chat() {
         localStorage.removeItem("jbrain_conv_research");
       }
     }
+    // Load the cached thread in EVERY mode (so entry shows history too), but only spin up a
+    // brand-new conversation when in a chat mode — entry alone shouldn't create empty threads.
     if (id) { setConvId(Number(id)); loadMessages(Number(id)); }
-    else { newConversation(); }
+    else if (mode !== "entry") { newConversation(); }
   }, [mode, convId]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
@@ -238,7 +239,7 @@ export default function Chat() {
     e?.preventDefault();
     const text = input.trim();
     if ((!text && !pendingFile) || streaming || busy || !online) return;
-    if (mode !== "entry" && text === "/clear") { setInput(""); newConversation(); return; }
+    if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     const coords = await geo.getCoords();   // one-shot GPS fix, only now (if enabled)
     const file = pendingFile;
     setInput(""); setPendingFile(null);

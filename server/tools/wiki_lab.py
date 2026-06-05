@@ -32,7 +32,8 @@ Examples
   python server/tools/wiki_lab.py reset        # wipe the DB and start over
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys
+import argparse, json, os, re, subprocess, sys, threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]            # …/JBrain
@@ -126,6 +127,40 @@ def cmd_ingest(args):
     print(f"ingested {len(todays)} raw notes for {day}")
 
 
+def cmd_analyze(args):
+    """Pre-compute per-note analysis CONCURRENTLY. analyze() is hash-guarded, so a
+    later wiki_build/wiki_update finds nothing pending and skips its (serial) analysis
+    loop — the single biggest speedup, since these calls are independent. Each thread
+    uses its own thread-local connection (WAL serialises the brief writes)."""
+    conn = _connect(args.db)
+    _bridge(args.model_default, args.model_cheap)
+    import app.db as db
+    from app.services import note_analysis
+    ids = note_analysis.pending_ids(conn, limit=100000, force=args.force)
+    if not ids:
+        print("nothing to analyze")
+        return
+    done, errs, lock = [0], [], threading.Lock()
+
+    def work(nid):
+        c = db.get_conn()                              # per-thread connection
+        try:
+            note_analysis.analyze(c, nid, force=args.force)
+            c.commit()
+        except Exception as e:                          # noqa: BLE001
+            with lock: errs.append((nid, str(e)))
+            return
+        with lock:
+            done[0] += 1
+            print(f"   analyzed {done[0]}/{len(ids)}", end="\r", flush=True)
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        list(ex.map(work, ids))
+    print(f"\nanalyzed {done[0]}/{len(ids)} notes" + (f"; {len(errs)} failed" if errs else ""))
+    for nid, e in errs[:5]:
+        print(f"   note {nid}: {e}")
+
+
 def cmd_run(args):
     conn = _connect(args.db)
     _bridge(args.model_default, args.model_cheap)
@@ -134,7 +169,10 @@ def cmd_run(args):
     if not recipe:
         sys.exit(f"unknown action '{args.action}'. Available: {', '.join(sorted(pipeline.action_types()))}")
     cfg = json.loads(args.config) if args.config else {}
-    msg = pipeline.run_pipeline(conn, recipe, cfg, 0, None, on_step=lambda s: print("   ·", s, flush=True))
+    # workflow_id=None: there's no workflows row in the lab, and review_items.workflow_id
+    # is a nullable FK — passing a dummy id (e.g. 0) trips a FOREIGN KEY constraint when
+    # a recipe posts a review card.
+    msg = pipeline.run_pipeline(conn, recipe, cfg, None, None, on_step=lambda s: print("   ·", s, flush=True))
     print(f"[{args.action}] -> {msg}")
 
 
@@ -175,6 +213,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("days").set_defaults(func=cmd_days)
     p = sub.add_parser("ingest"); p.add_argument("day"); p.set_defaults(func=cmd_ingest)
+    p = sub.add_parser("analyze", help="pre-compute note analysis concurrently (speeds up build/update)")
+    p.add_argument("--workers", type=int, default=6); p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_analyze)
     p = sub.add_parser("run"); p.add_argument("action"); p.add_argument("config", nargs="?"); p.set_defaults(func=cmd_run)
     p = sub.add_parser("dump"); p.add_argument("--full", action="store_true"); p.set_defaults(func=cmd_dump)
     sub.add_parser("entities").set_defaults(func=cmd_entities)

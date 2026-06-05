@@ -6434,12 +6434,25 @@ def test_video_frame_sampling_is_configurable_by_percent_or_interval():
     assert len(capped) == 8 and capped[0] == 0.0 and capped[-1] == 1.0
 
 
-def test_video_frame_max_zero_disables_frame_vision(monkeypatch):
+def test_video_frame_max_zero_disables_frame_vision(client):
     # VIDEO_FRAME_MAX=0 → no frames extracted → no vision call (transcript only). Returns []
-    # before any decode, so it costs nothing even on junk input.
-    monkeypatch.setenv("VIDEO_FRAME_MAX", "0")
-    from app.config import get_settings
-    get_settings.cache_clear()
+    # before any decode, so it costs nothing even on junk input. Set via the runtime meta store.
+    from app.db import get_conn, set_meta
     from app.services import audio_transcription as at
+    set_meta(get_conn(), "video_frame_max", "0")
+    get_conn().commit()
+    assert at.video_frame_max() == 0
     assert at._extract_frames(b"not a real video") == []
-    get_settings.cache_clear()   # don't leak the env into other tests
+
+
+def test_media_settings_endpoint_roundtrip_and_runtime_read(client):
+    # The GUI settings card reads/writes these; the backend reads them at runtime (meta over env).
+    from app.services import audio_transcription as at
+    cur = client.get("/api/system/settings/media").json()
+    assert "audio_model" in cur and "tiny" in cur["audio_model_options"]
+    saved = client.put("/api/system/settings/media",
+                       json={"audio_model": "small", "video_frame_interval": "15s", "video_frame_max": 4}).json()
+    assert saved["audio_model"] == "small" and saved["video_frame_interval"] == "15s" and saved["video_frame_max"] == 4
+    # Consuming code sees the override immediately (no restart, no env change).
+    assert at.audio_model() == "small"
+    assert at.video_frame_interval() == "15s" and at.video_frame_max() == 4

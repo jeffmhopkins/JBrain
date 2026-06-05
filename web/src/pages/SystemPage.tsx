@@ -6,6 +6,7 @@ import { useGeo } from "../hooks";
 import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
 import OwnerSetting from "../components/OwnerSetting";
+import MediaSettings from "../components/MediaSettings";
 
 // "System" card: version + server update (reusing the same endpoints the
 // header UpdateBanner reads), the opt-in location toggle (which previously had
@@ -197,6 +198,8 @@ export default function SystemPage() {
       <OwnerSetting />
 
       <ModelPicker />
+
+      <MediaSettings />
 
       {stats && (
         <div className="card">

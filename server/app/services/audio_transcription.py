@@ -20,7 +20,7 @@ import io
 import os
 import threading
 
-from ..db import get_conn
+from ..db import get_conn, get_meta
 from . import llm
 
 # Container/codec extensions we route to the transcriber even when the browser
@@ -36,7 +36,37 @@ VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".mov", ".ogv", ".mkv", ".avi", ".3gp", "
 _MAX_TRANSCRIPT_CHARS = 200_000   # parity with the PDF text cap
 
 _model = None
+_model_key: tuple[str, str] | None = None   # (model, compute_type) the cached model was loaded with
 _model_lock = threading.Lock()
+
+
+# --- Runtime-editable settings (DB `meta` override → env/config default) --------------------
+# These are read fresh each call so a change in the Settings GUI takes effect with no restart.
+
+def audio_model() -> str:
+    from ..config import get_settings
+    return get_meta("audio_model") or get_settings().audio_model
+
+
+def audio_compute_type() -> str:
+    from ..config import get_settings
+    return get_meta("audio_compute_type") or get_settings().audio_compute_type
+
+
+def video_frame_interval() -> str:
+    from ..config import get_settings
+    return get_meta("video_frame_interval") or get_settings().video_frame_interval
+
+
+def video_frame_max() -> int:
+    from ..config import get_settings
+    v = get_meta("video_frame_max")
+    if v is None or v == "":
+        return get_settings().video_frame_max
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return get_settings().video_frame_max
 
 
 class TranscriptionUnavailable(Exception):
@@ -61,12 +91,13 @@ def is_transcribable(mime: str | None, filename: str | None) -> bool:
 
 
 def _get_model():
-    """Load the Whisper model once and cache it for the process lifetime (mirrors
-    the embeddings model). Downloads from Hugging Face on first use."""
-    global _model
-    if _model is None:
+    """Load (and cache) the Whisper model. Reloads if the configured model/compute_type has
+    changed (e.g. edited in the Settings GUI). Downloads from Hugging Face on first use."""
+    global _model, _model_key
+    want = (audio_model(), audio_compute_type())
+    if _model is None or _model_key != want:
         with _model_lock:
-            if _model is None:
+            if _model is None or _model_key != want:
                 try:
                     from faster_whisper import WhisperModel
                 except ImportError as exc:  # the runtime image installs it; dev/test may not
@@ -74,9 +105,8 @@ def _get_model():
                         "Audio transcription needs faster-whisper "
                         "(pip install -r requirements-audio.txt)."
                     ) from exc
-                from ..config import get_settings
-                s = get_settings()
-                _model = WhisperModel(s.audio_model, device="cpu", compute_type=s.audio_compute_type)
+                _model = WhisperModel(want[0], device="cpu", compute_type=want[1])
+                _model_key = want
     return _model
 
 
@@ -125,15 +155,10 @@ def _extract_frames(raw: bytes, max_edge: int = 1568) -> list[bytes]:
         import av
     except ImportError:
         return []
-    from ..config import get_settings
-    s = get_settings()
-    try:
-        max_frames = int(s.video_frame_max)
-    except (TypeError, ValueError):
-        max_frames = 8
+    max_frames = video_frame_max()
     if max_frames <= 0:
         return []   # VIDEO_FRAME_MAX=0 → frame vision off entirely (transcript only, no LLM call)
-    kind, value = _parse_frame_spec(s.video_frame_interval)
+    kind, value = _parse_frame_spec(video_frame_interval())
     out: list[bytes] = []
     try:
         with av.open(io.BytesIO(raw)) as c:

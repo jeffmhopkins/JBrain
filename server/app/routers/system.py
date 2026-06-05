@@ -327,3 +327,47 @@ async def restore(file: UploadFile = File(...)):
     wf_svc.ingest_repo_workflows(get_conn())
     pipeline.ingest_repo_action_defs(get_conn())
     return {"ok": True, "message": "Database restored."}
+
+
+# --- Media & transcription settings (DB `meta` overrides; read at runtime, no restart) ------
+from pydantic import BaseModel as _BaseModel   # noqa: E402
+
+
+class MediaSettingsIn(_BaseModel):
+    audio_model: str | None = None
+    audio_compute_type: str | None = None
+    video_frame_interval: str | None = None
+    video_frame_max: int | None = None
+
+
+def _media_settings() -> dict:
+    from ..services import audio_transcription as at
+    return {
+        "audio_model": at.audio_model(),
+        "audio_compute_type": at.audio_compute_type(),
+        "video_frame_interval": at.video_frame_interval(),
+        "video_frame_max": at.video_frame_max(),
+        "audio_model_options": ["tiny", "base", "small", "medium", "large-v3"],
+        "compute_type_options": ["int8", "int8_float16", "float16", "float32"],
+    }
+
+
+@router.get("/settings/media")
+def get_media_settings():
+    return _media_settings()
+
+
+@router.put("/settings/media")
+def set_media_settings(body: MediaSettingsIn):
+    from ..db import get_conn, set_meta
+    conn = get_conn()
+    if body.audio_model is not None:
+        set_meta(conn, "audio_model", body.audio_model.strip())
+    if body.audio_compute_type is not None:
+        set_meta(conn, "audio_compute_type", body.audio_compute_type.strip())
+    if body.video_frame_interval is not None:
+        set_meta(conn, "video_frame_interval", body.video_frame_interval.strip())
+    if body.video_frame_max is not None:
+        set_meta(conn, "video_frame_max", str(max(0, int(body.video_frame_max))))
+    conn.commit()
+    return _media_settings()

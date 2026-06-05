@@ -249,7 +249,10 @@ cd server && pytest
 All config is environment-driven (`.env`, see `.env.example`): `LLM_PROVIDER`,
 `LLM_API_KEY`, `LLM_MODEL` (the legacy `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`
 still work), `BRAIN_NAME`, `JBRAIN_ACCESS_KEY`, `EMBEDDING_MODEL`,
-`JBRAIN_DOMAIN`, `DB_PATH`.
+`JBRAIN_DOMAIN`, `DB_PATH`. The transcription model and video frame-sampling
+(`AUDIO_MODEL`, `AUDIO_COMPUTE_TYPE`, `VIDEO_FRAME_INTERVAL`, `VIDEO_FRAME_MAX`)
+are also editable in-app under **System → Media & transcription** (stored in the
+DB and read at runtime, so changes apply with no restart).
 
 ## Roadmap
 

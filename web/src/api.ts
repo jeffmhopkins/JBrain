@@ -374,6 +374,15 @@ export interface Owner { id: number | null; name: string; display: string; is_se
 export const getOwner = () => get<Owner>("/api/people/owner");
 export const setOwner = (name: string) => put<Owner>("/api/people/owner", { name });
 
+export interface MediaSettings {
+  audio_model: string; audio_compute_type: string;
+  video_frame_interval: string; video_frame_max: number;
+  audio_model_options: string[]; compute_type_options: string[];
+}
+export const getMediaSettings = () => get<MediaSettings>("/api/system/settings/media");
+export const setMediaSettings = (s: Partial<MediaSettings>) =>
+  put<MediaSettings>("/api/system/settings/media", s);
+
 // Notes that carry a capture coordinate — the Map's note pins.
 export interface LocatedNote { slug: string; title: string; lat: number; lon: number; location_label: string | null; kind: string; created_at: string; }
 export const getLocatedNotes = (since?: string, until?: string) => {

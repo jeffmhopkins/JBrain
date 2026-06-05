@@ -4,6 +4,7 @@ import { useAuth } from "../App";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
 import { useOnline } from "../hooks";
+import { reviewHref } from "../util";
 import { Icon } from "./Icon";
 
 interface ReviewItem { id: number; title: string; message: string; link_slug: string | null; created_at: string; }
@@ -13,6 +14,7 @@ interface ReviewItem { id: number; title: string; message: string; link_slug: st
 // (same treatment as the active bolt) while the menu is open.
 function ReviewBell() {
   const { vapidPublicKey } = useAuth();
+  const nav = useNavigate();
   const [count, setCount] = useState(0);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<ReviewItem[]>([]);
@@ -76,25 +78,28 @@ function ReviewBell() {
 
   async function toggle() {
     if (open) { setOpen(false); return; }
-    // First time the user engages with alerts, ask for notification permission so
-    // the icon badge + push can work (required on installed iOS PWAs). Then
-    // subscribe to push and flip off the fast poll. User-gesture only.
-    if ("Notification" in window && Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch { /* ignore */ }
-    }
-    if (Notification.permission === "granted") enablePush(vapidPublicKey).then(setPushReady);
     let list: ReviewItem[] = [];
     try { list = await get("/api/reviews"); } catch { /* ignore */ }
     setItems(list);
     setCount(list.length);
-    if (list.length) setOpen(true);   // nothing to review → don't show the popup
+    // Only when there's something to review do we ask for notification permission /
+    // subscribe to push (required for the icon badge + push on installed iOS PWAs).
+    // An empty bell tap just opens the menu (to reach history) — no prompt. User-gesture only.
+    if (list.length && "Notification" in window) {
+      if (Notification.permission === "default") {
+        try { await Notification.requestPermission(); } catch { /* ignore */ }
+      }
+      if (Notification.permission === "granted") enablePush(vapidPublicKey).then(setPushReady);
+    }
+    setOpen(true);   // always open — even when empty, so Notification History is reachable
   }
   async function dismiss(id: number) {
     await post(`/api/reviews/${id}/dismiss`);
     const remaining = items.filter((x) => x.id !== id);
     setItems(remaining);
     setCount(remaining.length);
-    if (remaining.length === 0) setOpen(false);   // all cleared → hide the popup
+    // Stay open after the last dismiss — the menu collapses to the history link +
+    // empty state so the just-cleared item is still one tap away under history.
   }
 
   return (
@@ -105,13 +110,19 @@ function ReviewBell() {
       </button>
       {open && (
         <div className="review-menu">
-          <div className="review-menu-head">Review</div>
-          {items.map((r) => (
+          {/* Always at the top: a doorway to the 24h archive of dismissed alerts. */}
+          <button className="review-history-link" onClick={() => { setOpen(false); nav("/notifications"); }}>
+            <span>Notification History</span>
+            <Icon name="chevron" size={16} />
+          </button>
+          {items.length === 0 ? (
+            <div className="review-empty muted">No new notifications.</div>
+          ) : items.map((r) => (
             <div className="review-item" key={r.id}>
               <strong style={{ fontSize: 14 }}>{r.title}</strong>
               {r.message && <div className="muted" style={{ fontSize: 12, margin: "4px 0", whiteSpace: "pre-wrap" }}>{r.message}</div>}
               <div className="row" style={{ gap: 6, marginTop: 4 }}>
-                {r.link_slug && <Link className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} to={r.link_slug.startsWith("/") ? r.link_slug : r.link_slug === "__shares__" ? "/shares" : `/note/${r.link_slug}`} onClick={() => setOpen(false)}>Open</Link>}
+                {r.link_slug && <Link className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} to={reviewHref(r.link_slug)} onClick={() => setOpen(false)}>Open</Link>}
                 <button className="ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => dismiss(r.id)}>Dismiss</button>
               </div>
             </div>
@@ -138,6 +149,7 @@ const TOOL_TITLES: Record<string, string> = {
   "/flows": "Triggers",
   "/sql": "Data",
   "/system": "System",
+  "/notifications": "Notification History",
 };
 
 function toolTitle(pathname: string): string {

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { get, post } from "../api";
 import { useAuth } from "../App";
 import { fmtTs } from "../time";
+import { reviewHref } from "../util";
 
 interface ReviewItem {
   id: number;
@@ -42,7 +43,7 @@ export default function ReviewPage() {
           </div>
           {r.message && <p style={{ margin: "6px 0", whiteSpace: "pre-wrap" }}>{r.message}</p>}
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            {r.link_slug && <Link className="primary" style={{ padding: "8px 14px", borderRadius: 8 }} to={`/note/${r.link_slug}`}>Open entry</Link>}
+            {r.link_slug && <Link className="primary" style={{ padding: "8px 14px", borderRadius: 8 }} to={reviewHref(r.link_slug)}>Open entry</Link>}
             <button className="ghost" onClick={() => dismiss(r.id)}>Dismiss</button>
           </div>
         </div>

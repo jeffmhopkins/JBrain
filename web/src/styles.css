@@ -133,7 +133,15 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   max-height: 60vh; overflow-y: auto; z-index: 60;
   background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 12px; padding: 6px;
 }
-.review-menu-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); padding: 6px 8px 4px; }
+/* Top-of-menu doorway to the dismissed-notifications archive. */
+.review-history-link {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  background: transparent; border: none; border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0;
+  color: var(--text); font-size: 13px; font-weight: 600; padding: 8px; cursor: pointer; text-align: left;
+}
+.review-history-link:hover { background: var(--bg-elev); }
+.review-history-link .icon { color: var(--text-dim); }
+.review-empty { padding: 12px 8px; font-size: 13px; }
 .review-item { padding: 8px; border-radius: 8px; }
 .review-item + .review-item { border-top: 1px solid var(--border); }
 .utop .back { background: transparent; border: none; color: var(--text-dim); padding: 6px; cursor: pointer; display: inline-flex; border-radius: 8px; }

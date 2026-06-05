@@ -281,6 +281,8 @@ CREATE TABLE IF NOT EXISTS review_items (
   dismissed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_review_status ON review_items(status);
+-- Covers the Notification History query (dismissed items in a recent time window).
+CREATE INDEX IF NOT EXISTS idx_review_dismissed ON review_items(status, dismissed_at);
 
 -- Audit log of workflow executions.
 CREATE TABLE IF NOT EXISTS workflow_runs (

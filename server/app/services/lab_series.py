@@ -242,3 +242,70 @@ def series_from_results(results: list[dict], analyte: str, unit: str | None = No
         "value_range": {"min": min(nums), "max": max(nums)} if nums else None,
         "encounters": [], "other_units": sorted(other),
     }
+
+
+# --- Analytic reductions over a series (for the lab_stat / lab_value_at tools) -----------
+# All of these run over series().points, so they inherit the chart's exact handling of units
+# (equivalent-unit grouping), censored '<0.01' rows, flag-authoritative status, and the
+# soft-deleted-note filter — and every result is a WHOLE ROW, so a value always carries its
+# own date/status/ref-range (the fix for "value with no date").
+_OUT = ("high", "low", "abnormal")
+
+
+def _slim(p: dict | None) -> dict | None:
+    if p is None:
+        return None
+    return {"value": p["v"], "value_text": p["vtext"], "unit": p["unit"], "collected_at": p["t"],
+            "status": p["status"], "ref_low": p["ref_low"], "ref_high": p["ref_high"],
+            "ref_text": p["ref_text"], "flag": p["flag"], "note_slug": p["note_slug"],
+            "note_title": p["note_title"]}
+
+
+def _window(points: list[dict], dfrom: str | None, dto: str | None) -> list[dict]:
+    return [p for p in points if (not dfrom or p["t"] >= dfrom) and (not dto or p["t"] <= dto)]
+
+
+def stat(conn, analyte: str, unit: str | None = None, dfrom: str | None = None, dto: str | None = None) -> dict:
+    """Scalar summary for ONE analyte over a window: min/max/latest/first/mean/count and the
+    out-of-range count — each extreme is the WHOLE row (value + its date + status), numeric
+    extremes exclude censored values (which are counted separately)."""
+    s = series(conn, analyte, unit)
+    pts = _window(s["points"], dfrom, dto)
+    numeric = [p for p in pts if p["v"] is not None]
+    mn = min(numeric, key=lambda p: p["v"]) if numeric else None   # ties -> earliest (pts are date-asc)
+    mx = max(numeric, key=lambda p: p["v"]) if numeric else None
+    ties_min = [p["t"] for p in numeric if mn and p["v"] == mn["v"]]
+    ties_max = [p["t"] for p in numeric if mx and p["v"] == mx["v"]]
+    return {
+        "analyte": analyte, "test_name": s["test_name"], "unit": s["unit"],
+        "window": {"from": dfrom, "to": dto} if (dfrom or dto) else None,
+        "count": len(pts), "numeric_count": len(numeric),
+        "censored_count": sum(1 for p in pts if p["censored"]),
+        "out_of_range_count": sum(1 for p in pts if p["status"] in _OUT),
+        "min": _slim(mn), "min_dates": ties_min, "max": _slim(mx), "max_dates": ties_max,
+        "latest": _slim(pts[-1]) if pts else None, "first": _slim(pts[0]) if pts else None,
+        "mean": round(sum(p["v"] for p in numeric) / len(numeric), 2) if numeric else None,
+        "other_units": s["other_units"], "domain": s["domain"],
+    }
+
+
+def point_at(conn, analyte: str, which: str, *, unit: str | None = None, threshold: float | None = None,
+             direction: str = "above", dfrom: str | None = None, dto: str | None = None) -> dict | None:
+    """A single point selected from the series: latest | first | first_out_of_range |
+    last_out_of_range | first_cross | last_cross (with threshold/direction). Returns the whole
+    row (value + date + status) or None."""
+    pts = _window(series(conn, analyte, unit)["points"], dfrom, dto)
+    if not pts:
+        return None
+    if which == "latest":
+        return _slim(pts[-1])
+    if which == "first":
+        return _slim(pts[0])
+    if which in ("first_out_of_range", "last_out_of_range"):
+        oor = [p for p in pts if p["status"] in _OUT]
+        return _slim((oor[0] if which.startswith("first") else oor[-1]) if oor else None)
+    if which in ("first_cross", "last_cross") and threshold is not None:
+        hit = [p for p in pts if p["v"] is not None and
+               (p["v"] >= threshold if direction == "above" else p["v"] <= threshold)]
+        return _slim((hit[0] if which.startswith("first") else hit[-1]) if hit else None)
+    return None

@@ -69,6 +69,8 @@ const TOOL_LABELS: Record<string, string> = {
   drug_reference: "Looking up a medication…",
   list_abnormal_labs: "Finding out-of-range labs…",
   show_lab_chart: "Charting lab results…",
+  lab_stat: "Checking lab values…",
+  lab_value_at: "Checking lab values…",
   // Lists & tags
   read_list: "Reading a list…",
   add_list_item: "Updating a list…",

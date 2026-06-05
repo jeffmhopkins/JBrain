@@ -227,6 +227,36 @@ def test_lab_chart_tools(client):
     assert architect._run_tool(conn, None, "log_entry", {"text": "x"}, "research")[1] is None
 
 
+def test_lab_stat_and_value_at(client):
+    # The scalar tools: lowest/highest/latest with the value AND its date in one call (the
+    # "what date was the lowest?" fix), free-text analyte resolution, and "when out of range".
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?",
+                       (client.post("/api/notes/entry", json={"text": "p"}).json()["slug"],)).fetchone()["id"]
+    for d, vt, vn, f in [("2025-01-01", "250", 250.0, None), ("2026-02-01", "5", 5.0, "L"),
+                         ("2026-02-02", "9", 9.0, "L"), ("2026-03-01", "300", 300.0, None)]:
+        conn.execute("INSERT INTO lab_results (note_id, test_name, analyte_key, value_text, value_num, "
+                     "unit, ref_low, ref_high, flag, collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (nid, "Platelets", "platelets", vt, vn, "thou/cumm", 140.0, 440.0, f, d))
+    conn.commit()
+
+    # lab_stat: free text resolves; the extreme carries its own date + status (no "no date").
+    txt, ev = architect._run_tool(conn, None, "lab_stat", {"analyte": "platelets"}, "research")
+    assert ev is None
+    assert "lowest 5 thou/cumm on 2026-02-01" in txt and "2 of 4 out of range" in txt
+    # A window scopes it.
+    txt2 = architect._run_tool(conn, None, "lab_stat", {"analyte": "platelets", "from": "2026-01-01"}, "research")[0]
+    assert "3 results" in txt2 and "highest 300" in txt2
+    # lab_value_at: when did it first go out of range.
+    txt3 = architect._run_tool(conn, None, "lab_value_at",
+                               {"analyte": "platelets", "which": "first_out_of_range"}, "research")[0]
+    assert "first out of range = 5 thou/cumm on 2026-02-01" in txt3
+    # No-match is reported as not-on-file, never "normal".
+    assert "No lab named 'thyroid'" in architect._run_tool(conn, None, "lab_stat", {"analyte": "thyroid"}, "research")[0]
+
+
 def test_lab_staging_lifecycle(client, monkeypatch):
     # Staged ingestion: extract STAGES (nothing in lab_results yet, faithfulness-filtered);
     # approve commits; revoke removes but keeps the stage; re-analyze re-stages and clears a

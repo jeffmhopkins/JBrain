@@ -1,4 +1,4 @@
-# Map Performance Plan — Large Point Sets (gauntlet-hardened v2)
+# Map Performance Plan — Large Point Sets (gauntlet-hardened v3)
 
 **Goal:** keep the location map (`web/src/pages/MapPage.tsx`) responsive over large trails
 (12k–20k points, multi-person), targeting the user's actual symptom — **lag while zooming/panning
@@ -16,6 +16,13 @@ people, realistically low-tens-of-thousands of points — **not** a public servi
 > chronological" assumption is false; (b) slicing a DP-simplified array by a raw index is an
 > index-aliasing bug; (c) neighbor-based culling drops viewport-spanning segments. Added the LIVE-poll
 > O(N) memo-churn fix. Replaced the unsupported "5–50×" claim with measured ratios.
+>
+> **v3 (4th reviewer — feasibility/sequencing).** Made 1B self-contained via a required vertex cap so
+> close-up smoothness no longer secretly depends on Phase 2 (was an internal contradiction). Rewrote
+> Verification: seeding **must** use direct DB insert (the ingest dedup rule silently rejects dense
+> synthetic clusters); added the `npm run build` typecheck gate (no web test runner exists); invariant
+> checks are manual-with-instrumentation. Added the 2A ref/stale-closure contract (prevents
+> leaks/double-adds) and per-sub-item commit granularity (2A must be atomic).
 
 Scope: `web/src/pages/MapPage.tsx`, `web/src/api.ts` (+ a one-line `locations.py` cap fix).
 
@@ -85,10 +92,16 @@ Ordered so the two lowest-risk, highest-leverage items land first.
   *simplified* array. Without this, slicing the simplified array by a raw index is an aliasing bug.
 - Change `epsilonForZoom` (`:64`): at z≥17 use a **tiny non-zero epsilon** instead of `0`, so even a
   close-up dense track is lightly thinned and Leaflet iterates far fewer vertices.
-- Optional hard guardrail: cap drawn vertices per person to a fixed budget (e.g. ~3k) via stride if a
-  simplified track still exceeds it — bounds raster cost at any zoom.
-- **Acceptance:** DP runs once per settled zoom (dev counter); z18 on a dense cluster is smooth in the
-  Phase 0 profile.
+- **Required in-phase guarantee (not optional):** cap drawn vertices per person to a fixed budget
+  (e.g. ~3k) via stride when a simplified track still exceeds it. This is what makes 1B
+  **self-contained** — it bounds raster cost at any zoom **without** depending on viewport culling
+  (which is the deferred 2C). The original v1 wording leaned on Phase 2 culling for z18 smoothness,
+  an internal contradiction (gauntlet #4); the vertex cap removes that dependency.
+- **Acceptance (honest, Phase-1-boundary):** DP runs once per settled zoom (`console.count('DP')` in
+  the memo body stays flat while scrubbing at fixed zoom); the per-tick re-walk of all N is gone; z18
+  on a dense cluster draws ≤ the vertex cap. **Full** zero-culling close-up perfection on a 15k dense
+  cluster is explicitly a 2C concern — 1B's gate is "bounded, no longer re-walked per tick", measured
+  against the Phase 0 baseline.
 
 ### 1C. Kill LIVE-poll O(N) memo churn  *(should — constant idle hitch)*
 - Cache per-point parsed timestamps by `id` (stable across the new-array-ref append) so `timeline`,
@@ -122,6 +135,20 @@ Ordered so the two lowest-risk, highest-leverage items land first.
   geometry. Benefit is **JS churn only** — Leaflet still repaints the whole canvas layer on geometry
   change, so this helps playback, not pan/zoom. Carries the most refactor risk (stale closures, ref
   lifecycle, double-adds) → gate on a Phase 0 playback measurement, don't front-load.
+- **Required ref contract (gauntlet #3 — prevents leaks/double-adds):**
+  (a) one ref holding `Map<personId, { line, head, heatHandle }>`;
+  (b) the geometry effect **removes and clears every handle in that map at the top of each run** before
+  rebuilding (preserving today's teardown safety at `:357-358`), and its cleanup does the same — so a
+  trail↔heat `mode` switch can't leak the prior mode's layer, and a person moved into `hidden` has its
+  handle removed **and deleted** from the map;
+  (c) the cursor effect reads `points`/`pointTs`/`hidden`/`mode` via **refs** (extend the existing
+  `pointsRef` pattern at `:87,154`) so its only reactive dep is `curTs` and it never closes over a
+  stale `pointTs` after a live-poll append;
+  (d) live append changes `points`, so the geometry effect's `[points]` dep covers the rebuild, and the
+  ref reads must refresh in that same render.
+- **Atomicity:** 2A must land as a **single commit** — both effects plus every migrated `parseTs` call
+  site together. A partial split (e.g. trail migrated, heat mode still re-parsing at `:396`) leaves the
+  component in an inconsistent half-migrated state.
 
 ### 2B. Heat-input binning  *(do if heat mode is used on large ranges)*
 - Bin the heat array into a fixed-decimal grid by zoom, summing dwell per cell — collapses ~20k
@@ -150,19 +177,37 @@ Ordered so the two lowest-risk, highest-leverage items land first.
 ---
 
 ## Verification
-- **Seeding (dedup-aware):** ingest enforces keep-only-if ≥30 m moved OR ≥60 min elapsed
-  (`locations.py:25-26,79,144`) and `/bulk` caps 5000/request (`:114`). Naive clustered synthetic
-  points will be **rejected** — generate fixes that are spaced >30 m apart (a moving track) or
-  >60 min apart, batched ≤5000, to actually land ~15k–20k rows. *(Pending the feasibility reviewer —
-  confirm whether a direct DB seed is preferable to bypass dedup.)*
-- **Run/typecheck:** confirm the web app builds (`tsc`/Vite) and lints after each phase — check
-  `web/package.json` scripts.
+
+- **Seeding — direct DB insert is REQUIRED (gauntlet #1).** Ingest enforces keep-only-if ≥30 m moved
+  OR ≥60 min elapsed per source (`locations.py:25-26,79,144`) and `/bulk` caps 5000/request and
+  truncates silently (`:114`, returns `{stored, received}`). A naive generator scattering tight dwell
+  clusters has **nearly every point dropped** — the exact dense-cluster dataset Phase 1B/2B need to
+  stress **cannot** be produced via `/bulk`. Demo mode returns `[]` for locations (`web/src/demo.ts`),
+  so it's not a seed source either. **Use a direct `INSERT INTO locations (lat, lon, accuracy_m,
+  recorded_at, source, person_id) VALUES (...)` loop** against the dev SQLite (mirror the column list
+  at `locations.py:147-150`); set `person_id`/`source` for ≥2 people so per-person colouring and
+  `presentPeople` are exercised. (Only if testing the *ingest* path itself: generate a genuinely moving
+  track ≥40 m between consecutive same-source fixes, chronological chunks ≤5000, assert
+  `stored == received`.)
+- **Run the app (from README:232-236):** `cd server && uvicorn app.main:app --reload`, then
+  `cd web && npm install && npm run dev`.
+- **Build / typecheck gate (gauntlet #6):** there is **no** `test`/`lint`/`typecheck` script in
+  `web/package.json` (only `dev`/`build`/`preview`) and **no web test runner**. So after each web PR
+  run `cd web && npm run build` (which runs `tsc -b && vite build` — the de-facto typecheck) and
+  confirm zero errors before manual testing. The new generic refs (`Map<personId, L.Polyline>`) and
+  `setLatLngs`/`setLatLng` calls make a type error a live risk.
+- **Invariant checks are MANUAL with instrumentation (gauntlet #2)** — no automated harness exists.
+  Per invariant, add a temporary probe: 1A → grep the diff for `parseTs` inside `curTs`-keyed
+  effects/memos; 1B → `console.count('DP')` in the memo, scrub at fixed zoom, confirm flat; 2A →
+  `console.count('removeLayer')`, confirm it does not advance while playing. (Standing up
+  vitest + @testing-library + a Leaflet mock is a separate, out-of-scope task.)
 - **Manual gates:** Phase 0 profiles re-run after each phase (smooth zoom on dense cluster; pan at z16
   no flicker; playback at "All"); people chips; heat dwell hotspots unchanged vs. baseline; deep-link
   `?focus`/`?place`; live-poll append moves head dot.
-- **Commit granularity:** one PR per sub-item (1A, 1B, 1C, 1D independently shippable) so the intricate
-  component is never left half-migrated.
+- **Commit granularity (gauntlet #5):** **1A, 1B, 1C, 1D each their own commit/PR** (pure, individually
+  revertable). **2A must be a single atomic commit** — it cannot be split across PRs. Run the build
+  gate + manual probes before each merge so the hot component is never left half-migrated.
 
 ## Open questions
 - Confirm Leaflet `L.Canvas` repaint behavior empirically if 2A is pursued (bounds its payoff).
-- Tune z≥17 epsilon and the optional vertex cap against the Phase 0 dataset.
+- Tune z≥17 epsilon and the vertex cap against the Phase 0 dataset.

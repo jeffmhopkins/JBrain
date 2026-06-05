@@ -3446,6 +3446,43 @@ def test_location_bulk_ingest_dedups_in_order(client):
     assert get_conn().execute("SELECT DISTINCT source FROM locations").fetchone()["source"] == "Mom"
 
 
+def test_locations_list_truncation_header(client):
+    """When the window exceeds `limit`, the list keeps the MOST RECENT N and flags the
+    truncation in a header (so the trail viewer can say 'showing most recent N' instead
+    of silently hiding the oldest fixes). A within-limit window reports not-truncated."""
+    from app.db import get_conn
+    conn = get_conn()
+    # Seed 5 fixes directly (bypassing the ingest dedup, which would drop close points).
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?, ?, ?, ?)",
+            (40.0 + i, -74.0, f"2026-06-{i + 1:02d} 10:00:00", "Mom"),
+        )
+    conn.commit()
+
+    # limit below the row count → truncated, keeps the most recent `limit`, reversed ASC.
+    r = client.get("/api/locations", params={"limit": 3})
+    assert r.headers["X-Locations-Truncated"] == "1"
+    assert r.headers["X-Locations-Count"] == "3"
+    rows = r.json()
+    assert len(rows) == 3
+    assert rows[0]["recorded_at"] <= rows[-1]["recorded_at"]           # chronological
+    assert rows[-1]["recorded_at"].startswith("2026-06-05")            # newest retained
+    assert rows[0]["recorded_at"].startswith("2026-06-03")             # oldest 2 dropped
+
+    # limit EXACTLY at the row count → not truncated (guards the len > cap boundary).
+    r1 = client.get("/api/locations", params={"limit": 5})
+    assert r1.headers["X-Locations-Truncated"] == "0"
+    assert r1.headers["X-Locations-Count"] == "5"
+    assert len(r1.json()) == 5
+
+    # limit above the row count → not truncated, all rows returned.
+    r2 = client.get("/api/locations", params={"limit": 100})
+    assert r2.headers["X-Locations-Truncated"] == "0"
+    assert r2.headers["X-Locations-Count"] == "5"
+    assert len(r2.json()) == 5
+
+
 def test_tile_proxy(client, monkeypatch):
     """The tile proxy validates coords, serves PNG bytes, and caches (no auth — it's
     public OSM imagery loaded via <img>, which can't carry the bearer token)."""

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -36,12 +36,17 @@ const perpDist = (p: [number, number], a: [number, number], b: [number, number])
   const ey = p[0] - (a[0] + t * dy), ex = p[1] - (a[1] + t * dx);
   return Math.sqrt(ey * ey + ex * ex);
 };
+// A track as parallel arrays (cache-friendlier than [lat,lon] tuples for big trails)
+// plus each vertex's epoch-ms timestamp, so a scrub cut can slice the SIMPLIFIED track
+// by time without re-deriving which raw fix each kept vertex came from.
+type Track = { lat: number[]; lon: number[]; ts: number[] };
 // Iterative Douglas–Peucker (explicit stack, so 12k-point trails can't blow the call
 // stack). ALWAYS preserves the first and last vertex, so a simplified trail still ends
-// exactly on the person's newest fix — the head dot never detaches from the line.
-const simplifyDP = (pts: [number, number][], eps: number): [number, number][] => {
-  const n = pts.length;
-  if (n <= 2 || eps <= 0) return pts;
+// exactly on the person's newest fix — the head dot never detaches from the line. Carries
+// the timestamp of every kept vertex through, parallel to the kept coordinates.
+const simplifyDP = (t: Track, eps: number): Track => {
+  const n = t.lat.length;
+  if (n <= 2 || eps <= 0) return t;
   const keep = new Uint8Array(n);
   keep[0] = keep[n - 1] = 1;
   const stack: [number, number][] = [[0, n - 1]];
@@ -49,19 +54,34 @@ const simplifyDP = (pts: [number, number][], eps: number): [number, number][] =>
     const [lo, hi] = stack.pop()!;
     let maxD = 0, idx = -1;
     for (let i = lo + 1; i < hi; i++) {
-      const d = perpDist(pts[i], pts[lo], pts[hi]);
+      const d = perpDist([t.lat[i], t.lon[i]], [t.lat[lo], t.lon[lo]], [t.lat[hi], t.lon[hi]]);
       if (d > maxD) { maxD = d; idx = i; }
     }
     if (idx !== -1 && maxD > eps) { keep[idx] = 1; stack.push([lo, idx], [idx, hi]); }
   }
-  const out: [number, number][] = [];
-  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[i]);
+  const out: Track = { lat: [], lon: [], ts: [] };
+  for (let i = 0; i < n; i++) if (keep[i]) { out.lat.push(t.lat[i]); out.lon.push(t.lon[i]); out.ts.push(t.ts[i]); }
+  return out;
+};
+// Hard ceiling on drawn vertices per person: even after DP a pathological track stays
+// bounded, so Leaflet's canvas raster (and the per-tick layer rebuild) can't blow up at
+// any zoom. Stride-decimates while preserving the first AND last vertex.
+const VERTEX_CAP = 3000;
+const capTrack = (t: Track): Track => {
+  const n = t.lat.length;
+  if (n <= VERTEX_CAP) return t;
+  const step = Math.ceil(n / VERTEX_CAP);
+  const out: Track = { lat: [], lon: [], ts: [] };
+  for (let i = 0; i < n; i += step) { out.lat.push(t.lat[i]); out.lon.push(t.lon[i]); out.ts.push(t.ts[i]); }
+  if ((n - 1) % step !== 0) { out.lat.push(t.lat[n - 1]); out.lon.push(t.lon[n - 1]); out.ts.push(t.ts[n - 1]); }
   return out;
 };
 // Map the settled zoom to a DP tolerance in degrees (~1.5 px of detail at that zoom).
-// Zoomed out we collapse aggressively; at z≥17 we disable simplification so a close-up
-// inspection sees the raw track. Re-runs whenever the zoom level changes.
-const epsilonForZoom = (zoom: number) => (zoom >= 17 ? 0 : (360 / 256 / 2 ** zoom) * 1.5);
+// Zoomed out we collapse aggressively; even fully zoomed in this stays a TINY but
+// non-zero tolerance, so a close-up dense track is lightly thinned (collapsing stacked
+// GPS-jitter dwell points) instead of handing Leaflet the full raw vertex set. Re-runs
+// whenever the zoom level changes.
+const epsilonForZoom = (zoom: number) => (360 / 256 / 2 ** zoom) * 1.5;
 
 const noteIcon = L.divIcon({ className: "note-pin", html: "📍", iconSize: [22, 22], iconAnchor: [11, 22], popupAnchor: [0, -20] });
 
@@ -106,6 +126,22 @@ export default function MapPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [hidden, setHidden] = useState<Set<number>>(new Set());   // person ids toggled off
   const [zoomLevel, setZoomLevel] = useState(2);   // drives the trail's DP tolerance; updated on zoomend
+
+  // Parse each "recorded_at"/"created_at" string to epoch-ms ONCE and memo it by the
+  // (immutable) string. The live poller appends a brand-new points array every 15 s
+  // (new ref → all [points]-keyed memos recompute); caching the parse here means those
+  // recomputes are cheap numeric work, never thousands of fresh Date parses. (1A/1C)
+  const tsCache = useRef<Map<string, number>>(new Map());
+  const tsOf = useCallback((s: string) => {
+    const c = tsCache.current;
+    let v = c.get(s);
+    if (v === undefined) { v = parseTs(s); c.set(s, v); }
+    return v;
+  }, []);
+  // Numeric fix/note times, index-aligned with `points`/`notes` (NOT reordered — the heat
+  // dwell weighting indexes neighbours, and the overlay filters by index).
+  const pointTs = useMemo(() => points.map((p) => tsOf(p.recorded_at)), [points, tsOf]);
+  const noteTs = useMemo(() => notes.map((n) => tsOf(n.created_at)), [notes, tsOf]);
 
   const loadPlaces = () => getPlaces().then(setPlaces).catch(() => setPlaces([]));
 
@@ -215,6 +251,7 @@ export default function MapPage() {
   // Load both the trail and the located notes for the chosen range.
   useEffect(() => {
     setLoading(true);
+    tsCache.current.clear();         // fresh range replaces all points → drop stale parses
     needFitRef.current = true;       // a fresh range → refit once
     followingRef.current = true;     // …and re-pin to the live edge
     const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
@@ -249,10 +286,10 @@ export default function MapPage() {
   // (and play back) even on days the background trail wasn't running.
   const timeline = useMemo(() => {
     const ts = new Set<number>();
-    points.forEach((p) => ts.add(parseTs(p.recorded_at)));
-    notes.forEach((n) => ts.add(parseTs(n.created_at)));
+    for (const t of pointTs) ts.add(t);
+    for (const t of noteTs) ts.add(t);
     return [...ts].sort((a, b) => a - b);
-  }, [points, notes]);
+  }, [pointTs, noteTs]);
   // Follow the live edge only while the user is pinned there; if they've scrubbed back
   // (or are playing history), new fixes append silently without yanking the scrubber.
   useEffect(() => {
@@ -269,7 +306,14 @@ export default function MapPage() {
       ...points.map((p) => [p.lat, p.lon] as [number, number]),
       ...notes.map((n) => [n.lat, n.lon] as [number, number]),
     ];
-    if (coords.length) { m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 }); needFitRef.current = false; }
+    if (coords.length) {
+      m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 });
+      needFitRef.current = false;
+      // Sync the zoom that drives DP tolerance to the fitted zoom NOW, so the first
+      // trail paint simplifies at the right detail instead of flashing the over-collapsed
+      // zoom-2 track for the frame before `zoomend` fires.
+      setZoomLevel((cur) => { const z = Math.round(m.getZoom()); return cur === z ? cur : z; });
+    }
   }, [points, notes]);
 
   // ?focus=<slug>: center on that note and open its pin, regardless of scrub.
@@ -331,84 +375,105 @@ export default function MapPage() {
   // marker (and any open popup) is never needlessly recreated during playback.
   useEffect(() => {
     const g = noteLayer.current; if (!g) return;
-    for (const n of notes) {
-      const want = parseTs(n.created_at) <= curTs;
+    notes.forEach((n, i) => {
+      const want = noteTs[i] <= curTs;
       const mk = noteMarkers.current[n.slug];
-      if (!mk) continue;
+      if (!mk) return;
       const has = shownSlugs.current.has(n.slug);
       if (want && !has) { g.addLayer(mk); shownSlugs.current.add(n.slug); }
       else if (!want && has) { g.removeLayer(mk); shownSlugs.current.delete(n.slug); }
-    }
-  }, [notes, curTs, showNotes]);
+    });
+  }, [notes, noteTs, curTs, showNotes]);
 
   // Dwell weight: time gap to the NEXT fix (capped) → places you lingered glow hotter.
   const heat = useMemo(
     () => points.map((p, i) => {
-      const next = points[i + 1];
-      const gapMin = next ? Math.min(120, (parseTs(next.recorded_at) - parseTs(p.recorded_at)) / 60000) : 30;
+      const gapMin = i + 1 < pointTs.length ? Math.min(120, (pointTs[i + 1] - pointTs[i]) / 60000) : 30;
       return [p.lat, p.lon, Math.max(0.15, gapMin / 120)] as [number, number, number];
     }),
-    [points],
+    [points, pointTs],
   );
 
-  // Trail / heat overlay up to the current scrub time.
+  // Per-person SIMPLIFIED trail, recomputed only when the data / settled zoom / filter
+  // changes — NOT on every scrub tick. This is where Douglas–Peucker now runs (once),
+  // so playback no longer re-simplifies 15k points 8×/s. Each person's full track is
+  // sorted chronologically first (live-poll appends and offline `/bulk` backfills can
+  // arrive out of order), so the simplified `ts` array is monotonic and a scrub cut can
+  // binary-/linear-slice it by time. We keep BOTH the simplified track (for the line)
+  // and the raw sorted track (to land the head dot exactly on the newest fix). (1B)
+  const simplifiedByPerson = useMemo(() => {
+    const groups = new Map<number, { color: string; name: string; raw: Track }>();
+    points.forEach((p, i) => {
+      const per = personOf(p.source);
+      if (per && hidden.has(per.id)) return;   // toggled-off person → omit entirely
+      const key = per?.id ?? -1;
+      let g = groups.get(key);
+      if (!g) { g = { color: per?.color || "#4ea1ff", name: per?.name || "", raw: { lat: [], lon: [], ts: [] } }; groups.set(key, g); }
+      g.raw.lat.push(p.lat); g.raw.lon.push(p.lon); g.raw.ts.push(pointTs[i]);
+    });
+    const eps = epsilonForZoom(zoomLevel);
+    const out: { id: number; color: string; name: string; raw: Track; simp: Track }[] = [];
+    for (const [id, g] of groups) {
+      const ord = g.raw.ts.map((_, i) => i).sort((a, b) => g.raw.ts[a] - g.raw.ts[b]);
+      const raw: Track = { lat: ord.map((i) => g.raw.lat[i]), lon: ord.map((i) => g.raw.lon[i]), ts: ord.map((i) => g.raw.ts[i]) };
+      const simp = capTrack(simplifyDP(raw, eps));
+      out.push({ id, color: g.color, name: g.name, raw, simp });
+    }
+    return out;
+  }, [points, pointTs, zoomLevel, personOf, hidden]);
+
+  // Trail / heat overlay up to the current scrub time. Trail mode now slices the
+  // already-simplified per-person tracks by `curTs` (cheap) instead of re-filtering and
+  // re-simplifying all N points every tick.
   useEffect(() => {
     const m = map.current; if (!m) return;
     if (overlay.current) { m.removeLayer(overlay.current); overlay.current = null; }
     if (head.current) { m.removeLayer(head.current); head.current = null; }
-    // A point is shown unless its person is toggled off.
-    const visible = (p: LocPoint) => { const per = personOf(p.source); return !per || !hidden.has(per.id); };
-    const upto = points.filter((p) => parseTs(p.recorded_at) <= curTs && visible(p));
-    if (!upto.length) return;
     if (mode === "trail") {
-      // One polyline per person in their colour (different people aren't joined); track
-      // each person's MOST RECENT fix (upto is chronological) for a labeled head dot.
-      const byPerson = new Map<number, { color: string; name: string; pts: [number, number][]; last: LocPoint }>();
-      for (const p of upto) {
-        const per = personOf(p.source);
-        const key = per?.id ?? -1;
-        const g = byPerson.get(key) ?? { color: per?.color || "#4ea1ff", name: per?.name || "", pts: [], last: p };
-        g.pts.push([p.lat, p.lon]);
-        g.last = p;   // chronological order → ends on this person's newest fix
-        byPerson.set(key, g);
-      }
-      // Thin each person's track to ~1.5 px of detail for the current zoom before drawing.
-      // DP keeps the endpoints, so the line still ends on `last` (the head dot). Heat mode
-      // is left untouched below — it needs every fix for its dwell weighting. Read the live
-      // zoom (zoomLevel only triggers this rebuild) so the first paint after fitBounds is
-      // already at the right detail instead of flashing the zoom-2 (over-collapsed) track.
-      const eps = epsilonForZoom(m.getZoom());
       const group = L.layerGroup();
-      for (const { color, pts } of byPerson.values()) {
-        L.polyline(eps > 0 ? simplifyDP(pts, eps) : pts, { color, weight: 3, opacity: 0.85 }).addTo(group);
-      }
-      overlay.current = group.addTo(m);
-      // Each person's latest position as a white-ringed dot, labeled with their name.
       const heads = L.layerGroup();
-      for (const { color, name, last } of byPerson.values()) {
-        const dot = L.circleMarker([last.lat, last.lon],
-          { radius: 6, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 });
-        if (name) dot.bindTooltip(name, { permanent: true, direction: "top", className: "head-label", offset: [0, -6] });
+      for (const t of simplifiedByPerson) {
+        // Newest RAW fix ≤ curTs → the exact head-dot position and the line's true tail.
+        // (raw.ts is sorted, so the last index ≤ curTs is the run's end.)
+        let lastIdx = -1;
+        for (let i = 0; i < t.raw.ts.length; i++) { if (t.raw.ts[i] <= curTs) lastIdx = i; else break; }
+        if (lastIdx < 0) continue;   // this person has no fix yet at curTs → no line, no dot
+        const lastLL: [number, number] = [t.raw.lat[lastIdx], t.raw.lon[lastIdx]];
+        // Slice the SIMPLIFIED track to curTs (its own sorted ts), then make sure the tail
+        // ends exactly on the newest raw fix (DP/cap may have dropped the final vertices).
+        const latlngs: [number, number][] = [];
+        for (let i = 0; i < t.simp.ts.length && t.simp.ts[i] <= curTs; i++) latlngs.push([t.simp.lat[i], t.simp.lon[i]]);
+        const tail = latlngs[latlngs.length - 1];
+        if (!tail || tail[0] !== lastLL[0] || tail[1] !== lastLL[1]) latlngs.push(lastLL);
+        if (latlngs.length > 1) L.polyline(latlngs, { color: t.color, weight: 3, opacity: 0.85 }).addTo(group);
+        const dot = L.circleMarker(lastLL, { radius: 6, color: "#fff", weight: 2, fillColor: t.color, fillOpacity: 1 });
+        if (t.name) dot.bindTooltip(t.name, { permanent: true, direction: "top", className: "head-label", offset: [0, -6] });
         dot.addTo(heads);
       }
+      overlay.current = group.addTo(m);
       head.current = heads.addTo(m);
-    } else if ((L as any).heatLayer) {
-      const hUpto = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs && visible(points[i]));
-      // The slider drives intensity: a higher level lowers `max` (more of the trail
-      // reaches "hot") and grows the radius (bigger shading), and vice-versa.
-      const heatMax = Math.max(0.12, 1 - heatLevel * 0.85);   // higher level → hotter
-      const radius = Math.round(26 + heatLevel * 26);          // ~26–52 px
-      overlay.current = (L as any).heatLayer(hUpto, {
-        radius, blur: Math.round(radius * 0.7), max: heatMax, minOpacity: 0.3, maxZoom: 17,
-      }).addTo(m);
     } else {
-      const hv = heat.filter((_, i) => parseTs(points[i].recorded_at) <= curTs && visible(points[i]));
-      overlay.current = L.layerGroup(
-        hv.map((h) => L.circleMarker([h[0], h[1]],
-          { radius: 4 + 10 * h[2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
-      ).addTo(m);
+      // Heat mode keeps EVERY fix (dwell weighting needs the full sequence) — only DP/cull
+      // are skipped here. A point shows unless its person is toggled off.
+      const visible = (i: number) => { const per = personOf(points[i].source); return !per || !hidden.has(per.id); };
+      const hUpto = heat.filter((_, i) => pointTs[i] <= curTs && visible(i));
+      if (!hUpto.length) return;
+      if ((L as any).heatLayer) {
+        // The slider drives intensity: a higher level lowers `max` (more of the trail
+        // reaches "hot") and grows the radius (bigger shading), and vice-versa.
+        const heatMax = Math.max(0.12, 1 - heatLevel * 0.85);   // higher level → hotter
+        const radius = Math.round(26 + heatLevel * 26);          // ~26–52 px
+        overlay.current = (L as any).heatLayer(hUpto, {
+          radius, blur: Math.round(radius * 0.7), max: heatMax, minOpacity: 0.3, maxZoom: 17,
+        }).addTo(m);
+      } else {
+        overlay.current = L.layerGroup(
+          hUpto.map((h) => L.circleMarker([h[0], h[1]],
+            { radius: 4 + 10 * h[2], stroke: false, fillColor: "#ff7043", fillOpacity: 0.35 })),
+        ).addTo(m);
+      }
     }
-  }, [points, mode, curTs, heat, heatLevel, personOf, hidden, zoomLevel]);
+  }, [simplifiedByPerson, mode, curTs, heat, heatLevel, points, pointTs, personOf, hidden]);
 
   useEffect(() => {
     if (!playing || timeline.length < 2) return;

@@ -8,7 +8,7 @@ is sensitive, so it lives behind the same access key as everything else.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
 from ..auth import CurrentUser, require_location_writer
@@ -173,7 +173,7 @@ def _norm(ts: str | None) -> str | None:
 
 
 @router.get("", dependencies=[CurrentUser])
-def list_locations(since: str | None = None, until: str | None = None, limit: int = 12000):
+def list_locations(response: Response, since: str | None = None, until: str | None = None, limit: int = 12000):
     sql = "SELECT id, lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []
     s, u = _norm(since), _norm(until)
@@ -185,8 +185,18 @@ def list_locations(since: str | None = None, until: str | None = None, limit: in
         params.append(u)
     # Cap the scan but keep the MOST RECENT fixes when the window is huge (several people
     # share this stream): DESC + LIMIT, then reverse to chronological for the trail viewer.
+    # Fetch ONE past the cap so we can tell the client (via header) when the window was
+    # truncated — otherwise the OLDEST fixes vanish silently and an "All" view looks
+    # complete when it isn't. This is a wire signal only (the JSON body is unchanged); a
+    # client MAY read the header to show a "showing most recent N" note — not yet wired.
+    cap = max(1, min(int(limit), 20000))
     sql += " ORDER BY recorded_at DESC LIMIT ?"
-    params.append(max(1, min(int(limit), 20000)))
+    params.append(cap + 1)
     rows = [dict(r) for r in get_conn().execute(sql, params).fetchall()]
+    truncated = len(rows) > cap
+    if truncated:
+        rows = rows[:cap]
+    response.headers["X-Locations-Truncated"] = "1" if truncated else "0"
+    response.headers["X-Locations-Count"] = str(len(rows))
     rows.reverse()
     return rows

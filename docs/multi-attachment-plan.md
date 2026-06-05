@@ -248,34 +248,38 @@ analyses — already supported. The only watch-item is **fan-out cost/concurrenc
 
 ## 6. Implementation plan (phased, each shippable alone)
 
-- **Phase 1 — compose multi-upload (the actual feature).** `Chat.tsx` single→plural per
-  §2. One carrier note for assisted mode. Note-level lab extraction preserved. **No backend
-  change.** This closes the only real gap and is the heart of the branch.
-- **Phase 2 — handler registry refactor.** Introduce `classify()` + `Handler` registry;
-  port today's text/pdf/image logic onto it behind the same behavior (pure refactor, fully
-  covered by existing tests). Generalize the `analysis_*` sidecar into a kind-agnostic
-  enrichment slot. No user-visible change; this is the seam.
-- **Phase 3 — office + richer previews.** docx/xlsx/pptx text extraction; audio/video inline
-  players in the viewer (no transcription yet). Pure additive handlers.
-- **Phase 4 — audio/video transcription.** Plug a transcription `enrich` into the registry
-  behind a **"Transcribe"** button (opt-in), writing transcript → `content_text` + chunks +
-  sidecar. Provider decision (§7) resolved here. The rest of the stack already reads it.
-
-Phases 2–4 are independent of Phase 1 and of each other; Phase 1 is the user's headline ask.
+- **Phase 1 — compose multi-upload (the actual feature). ✅ DONE.** `Chat.tsx` single→plural
+  per §2. Assisted mode creates **one carrier note per file** (owner's call, §7.1). Note-level
+  lab extraction preserved. **No backend change.** Closes the only real gap.
+- **Phase 4 — audio transcription (local). ✅ DONE.** Implemented directly (ahead of the
+  registry refactor) using **faster-whisper** (§7.3 → local). A new `audio_transcription.py`
+  mirrors the image-analysis worker: a background thread transcribes on upload (**auto** — it's
+  local/free and needs no note context, so there's nothing to opt out of), writing the
+  transcript to `content_text` + FTS + chunk embeddings (first-class searchable / AI-readable
+  via the *existing* `search_attachments` path) and to the `analysis_md` sidecar for display.
+  A per-attachment **Transcribe / Re-transcribe** button + inline `<audio>` player in
+  `Attachments.tsx`; CSP gained `media-src 'self' blob:`. Reuses the `analysis_*` columns (an
+  attachment is image **or** audio, never both) so the status-poll endpoint and boot
+  stale-reset cover it with no migration.
+- **Phase 2 — handler registry refactor.** *(Still valuable, not yet done.)* Introduce
+  `classify()` + `Handler` registry; port today's text/pdf/image/**audio** logic onto it
+  behind the same behavior (pure refactor, covered by existing tests). The seam for office /
+  video later.
+- **Phase 3 — office + video.** docx/xlsx/pptx text extraction; video transcription + inline
+  player (the audio worker generalizes — same sidecar, same read path).
 
 ---
 
-## 7. Open decisions
+## 7. Decisions (resolved)
 
-1. **Assisted-mode carrier (Phase 1):** one note with N attachments *(recommended)* vs. N
-   notes. Default chosen: **one note**.
-2. **Image auto-analysis fan-out cap (Phase 1):** auto-analyze all images in a batch, or
-   only the first K and offer "Analyze" on the rest? Default proposed: **auto all** (matches
-   today), revisit if cost bites.
-3. **Audio/video transcription provider (Phase 4):** local `faster-whisper` (no API key,
-   heavier image, matches the "no extra key" ethos of local embeddings) vs. an LLM/cloud
-   transcription call (lighter image, needs egress + cost). This is the one genuinely new
-   dependency and the only blocker for Phase 4.
-4. **Enrichment storage (Phase 2):** reuse `analysis_*` columns as a generic slot vs. add an
-   `enrich_kind` discriminator. Default proposed: **add `enrich_kind`**, keep `analysis_md`
-   as the rendered text, so images and transcripts coexist cleanly.
+1. **Assisted-mode carrier (Phase 1):** **N notes — one per file** (owner's call). Each file
+   gets its own titled note + wikilink; the chat bubble lists them.
+2. **Image auto-analysis fan-out cap (Phase 1):** **auto all** (matches today); revisit if
+   cost bites.
+3. **Audio transcription provider:** **local `faster-whisper`** — no API key, in-container,
+   same ethos as the local embeddings. Model size via `AUDIO_MODEL` (default `base`; `tiny`
+   on a 2 GB box). Installed via `requirements-audio.txt` in the Docker image.
+4. **Enrichment storage:** **reuse the `analysis_*` columns** for both image summaries and
+   audio transcripts (an attachment is never both) — no migration, and the existing
+   status-poll endpoint + boot stale-reset cover audio for free. If a single attachment ever
+   needs *two* enrichments at once, revisit with an `enrich_kind` discriminator (Phase 2).

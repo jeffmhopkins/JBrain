@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     geocoder_url: str = Field("https://nominatim.openstreetmap.org",
                               validation_alias=AliasChoices("GEOCODER_URL", "geocoder_url"))
 
+    # Local speech-to-text (faster-whisper). Audio attachments are transcribed on a
+    # background thread with no external API key — same ethos as the local embeddings.
+    # Model size trades accuracy for RAM/speed: tiny | base | small | medium | large-v3.
+    # "base" is a good CPU default; drop to "tiny" on a tight (2 GB) box. compute_type
+    # "int8" keeps the CPU footprint small.
+    audio_model: str = Field("base", validation_alias=AliasChoices("AUDIO_MODEL", "audio_model"))
+    audio_compute_type: str = Field("int8", validation_alias=AliasChoices("AUDIO_COMPUTE_TYPE", "audio_compute_type"))
+
     # Web Push (VAPID). Keys auto-generate on first boot into the DB `meta` table
     # if these are blank, so existing installs gain push with zero config. Set
     # them here only to pin a keypair across machines/restores. `vapid_subject` is

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { analyzeAttachment, attachmentImageUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, uploadAttachment } from "../api";
+import { analyzeAttachment, attachmentImageUrl, attachmentObjectUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, transcribeAttachment, uploadAttachment } from "../api";
 import { useAuth } from "../App";
 import { Icon } from "./Icon";
 import Modal from "./Modal";
@@ -9,7 +9,7 @@ interface Attachment {
   id: number; filename: string; mime: string; byte_size: number; created_at: string;
   analysis_status?: "none" | "pending" | "done" | "error" | null;
   analysis_detail?: string | null; analyzed_at?: string | null;
-  analysis_md?: string | null;   // AI vision summary — shown here, not in the note body
+  analysis_md?: string | null;   // AI vision summary (image) OR speech transcript (audio) — sidecar, not in the note body
 }
 type Viewing =
   | { kind: "image"; filename: string; url: string }
@@ -20,6 +20,10 @@ function humanSize(n: number): string {
   return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 const isImage = (mime: string) => mime.startsWith("image/");
+const AUDIO_EXTS = /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|aiff?|amr|wma|weba|3gp|caf|mka)$/i;
+const isAudio = (mime: string, filename = "") => mime.startsWith("audio/") || AUDIO_EXTS.test(filename);
+// Both image vision summaries and audio transcripts use the same analysis_* sidecar slot.
+const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) || isAudio(a.mime, a.filename);
 
 export default function Attachments({ slug, onNoteChanged }: { slug: string; onNoteChanged?: () => void }) {
   const { hasLlm } = useAuth();
@@ -30,11 +34,14 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   const [viewing, setViewing] = useState<Viewing>(null);
   const [thumbs, setThumbs] = useState<Record<number, string>>({});   // attachment id -> object URL for inline image previews
   const [thumbErr, setThumbErr] = useState<Record<number, string>>({});   // why a preview failed (surfaced inline)
+  const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});   // attachment id -> blob URL for the inline <audio> player
   const inputRef = useRef<HTMLInputElement>(null);
   const polling = useRef<Set<number>>(new Set());
   const alive = useRef(true);
   const thumbsRef = useRef(thumbs);
   thumbsRef.current = thumbs;
+  const audioRef = useRef(audioUrls);
+  audioRef.current = audioUrls;
 
   async function load() {
     try {
@@ -70,6 +77,25 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   }, [items]);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
 
+  // Inline audio players: fetch each audio file's bytes once (authed) into a blob URL for
+  // an <audio controls> element. Kept until unmount, then revoked. (CSP allows media-src
+  // blob:.) On failure we stay silent — the Download button is always available.
+  useEffect(() => () => { Object.values(audioRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const a of items) {
+        if (!isAudio(a.mime, a.filename) || audioRef.current[a.id]) continue;
+        try {
+          const url = await attachmentObjectUrl(a.id);
+          if (cancelled) { URL.revokeObjectURL(url); return; }
+          setAudioUrls((u) => ({ ...u, [a.id]: url }));
+        } catch { /* download button still works */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [items]);
+
   // Poll a single attachment until analysis settles, then refresh the list so the new
   // AI summary (now stored on the attachment, not the note body) shows in the panel.
   function startPoll(id: number) {
@@ -88,13 +114,16 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
     setTimeout(tick, 1500);
   }
 
-  async function reanalyze(a: Attachment) {
+  // Kick (or re-kick) the per-type enrichment: vision summary for images, transcript for
+  // audio. `force` re-runs a finished/errored one.
+  async function enrich(a: Attachment) {
     setError("");
+    const force = a.analysis_status === "done" || a.analysis_status === "error";
     try {
-      await analyzeAttachment(a.id, a.analysis_status === "done" || a.analysis_status === "error");
+      await (isAudio(a.mime, a.filename) ? transcribeAttachment(a.id, force) : analyzeAttachment(a.id, force));
       setItems((xs) => xs.map((x) => (x.id === a.id ? { ...x, analysis_status: "pending" } : x)));
       startPoll(a.id);
-    } catch (e: any) { setError(e.message || "Could not start analysis."); }
+    } catch (e: any) { setError(e.message || "Could not start."); }
   }
 
   async function onFiles(files: FileList | null) {
@@ -155,7 +184,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
-        Any file up to 10 MB. Text, PDFs, and image metadata are searchable.{hasLlm ? " Images are summarized by AI automatically." : ""}
+        Any file up to 10 MB. Text, PDFs, and image metadata are searchable. Audio is transcribed locally (no API key).{hasLlm ? " Images are summarized by AI automatically." : ""}
       </p>
       {progress && (
         <div className="upload-progress">
@@ -196,19 +225,31 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
               Couldn’t show image — {thumbErr[a.id]}
             </div>
           )}
-          {isImage(a.mime) && a.analysis_status === "pending" && (
-            <div className="row" style={{ marginTop: 6, fontSize: 11 }}><span className="muted">⏳ Analyzing image…</span></div>
+          {isAudio(a.mime, a.filename) && audioUrls[a.id] && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption -- user-uploaded media; the
+            // transcript below is the caption.
+            <audio controls src={audioUrls[a.id]} style={{ width: "100%", marginTop: 8 }} />
           )}
-          {isImage(a.mime) && a.analysis_status === "error" && (
+          {isEnrichable(a) && a.analysis_status === "pending" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
-              <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>⚠ AI analysis failed</span>
+              <span className="muted">{isAudio(a.mime, a.filename) ? "⏳ Transcribing audio…" : "⏳ Analyzing image…"}</span>
             </div>
           )}
-          {isImage(a.mime) && a.analysis_md && (
-            // The AI vision summary, read-only, collapsed by default (it can be long) — it
-            // lives here on the image, not in the note body. Re-analyze (below) refreshes it.
+          {isEnrichable(a) && a.analysis_status === "error" && (
+            <div className="row" style={{ marginTop: 6, fontSize: 11 }}>
+              <span style={{ color: "var(--danger)" }} title={a.analysis_detail || ""}>
+                {isAudio(a.mime, a.filename) ? "⚠ Transcription failed" : "⚠ AI analysis failed"}
+              </span>
+            </div>
+          )}
+          {isEnrichable(a) && a.analysis_md && (
+            // The vision summary (image) or transcript (audio), read-only, collapsed by
+            // default (it can be long) — a sidecar on the attachment, not in the note body.
+            // The enrich button (below) refreshes it.
             <details className="att-summary" style={{ marginTop: 6 }}>
-              <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>✦ AI summary</summary>
+              <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
+                {isAudio(a.mime, a.filename) ? "📝 Transcript" : "✦ AI summary"}
+              </summary>
               <div className="md" style={{ fontSize: 13, marginTop: 4 }}>
                 <ReactMarkdown>{a.analysis_md}</ReactMarkdown>
               </div>
@@ -217,8 +258,14 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
           <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => dl(a)}>Download</button>
+            {isAudio(a.mime, a.filename) && a.analysis_status !== "pending" && (
+              // Local transcription — no LLM key required, so not gated on hasLlm.
+              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => enrich(a)}>
+                {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-transcribe" : "Transcribe"}
+              </button>
+            )}
             {hasLlm && isImage(a.mime) && a.analysis_status !== "pending" && (
-              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => reanalyze(a)}>
+              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => enrich(a)}>
                 {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-analyze" : "Analyze with AI"}
               </button>
             )}

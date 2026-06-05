@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import attachments as att_svc
-from ..services import image_analysis, llm
+from ..services import audio_transcription, image_analysis, llm
 
 router = APIRouter(prefix="/api", tags=["attachments"], dependencies=[CurrentUser])
 
@@ -40,6 +40,11 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     # assisted-attachment path, whose carrier note has no real content to inform it.
     if analyze and mime.startswith("image/") and llm.has_credentials():
         result["analysis"] = image_analysis.start_analysis(conn, result["id"])
+    # Audio auto-transcribes regardless of the analyze flag: it's local (no API key,
+    # no cost) and doesn't depend on the note body for context, so there's nothing to
+    # opt out of. The transcript lands on the attachment and becomes searchable.
+    elif audio_transcription.is_audio(mime, file.filename):
+        result["analysis"] = audio_transcription.start_transcription(conn, result["id"])
     return result
 
 
@@ -63,6 +68,19 @@ def analyze_attachment(att_id: int, body: AnalyzeBody | None = None):
     if row["analysis_status"] == "pending" and not force:
         raise HTTPException(status_code=409, detail="Analysis already running.")
     return image_analysis.start_analysis(conn, att_id, force=force)
+
+
+@router.post("/attachments/{att_id}/transcribe")
+def transcribe_attachment(att_id: int, body: AnalyzeBody | None = None):
+    conn = get_conn()
+    _require_attachment(conn, att_id)
+    force = bool(body and body.force)
+    row = conn.execute(
+        "SELECT analysis_status FROM attachments WHERE id = ?", (att_id,)
+    ).fetchone()
+    if row["analysis_status"] == "pending" and not force:
+        raise HTTPException(status_code=409, detail="Transcription already running.")
+    return audio_transcription.start_transcription(conn, att_id, force=force)
 
 
 @router.get("/attachments/{att_id}/analysis-status")

@@ -26,8 +26,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 # requirements-vision.txt = pytesseract + pypdfium2 (render scanned PDFs to images for OCR).
-COPY server/requirements.txt server/requirements-vision.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-vision.txt
+# requirements-audio.txt = faster-whisper (local speech-to-text for audio attachments).
+COPY server/requirements.txt server/requirements-vision.txt server/requirements-audio.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-vision.txt -r requirements-audio.txt
 
 COPY server/app ./app
 # Repo-defined workflows, action recipes, and central prompt store.

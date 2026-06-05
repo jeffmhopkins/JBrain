@@ -474,18 +474,27 @@ export default function Chat() {
       cid = await ensureConversation();
       let extra = "";
       if (mode === "assisted" && files.length) {
-        // Save the file(s) to ONE carrier note so there's something to attach them to —
-        // many files become many attachments on a single note (not N notes), referenced by
-        // one wikilink. Skip auto-analysis: this carrier note has no real content to inform it.
+        // One carrier note PER file (each file gets its own titled note + wikilink) so
+        // there's something to attach each to. Skip auto-analysis on images: these carrier
+        // notes have no real content to inform it (audio still auto-transcribes, server-side).
         const coords = await coordsP;
-        const single = files.length === 1;
-        const title = single ? files[0].name.replace(/\.[^.]+$/, "") : `Attached ${files.length} files`;
-        const body = single ? `Attached file: ${files[0].name}` : `Attached files:\n${files.map((f) => `- ${f.name}`).join("\n")}`;
-        const r = await createEntry(body, title, coords);
-        const errs = await uploadAll(r.slug, files, false);
-        extra = `\n\n(I attached ${single ? "a file" : `${files.length} files`}, saved as [[${r.title}]].`
-          + (errs.length ? ` ${errs.length} couldn't attach.` : "") + ")";
-        // Fold the saved-note reference into this turn's user bubble (by id).
+        const links: string[] = [];
+        const failed: string[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          setUploadLabel(files.length > 1 ? `(${i + 1}/${files.length}) ${f.name}` : "");
+          try {
+            const r = await createEntry(`Attached file: ${f.name}`, f.name.replace(/\.[^.]+$/, ""), coords);
+            await uploadAttachment(r.slug, f, setUploadPct, false);
+            links.push(`[[${r.title}]]`);
+          } catch { failed.push(f.name); }
+          setUploadPct(null);
+        }
+        setUploadLabel("");
+        const saved = links.length ? `saved as ${links.join(", ")}` : "but none could be saved";
+        extra = `\n\n(I attached ${files.length === 1 ? "a file" : `${files.length} files`}, ${saved}.`
+          + (failed.length ? ` ${failed.length} couldn't attach.` : "") + ")";
+        // Fold the saved-note reference(s) into this turn's user bubble (by id).
         setMessages((m) => m.map((x) => x.id === userId ? { ...x, content: (text + extra).trim() } : x));
       }
       const msg = (text + extra).trim();

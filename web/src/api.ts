@@ -192,6 +192,11 @@ export interface AnalysisStatus { status: "none" | "pending" | "done" | "error";
 export const analyzeAttachment = (id: number, force = false) =>
   isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
            : post<AnalysisStatus>(`/api/attachments/${id}/analyze`, { force });
+// Local speech-to-text for audio attachments (no API key). Shares the analysis_* status
+// columns, so getAnalysisStatus polls it the same way images are polled.
+export const transcribeAttachment = (id: number, force = false) =>
+  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
+           : post<AnalysisStatus>(`/api/attachments/${id}/transcribe`, { force });
 export const getAnalysisStatus = (id: number) =>
   isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
            : get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);

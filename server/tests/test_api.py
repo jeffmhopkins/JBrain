@@ -6141,3 +6141,61 @@ def test_location_fixes_redacts_third_party_raw_coords(client, monkeypatch):
     third_out = architect._tool_location_fixes(conn, person="Allan")
     assert "12.345678" in owner_out                                  # owner: raw precision
     assert "12.345678" not in third_out and "Downtown" in third_out  # third party: label only
+
+
+def test_audio_transcription_writes_searchable_sidecar(client, monkeypatch):
+    # The local-whisper decoder is stubbed (no faster-whisper / model download): we exercise
+    # the worker body directly and prove the transcript lands on the attachment AND becomes
+    # searchable (content_text + FTS) — i.e. the spoken words are first-class content.
+    from app.db import get_conn
+    from app.services import audio_transcription as at
+    note = client.post("/api/notes/entry", json={"text": "voice memo"}).json()
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "memo.m4a", "audio/mp4", "", b"\x00\x01fakeaudio", 10, "sha-audio")).fetchone()["id"]
+    conn.commit()
+
+    monkeypatch.setattr(at, "_transcribe", lambda raw: "Remember to buy milk and call the dentist.")
+    at.transcribe(aid)   # run the worker body synchronously (same thread → same conn)
+
+    row = conn.execute(
+        "SELECT analysis_status, analysis_md, content_text FROM attachments WHERE id = ?", (aid,)
+    ).fetchone()
+    assert row["analysis_status"] == "done"
+    assert "buy milk" in row["analysis_md"]          # human-readable transcript sidecar
+    assert "dentist" in row["content_text"]          # canonical searchable text
+    hit = conn.execute(
+        "SELECT attachment_id FROM attachments_fts WHERE attachments_fts MATCH 'dentist'"
+    ).fetchone()
+    assert hit and hit["attachment_id"] == aid       # keyword-searchable
+
+
+def test_audio_upload_auto_starts_transcription(client, monkeypatch):
+    # Uploading an audio file auto-kicks transcription (local, so no analyze opt-out needed).
+    from app.services import audio_transcription as at
+    started = []
+    monkeypatch.setattr(at, "start_transcription",
+                        lambda conn, aid, **k: (started.append(aid) or {"status": "pending"}))
+    note = client.post("/api/notes/entry", json={"text": "memo"}).json()
+    r = client.post(f"/api/notes/{note['slug']}/attachments",
+                    files={"file": ("memo.m4a", b"\x00fakeaudio", "audio/mp4")})
+    assert r.status_code == 200
+    assert r.json().get("analysis", {}).get("status") == "pending"
+    assert len(started) == 1
+
+
+def test_transcribe_endpoint_rejects_non_audio(client):
+    from app.db import get_conn
+    note = client.post("/api/notes/entry", json={"text": "x"}).json()
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "doc.pdf", "application/pdf", "", b"%PDF", 4, "sha-pdf")).fetchone()["id"]
+    conn.commit()
+    r = client.post(f"/api/attachments/{aid}/transcribe")
+    assert r.status_code == 200 and r.json()["status"] == "error"

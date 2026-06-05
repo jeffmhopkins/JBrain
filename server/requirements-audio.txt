@@ -1,0 +1,13 @@
+# Local speech-to-text for audio attachments (server/app/services/audio_transcription.py).
+# faster-whisper runs a Whisper model on the CPU with NO external API key — the same
+# "owned end-to-end" approach as the local embeddings. It bundles its audio decoding via
+# PyAV (ffmpeg libs in the wheel), so no system ffmpeg is required.
+#
+# Install with:
+#   pip install -r requirements.txt -r requirements-audio.txt
+#
+# The model (default "base", see AUDIO_MODEL) downloads from Hugging Face on first use and
+# is cached for the process lifetime. WITHOUT this package, audio still uploads and is
+# searchable by filename; transcription degrades visibly to an attachment "error" status
+# ("needs faster-whisper") rather than a silent no-op.
+faster-whisper==1.1.0

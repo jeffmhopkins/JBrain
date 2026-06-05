@@ -203,3 +203,42 @@ def series(conn, analyte: str, unit: str | None = None) -> dict:
         "encounters": _encounters_in(conn, dates[0] if dates else None, dates[-1] if dates else None),
         "other_units": sorted(other),
     }
+
+
+def series_from_results(results: list[dict], analyte: str, unit: str | None = None) -> dict:
+    """Build the same series payload as series() but from STAGED parser results (no DB) — for
+    previewing a lab import before it's approved. No flag/encounter/note context is available."""
+    rows = [r for r in results if r.get("analyte_key") == analyte and r.get("collected_at")]
+    rows.sort(key=lambda r: r["collected_at"])
+    import collections
+    name = (collections.Counter(r["test_name"] for r in rows if r.get("test_name")).most_common(1) or [(analyte,)])[0][0]
+    units = collections.Counter(r["unit"] for r in rows if r.get("unit"))
+    target_norm = _unit_norm(unit or (units.most_common(1)[0][0] if units else None))
+    points: list[dict] = []
+    seen: set = set()
+    other: set = set()
+    for r in rows:
+        if _unit_norm(r.get("unit")) != target_norm:
+            if r.get("unit"):
+                other.add(r["unit"])
+            continue
+        key = (r["collected_at"], r["value_text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        points.append({
+            "t": r["collected_at"], "v": r["value_num"], "vtext": r["value_text"], "unit": r["unit"],
+            "status": _status(None, r["value_num"], r["ref_low"], r["ref_high"]),
+            "censored": r["value_num"] is None,
+            "ref_low": r["ref_low"], "ref_high": r["ref_high"], "ref_text": r.get("ref_text"), "flag": None,
+            "note_id": None, "note_slug": None, "note_title": None, "encounter_id": None,
+        })
+    dates = [p["t"] for p in points]
+    nums = [p["v"] for p in points if p["v"] is not None]
+    return {
+        "analyte": analyte, "test_name": name, "unit": unit or (units.most_common(1)[0][0] if units else None),
+        "points": points, "segments": _segments(points),
+        "domain": {"from": dates[0], "to": dates[-1]} if dates else None,
+        "value_range": {"min": min(nums), "max": max(nums)} if nums else None,
+        "encounters": [], "other_units": sorted(other),
+    }

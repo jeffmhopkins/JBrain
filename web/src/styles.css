@@ -863,3 +863,16 @@ table.sql-result th { background: var(--bg-elev-2); }
 .lab-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .lab-card-head .lab-src { margin-left: auto; }
 .lab-card-foot { font-size: 11px; margin-top: 4px; }
+
+/* ---- Staged lab import (on the note) ----------------------------------- */
+.lab-import { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin: 8px 0; background: var(--bg-elev); }
+.lab-import-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.lab-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.lab-badge.ok { background: var(--accent-soft); color: var(--text); border: 1px solid var(--accent); }
+.lab-badge.pend { background: rgba(192,133,133,0.14); color: var(--danger); border: 1px solid var(--danger); }
+.lab-badge.err { background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border); }
+.lab-import-actions { display: flex; gap: 8px; margin-top: 8px; }
+.lab-pending-banner {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px;
+  background: rgba(192,133,133,0.12); border: 1px solid var(--danger); border-radius: 8px; color: var(--text);
+}

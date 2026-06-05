@@ -191,7 +191,10 @@ CREATE TABLE IF NOT EXISTS attachments (
   analysis_status TEXT,                      -- NULL|pending|done|error (AI image analysis)
   analysis_detail TEXT,                      -- error message surfaced to the UI
   analyzed_at  TEXT,                         -- when analysis last completed
-  analysis_md  TEXT                          -- AI vision summary (read-only sidecar; not in the note body)
+  analysis_md  TEXT,                         -- AI vision summary (read-only sidecar; not in the note body)
+  lab_status   TEXT,                         -- NULL|extracted|approved|error (staged lab ingestion)
+  lab_json     TEXT,                          -- the staged parse (results + doc_type) awaiting approval
+  lab_extracted_at TEXT                       -- when labs were last extracted from this PDF
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_note ON attachments(note_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_sha  ON attachments(note_id, sha256);

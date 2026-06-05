@@ -58,8 +58,14 @@ export function useGeo() {
     if (!enabled || !("geolocation" in navigator)) return Promise.resolve(null);
     return new Promise((resolve) => {
       let done = false;
-      const finish = (c: Coords | null) => { if (!done) { done = true; resolve(c); } };
-      if (maxWait != null) window.setTimeout(() => finish(null), maxWait);
+      let timer: number | undefined;
+      const finish = (c: Coords | null) => {
+        if (done) return;
+        done = true;
+        if (timer !== undefined) window.clearTimeout(timer);
+        resolve(c);
+      };
+      if (maxWait != null && maxWait > 0) timer = window.setTimeout(() => finish(null), maxWait);
       navigator.geolocation.getCurrentPosition(
         (p) => finish({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
         () => finish(null),

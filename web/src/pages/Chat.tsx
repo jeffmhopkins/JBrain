@@ -287,6 +287,10 @@ export default function Chat() {
   async function loadMessages(id: number) {
     try {
       const rows = await get<{ role: Msg["role"]; content: string }[]>(`/api/chat/conversations/${id}/messages`);
+      // A turn may have started streaming while this fetch was in flight (e.g. the user
+      // sent before the initial restore-load resolved). Don't clobber the optimistic /
+      // actively-streaming view with stale server rows — the post-stream re-sync handles it.
+      if (streamActiveRef.current) return;
       setMessages(rows.map((r) => ({ role: r.role, content: r.content })));
     } catch { /* keep what we have */ }
   }
@@ -334,10 +338,11 @@ export default function Chat() {
         localStorage.removeItem("jbrain_conv_research");
       }
     }
-    // Load the cached thread in EVERY mode (so entry shows history too), but only spin up a
-    // brand-new conversation when in a chat mode — entry alone shouldn't create empty threads.
+    // Load the cached thread in EVERY mode (so entry shows history too). With no cached
+    // thread we do NOT eagerly create one: send() lazily creates a conversation on the
+    // first chat turn via ensureConversation(), so just entering a chat mode (or launching
+    // straight into one) never leaves an orphan empty thread behind.
     if (id) { convIdRef.current = Number(id); setConvId(Number(id)); loadMessages(Number(id)); }
-    else if (mode !== "entry" && mode !== "medical") { ensureConversation(); }
   }, [mode, convId]);
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "auto" });
@@ -399,7 +404,7 @@ export default function Chat() {
         // Don't silently lose the entry: drop the optimistic row, restore the composer
         // (only if the user hasn't typed something new), and tell them.
         setEntries((xs) => xs.filter((en) => en.id !== enId));
-        setInput((cur) => cur || text);
+        setInput((cur) => cur.trim() ? cur : text);
         if (file) setPendingFile((cur) => cur || file);
         alert("Couldn't save entry: " + (err instanceof Error ? err.message : "please try again."));
       } finally { setBusy(false); setUploadPct(null); sendingRef.current = false; }
@@ -499,7 +504,7 @@ export default function Chat() {
       // Roll back so nothing is lost: drop the optimistic bubble, restore the composer.
       errored = true;
       dropOptimisticBubble();
-      setInput((cur) => cur || text);
+      setInput((cur) => cur.trim() ? cur : text);
       if (file) setPendingFile((cur) => cur || file);
       alert("Couldn't send: " + (err instanceof Error ? err.message : "please try again."));
     } finally {

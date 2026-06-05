@@ -6,6 +6,19 @@ import LabChart from "../components/LabChart";
 const OUT = new Set(["high", "low", "abnormal"]);
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
 const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
+// Keep the chosen window when switching analytes: preserve its span, shifted to fit the new
+// analyte's data (so it stays identical when the analytes share dates, e.g. one blood draw).
+function clampWin(w: { from: string; to: string } | null, domain: { from: string; to: string } | null) {
+  if (!domain) return w;
+  if (!w) return { from: domain.from, to: domain.to };
+  const dlo = ms(domain.from), dhi = ms(domain.to);
+  let from = ms(w.from), to = ms(w.to);
+  const span = Math.min(Math.max(1, to - from), Math.max(1, dhi - dlo));
+  if (from < dlo) { from = dlo; to = dlo + span; }
+  if (to > dhi) { to = dhi; from = dhi - span; }
+  if (from < dlo) from = dlo;
+  return { from: iso(from), to: iso(to) };
+}
 const PRESETS: { label: string; years: number | null }[] = [
   { label: "1y", years: 1 }, { label: "5y", years: 5 }, { label: "All", years: null },
 ];
@@ -35,10 +48,10 @@ export default function LabsPage() {
 
   useEffect(() => {
     if (!sel) return;
-    setSeries(null); setPicked(null); setWin(null);
+    setSeries(null); setPicked(null);
     getLabSeries(sel).then((s) => {
       setSeries(s);
-      if (s.domain) setWin({ from: s.domain.from, to: s.domain.to });
+      setWin((w) => clampWin(w, s.domain));   // keep the current date range across switches
     }).catch(() => setErr("Couldn't load that analyte."));
   }, [sel]);
 

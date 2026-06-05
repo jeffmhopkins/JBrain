@@ -1,17 +1,21 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LabSeries, LabPoint } from "../api";
 
 // A dependency-free SVG trend chart for ONE analyte. Renders a STEPPED reference band
 // (ranges change over time), encounter shading, a line that breaks across censored points
 // and multi-year gaps, and points DUAL-ENCODED by shape AND colour (so it's readable
 // without colour). Point status is whatever the server computed (flag-authoritative);
-// this component never decides "normal" itself. Tap a point for its details + source note.
+// this component never decides "normal" itself. Tap a point for details; drag to pan,
+// pinch to zoom (vertical scroll passes through); double-tap to reset.
 
 const VW = 1000, VH = 360;
 const M = { l: 52, r: 14, t: 12, b: 34 };
 const PW = VW - M.l - M.r, PH = VH - M.t - M.b;
+const DAY = 24 * 3600 * 1000, YR = 365 * DAY;
+const MIN_SPAN = 7 * DAY;
+const GAP_MS = 1.5 * YR;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
-const GAP_MS = 1.5 * 365 * 24 * 3600 * 1000;   // break the line across gaps longer than ~1.5y
 
 const OUT = new Set(["high", "low", "abnormal"]);
 function fill(status: string) {
@@ -20,8 +24,6 @@ function fill(status: string) {
   return "var(--text-dim)";                       // unknown / no range
 }
 
-// A small status-distinct glyph at (x,y): out-of-range = triangle/square, normal = dot,
-// unknown = hollow ring. Shape carries the meaning even with no colour.
 function Glyph({ x, y, status, sel }: { x: number; y: number; status: string; sel: boolean }) {
   const c = fill(status);
   const r = sel ? 7 : 5;
@@ -35,18 +37,113 @@ function Glyph({ x, y, status, sel }: { x: number; y: number; status: string; se
   return <>{ring}{shape}</>;
 }
 
+// Adaptive x ticks: years for wide spans, months (stepped) when zoomed in.
+function xTicks(lo: number, hi: number): { t: number; label: string }[] {
+  const span = hi - lo;
+  const out: { t: number; label: string }[] = [];
+  if (span > 2.5 * YR) {
+    for (let y = new Date(lo).getUTCFullYear(); y <= new Date(hi).getUTCFullYear(); y++)
+      out.push({ t: Date.UTC(y, 0, 1), label: String(y) });
+  } else {
+    const step = span > 1.1 * YR ? 3 : 1;          // months between ticks
+    const d0 = new Date(lo);
+    let y = d0.getUTCFullYear(), m = d0.getUTCMonth();
+    if (Date.UTC(y, m, 1) < lo) m++;
+    for (let cur = Date.UTC(y, m, 1); cur <= hi; ) {
+      const dt = new Date(cur);
+      out.push({ t: cur, label: dt.getUTCMonth() === 0 ? String(dt.getUTCFullYear()) : MONTHS[dt.getUTCMonth()] });
+      cur = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + step, 1);
+    }
+  }
+  return out;
+}
+
 export default function LabChart({ series, from, to, height, onPick }: {
   series: LabSeries; from?: string; to?: string; height?: number;
   onPick?: (p: LabPoint | null) => void;
 }) {
   const [sel, setSel] = useState<number | null>(null);
   const pts = series.points;
+  const svgRef = useRef<SVGSVGElement>(null);
 
+  // Full data extent (with a little pad for a single point) = the zoom-out limit.
+  const [dataLo, dataHi] = useMemo(() => {
+    const lo = series.domain ? ms(series.domain.from) : 0;
+    const hi = series.domain ? ms(series.domain.to) : 1;
+    return hi > lo ? [lo, hi] : [lo - 15 * DAY, lo + 15 * DAY];
+  }, [series]);
+
+  // The visible window — initialised from the from/to props (the AI/preset window), then
+  // driven by pan/zoom gestures. Resets when the series or requested window changes.
+  const initial = (): { lo: number; hi: number } => {
+    const lo = from ? ms(from) : dataLo;
+    const hi = to ? ms(to) : dataHi;
+    return hi > lo ? { lo, hi } : { lo: dataLo, hi: dataHi };
+  };
+  const [win, setWin] = useState(initial);
+  useEffect(() => setWin(initial()), [series, from, to]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pointers = useRef<Map<number, number>>(new Map());
+  const prevDist = useRef<number | null>(null);
+  const dragged = useRef(false);
+
+  function clampPos(lo: number, hi: number) {
+    const span = hi - lo;
+    if (lo < dataLo) { lo = dataLo; hi = lo + span; }
+    if (hi > dataHi) { hi = dataHi; lo = hi - span; }
+    if (lo < dataLo) lo = dataLo;
+    return { lo, hi };
+  }
+  function panBy(dxPx: number) {
+    const w = svgRef.current?.getBoundingClientRect().width || 1;
+    setWin((p) => {
+      const span = p.hi - p.lo;
+      const d = -dxPx * (VW / w) * (span / PW);
+      return clampPos(p.lo + d, p.hi + d);
+    });
+  }
+  function zoomAt(midClientX: number, factor: number) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setWin((p) => {
+      const span = p.hi - p.lo;
+      const frac = Math.max(0, Math.min(1, ((midClientX - rect.left) * (VW / rect.width) - M.l) / PW));
+      const anchor = p.lo + frac * span;
+      const maxSpan = Math.max(MIN_SPAN, dataHi - dataLo);
+      const newSpan = Math.max(MIN_SPAN, Math.min(span * factor, maxSpan));
+      return clampPos(anchor - frac * newSpan, anchor - frac * newSpan + newSpan);
+    });
+  }
+
+  function onDown(e: React.PointerEvent<SVGSVGElement>) {
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    pointers.current.set(e.pointerId, e.clientX);
+    dragged.current = false;
+    if (pointers.current.size >= 2 && svgRef.current) svgRef.current.style.touchAction = "none";
+  }
+  function onMove(e: React.PointerEvent<SVGSVGElement>) {
+    if (!pointers.current.has(e.pointerId)) return;
+    const prevX = pointers.current.get(e.pointerId)!;
+    pointers.current.set(e.pointerId, e.clientX);
+    const xs = [...pointers.current.values()];
+    if (xs.length >= 2) {
+      const dist = Math.abs(xs[0] - xs[1]);
+      if (prevDist.current && dist > 0) { zoomAt((xs[0] + xs[1]) / 2, prevDist.current / dist); dragged.current = true; }
+      prevDist.current = dist;
+      e.preventDefault();
+    } else {
+      const dx = e.clientX - prevX;
+      if (Math.abs(dx) > 1) { panBy(dx); dragged.current = true; }
+    }
+  }
+  function onUp(e: React.PointerEvent<SVGSVGElement>) {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size < 2) { prevDist.current = null; if (svgRef.current) svgRef.current.style.touchAction = "pan-y"; }
+  }
+
+  const { lo, hi } = win;
   const view = useMemo(() => {
-    const lo = from ? ms(from) : (series.domain ? ms(series.domain.from) : 0);
-    const hi = to ? ms(to) : (series.domain ? ms(series.domain.to) : 1);
     const span = Math.max(1, hi - lo);
-    // y from numeric points in view + reference-band bounds, padded 8%.
     const vals: number[] = [];
     for (const p of pts) if (p.v != null && ms(p.t) >= lo && ms(p.t) <= hi) vals.push(p.v);
     for (const s of series.segments) {
@@ -57,23 +154,17 @@ export default function LabChart({ series, from, to, height, onPick }: {
     let ymin = vals.length ? Math.min(...vals) : 0, ymax = vals.length ? Math.max(...vals) : 1;
     if (ymin === ymax) { ymin -= 1; ymax += 1; }
     const pad = (ymax - ymin) * 0.08; ymin -= pad; ymax += pad;
-    const x = (t: string) => M.l + ((ms(t) - lo) / span) * PW;
-    const y = (v: number) => M.t + (1 - (v - ymin) / (ymax - ymin)) * PH;
-    const clampX = (t: number) => M.l + (Math.min(hi, Math.max(lo, t)) - lo) / span * PW;
-    return { lo, hi, ymin, ymax, x, y, clampX };
-  }, [series, from, to, pts]);
+    return { span, ymin, ymax };
+  }, [pts, series.segments, lo, hi]);
+  const { ymin, ymax, span } = view;
 
-  const { lo, hi, ymin, ymax, x, y, clampX } = view;
+  const x = (t: string) => M.l + ((ms(t) - lo) / span) * PW;
+  const y = (v: number) => M.t + (1 - (v - ymin) / (ymax - ymin)) * PH;
+  const clampX = (t: number) => M.l + (Math.min(hi, Math.max(lo, t)) - lo) / span * PW;
   const inView = (t: string) => ms(t) >= lo && ms(t) <= hi;
-
-  // Year gridlines/ticks across the visible domain.
-  const years: number[] = [];
-  for (let yr = new Date(lo).getUTCFullYear(); yr <= new Date(hi).getUTCFullYear(); yr++) years.push(yr);
-  // A few value ticks.
   const yticks = [0, 0.25, 0.5, 0.75, 1].map((f) => ymin + f * (ymax - ymin));
 
-  // Line runs: split the polyline at censored points and long gaps so we never draw a
-  // line through a value we don't have or across a multi-year void.
+  // Line runs: break at censored points and long gaps.
   const runs: LabPoint[][] = [];
   let run: LabPoint[] = [];
   for (const p of pts) {
@@ -84,14 +175,15 @@ export default function LabChart({ series, from, to, height, onPick }: {
   }
   if (run.length) runs.push(run);
 
-  function pick(i: number | null) { setSel(i); onPick?.(i == null ? null : pts[i]); }
+  function pick(i: number | null) { if (dragged.current) return; setSel(i); onPick?.(i == null ? null : pts[i]); }
   const selP = sel != null ? pts[sel] : null;
 
   return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" height={height ?? undefined}
-         style={{ touchAction: "pan-y" }} role="img"
-         aria-label={`${series.test_name} trend chart`} onClick={() => pick(null)}>
-      {/* out-of-range wash, then the green in-range band painted on top per segment */}
+    <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} width="100%" height={height ?? undefined}
+         style={{ touchAction: "pan-y", userSelect: "none" }} role="img"
+         aria-label={`${series.test_name} trend chart`}
+         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
+         onDoubleClick={() => setWin(initial())} onClick={() => pick(null)}>
       <rect x={M.l} y={M.t} width={PW} height={PH} fill="var(--danger)" fillOpacity={0.06} />
       {series.encounters.map((e) => {
         const x0 = clampX(ms(e.from)), x1 = clampX(e.to ? ms(e.to) : hi);
@@ -107,41 +199,34 @@ export default function LabChart({ series, from, to, height, onPick }: {
         return <rect key={i} x={x0} y={yTop} width={Math.max(0, x1 - x0)} height={Math.max(0, yBot - yTop)}
                      fill="var(--ok)" fillOpacity={0.18} />;
       })}
-      {/* y grid + labels */}
       {yticks.map((v, i) => (
         <g key={i}>
           <line x1={M.l} y1={y(v)} x2={M.l + PW} y2={y(v)} stroke="var(--border)" strokeWidth={1} />
           <text x={M.l - 6} y={y(v) + 3} textAnchor="end" fontSize={13} fill="var(--text-dim)">{v.toFixed(1)}</text>
         </g>
       ))}
-      {/* x year ticks */}
-      {years.map((yr) => {
-        const xx = clampX(Date.UTC(yr, 0, 1));
-        return <g key={yr}>
+      {xTicks(lo, hi).map((tk, i) => {
+        const xx = clampX(tk.t);
+        return <g key={i}>
           <line x1={xx} y1={M.t} x2={xx} y2={M.t + PH} stroke="var(--border)" strokeWidth={1} strokeDasharray="2 4" />
-          <text x={xx} y={VH - 12} textAnchor="middle" fontSize={13} fill="var(--text-dim)">{yr}</text>
+          <text x={xx} y={VH - 12} textAnchor="middle" fontSize={13} fill="var(--text-dim)">{tk.label}</text>
         </g>;
       })}
-      {/* line runs */}
       {runs.map((r, i) => (
         <polyline key={i} fill="none" stroke="var(--accent)" strokeWidth={2}
                   points={r.map((p) => `${x(p.t)},${y(p.v as number)}`).join(" ")} />
       ))}
-      {/* censored markers at the foot of the plot */}
       {pts.map((p, i) => p.censored && inView(p.t) ? (
         <text key={`c${i}`} x={x(p.t)} y={M.t + PH - 2} textAnchor="middle" fontSize={13}
               fill="var(--text-dim)" onClick={(ev) => { ev.stopPropagation(); pick(i); }}
               style={{ cursor: "pointer" }}>⌄</text>
       ) : null)}
-      {/* points */}
       {pts.map((p, i) => !p.censored && p.v != null && inView(p.t) ? (
         <g key={i} onClick={(ev) => { ev.stopPropagation(); pick(i); }} style={{ cursor: "pointer" }}>
-          {/* generous invisible hit target for touch */}
           <circle cx={x(p.t)} cy={y(p.v)} r={14} fill="transparent" />
           <Glyph x={x(p.t)} y={y(p.v)} status={p.status} sel={sel === i} />
         </g>
       ) : null)}
-      {/* selected-point tooltip (in-SVG so it scales) */}
       {selP && selP.v != null && (() => {
         const tx = Math.min(M.l + PW - 196, Math.max(M.l, x(selP.t) - 96));
         return (

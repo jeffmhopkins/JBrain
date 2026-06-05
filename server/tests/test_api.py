@@ -211,6 +211,18 @@ def test_lab_chart_tools(client):
     assert ev["type"] == "chart" and ev["chart"] == {"analyte": "wbc", "unit": "thou/cumm",
                                                      "from": None, "to": None, "title": "WBC"}
     assert "do NOT restate" in txt                      # model is told not to recite values
+
+    # A date window scopes BOTH the chart spec and the summary (the "over the last year" fix):
+    # an explicit from/to keeps only the in-window result.
+    txt, ev = architect._run_tool(conn, None, "show_lab_chart",
+                                  {"analyte": "wbc", "from": "2025-06-01", "to": "2026-06-01"}, "research")
+    assert ev["chart"]["from"] == "2025-06-01" and ev["chart"]["to"] == "2026-06-01"
+    assert "1 results" in txt                            # only the 2026-01-01 draw is in-window
+    # A relative range resolves server-side to a real from/to (anchored on today).
+    ev2 = architect._run_tool(conn, None, "show_lab_chart", {"analyte": "wbc", "range": "5y"}, "research")[1]
+    assert ev2["chart"]["from"] and ev2["chart"]["to"] and ev2["chart"]["from"] < ev2["chart"]["to"]
+    # list_abnormal_labs accepts the same window.
+    assert architect._run_tool(conn, None, "list_abnormal_labs", {"range": "5y"}, "research")[1] is None
     # Read-only research mode still fails closed for a write tool.
     assert architect._run_tool(conn, None, "log_entry", {"text": "x"}, "research")[1] is None
 

@@ -62,15 +62,21 @@ _DEFAULT_MODE_TOOLS = {
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
 _TOOL_SCHEMAS = {
     "list_abnormal_labs": {"type": "object", "properties": {
-        "from": {"type": "string", "description": "Optional ISO date lower bound (e.g. one year ago)."},
-        "to": {"type": "string", "description": "Optional ISO date upper bound."},
+        "range": {"type": "string", "enum": ["3mo", "6mo", "1y", "2y", "5y", "all"],
+                  "description": "Relative window when the user gives one ('over the past year' -> '1y'). "
+                  "Resolved server-side against today; use instead of from/to for relative asks."},
+        "from": {"type": "string", "description": "Optional explicit ISO date lower bound (overrides range)."},
+        "to": {"type": "string", "description": "Optional explicit ISO date upper bound."},
         "limit": {"type": "integer", "default": 8, "description": "Max analytes (capped 12)."}}},
     "show_lab_chart": {"type": "object", "properties": {
         "analyte": {"type": "string", "description": "The analyte_key from list_abnormal_labs (e.g. 'wbc', "
                     "'creatinine') — NEVER a free-text lab name; if unsure, call list_abnormal_labs first."},
         "unit": {"type": "string", "description": "Optional: pin one unit when the analyte was recorded in several."},
-        "from": {"type": "string", "description": "Optional ISO date lower bound for the displayed window."},
-        "to": {"type": "string", "description": "Optional ISO date upper bound."}}, "required": ["analyte"]},
+        "range": {"type": "string", "enum": ["3mo", "6mo", "1y", "2y", "5y", "all"],
+                  "description": "Relative display window ('over the last year' -> '1y'). Resolved server-side; "
+                  "use instead of from/to for relative asks. The chart opens to this window (the user can pan/zoom out)."},
+        "from": {"type": "string", "description": "Optional explicit ISO date lower bound (overrides range)."},
+        "to": {"type": "string", "description": "Optional explicit ISO date upper bound."}}, "required": ["analyte"]},
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
@@ -1359,8 +1365,27 @@ def _record_chart(conn, conversation_id, spec: dict) -> dict:
     return {"type": "chart", "chart": spec}
 
 
-def _tool_list_abnormal_labs(conn, dfrom=None, dto=None, limit=8) -> str:
+_RANGE_DAYS = {"3mo": 91, "6mo": 183, "1y": 365, "2y": 730, "5y": 1826}
+
+
+def _resolve_range(rng=None, dfrom=None, dto=None) -> tuple[str | None, str | None]:
+    """(from_iso, to_iso) for a tool's window. Explicit from/to win; otherwise a relative
+    `range` token ('1y', '6mo', …) is resolved against TODAY (owner-local). 'all'/None = no
+    bound. This is where "over the last year" actually becomes a date window."""
+    if dfrom or dto:
+        return dfrom, dto
+    days = _RANGE_DAYS.get(rng or "")
+    if not days:
+        return None, None
+    from datetime import timedelta
+    from . import clock
+    today = clock.today_local()
+    return (today - timedelta(days=days)).isoformat(), today.isoformat()
+
+
+def _tool_list_abnormal_labs(conn, rng=None, dfrom=None, dto=None, limit=8) -> str:
     from . import lab_series
+    dfrom, dto = _resolve_range(rng, dfrom, dto)
     rows = lab_series.abnormal_analytes(conn, dfrom, dto, limit)
     if not rows:
         span = (f" between {dfrom} and {dto}" if dfrom and dto else
@@ -1374,19 +1399,26 @@ def _tool_list_abnormal_labs(conn, dfrom=None, dto=None, limit=8) -> str:
                       "using its analyte_key:\n" + "\n".join(lines))
 
 
-def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, dfrom=None, dto=None):
+def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, rng=None, dfrom=None, dto=None):
     from . import lab_series
+    rf, rt = _resolve_range(rng, dfrom, dto)
     s = lab_series.series(conn, analyte, unit)
     if not s["points"]:
         return _untrusted("lab-chart", f"No results on file for analyte '{analyte}'."), None
-    pts = s["points"]
+    # Window the SUMMARY to the requested range so "over the last year" reports last-year
+    # counts (the chart opens to the same window but the user can pan/zoom out to all data).
+    pts = [p for p in s["points"] if (not rf or p["t"] >= rf) and (not rt or p["t"] <= rt)]
+    if not pts:
+        d = s["domain"]
+        return _untrusted("lab-chart", f"No {s['test_name']} results in that window "
+                          f"(have {len(s['points'])} from {d['from']} to {d['to']})."), None
     abn = sum(1 for p in pts if p["status"] in ("high", "low", "abnormal"))
-    latest, dom = pts[-1], s["domain"]
-    summary = (f"Charted {s['test_name']} ({s['unit'] or 'no unit'}): {len(pts)} results from "
-               f"{dom['from']} to {dom['to']}; latest {latest['vtext']} (the lab/range marked it "
-               f"'{latest['status']}'); {abn} out-of-range. The chart is shown to the user — describe only "
-               "these counts/dates, do NOT restate individual values and do NOT interpret clinically.")
-    spec = {"analyte": analyte, "unit": s["unit"], "from": dfrom, "to": dto, "title": s["test_name"]}
+    latest, win = pts[-1], (f"the last year" if rng == "1y" else f"{pts[0]['t']} to {pts[-1]['t']}")
+    summary = (f"Charted {s['test_name']} ({s['unit'] or 'no unit'}): {len(pts)} results ({win}); "
+               f"latest {latest['vtext']} (the lab/range marked it '{latest['status']}'); {abn} out-of-range. "
+               "The chart is shown to the user — describe only these counts/dates, do NOT restate individual "
+               "values and do NOT interpret clinically.")
+    spec = {"analyte": analyte, "unit": s["unit"], "from": rf, "to": rt, "title": s["test_name"]}
     return _untrusted("lab-chart", summary), _record_chart(conn, conversation_id, spec)
 
 
@@ -1630,10 +1662,11 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name not in _mode_tool_names(mode):
         return f"Tool '{name}' is not available in {mode} mode.", None
     if name == "list_abnormal_labs":
-        return _tool_list_abnormal_labs(conn, args.get("from"), args.get("to"), args.get("limit", 8)), None
+        return _tool_list_abnormal_labs(conn, args.get("range"), args.get("from"), args.get("to"),
+                                        args.get("limit", 8)), None
     if name == "show_lab_chart":
         return _tool_show_lab_chart(conn, conversation_id, args["analyte"], args.get("unit"),
-                                    args.get("from"), args.get("to"))
+                                    args.get("range"), args.get("from"), args.get("to"))
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":

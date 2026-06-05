@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from .. import db as db_mod
@@ -264,6 +264,30 @@ def update():
             "auto-updater / set JBRAIN_UPDATE_CMD) to finish."
         ),
     }
+
+
+@router.get("/export/original-notes")
+def export_original_notes():
+    """Download JUST the original note content the user uploaded — the FIRST user-authored
+    version of each (live) note, before any AI edit, rename, link-rewrite or KB synthesis.
+    Picks the earliest note_versions row with source='user' per note (so architect/import/
+    kb/rename/structural versions are excluded), as a JSON array [{title, content_md,
+    created_at}]."""
+    conn = db_mod.get_conn()
+    rows = conn.execute(
+        "SELECT nv.title, nv.content_md, nv.created_at "
+        "FROM note_versions nv "
+        "JOIN (SELECT note_id, MIN(id) AS fid FROM note_versions "
+        "      WHERE source = 'user' GROUP BY note_id) f ON f.fid = nv.id "
+        "JOIN notes n ON n.id = nv.note_id AND n.deleted_at IS NULL "
+        "ORDER BY nv.created_at, nv.note_id"
+    ).fetchall()
+    data = [{"title": r["title"], "content_md": r["content_md"], "created_at": r["created_at"]}
+            for r in rows]
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    fname = f"jbrain-original-notes-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    return Response(content=payload, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.get("/backup")

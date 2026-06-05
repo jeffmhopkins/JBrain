@@ -1351,6 +1351,33 @@ def test_reanalyze_endpoint_also_titles_bare_dated_note(client, monkeypatch):
     assert client.get(f"/api/notes/{out['slug']}/analysis").json()["domain"] == "People"
 
 
+def test_export_original_notes(client):
+    """The export returns each note's FIRST user-authored content — not AI edits, renames,
+    KB articles, or deleted notes."""
+    import json
+    from app.db import get_conn
+    from app.services import notes as ns
+    conn = get_conn()
+    # A user note, later AI-edited + renamed (only the original 'user' text should export).
+    nid = ns.upsert_note(conn, "notes/Recipe", "MY ORIGINAL recipe text.", source="user")
+    ns.upsert_note(conn, "notes/Recipe", "AI-polished recipe.", note_id=nid, source="architect")
+    ns.upsert_note(conn, "notes/Grandma Recipe", "AI-polished recipe.", note_id=nid, source="rename")
+    # A KB (synthesized) note — never user-authored → excluded.
+    ns.upsert_note(conn, "kb/Reference/Cooking", "# synthesized", kind="kb", source="create")
+    # A user note that was deleted → excluded.
+    dead = ns.upsert_note(conn, "notes/Scratch", "throwaway", source="user")
+    ns.soft_delete(conn, dead)
+    conn.commit()
+
+    raw = client.get("/api/system/export/original-notes").content
+    data = json.loads(raw)
+    titles = {d["title"]: d["content_md"] for d in data}
+    assert titles.get("notes/Recipe") == "MY ORIGINAL recipe text."   # original title + content
+    assert "notes/Grandma Recipe" not in titles                       # not the renamed/edited version
+    assert "kb/Reference/Cooking" not in titles                       # KB excluded
+    assert "notes/Scratch" not in titles                              # deleted excluded
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

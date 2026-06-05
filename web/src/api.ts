@@ -273,6 +273,26 @@ export async function downloadBackup(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+// Download just the original user-uploaded note content (first user-authored version of
+// each note), as a JSON file — same auth+blob dance as the DB backup.
+export async function downloadOriginalNotes(): Promise<void> {
+  if (isDemo()) { alert("Demo mode — export is disabled."); return; }
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch(u("/api/system/export/original-notes"), { headers });
+  if (!res.ok) throw new ApiError("Export failed", res.status);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1]
+    || "jbrain-original-notes.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function restoreBackup<T = any>(file: File): Promise<T> {
   if (isDemo()) return { ok: true } as T;
   const fd = new FormData();

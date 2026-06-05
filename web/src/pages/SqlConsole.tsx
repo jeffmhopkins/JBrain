@@ -1,10 +1,18 @@
 import { FormEvent, useRef, useState } from "react";
-import { downloadBackup, post, restoreBackup } from "../api";
+import { downloadBackup, downloadOriginalNotes, post, restoreBackup } from "../api";
+
+// The query behind the "Export original notes" button — the first user-authored version of
+// each live note (its original title + content, before any AI edit/rename/KB synthesis).
+const ORIGINAL_NOTES_SQL =
+  "SELECT nv.title, nv.content_md, nv.created_at FROM note_versions nv " +
+  "JOIN (SELECT note_id, MIN(id) AS fid FROM note_versions WHERE source='user' GROUP BY note_id) f " +
+  "ON f.fid = nv.id JOIN notes n ON n.id = nv.note_id AND n.deleted_at IS NULL ORDER BY nv.created_at";
 
 const EXAMPLES = [
   "SELECT title, updated_at FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC",
   "SELECT target_title, COUNT(*) AS refs FROM links GROUP BY target_title ORDER BY refs DESC",
   "SELECT COUNT(*) AS notes FROM notes WHERE deleted_at IS NULL",
+  ORIGINAL_NOTES_SQL,
 ];
 
 export default function SqlConsole() {
@@ -19,6 +27,12 @@ export default function SqlConsole() {
     setBackupMsg("Preparing download…");
     try { await downloadBackup(); setBackupMsg("Backup downloaded."); }
     catch (e: any) { setBackupMsg(`Backup failed: ${e.message}`); }
+  }
+
+  async function doExportOriginal() {
+    setBackupMsg("Exporting original notes…");
+    try { await downloadOriginalNotes(); setBackupMsg("Original notes exported (JSON)."); }
+    catch (e: any) { setBackupMsg(`Export failed: ${e.message}`); }
   }
 
   async function doRestore(file: File) {
@@ -63,6 +77,11 @@ export default function SqlConsole() {
           <button className="ghost" onClick={() => fileRef.current?.click()}>Import database…</button>
           {backupMsg && <span className="muted" style={{ fontSize: 13 }}>{backupMsg}</span>}
         </div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 12, marginBottom: 4 }}>
+          Or export <strong>just your original note content</strong> — the first version you
+          wrote of each note, before any AI edit, rename, or KB synthesis (JSON).
+        </p>
+        <button className="ghost" onClick={doExportOriginal}>Export original notes</button>
       </div>
 
       <h3>SQL console</h3>

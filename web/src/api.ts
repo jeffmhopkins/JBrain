@@ -219,6 +219,15 @@ export async function attachmentObjectUrl(id: number): Promise<string> {
   return URL.createObjectURL(await attachmentBlob(id));
 }
 
+// A short-lived signed, SAME-ORIGIN URL an <img>/<audio>/<video> can load directly —
+// no blob:, no Authorization header, so no `media-src blob:` CSP dependency and real
+// range-streaming/seeking. Authed mint, then the element streams it on its own.
+export async function attachmentMediaUrl(id: number): Promise<string> {
+  if (isDemo()) return "";
+  const r = await get<{ url: string }>(`/api/attachments/${id}/media-url`);
+  return u(r.url);
+}
+
 // Like attachmentObjectUrl but verifies the bytes are actually an image. If the
 // server returns 200 with a non-image body (e.g. an older backend whose SPA
 // fallback serves index.html for /api/attachments/.../download), surface a clear

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { analyzeAttachment, attachmentImageUrl, attachmentObjectUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, transcribeAttachment, uploadAttachment } from "../api";
+import { analyzeAttachment, attachmentImageUrl, attachmentMediaUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, transcribeAttachment, uploadAttachment } from "../api";
 import { useAuth } from "../App";
 import { Icon } from "./Icon";
 import Modal from "./Modal";
@@ -29,10 +29,10 @@ const isMedia = (a: { mime: string; filename: string }) => isAudio(a.mime, a.fil
 const isTranscribable = (a: { mime: string; filename: string }) => isMedia(a);
 // Image vision summaries and audio/video transcripts share the analysis_* sidecar slot.
 const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) || isMedia(a);
-// Auto-fetch a media file's bytes for inline playback only when it's small enough that the
-// eager download is cheap; above this, render a "Load player" button so opening a note never
-// pulls a big (now up to 100 MB) video just to show a player.
-const PLAYER_AUTOLOAD_MAX = 25 * 1024 * 1024;
+// Images are previewed by downloading their bytes into a data URL; skip that eager fetch for
+// unusually large images (use "View" instead). Audio/video no longer download at all — they
+// stream from a signed URL — so this cap is image-only now.
+const IMAGE_PREVIEW_MAX = 25 * 1024 * 1024;
 
 export default function Attachments({ slug, onNoteChanged }: { slug: string; onNoteChanged?: () => void }) {
   const { hasLlm } = useAuth();
@@ -73,7 +73,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
     let cancelled = false;
     (async () => {
       for (const a of items) {
-        if (!isImage(a.mime) || thumbsRef.current[a.id] || a.byte_size > PLAYER_AUTOLOAD_MAX) continue;
+        if (!isImage(a.mime) || thumbsRef.current[a.id] || a.byte_size > IMAGE_PREVIEW_MAX) continue;
         try {
           const url = await attachmentImageUrl(a.id, a.byte_size);
           if (cancelled) { URL.revokeObjectURL(url); return; }
@@ -87,28 +87,19 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
   }, [items]);
   useEffect(() => () => { if (viewing?.kind === "image") URL.revokeObjectURL(viewing.url); }, [viewing]);
 
-  // Inline players: fetch a media file's bytes once (authed) into a blob URL for an
-  // <audio>/<video controls> element. Kept until unmount, then revoked. (CSP allows
-  // media-src blob:.) Small files auto-load; bigger ones wait for a "Load player" tap so
-  // opening a note never eagerly pulls a large video. On failure we stay silent — Download works.
-  useEffect(() => () => { Object.values(mediaRef.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
-  async function loadPlayer(a: Attachment) {
-    if (mediaRef.current[a.id]) return;
-    try {
-      const url = await attachmentObjectUrl(a.id);
-      if (!alive.current) { URL.revokeObjectURL(url); return; }
-      setMediaUrls((u) => (u[a.id] ? (URL.revokeObjectURL(url), u) : { ...u, [a.id]: url }));
-    } catch (e: any) { setError(`Couldn’t load player for “${a.filename}” — ${attErr(e)}`); }
-  }
+  // Inline players: mint a short-lived signed, same-origin streaming URL and hand it straight
+  // to the <audio>/<video> element. No blob download (so a big video isn't pulled into memory,
+  // and seeking range-streams), and no blob: URL (so no `media-src` CSP dependency — the source
+  // is 'self'). On failure the element's onError surfaces a clear message; Download always works.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       for (const a of items) {
-        if (!isMedia(a) || mediaRef.current[a.id] || a.byte_size > PLAYER_AUTOLOAD_MAX) continue;
+        if (!isMedia(a) || mediaRef.current[a.id]) continue;
         try {
-          const url = await attachmentObjectUrl(a.id);
-          if (cancelled) { URL.revokeObjectURL(url); return; }
-          setMediaUrls((u) => ({ ...u, [a.id]: url }));
+          const url = await attachmentMediaUrl(a.id);
+          if (cancelled) return;
+          if (url) setMediaUrls((u) => ({ ...u, [a.id]: url }));
         } catch { /* download button still works */ }
       }
     })();
@@ -256,18 +247,11 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
                    onError={() => setMediaErr((m) => ({ ...m, [a.id]: "playback" }))} />
           )}
           {isMedia(a) && mediaErr[a.id] && (
-            // The blob loaded but the element refused it — almost always the server's CSP is
-            // missing `media-src 'self' blob:` (older Caddyfile), or the codec is unsupported.
-            // Say so plainly instead of showing a dead player; Download always works.
+            // Same-origin streaming, so it isn't a CSP problem — the browser just can't decode
+            // this codec inline (e.g. HEVC/H.265 from some phones). Download → native player works.
             <div style={{ fontSize: 11, color: "var(--danger)", margin: "8px 0 2px" }}>
-              Can’t play inline — use Download. If self-hosted, add <code>media-src 'self' blob:</code> to your Caddy CSP and restart.
+              Can’t play this {isVideo(a.mime, a.filename) ? "video" : "audio"} inline (unsupported codec) — use Download to play it.
             </div>
-          )}
-          {isMedia(a) && !mediaUrls[a.id] && (
-            // Larger media (> auto-load cap): fetch the bytes only when asked.
-            <button className="ghost" style={{ fontSize: 11, padding: "4px 10px", marginTop: 8 }} onClick={() => loadPlayer(a)}>
-              ▶ Load {isVideo(a.mime, a.filename) ? "video" : "audio"} player ({humanSize(a.byte_size)})
-            </button>
           )}
           {isEnrichable(a) && a.analysis_status === "pending" && (
             <div className="row" style={{ marginTop: 6, fontSize: 11 }}>

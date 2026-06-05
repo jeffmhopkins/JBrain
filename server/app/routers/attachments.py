@@ -1,16 +1,19 @@
 """Attachment REST API: upload (multipart), list, view, download, delete."""
 import re
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import attachments as att_svc
-from ..services import audio_transcription, image_analysis, llm
+from ..services import audio_transcription, image_analysis, llm, media_tokens
 
 router = APIRouter(prefix="/api", tags=["attachments"], dependencies=[CurrentUser])
+# Token-gated (NOT bearer-gated) routes media elements can hit directly. The signed,
+# short-lived token authorizes a single attachment, so no access key rides in the URL.
+public_router = APIRouter(prefix="/api", tags=["attachments"])
 
 
 def _note_id_for_slug(conn, slug: str) -> int:
@@ -113,6 +116,66 @@ def get_attachment(att_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
     return dict(row)
+
+
+@router.get("/attachments/{att_id}/media-url")
+def media_url(att_id: int):
+    """Mint a short-lived signed URL the browser's <img>/<audio>/<video> can load
+    directly (same-origin, no bearer header, no blob: → no media-src CSP needed)."""
+    conn = get_conn()
+    _require_attachment(conn, att_id)
+    token = media_tokens.make_token(conn, att_id)
+    return {"url": f"/api/attachments/{att_id}/stream?token={token}"}
+
+
+@public_router.get("/attachments/{att_id}/stream")
+def stream_attachment(att_id: int, request: Request, token: str = ""):
+    """Range-capable inline streaming for media, gated by the signed token (not the
+    access key, which never belongs in a media URL). Only real media renders inline;
+    anything script-y/unknown is neutralised to a forced download (no same-origin XSS)."""
+    conn = get_conn()
+    if not media_tokens.verify_token(conn, att_id, token):
+        raise HTTPException(status_code=403, detail="Invalid or expired media link.")
+    row = conn.execute(
+        "SELECT filename, mime, content_blob FROM attachments WHERE id = ?", (att_id,)
+    ).fetchone()
+    if not row or row["content_blob"] is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    data = bytes(row["content_blob"])
+    total = len(data)
+    mime = row["mime"] or "application/octet-stream"
+    base = {"Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600"}
+
+    inlineable = mime.startswith(("image/", "audio/", "video/")) and "javascript" not in mime and mime != "image/svg+xml"
+    if not inlineable:
+        safe_name = re.sub(r'[\r\n"\\]', "_", (row["filename"] or "file"))
+        return Response(content=data, media_type="application/octet-stream",
+                        headers={**base, "Content-Disposition": f'attachment; filename="{safe_name}"'})
+
+    rng = request.headers.get("range", "")
+    if rng.startswith("bytes="):
+        spec = rng[6:].split(",")[0].strip()
+        start_s, _, end_s = spec.partition("-")
+        try:
+            if not start_s:                       # suffix range: last N bytes
+                n = int(end_s)
+                start, end = max(0, total - n), total - 1
+            else:
+                start = int(start_s)
+                end = int(end_s) if end_s else total - 1
+            if start < 0 or start >= total or end < start:
+                raise ValueError
+        except ValueError:
+            return Response(status_code=416, headers={**base, "Content-Range": f"bytes */{total}"})
+        end = min(end, total - 1)
+        chunk = data[start:end + 1]
+        return Response(content=chunk, status_code=206, media_type=mime,
+                        headers={**base, "Content-Disposition": "inline",
+                                 "Content-Range": f"bytes {start}-{end}/{total}",
+                                 "Content-Length": str(len(chunk))})
+    return Response(content=data, media_type=mime,
+                    headers={**base, "Content-Disposition": "inline", "Content-Length": str(total)})
 
 
 @router.get("/attachments/{att_id}/download")

@@ -229,12 +229,15 @@ analyses — already supported. The only watch-item is **fan-out cost/concurrenc
 7. **Carrier-note title.** With one file, today's "filename" title is good. With many, use
    "Attached N files (2026-06-05)" or the first filename + "(+N more)"; keep it a real,
    findable title.
-8. **Size/quota.** Per-file cap is **100 MB** (raised from 10 MB for audio/video), enforced
-   client- and server-side. Multi-upload + the higher cap make it *easy* to push hundreds of
-   MB of blobs into SQLite per note; the whole-file `await file.read()` and the inline-player
-   blob fetch are both in-memory, so the UI only auto-fetches media/images under a 25 MB cap
-   (larger ones get a "Load player" / "View" affordance). Backups still carry blobs; a soft
-   per-note total warning is worth adding later.
+8. **Size/quota & media delivery.** Per-file cap is **100 MB** (raised from 10 MB for
+   audio/video), enforced client- and server-side. Audio/video are **not** downloaded into a
+   `blob:` to play — they stream from a short-lived **signed, same-origin URL**
+   (`/api/attachments/{id}/stream?token=…`) with HTTP **range** support, so a 100 MB video
+   seeks/streams instead of loading into memory, and there's **no `media-src` CSP / service-worker
+   dependency** (the source is `'self'`, the token authorizes one attachment so no access key
+   rides in the URL). Images still preview via a data URL, skipped above a 25 MB cap. Upload still
+   does a whole-file `await file.read()`; backups carry blobs; a soft per-note total warning is
+   worth adding later.
 9. **FTS/embedding load.** Each attachment embeds independently (already true). A 10-file
    batch = 10 embedding passes; fine, they're local. No new index pressure.
 10. **Share exposure.** Share already emits the full array, and download is per-id with the

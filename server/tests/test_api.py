@@ -6284,3 +6284,57 @@ def test_video_is_transcribable_and_auto_starts(client, monkeypatch):
     assert r.status_code == 200
     assert r.json().get("analysis", {}).get("status") == "pending"
     assert len(started) == 1
+
+
+def test_signed_media_streaming_with_range_and_token_gate(client):
+    # Media streams from a signed, same-origin URL: range-capable, token-gated (no bearer),
+    # and NOT dependent on a blob:/CSP path. Non-media is neutralised to a forced download.
+    from app.db import get_conn
+    from fastapi.testclient import TestClient
+    from app.main import app
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "clip", "title": "Vid"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    blob = bytes(range(256)) * 8          # 2048 deterministic bytes
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "clip.mp4", "video/mp4", "", blob, len(blob), "sha-vid")).fetchone()["id"]
+    conn.commit()
+
+    url = client.get(f"/api/attachments/{aid}/media-url").json()["url"]
+    assert url.startswith(f"/api/attachments/{aid}/stream?token=")
+
+    # Full fetch — works WITHOUT a bearer header (token authorizes it); right type + bytes.
+    bare = TestClient(app)
+    full = bare.get(url)
+    assert full.status_code == 200
+    assert full.headers["content-type"].startswith("video/mp4")
+    assert full.headers.get("accept-ranges") == "bytes"
+    assert full.content == blob
+
+    # Range request → 206 partial with a correct Content-Range.
+    part = bare.get(url, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206
+    assert part.headers["content-range"] == f"bytes 0-99/{len(blob)}"
+    assert part.content == blob[:100]
+
+    # A tampered token is rejected even with a valid bearer (route is token-gated, not bearer).
+    assert client.get(url + "TAMPER").status_code == 403
+
+
+def test_signed_media_stream_forces_download_for_non_media(client):
+    from app.db import get_conn
+    conn = get_conn()
+    note = client.post("/api/notes/entry", json={"text": "doc", "title": "Doc"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (nid, "report.pdf", "application/pdf", "", b"%PDF-1.4 body", 13, "sha-doc")).fetchone()["id"]
+    conn.commit()
+    url = client.get(f"/api/attachments/{aid}/media-url").json()["url"]
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/octet-stream")   # not rendered inline
+    assert "attachment" in r.headers.get("content-disposition", "")

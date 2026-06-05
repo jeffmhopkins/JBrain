@@ -200,6 +200,9 @@ for r in (auth_router, notes, chat, search, graph, staging, sql_console, attachm
 # The dictation-capture route (POST /api/notes/entry) accepts a per-person location key
 # in addition to the full key, so it lives on a separate, less-restricted router.
 app.include_router(notes.entry_router)
+# Token-gated media streaming (signed URL, not bearer) so <img>/<audio>/<video> can load
+# attachments directly same-origin — no blob:, no media-src CSP dependency.
+app.include_router(attachments.public_router)
 
 
 @app.get("/api/health")

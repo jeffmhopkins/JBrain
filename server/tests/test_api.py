@@ -2387,6 +2387,77 @@ def test_note_chunking_finds_buried_terms_and_collapses(monkeypatch, tmp_path):
     assert "notes/daily/x" in [h["title"] for h in search.hybrid_notes(conn, "thrombocytopenic purpura", 8)]
 
 
+def test_semantic_search_filters(monkeypatch):
+    """kind / tag / recency filters and the max_distance floor each narrow
+    semantic_search, while the unfiltered call still surfaces everything on topic.
+    Deterministic bag-of-words vectors so the test needs no model download. This is
+    what lets a workflow re-retrieve focused, in-scope sources (e.g. only 'entry'
+    notes tagged 'health' since a date) instead of the whole corpus."""
+    import hashlib
+    os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "filt.db"),
+                      JBRAIN_ACCESS_KEY=TEST_KEY, BRAIN_NAME="Test Brain", JBRAIN_DOMAIN="localhost")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    import app.db as db
+    db._initialized = False
+    db._local.__dict__.clear()
+    db.init_db()
+    from app.services import embeddings, notes as ns
+    dim = embeddings.EMBEDDING_DIM
+
+    def fake_embed(text):
+        v = [0.0] * dim
+        for tok in str(text).lower().split():
+            v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+        return v
+    monkeypatch.setattr(embeddings, "embed", fake_embed)
+    monkeypatch.setattr(embeddings, "embed_many", lambda ts: [fake_embed(t) for t in ts])
+
+    conn = db.get_conn()
+    topic = "tinnitus audiology ringing ears treatment"
+    # Notes that all match the topic, differing only in kind / tags / age, plus one
+    # off-topic note that should never qualify as a focused source.
+    e1 = ns.upsert_note(conn, "notes/health/tinnitus log", topic + " appointment today", kind="entry")
+    ns.upsert_note(conn, "kb/Health/Tinnitus", topic + " synthesized article", kind="kb")
+    old = ns.upsert_note(conn, "notes/health/old tinnitus", topic + " years ago", kind="entry")
+    off = ns.upsert_note(conn, "notes/music/synth patch", "eurorack oscillator filter envelope patch", kind="entry")
+    ns.set_tags(conn, e1, ["health"])
+    ns.set_tags(conn, off, ["music"])
+    conn.execute("UPDATE notes SET created_at = '2020-01-01 00:00:00' WHERE id = ?", (old,))
+    conn.commit()
+
+    def titles(hits):
+        return {h["title"] for h in hits}
+
+    # Unfiltered: every on-topic note surfaces (default behaviour unchanged).
+    base = titles(embeddings.semantic_search(conn, topic, 10))
+    assert {"notes/health/tinnitus log", "kb/Health/Tinnitus", "notes/health/old tinnitus"} <= base
+
+    # kind: a focused re-retrieval pulls source ENTRIES, never other kb articles.
+    assert "kb/Health/Tinnitus" not in titles(embeddings.semantic_search(conn, topic, 10, kind="entry"))
+    assert titles(embeddings.semantic_search(conn, topic, 10, kind="kb")) == {"kb/Health/Tinnitus"}
+
+    # tag: only notes carrying the tag.
+    assert titles(embeddings.semantic_search(conn, topic, 10, tags=["health"])) == {"notes/health/tinnitus log"}
+
+    # recency: the 2020 note is excluded by a 2021 cutoff, the recent one kept.
+    recent = titles(embeddings.semantic_search(conn, topic, 10, since="2021-01-01"))
+    assert "notes/health/old tinnitus" not in recent
+    assert "notes/health/tinnitus log" in recent
+
+    # max_distance floor: an impossible floor drops everything (the KNN otherwise
+    # always returns its nearest rows even when nothing is on topic).
+    assert embeddings.semantic_search(conn, topic, 10, max_distance=-1.0) == []
+    # A floor between the nearest and farthest hit drops the far one, keeps the near.
+    hits = embeddings.semantic_search(conn, topic, 10, kind="entry")
+    near, far = min(h["distance"] for h in hits), max(h["distance"] for h in hits)
+    assert near < far                                   # a spread to threshold on
+    mid = (near + far) / 2
+    floored = embeddings.semantic_search(conn, topic, 10, kind="entry", max_distance=mid)
+    assert floored and all(h["distance"] <= mid for h in floored)
+    assert len(floored) < len(hits)                     # the off-topic note was cut
+
+
 def test_geotrail_math(client):
     """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
     from app.db import get_conn

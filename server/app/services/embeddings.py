@@ -205,29 +205,60 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
     return [dict(r) for r in rows if r["distance"] <= max_distance]
 
 
-def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:
+def semantic_search(conn, query: str, limit: int = 10, *, kind: str | None = None,
+                    tags: list[str] | None = None, since: str | None = None,
+                    max_distance: float | None = None) -> list[dict]:
     """Return notes most similar in meaning to the query, collapsed to each note's
     BEST-matching chunk. Searching chunks (not the whole-note vector) means a long
     note surfaces on the part that matches, instead of being judged only by the
-    truncated head the embedder saw. Returns [{id, title, slug, distance}]."""
+    truncated head the embedder saw. Returns [{id, title, slug, distance}].
+
+    Optional metadata filters (all keyword-only, default off → unchanged behaviour):
+      kind          — only notes of this kind ('entry' | 'kb' | 'daily').
+      tags          — only notes carrying at least one of these tag names.
+      since         — only notes with created_at >= this ISO timestamp.
+      max_distance  — drop hits farther than this vector distance (a relevance floor,
+                      like ENTITY_SIM_MAX_DISTANCE; KNN otherwise always returns its k
+                      nearest even when nothing is actually on topic).
+
+    sqlite-vec has no metadata partition key, so the filters apply AFTER the KNN picks
+    its k nearest chunks — which means an aggressive filter could starve the result.
+    We compensate by over-fetching a much larger k whenever any filter is active."""
     qvec = embed(query)
+    filtering = bool(kind or tags or since)
     # Over-fetch chunks so several distinct notes survive even when one long note
-    # contributes many near-neighbour chunks; then collapse to best-per-note.
-    k = max(limit * 10, 80)
+    # contributes many near-neighbour chunks; then collapse to best-per-note. When a
+    # metadata filter is active, reach far deeper into the KNN so post-filtering still
+    # fills `limit` instead of returning a near-empty list.
+    k = max(limit * 40, 400) if filtering else max(limit * 10, 80)
+    joins = ""
+    where = ["v.embedding MATCH ?", "k = ?", "n.deleted_at IS NULL"]
+    params: list = [sqlite_vec.serialize_float32(qvec), k]
+    if kind:
+        where.append("n.kind = ?")
+        params.append(kind)
+    if since:
+        where.append("n.created_at >= ?")
+        params.append(since)
+    if tags:
+        joins = ("JOIN note_tags nt ON nt.note_id = n.id "
+                 "JOIN tags t ON t.id = nt.tag_id")
+        where.append(f"t.name IN ({','.join('?' * len(tags))})")
+        params.extend(tags)
     rows = conn.execute(
-        """
-        SELECT c.note_id AS id, n.title, n.slug, v.distance
-        FROM vec_note_chunks v
-        JOIN note_chunks c ON c.id = v.chunk_id
-        JOIN notes n ON n.id = c.note_id
-        WHERE v.embedding MATCH ? AND k = ?
-          AND n.deleted_at IS NULL
-        ORDER BY v.distance
-        """,
-        (sqlite_vec.serialize_float32(qvec), k),
+        f"SELECT c.note_id AS id, n.title, n.slug, v.distance "
+        f"FROM vec_note_chunks v "
+        f"JOIN note_chunks c ON c.id = v.chunk_id "
+        f"JOIN notes n ON n.id = c.note_id "
+        f"{joins} "
+        f"WHERE {' AND '.join(where)} "
+        f"ORDER BY v.distance",
+        params,
     ).fetchall()
     best: dict[int, dict] = {}
     for r in rows:  # rows are distance-ascending → first hit per note is its best chunk
+        if max_distance is not None and r["distance"] > max_distance:
+            continue
         if r["id"] not in best:
             best[r["id"]] = {"id": r["id"], "title": r["title"], "slug": r["slug"],
                              "distance": r["distance"]}

@@ -147,8 +147,14 @@ def _p_create_review(ctx, title, message="", link_title=None):
     return {"id": rid, "link_slug": link_slug}
 
 
-def _p_semantic_search(ctx, query, limit=8):
-    return embeddings.semantic_search(ctx.conn, query, int(limit))
+def _p_semantic_search(ctx, query, limit=8, kind=None, tags=None, since=None, max_distance=None):
+    return embeddings.semantic_search(
+        ctx.conn, query, int(limit),
+        kind=kind or None,
+        tags=list(tags) if tags else None,
+        since=since or None,
+        max_distance=float(max_distance) if max_distance is not None else None,
+    )
 
 
 def _p_analyze_pending(ctx, limit=60, force=False):
@@ -1226,9 +1232,13 @@ _PRIMITIVE_META: dict[str, dict] = {
                       "inputs": [{"name": "title", "type": "str", "required": True},
                                  {"name": "message", "type": "str"}, {"name": "link_title", "type": "str"}],
                       "output": "object"},
-    "semantic_search": {"summary": "Vector search over notes.",
+    "semantic_search": {"summary": "Vector search over notes, with optional kind/tag/recency filters and a relevance floor.",
                         "inputs": [{"name": "query", "type": "str", "required": True},
-                                   {"name": "limit", "type": "int"}], "output": "list"},
+                                   {"name": "limit", "type": "int"},
+                                   {"name": "kind", "type": "str"},
+                                   {"name": "tags", "type": "list"},
+                                   {"name": "since", "type": "str"},
+                                   {"name": "max_distance", "type": "float"}], "output": "list"},
     "find_unfiled": {"summary": "List loose notes (no folder, or one level under notes/) to re-file.",
                      "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
     "plan_moves": {"summary": "LLM-propose a destination folder for each loose note (reusing existing folders).",

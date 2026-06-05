@@ -535,10 +535,12 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
             revised, v = r2, v2
         if not r2 or cur >= prev:
             break
-    open_ids = {it["id"] for it in open_items}
-    resolved = [{"id": int(r["id"]), "how": str(r.get("how") or "")}
+    by_id = {it["id"]: it for it in open_items}
+    resolved = [{"id": int(r["id"]), "kind": by_id[int(r["id"])]["kind"],
+                 "outcome": str(r.get("outcome") or "").strip().lower(),
+                 "how": str(r.get("how") or "")}
                 for r in (payload.get("resolved") or [])
-                if isinstance(r, dict) and _isint(r.get("id")) and int(r["id"]) in open_ids]
+                if isinstance(r, dict) and _isint(r.get("id")) and int(r["id"]) in by_id]
     new = [{"kind": str(n.get("kind") or "note"), "body": str(n.get("body") or "").strip()}
            for n in (payload.get("new") or []) if isinstance(n, dict) and str(n.get("body") or "").strip()]
     return {"title": article_title, "ok": v["ok"], "changed": revised != content.strip(),
@@ -1086,26 +1088,43 @@ def split_article(conn, parent: str, child: str, child_sources: list[str]) -> di
         kb_lock_release(conn)
 
 
-def _apply_maintain(conn, out: dict, version_note: str) -> bool:
-    """Apply a maintain_one result: save the revision (versioned), resolve addressed items
-    (recording HOW), record any new items. Returns True if the article content changed."""
+# An item CLOSES only on a genuine settlement outcome; anything else (incl. a missing or
+# unrecognized outcome) leaves it OPEN. answered/applied/reconciled also require the article
+# to have actually changed this pass — a claimed fix with no edit is downgraded and kept open
+# so "no source / no edit needed" can never silently close work. "moot" is exempt (an item can
+# legitimately already be answered, or be voided by a removed claim, with nothing left to edit).
+_CLOSING = {"answered", "applied", "reconciled", "moot"}
+_NEEDS_EDIT = {"answered", "applied", "reconciled"}
+
+
+def _apply_maintain(conn, out: dict, version_note: str) -> tuple[bool, int]:
+    """Apply a maintain_one result: save the revision (versioned), close the items the model
+    GENUINELY settled (recording HOW), record any new items. An item closes only when its
+    `outcome` is a real settlement (see _CLOSING) — and answered/applied/reconciled also
+    require the article to have changed, else the item stays open. Returns (content_changed,
+    number_of_items_actually_closed)."""
     from . import article_talk
     from . import notes as notes_svc
     if not out["ok"]:
-        return False
+        return False, 0
     changed = bool(out["changed"] and out["content_md"])
     if changed:
         notes_svc.upsert_note(conn, out["title"], out["content_md"], kind="kb", version_note=version_note)
+    closed = 0
     for r in out["resolved"]:
-        # If the model claimed an item resolved but the article didn't actually change, mark
-        # it so the log is honest (it's auditable / reopenable) rather than looking like work.
+        outcome = r.get("outcome") or ""
         how = r["how"] or ""
-        if not changed:
-            how = ("(no edit needed) " + how).strip()
+        if outcome not in _CLOSING:
+            continue                                    # unresolvable / unknown → stays open
+        if outcome in _NEEDS_EDIT and not changed:
+            continue                                    # claimed a fix but made no edit → stays open
+        if outcome == "moot" and not changed:
+            how = ("(moot — no edit needed) " + how).strip()
         article_talk.resolve_with(conn, r["id"], how)
+        closed += 1
     if out["new"]:
         article_talk.record(conn, out["title"], out["new"], author="ai")
-    return changed
+    return changed, closed
 
 
 def maintain_batch(conn, limit: int = 20) -> dict:
@@ -1119,16 +1138,19 @@ def maintain_batch(conn, limit: int = 20) -> dict:
         "ORDER BY t.article_title LIMIT ?",
         (int(limit),)).fetchall()
     known = _known_titles(conn)
-    changed = resolved = failed = 0
+    changed = resolved = examined = failed = 0
     for row in rows:
         out = maintain_one(conn, row["title"], known)
         if not out["ok"]:
             failed += 1
             continue
-        changed += 1 if _apply_maintain(conn, out, "maintenance pass") else 0
-        resolved += len(out["resolved"])
+        did_change, n_closed = _apply_maintain(conn, out, "maintenance pass")
+        changed += 1 if did_change else 0
+        resolved += n_closed
+        examined += len(out["resolved"])
     conn.commit()
-    return {"articles": len(rows), "changed": changed, "resolved": resolved, "failed": failed}
+    return {"articles": len(rows), "changed": changed, "resolved": resolved,
+            "examined": examined, "kept_open": examined - resolved, "failed": failed}
 
 
 def _articles_citing(conn, note_id: int) -> set[str]:
@@ -1223,7 +1245,7 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
     items = items[:int(max_articles)]
 
     known = _known_titles(conn)
-    changed = resolved = failed = 0
+    changed = resolved = examined = failed = 0
     bad_articles = set(deferred)
     for title, slot in items:
         out = maintain_one(conn, title, known,
@@ -1232,8 +1254,10 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
             failed += 1
             bad_articles.add(title)
             continue
-        changed += 1 if _apply_maintain(conn, out, "incremental update") else 0
-        resolved += len(out["resolved"])
+        did_change, n_closed = _apply_maintain(conn, out, "incremental update")
+        changed += 1 if did_change else 0
+        resolved += n_closed
+        examined += len(out["resolved"])
 
     # Brand-new recurring subjects: CREATE their articles now — maintenance owns this, no
     # waiting for a full rebuild. create_article dedups/folds and refuses thin subjects; a
@@ -1250,7 +1274,8 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
     set_meta(conn, _WATERMARK, new_wm)
     conn.commit()
     return {"changes": len(changes), "articles": len(items), "changed": changed,
-            "resolved": resolved, "failed": failed, "deferred": len(deferred),
+            "resolved": resolved, "examined": examined, "kept_open": examined - resolved,
+            "failed": failed, "deferred": len(deferred),
             "created": subj["created"], "new_subjects": subj["created"] + subj["nudged"]}
 
 

@@ -1855,15 +1855,51 @@ def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k: (
         "# Allan\nAllan moved to Cocoa in 2019.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n"
-        f'\n```maintain\n{{"resolved": [{{"id": {d1}, "how": "Added the 2019 move year from the source."}}]}}\n```\n'))
+        f'\n```maintain\n{{"resolved": [{{"id": {d1}, "outcome": "applied", '
+        f'"how": "Added the 2019 move year from the source."}}]}}\n```\n'))
 
     res = wiki_build.maintain_batch(conn, limit=10)
-    assert res["changed"] == 1 and res["resolved"] == 1
+    assert res["changed"] == 1 and res["resolved"] == 1 and res["kept_open"] == 0
     body = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Allan'").fetchone()["content_md"]
     assert "2019" in body                                              # directive applied + saved
     talk = {t["id"]: t for t in article_talk.list_for(conn, "kb/People/Allan")}
     assert talk[d1]["resolved_at"] and "2019" in talk[d1]["resolution"]  # resolved WITH how
     assert not talk[d2]["resolved_at"]                                 # the unanswerable question stays open
+
+
+def test_wiki_maintain_keeps_unsettled_items_open(client, monkeypatch):
+    """The maintenance pass must NOT close an item just because the model listed it: an
+    `unresolvable` outcome (no sources to settle it) stays open, and a claimed
+    answered/applied with no actual article edit is downgraded and ALSO stays open. This is
+    the false-resolution fix — "no source / no edit needed" can never silently close work."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src2", "Bea volunteers at the shelter on weekends, per her own note.")
+    conn.commit()
+    ns.upsert_note(conn, "kb/People/Bea",
+                   "# Bea\nBea volunteers at the local shelter on weekends.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/src2]] — 2026-06-01\n", kind="kb")
+    conn.commit()
+    q1 = article_talk.add(conn, "kb/People/Bea", "question", "What is her exact birth date?")
+    q2 = article_talk.add(conn, "kb/People/Bea", "todo", "Confirm the shelter's name.")
+    conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    # Model returns the article essentially unchanged and claims BOTH items handled — one as
+    # honestly unresolvable, one as a bogus "answered" with no edit backing it.
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: (
+        "# Bea\nBea volunteers at the local shelter on weekends.[^s1]\n\n"
+        "## References\n[^s1]: [[notes/src2]] — 2026-06-01\n"
+        f'\n```maintain\n{{"resolved": [{{"id": {q1}, "outcome": "unresolvable", "how": "no source"}}, '
+        f'{{"id": {q2}, "outcome": "answered", "how": "claimed but made no edit"}}]}}\n```\n'))
+
+    res = wiki_build.maintain_batch(conn, limit=10)
+    assert res["resolved"] == 0 and res["examined"] == 2 and res["kept_open"] == 2
+    talk = {t["id"]: t for t in article_talk.list_for(conn, "kb/People/Bea")}
+    assert not talk[q1]["resolved_at"]      # unresolvable → stays open
+    assert not talk[q2]["resolved_at"]      # answered-but-no-edit → downgraded, stays open
 
 
 def test_review_open_talk_opens_session(client):

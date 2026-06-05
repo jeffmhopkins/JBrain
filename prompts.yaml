@@ -549,10 +549,18 @@ actions:
     The owner is {owner}; first-person in the sources refers to them (resolve by name).
 
     Work each OPEN ITEM:
-    - directive — a standing instruction from the owner; APPLY it.
-    - conflict  — sources disagree; reconcile only if the sources now allow, else leave it.
-    - question  — answer it in the article if the sources support an answer.
-    - todo      — do it if the sources support it.
+    - directive — a standing instruction from the owner; APPLY it (it stays OPEN until applied).
+    - conflict  — sources disagree; reconcile only if the sources now allow, else leave it open.
+    - question  — answer it in the article if the sources support an answer, else leave it open.
+    - todo      — do it if the sources support it, else leave it open.
+
+    RESOLVE ONLY WHAT YOU GENUINELY SETTLED. For each item you settle, report an `outcome`:
+    answered (you put the answer in the article), applied (you did the directive/todo),
+    reconciled (you fixed the conflict), or moot (it's already answered in the article, or a
+    removed claim made it no longer apply — fine even with no edit). If you examined an item
+    and STILL can't settle it from the sources, report outcome "unresolvable" with a one-line
+    reason — it STAYS OPEN. "No new source / still a stub / no edit needed / pending richer
+    sourcing" is unresolvable, NOT a resolution. Never close an item just because you looked at it.
 
     SOURCES MAY HAVE CHANGED since this article was written:
     - Integrate durable new facts from the NEW/CHANGED SOURCES (cite them).
@@ -594,9 +602,12 @@ actions:
 
     After the article, append EXACTLY one fenced block (valid JSON):
     ```maintain
-    {"resolved": [{"id": 12, "how": "one sentence on what you changed"}], "new": [{"kind": "conflict|question|todo|note|restructure", "body": "..."}]}
+    {"resolved": [{"id": 12, "outcome": "answered|applied|reconciled|moot|unresolvable", "how": "one short sentence"}], "new": [{"kind": "conflict|question|todo|note|restructure", "body": "..."}]}
     ```
-    List every OPEN-ITEM id you actually addressed in "resolved"; omit ids you left open.
+    List EVERY OPEN-ITEM id you examined in "resolved", each with its `outcome`. An item
+    CLOSES only if its outcome is answered, applied, reconciled, or moot; outcome
+    "unresolvable" (or a missing/unknown outcome) leaves it OPEN for a later pass — so use
+    "unresolvable" with a one-line `how` whenever the sources still don't let you settle it.
     "new" is optional — raise it for something genuinely worth a later look, including a
     split/fold/merge hint as a "restructure" per above.
 

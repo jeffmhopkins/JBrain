@@ -251,6 +251,7 @@ export default function MapPage() {
   // Load both the trail and the located notes for the chosen range.
   useEffect(() => {
     setLoading(true);
+    tsCache.current.clear();         // fresh range replaces all points → drop stale parses
     needFitRef.current = true;       // a fresh range → refit once
     followingRef.current = true;     // …and re-pin to the live edge
     const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
@@ -305,7 +306,14 @@ export default function MapPage() {
       ...points.map((p) => [p.lat, p.lon] as [number, number]),
       ...notes.map((n) => [n.lat, n.lon] as [number, number]),
     ];
-    if (coords.length) { m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 }); needFitRef.current = false; }
+    if (coords.length) {
+      m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 });
+      needFitRef.current = false;
+      // Sync the zoom that drives DP tolerance to the fitted zoom NOW, so the first
+      // trail paint simplifies at the right detail instead of flashing the over-collapsed
+      // zoom-2 track for the frame before `zoomend` fires.
+      setZoomLevel((cur) => { const z = Math.round(m.getZoom()); return cur === z ? cur : z; });
+    }
   }, [points, notes]);
 
   // ?focus=<slug>: center on that note and open its pin, regardless of scrub.

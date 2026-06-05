@@ -3392,7 +3392,7 @@ def test_locations_list_truncation_header(client):
     for i in range(5):
         conn.execute(
             "INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?, ?, ?, ?)",
-            (40.0 + i, -74.0, f"2026-06-0{i + 1} 10:00:00", "Mom"),
+            (40.0 + i, -74.0, f"2026-06-{i + 1:02d} 10:00:00", "Mom"),
         )
     conn.commit()
 
@@ -3406,7 +3406,13 @@ def test_locations_list_truncation_header(client):
     assert rows[-1]["recorded_at"].startswith("2026-06-05")            # newest retained
     assert rows[0]["recorded_at"].startswith("2026-06-03")             # oldest 2 dropped
 
-    # limit at/above the row count → not truncated, all rows returned.
+    # limit EXACTLY at the row count → not truncated (guards the len > cap boundary).
+    r1 = client.get("/api/locations", params={"limit": 5})
+    assert r1.headers["X-Locations-Truncated"] == "0"
+    assert r1.headers["X-Locations-Count"] == "5"
+    assert len(r1.json()) == 5
+
+    # limit above the row count → not truncated, all rows returned.
     r2 = client.get("/api/locations", params={"limit": 100})
     assert r2.headers["X-Locations-Truncated"] == "0"
     assert r2.headers["X-Locations-Count"] == "5"

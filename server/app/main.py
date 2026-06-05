@@ -171,6 +171,10 @@ app.add_middleware(
     allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Custom response headers aren't readable by a cross-origin browser unless explicitly
+    # exposed (the PWA can be hosted separately from the API). Surface the trail
+    # truncation signal so a remotely-hosted client can read it.
+    expose_headers=["X-Locations-Truncated", "X-Locations-Count"],
 )
 
 for r in (auth_router, notes, chat, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical):

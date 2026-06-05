@@ -187,7 +187,8 @@ def list_locations(response: Response, since: str | None = None, until: str | No
     # share this stream): DESC + LIMIT, then reverse to chronological for the trail viewer.
     # Fetch ONE past the cap so we can tell the client (via header) when the window was
     # truncated — otherwise the OLDEST fixes vanish silently and an "All" view looks
-    # complete when it isn't. The trail viewer can surface a "showing most recent N" note.
+    # complete when it isn't. This is a wire signal only (the JSON body is unchanged); a
+    # client MAY read the header to show a "showing most recent N" note — not yet wired.
     cap = max(1, min(int(limit), 20000))
     sql += " ORDER BY recorded_at DESC LIMIT ?"
     params.append(cap + 1)

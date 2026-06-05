@@ -7,9 +7,10 @@ laggy on. This script therefore writes DIRECTLY to the SQLite DB (mirroring the 
 routers/locations.py), bypassing dedup, so you can land tens of thousands of clustered
 fixes for profiling.
 
-Run from the server/ directory (it uses the app's configured db_path):
+Run from the server/ directory. It writes DIRECTLY to the configured db_path, so point a
+throwaway DB at it (it refuses an apparent production DB without --force):
 
-    python -m scripts.seed_locations --count 18000 --people Mom,Dad --days 120
+    DB_PATH=/tmp/seed.db python -m scripts.seed_locations --count 18000 --people Mom,Dad --days 120
 
 Each person gets a continuous random-walk track (mostly small steps with occasional long
 hops + multi-fix dwells) spanning the window, plus a `people` row so the trail viewer
@@ -70,12 +71,29 @@ def main() -> None:
     ap.add_argument("--count", type=int, default=18000, help="total fixes across all people")
     ap.add_argument("--people", default="Mom,Dad", help="comma-separated person names")
     ap.add_argument("--days", type=int, default=120, help="span the track over this many days, ending now")
-    ap.add_argument("--reset", action="store_true", help="clear locations + seeded people first")
+    ap.add_argument("--reset", action="store_true", help="clear locations + seeded people first (DESTRUCTIVE)")
+    ap.add_argument("--force", action="store_true", help="allow running against a non-throwaway DB path")
     args = ap.parse_args()
 
     names = [p.strip() for p in args.people.split(",") if p.strip()]
     if not names:
         raise SystemExit("need at least one --people name")
+
+    # Footgun guard: this writes DIRECTLY to settings.db_path (default /data/brain.db, the
+    # PRODUCTION DB) and --reset does `DELETE FROM locations` (ALL history, not just seeded
+    # rows). Refuse the real DB unless the caller explicitly opts in. Point a throwaway DB
+    # at it instead, e.g.  DB_PATH=/tmp/seed.db python -m scripts.seed_locations ...
+    from app.config import get_settings
+    db_path = get_settings().db_path
+    print(f"Target DB: {db_path}")
+    looks_production = db_path == "/data/brain.db" or db_path.endswith("brain.db")
+    if looks_production and not args.force:
+        raise SystemExit(
+            "Refusing to seed what looks like the production DB. Re-run with DB_PATH=/tmp/… "
+            "for a throwaway DB, or pass --force if you really mean this DB."
+        )
+    if args.reset and not args.force:
+        raise SystemExit("--reset is destructive (DELETE FROM locations). Pass --force to confirm.")
 
     init_db()   # create the schema if this is a fresh DB (e.g. a throwaway test path)
     conn = get_conn()
@@ -89,7 +107,11 @@ def main() -> None:
     # Spread fixes across the window: even spacing as a baseline, jittered by the walk.
     total = 0
     for idx, name in enumerate(names):
-        pid = _ensure_person(conn, name, _COLORS[idx % len(_COLORS)])
+        _ensure_person(conn, name, _COLORS[idx % len(_COLORS)])
+        # Resolve person_id the SAME way ingest does (routers/locations.py), so seeded
+        # fixes carry the identical person_id production would assign for this source.
+        resolved = people_svc.resolve(conn, name)
+        pid = resolved["id"] if resolved else None
         # Give each person a different home base.
         lat0 = 40.0 + idx * 0.3 + random.uniform(-0.05, 0.05)
         lon0 = -74.0 + idx * 0.3 + random.uniform(-0.05, 0.05)
@@ -102,9 +124,11 @@ def main() -> None:
         total += len(rows)
         print(f"  {name}: {len(rows)} fixes (person_id={pid})")
     conn.commit()
-    # Sanity: resolve() should map the source back to the person for the trail colouring.
+    # Sanity: each source must resolve to a person actually NAMED that source (not just the
+    # default fallback resolve() returns for unknown sources) — i.e. colouring is distinct.
     for name in names:
-        assert people_svc.resolve(conn, name), f"resolve() failed for {name}"
+        r = people_svc.resolve(conn, name)
+        assert r and r["name"] == name, f"resolve() did not map {name!r} to its own person"
     print(f"Seeded {total} fixes for {len(names)} people over {args.days} days.")
 
 

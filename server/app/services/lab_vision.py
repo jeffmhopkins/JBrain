@@ -157,8 +157,13 @@ def _num(x) -> float | None:
 def parse_lab_image(image_bytes_list: list[bytes]) -> dict:
     """Vision+OCR extraction for image inputs. Same return shape as lab_parse.parse_lab_pdf:
     {doc_type, confidence, results, pages, skips}. A value is kept only if it appears verbatim
-    in the INDEPENDENT OCR corpus (faithfulness); rows that fail the cross-read are recorded in
-    `skips` with a reason, never silently dropped."""
+    in the INDEPENDENT OCR corpus. OCR is a CORROBORATOR, not a filter: a value OCR confirms is
+    'medium' confidence, one it can't is kept but flagged 'low' ('verify against the image') —
+    because on a noisy scan OCR routinely misreads correct values (a decimal dropped, a digit
+    confused), and silently dropping them would lose real, clinically-important results. The
+    human (who must approve every image-derived lab) is the faithfulness backstop; nothing is
+    auto-trusted, and nothing real is thrown away unseen. An ABSENT OCR engine still refuses
+    outright (we want at least one independent reader present)."""
     empty = {"doc_type": "image_unparsed", "confidence": 0.0, "results": [], "pages": len(image_bytes_list), "skips": []}
     if not image_bytes_list:
         return empty
@@ -175,22 +180,22 @@ def parse_lab_image(image_bytes_list: list[bytes]) -> dict:
     rows = _normalize(raw_rows)
     if not rows:                                       # model saw no lab values -> not a lab image
         return {"doc_type": "unknown", "confidence": 0.0, "results": [], "pages": len(image_bytes_list), "skips": []}
-    results, skips = [], []
     for r in rows:
-        if not lab_parse.is_faithful(r["value_text"], ocr):       # OCR cross-read gate
-            skips.append({"analyte": r["analyte_key"], "date": r.get("collected_at"),
-                          "value": r["value_text"], "reason": "not confirmed by OCR of the image"})
-            continue
-        results.append(r)
-    if not results:                                    # had candidate rows but none survived the gate
-        return {**empty, "skips": skips}
-    lab_parse._backfill(results)
-    lab_parse._score_confidence(results)
-    # Vision rows have no geometry margins, so confidence starts 'high' from _score_confidence;
-    # demote a notch to 'medium' to signal model-derived provenance — never auto-trust a photo.
-    for r in results:
-        if r.get("confidence") == "high":
-            r["confidence"] = "medium"
-            r.setdefault("confidence_reasons", []).append("read from image by model — verify")
-    return {"doc_type": "lab_image", "confidence": 1.0, "results": results,
-            "pages": len(image_bytes_list), "skips": skips}
+        r["_ocr_confirmed"] = lab_parse.is_faithful(r["value_text"], ocr)
+    lab_parse._backfill(rows)
+    lab_parse._score_confidence(rows)
+    # Vision rows have no geometry margins, so confidence starts 'high'. Tier by OCR corroboration
+    # (never auto-trust a photo): confirmed -> 'medium', unconfirmed -> 'low' + an explicit reason.
+    for r in rows:
+        confirmed = r.pop("_ocr_confirmed", False)
+        if confirmed:
+            if r.get("confidence") == "high":
+                r["confidence"] = "medium"
+            r.setdefault("confidence_reasons", []).append("read from image; OCR-confirmed — verify")
+        else:
+            r["confidence"] = "low"
+            r.setdefault("confidence_reasons", []).append("read from image; NOT confirmed by OCR — verify against the original")
+    n_unconf = sum(1 for r in rows if r["confidence"] == "low")
+    return {"doc_type": "lab_image", "confidence": 1.0, "results": rows,
+            "pages": len(image_bytes_list), "skips": [],
+            "ocr_unconfirmed": n_unconf}

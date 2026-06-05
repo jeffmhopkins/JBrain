@@ -211,3 +211,54 @@ Ordered so the two lowest-risk, highest-leverage items land first.
 ## Open questions
 - Confirm Leaflet `L.Canvas` repaint behavior empirically if 2A is pursued (bounds its payoff).
 - Tune z≥17 epsilon and the vertex cap against the Phase 0 dataset.
+
+---
+
+# Iteration 2 — the REAL bottleneck was the note pins (post-Phase-1 follow-up)
+
+Phase 1 shipped but the map still stuttered on **large date ranges**. A second multi-agent
+diagnosis + a user device test pinned the actual cause, which Phase 1 never touched.
+
+## Evidence (decisive)
+- Symptom: **stutter *while dragging*** on **phone/tablet**, in **BOTH Trail and Heatmap**,
+  worse with large date ranges; **zooming in to a few points → smooth**; **toggling Notes
+  off → smooth**.
+- "Both modes" rules out the trail polyline (Trail) and the heat canvas (Heatmap) — they are
+  different render paths. The only heavy thing common to both, scaling with date range, is the
+  **note pins**.
+- Note pins are `L.marker` with **`divIcon` (a real DOM node + emoji per note)**
+  (`MapPage.tsx` ~`noteIcon`/the build-markers effect). A large range loads many located
+  notes → many DOM nodes. On a mobile/retina device the browser paints/composites the on-screen
+  ones every drag frame → stutter. Off-screen DOM nodes are paint-culled, so zooming in (few
+  on-screen) is smooth. Confirmed by the user's "Notes off = smooth" test.
+- Measurement (`/tmp` seed of 18k–30k pts) confirmed the trail is NOT the issue at the fitted
+  zoom: DP already reduces it to ~1.8k–3k vertices and `VERTEX_CAP=3000` is inert there.
+
+## Fix — render note pins on the shared canvas instead of DOM
+Replace the per-note `L.marker(divIcon)` with **`L.circleMarker`** on the existing
+`preferCanvas` renderer:
+- **Zero DOM nodes per note** — all pins draw into the one shared `<canvas>`, which during a
+  drag is GPU-transformed (not repainted). This is exactly what made the trail smooth.
+- Leaflet's canvas renderer **auto-skips off-screen** circleMarkers (per-layer pxBounds
+  intersect check), so cost is bounded to on-screen pins and only on `moveend`, not per drag
+  frame.
+- Keep the existing layerGroup + scrub-time reconcile + `bindPopup`/`openPopup` (circleMarker
+  supports the full Layer/Popup API), so click→note, the "Save as place" popup, and the
+  `?focus=<slug>` deep-link `openPopup()` all keep working unchanged.
+- Style the dot to read as a note pin (filled circle + white ring, a distinct "note" colour),
+  with a tap-friendly radius for mobile.
+
+### Why not the alternatives
+- **Viewport-culling the DOM markers** (add/remove on moveend): no new dep, but keeps DOM
+  nodes (still many when zoomed out), adds moveend churn, and Leaflet already paint-culls
+  off-screen — so it under-delivers vs. moving to canvas.
+- **markercluster / supercluster**: a new dependency, cluster icons are still DOM, and it
+  changes UX (pins merge into count bubbles). Overkill for the stated problem. Revisit only if
+  note counts reach the thousands AND canvas markers prove insufficient.
+
+### Acceptance
+- Dragging a large-range view with Notes ON is smooth on mobile (the reported case).
+- Click a pin → popup; "Save as place" works; `?focus=<slug>` opens the pin's popup.
+- Scrub still reveals pins by time; Notes toggle still works; no DOM node per note (verify in
+  devtools elements panel — the marker pane stays empty).
+- `npm run build` clean.

@@ -4173,6 +4173,35 @@ def test_workflow_creates_review_item_and_dismiss(client):
     assert client.get("/api/reviews/count").json()["pending"] == 0
 
 
+def test_reviews_history_window(client):
+    from app.db import get_conn
+
+    # A normally-created item we dismiss → shows up in the 24h history with a stamp.
+    rid = client.post("/api/reviews", json={"title": "Recent dismissed", "message": "x"}).json()["id"]
+    client.post(f"/api/reviews/{rid}/dismiss")
+
+    # A directly-inserted item dismissed >24h ago → outside the window, excluded.
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO review_items (title, message, status, dismissed_at) "
+        "VALUES ('Old dismissed', '', 'dismissed', datetime('now', '-2 days'))"
+    )
+    conn.commit()
+
+    history = client.get("/api/reviews/history").json()
+    titles = [h["title"] for h in history]
+    assert "Recent dismissed" in titles
+    assert "Old dismissed" not in titles
+
+    recent = next(h for h in history if h["title"] == "Recent dismissed")
+    assert recent["dismissed_at"] is not None
+    assert recent["status"] == "dismissed"
+
+    # The history endpoint must not surface still-pending items.
+    client.post("/api/reviews", json={"title": "Still pending"})
+    assert "Still pending" not in [h["title"] for h in client.get("/api/reviews/history").json()]
+
+
 def test_day_log_summary_workflow(client):
     from app.db import get_conn
     from app.services import quicktasks

@@ -7,6 +7,16 @@ export function slugify(title: string): string {
   return s || "note";
 }
 
+// Resolve a review item's link_slug to an app route. Slugs are usually bare note
+// slugs (→ /note/<slug>), but a few are absolute paths ("/shares") or the
+// "__shares__" sentinel. Shared by the bell dropdown, the Review inbox, and the
+// Notification History page so the three never drift.
+export function reviewHref(linkSlug: string): string {
+  if (linkSlug.startsWith("/")) return linkSlug;
+  if (linkSlug === "__shares__") return "/shares";
+  return `/note/${linkSlug}`;
+}
+
 // Strip the root prefix (notes/ kb/ lists/ logs/) so a title reads as its bare
 // leaf. Titles are stored root-prefixed; this is the human-facing short form.
 export const leaf = (t: string) => (t || "").replace(/^(notes|kb|lists|logs)\//i, "");

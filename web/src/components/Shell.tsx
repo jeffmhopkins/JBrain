@@ -1,6 +1,7 @@
 import { ReactNode, TouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
+import { takeReplaceNav } from "../nav";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
 import { useOnline } from "../hooks";
@@ -184,6 +185,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (poppingRef.current) { poppingRef.current = false; return; }   // a back-pop, not a forward move
     const st = stackRef.current;
     if (st[st.length - 1] === path) return;
+    if (takeReplaceNav()) { st[st.length - 1] = path; return; }   // a replace nav → swap the top, don't grow (e.g. a note rename)
     const prior = st.lastIndexOf(path);
     if (prior >= 0) st.length = prior + 1;   // navigated back to an ancestor → unwind to it
     else st.push(path);                      // moved away → grow the tree
@@ -194,7 +196,9 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (st.length <= 1) return;              // at the root (Chat) → never exit the PWA
     st.pop();
     poppingRef.current = true;
-    nav(st[st.length - 1]);
+    // Replace (not push) so neither the chevron nor the OS-back gesture grows browser
+    // history on the way down the tree — the popstate sentinel below keeps back trapped.
+    nav(st[st.length - 1], { replace: true });
   }
   // Keep a live handle so the install-once popstate listener always calls the latest goBack.
   const goBackRef = useRef(goBack);

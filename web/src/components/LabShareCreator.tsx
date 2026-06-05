@@ -18,6 +18,8 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");   // optional date window — empty = full history
+  const [to, setTo] = useState("");
   const [allowChat, setAllowChat] = useState(true);
   // PHI defaults: locked to one device, finite expiry (no "never"), modest reply caps.
   const [opts, setOpts] = useState<ShareCommonOptions>(
@@ -48,6 +50,7 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
     setBusy(true); setErr("");
     try {
       const r = await createLabShare([...sel], { allow_chat: allowChat,
+        window_from: from || null, window_to: to || null,
         bind: opts.bind, single_use: opts.single_use, ttl_days: opts.ttl_days,
         max_turns: opts.max_turns, max_total_replies: opts.max_total_replies });
       setUrl(r.url || "");
@@ -133,6 +136,18 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
                 <span className="share-help share-toggle-help">
                   Scoped to the shared results only — it can’t see anything else.</span>
               </label>
+
+              <div className="adv-section">Date range (optional)</div>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <label className="row" style={{ gap: 6 }}>From
+                  <input type="date" value={from} max={to || undefined}
+                         onChange={(e) => setFrom(e.target.value)} /></label>
+                <label className="row" style={{ gap: 6 }}>To
+                  <input type="date" value={to} min={from || undefined}
+                         onChange={(e) => setTo(e.target.value)} /></label>
+                {(from || to) && <button className="ghost" style={{ fontSize: 12 }}
+                  onClick={() => { setFrom(""); setTo(""); }}>All time</button>}
+              </div>
 
               <div className="adv-section">Link settings</div>
               <ShareOptions value={opts} onChange={(p) => setOpts((o) => ({ ...o, ...p }))}

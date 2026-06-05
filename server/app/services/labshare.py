@@ -27,15 +27,18 @@ def get_spec(conn, link_id: int):
 
 
 def create(conn, *, analytes, window_from=None, window_to=None, allow_chat=True,
-           intro="", topics="", persona_voice="", label=None, ttl_days=14, bind=True) -> tuple[str, int]:
+           intro="", topics="", persona_voice="", label=None, ttl_days=14, bind=True,
+           single_use=False, max_turns=30, max_total_replies=120) -> tuple[str, int]:
     """Mint a lab-share link + its DRAFT spec. The link is inert until activate()."""
     token, link_id = share_svc.create_labshare_link(conn, label=label, ttl_days=ttl_days, bind=bind)
     conn.execute(
-        "INSERT INTO labshare_specs (share_link_id, analytes_json, window_from, window_to, "
-        "allow_chat, intro, topics, persona_voice, bind) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO labshare_specs (share_link_id, analytes_json, window_from, window_to, allow_chat, "
+        "intro, topics, persona_voice, bind, single_use, max_turns, max_total_replies) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (link_id, json.dumps(sorted({str(a) for a in (analytes or []) if a})),
          window_from or None, window_to or None, 1 if allow_chat else 0,
-         intro or "", topics or "", persona_voice or "", 1 if bind else 0))
+         intro or "", topics or "", persona_voice or "", 1 if bind else 0,
+         1 if single_use else 0, max(1, int(max_turns)), max(1, int(max_total_replies))))
     return token, link_id
 
 

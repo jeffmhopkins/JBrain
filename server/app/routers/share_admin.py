@@ -359,7 +359,13 @@ class LabShareIn(BaseModel):
     allow_chat: bool = True
     intro: str = ""
     label: str | None = None
+    # Standardized share options (shared with note/guided/research). PHI defaults differ: bind on,
+    # a finite TTL is enforced (a medical link is never a permanent bearer credential).
+    bind: bool = True
+    single_use: bool = False
     ttl_days: int = 14
+    max_turns: int = 30
+    max_total_replies: int = 120
 
 
 @router.post("/labs")
@@ -373,7 +379,9 @@ def create_lab_share(body: LabShareIn):
     token, link_id = labshare_svc.create(
         conn, analytes=analytes, window_from=body.window_from, window_to=body.window_to,
         allow_chat=body.allow_chat, intro=(body.intro or "").strip()[:1000],
-        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, bind=True)
+        label=(body.label or "").strip()[:80] or None, ttl_days=max(1, body.ttl_days),
+        bind=body.bind, single_use=body.single_use,
+        max_turns=body.max_turns, max_total_replies=body.max_total_replies)
     if not labshare_svc.activate(conn, link_id):
         raise HTTPException(status_code=400, detail="Couldn't activate (need at least one result).")
     conn.commit()

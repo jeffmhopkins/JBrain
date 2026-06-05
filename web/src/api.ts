@@ -131,7 +131,8 @@ export const getShareLabSeries = (token: string, analyte: string) =>
   publicApi<LabSeries>(`/api/share/${encodeURIComponent(token)}/labs/series?analyte=${encodeURIComponent(analyte)}`);
 // Lab-share — owner management.
 export const createLabShare = (analytes: string[], opts: { window_from?: string | null; window_to?: string | null;
-    allow_chat?: boolean; intro?: string; label?: string }) =>
+    allow_chat?: boolean; intro?: string; label?: string;
+    bind?: boolean; single_use?: boolean; ttl_days?: number; max_turns?: number; max_total_replies?: number }) =>
   post<{ token: string; link_id: number; url: string }>("/api/shares/labs", { analytes, ...opts });
 // Research links — owner management.
 export const researchDetail = <T = any>(linkId: number) => get<T>(`/api/shares/research/${linkId}`);

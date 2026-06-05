@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { LabAnalyte, createLabShare } from "../api";
+import ShareOptions, { ShareCommonOptions } from "./ShareOptions";
 
 // Owner authoring UI: pick which lab results to share, whether to allow the scoped AI chat, and
 // mint a bind-locked, expiring share link. Only the ticked analytes are ever exposed.
@@ -7,6 +8,9 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [allowChat, setAllowChat] = useState(true);
+  // PHI defaults: locked to one device, finite expiry (no "never"), modest reply caps.
+  const [opts, setOpts] = useState<ShareCommonOptions>(
+    { bind: true, single_use: false, ttl_days: 14, max_turns: 30, max_total_replies: 120 });
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState("");
   const [err, setErr] = useState("");
@@ -18,7 +22,9 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
     if (!sel.size) { setErr("Pick at least one result to share."); return; }
     setBusy(true); setErr(""); setUrl("");
     try {
-      const r = await createLabShare([...sel], { allow_chat: allowChat });
+      const r = await createLabShare([...sel], { allow_chat: allowChat,
+        bind: opts.bind, single_use: opts.single_use, ttl_days: opts.ttl_days,
+        max_turns: opts.max_turns, max_total_replies: opts.max_total_replies });
       setUrl(r.url || "");
     } catch (e: any) { setErr(e?.message || "Couldn't create the link."); }
     finally { setBusy(false); }
@@ -49,7 +55,9 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
             <input type="checkbox" checked={allowChat} onChange={(e) => setAllowChat(e.target.checked)} />
             Let them ask an AI questions about these results (scoped to the shared results only)
           </label>
-          <div className="row" style={{ gap: 8 }}>
+          <ShareOptions value={opts} onChange={(p) => setOpts((o) => ({ ...o, ...p }))}
+                        show={{ singleUse: true, caps: allowChat, ttlMin: 1 }} disabled={busy} />
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
             <button className="primary" disabled={busy || !sel.size} onClick={create}>
               {busy ? "…" : `Create link (${sel.size})`}</button>
           </div>

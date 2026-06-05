@@ -6432,3 +6432,14 @@ def test_video_frame_sampling_is_configurable_by_percent_or_interval():
     # Too many for the cap → re-spaced evenly across the whole clip (count == cap).
     capped = at._frame_positions(100.0, "percent", 5.0, 8)       # would be 21 frames
     assert len(capped) == 8 and capped[0] == 0.0 and capped[-1] == 1.0
+
+
+def test_video_frame_max_zero_disables_frame_vision(monkeypatch):
+    # VIDEO_FRAME_MAX=0 → no frames extracted → no vision call (transcript only). Returns []
+    # before any decode, so it costs nothing even on junk input.
+    monkeypatch.setenv("VIDEO_FRAME_MAX", "0")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.services import audio_transcription as at
+    assert at._extract_frames(b"not a real video") == []
+    get_settings.cache_clear()   # don't leak the env into other tests

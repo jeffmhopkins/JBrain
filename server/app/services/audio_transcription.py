@@ -127,8 +127,13 @@ def _extract_frames(raw: bytes, max_edge: int = 1568) -> list[bytes]:
         return []
     from ..config import get_settings
     s = get_settings()
+    try:
+        max_frames = int(s.video_frame_max)
+    except (TypeError, ValueError):
+        max_frames = 8
+    if max_frames <= 0:
+        return []   # VIDEO_FRAME_MAX=0 → frame vision off entirely (transcript only, no LLM call)
     kind, value = _parse_frame_spec(s.video_frame_interval)
-    max_frames = max(1, int(s.video_frame_max))
     out: list[bytes] = []
     try:
         with av.open(io.BytesIO(raw)) as c:

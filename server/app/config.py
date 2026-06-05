@@ -47,11 +47,13 @@ class Settings(BaseSettings):
     audio_model: str = Field("base", validation_alias=AliasChoices("AUDIO_MODEL", "audio_model"))
     audio_compute_type: str = Field("int8", validation_alias=AliasChoices("AUDIO_COMPUTE_TYPE", "audio_compute_type"))
 
-    # How often to grab a video frame for the vision summary: a PERCENT step ("25%" → at
-    # 0/25/50/75/100% of the clip) or a TIME interval ("30s" → every 30 seconds). VIDEO_FRAME_MAX
-    # caps the count (frames are re-spaced evenly across the clip if the step would exceed it),
-    # bounding vision cost/payload on long videos.
-    video_frame_interval: str = Field("25%", validation_alias=AliasChoices("VIDEO_FRAME_INTERVAL", "video_frame_interval"))
+    # Video → vision-summary frame sampling. Use the two together: VIDEO_FRAME_INTERVAL sets the
+    # cadence — a TIME interval ("30s" → a frame every 30 seconds) or a PERCENT step ("25%" → at
+    # 0/25/50/75/100% of the clip) — and VIDEO_FRAME_MAX is the HARD CAP that bounds spend (all
+    # frames go in ONE vision call, so the cap is your cost ceiling). If the cadence would exceed
+    # the cap, frames re-space evenly across the clip. VIDEO_FRAME_MAX=0 turns frame vision OFF
+    # (transcript only — no vision call at all).
+    video_frame_interval: str = Field("30s", validation_alias=AliasChoices("VIDEO_FRAME_INTERVAL", "video_frame_interval"))
     video_frame_max: int = Field(8, validation_alias=AliasChoices("VIDEO_FRAME_MAX", "video_frame_max"))
 
     # Web Push (VAPID). Keys auto-generate on first boot into the DB `meta` table

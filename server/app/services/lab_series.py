@@ -123,6 +123,35 @@ def _encounters_in(conn, dfrom: str | None, dto: str | None) -> list[dict]:
              "from": r["started_at"], "to": r["ended_at"]} for r in rows]
 
 
+def abnormal_analytes(conn, dfrom: str | None = None, dto: str | None = None, limit: int = 8) -> list[dict]:
+    """Analytes with >=1 non-censored result whose status is high/low/abnormal in the window,
+    ranked most-recently-abnormal first (then by count). Reads lab_results directly and uses
+    the SAME _status the chart colours by — so 'what was abnormal' and the chart always agree.
+    A censored row counts only if the lab itself flagged it (else it's unknown, never swept in)."""
+    where = "collected_at IS NOT NULL"
+    params: list = []
+    if dfrom:
+        where += " AND date(collected_at) >= date(?)"; params.append(dfrom)
+    if dto:
+        where += " AND date(collected_at) <= date(?)"; params.append(dto)
+    rows = conn.execute(
+        f"SELECT analyte_key, value_num, flag, ref_low, ref_high, collected_at "
+        f"FROM lab_results WHERE {where}", params).fetchall()
+    agg: dict[str, dict] = {}
+    for r in rows:
+        if _status(r["flag"], r["value_num"], r["ref_low"], r["ref_high"]) not in ("high", "low", "abnormal"):
+            continue
+        a = agg.setdefault(r["analyte_key"], {"analyte": r["analyte_key"], "count": 0, "last_at": ""})
+        a["count"] += 1
+        if r["collected_at"] > a["last_at"]:
+            a["last_at"] = r["collected_at"]
+            a["last_status"] = _status(r["flag"], r["value_num"], r["ref_low"], r["ref_high"])
+    out = sorted(agg.values(), key=lambda a: (a["last_at"], a["count"]), reverse=True)
+    for a in out:
+        a["test_name"] = _modal(conn, a["analyte"], "test_name") or a["analyte"]
+    return out[: max(1, min(int(limit), 12))]
+
+
 def series(conn, analyte: str, unit: str | None = None) -> dict:
     """One analyte's full series: points (incl. censored), stepped band segments, the date
     domain + value range, overlapping encounters, and any other units it was recorded in."""

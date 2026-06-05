@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { createEntry, get, getMedicalDests, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
+import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
 import { makeLinkRenderer, renderWikiLinks } from "../util";
 
@@ -66,6 +67,8 @@ const TOOL_LABELS: Record<string, string> = {
   reverse_geocode: "Looking up an address…",
   forward_geocode: "Looking up coordinates…",
   drug_reference: "Looking up a medication…",
+  list_abnormal_labs: "Finding out-of-range labs…",
+  show_lab_chart: "Charting lab results…",
   // Lists & tags
   read_list: "Reading a list…",
   add_list_item: "Updating a list…",
@@ -121,6 +124,8 @@ export default function Chat() {
   // Transient chips for actions auto-applied during the current stream; at stream
   // end we reload from the server (which has them as persisted 'event' rows).
   const [applied, setApplied] = useState<{ id: number; summary: string }[]>([]);
+  // Charts streamed during the current turn (transient; persisted as event rows on reload).
+  const [charts, setCharts] = useState<{ analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string }[]>([]);
   const [undone, setUndone] = useState<Set<number>>(new Set());
 
   const endRef = useRef<HTMLDivElement>(null);
@@ -268,7 +273,7 @@ export default function Chat() {
   async function newConversation() {
     const { id } = await post("/api/chat/conversations");
     localStorage.setItem(CHAT_CONV_KEY, String(id));
-    setConvId(id); setMessages([]); setApplied([]); setUndone(new Set());
+    setConvId(id); setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
   }
 
   // Restore (or migrate to) the single shared chat thread on first entry into a chat
@@ -363,6 +368,8 @@ export default function Chat() {
           setStagingTick((t) => t + 1);
         } else if (ev.type === "applied" && ev.action) {
           setApplied((a) => [...a, ev.action!]);
+        } else if (ev.type === "chart" && ev.chart) {
+          setCharts((c) => [...c, ev.chart!]);
         } else if (ev.type === "error") {
           errored = true;
           // Show the error immediately — don't typewriter-drip it. Clear the buffer
@@ -396,7 +403,7 @@ export default function Chat() {
       setStagingTick((t) => t + 1);   // chat modes (assisted+research) share staging
       // Re-sync from the server: the authoritative turn + any persisted approval
       // ('event') records, correctly ordered. Skip on error to keep the ⚠️.
-      if (!errored && convId) { await loadMessages(convId); setApplied([]); }
+      if (!errored && convId) { await loadMessages(convId); setApplied([]); setCharts([]); }
     }
   }
 
@@ -425,11 +432,12 @@ export default function Chat() {
         )}
         {messages.map((m, i) => {
           if (m.role === "event") {
-            let ev: { summary: string; undo_id?: number };
+            let ev: { summary?: string; undo_id?: number; chart?: any };
             try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
+            if (ev.chart) return <LabChartCard key={i} spec={ev.chart} />;
             return (
               <div key={i} className="applied-chip">
-                <span>✓ {renderSummary(ev.summary)}</span>
+                <span>✓ {renderSummary(ev.summary || "")}</span>
                 {ev.undo_id == null ? null : undone.has(ev.undo_id)
                   ? <span className="muted" style={{ fontSize: 12 }}>undone</span>
                   : <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => undo(ev.undo_id!)}>Undo</button>}
@@ -463,6 +471,7 @@ export default function Chat() {
             </div>
           );
         })}
+        {charts.map((c, i) => <LabChartCard key={`ch${i}`} spec={c} />)}
         {applied.map((a) => (
           <div key={`a${a.id}`} className="applied-chip">
             <span>✓ {renderSummary(a.summary)}</span>

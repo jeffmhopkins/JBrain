@@ -190,6 +190,31 @@ def test_labs_series_and_analytes(client):
     assert wbc["test_name"] == "WBC" and wbc["n"] == 8
 
 
+def test_lab_chart_tools(client):
+    # The AI lab tools: list_abnormal_labs surfaces analyte_keys (read-only, no event);
+    # show_lab_chart returns a model RECEIPT + a thin `chart` event (no values in the row),
+    # and the read-only research boundary still refuses write tools.
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?",
+                       (client.post("/api/notes/entry", json={"text": "l"}).json()["slug"],)).fetchone()["id"]
+    for d, v, f in [("2025-01-01", "12.0", None), ("2026-01-01", "3.0", "L")]:
+        conn.execute("INSERT INTO lab_results (note_id, test_name, analyte_key, value_text, value_num, "
+                     "unit, ref_low, ref_high, flag, collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (nid, "WBC", "wbc", v, float(v), "thou/cumm", 4.0, 11.0, f, d))
+    conn.commit()
+
+    txt, ev = architect._run_tool(conn, None, "list_abnormal_labs", {}, "research")
+    assert ev is None and "'wbc'" in txt and "out-of-range" in txt
+    txt, ev = architect._run_tool(conn, None, "show_lab_chart", {"analyte": "wbc"}, "research")
+    assert ev["type"] == "chart" and ev["chart"] == {"analyte": "wbc", "unit": "thou/cumm",
+                                                     "from": None, "to": None, "title": "WBC"}
+    assert "do NOT restate" in txt                      # model is told not to recite values
+    # Read-only research mode still fails closed for a write tool.
+    assert architect._run_tool(conn, None, "log_entry", {"text": "x"}, "research")[1] is None
+
+
 def test_entry_via_person_location_key(client):
     # A family phone holding only its scoped per-person location key can drop a watch
     # dictation: filed as a dated note, attributed to that person, even though that key

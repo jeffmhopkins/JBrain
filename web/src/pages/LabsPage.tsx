@@ -37,6 +37,7 @@ export default function LabsPage() {
   const [q, setQ] = useState("");
   const [win, setWin] = useState<{ from: string; to: string } | null>(null);
   const [picked, setPicked] = useState<LabPoint | null>(null);
+  const [showTable, setShowTable] = useState(false);   // persists across analyte switches
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -122,7 +123,8 @@ export default function LabsPage() {
                        onChange={(e) => setWin({ ...win, to: e.target.value })} />
                 <button className="chip" onClick={() => series.domain && setWin({ ...series.domain })}>Reset</button>
               </div>
-              <LabChart series={series} from={win.from} to={win.to} onPick={setPicked} />
+              <LabChart series={series} from={win.from} to={win.to} onPick={setPicked}
+                        onViewChange={(f, t) => setWin({ from: f, to: t })} />
               {picked && (
                 <div className="lab-detail">
                   <Pip status={picked.status} /> <strong>{picked.vtext}{picked.unit ? " " + picked.unit : ""}</strong>
@@ -134,8 +136,10 @@ export default function LabsPage() {
             </>
           )}
 
-          {/* Accessible / colour-blind / offline fallback: the same data as a table. */}
-          <details className="lab-table">
+          {/* Accessible / colour-blind / offline fallback: the same data as a table. The
+              open state is controlled so it stays open when you switch to another analyte. */}
+          <details className="lab-table" open={showTable}
+                   onToggle={(e) => setShowTable((e.target as HTMLDetailsElement).open)}>
             <summary className="muted" style={{ fontSize: 12 }}>Show as table</summary>
             <table>
               <thead><tr><th>Date</th><th>Value</th><th>Range</th><th>Status</th><th></th></tr></thead>

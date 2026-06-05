@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { LabSeries, LabPoint } from "../api";
 
 // A dependency-free SVG trend chart for ONE analyte. Renders a STEPPED reference band
@@ -79,6 +79,7 @@ export default function LabChart({ series, from, to, height, onPick, onViewChang
   const [sel, setSel] = useState<number | null>(null);
   const pts = series.points;
   const svgRef = useRef<SVGSVGElement>(null);
+  const clip = useId().replace(/:/g, "");                  // unique plot-area clip id
 
   // Full data extent (with a little pad for a single point) = the zoom-out limit.
   const [dataLo, dataHi] = useMemo(() => {
@@ -184,11 +185,12 @@ export default function LabChart({ series, from, to, height, onPick, onViewChang
   const inView = (t: string) => ms(t) >= lo && ms(t) <= hi;
   const yticks = [0, 0.25, 0.5, 0.75, 1].map((f) => ymin + f * (ymax - ymin));
 
-  // Line runs: break at censored points and long gaps.
+  // Line runs over ALL points (not just in-view), so a segment crosses the visible edge and
+  // the line reaches the screen edges; the polylines are clipped to the plot area. Still break
+  // at censored points and long gaps.
   const runs: LabPoint[][] = [];
   let run: LabPoint[] = [];
   for (const p of pts) {
-    if (!inView(p.t)) continue;
     if (p.censored || p.v == null) { if (run.length) runs.push(run); run = []; continue; }
     if (run.length && ms(p.t) - ms(run[run.length - 1].t) > GAP_MS) { runs.push(run); run = []; }
     run.push(p);
@@ -204,6 +206,7 @@ export default function LabChart({ series, from, to, height, onPick, onViewChang
          aria-label={`${series.test_name} trend chart`}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
          onDoubleClick={resetView} onClick={() => pick(null)}>
+      <defs><clipPath id={clip}><rect x={M.l} y={M.t} width={PW} height={PH} /></clipPath></defs>
       <rect x={M.l} y={M.t} width={PW} height={PH} fill="var(--danger)" fillOpacity={0.06} />
       {series.encounters.map((e) => {
         const x0 = clampX(ms(e.from)), x1 = clampX(e.to ? ms(e.to) : hi);
@@ -232,10 +235,12 @@ export default function LabChart({ series, from, to, height, onPick, onViewChang
           <text x={xx} y={VH - 12} textAnchor="middle" fontSize={13} fill="var(--text-dim)">{tk.label}</text>
         </g>;
       })}
-      {runs.map((r, i) => (
-        <polyline key={i} fill="none" stroke="var(--accent)" strokeWidth={2}
-                  points={r.map((p) => `${x(p.t)},${y(p.v as number)}`).join(" ")} />
-      ))}
+      <g clipPath={`url(#${clip})`}>
+        {runs.map((r, i) => (
+          <polyline key={i} fill="none" stroke="var(--accent)" strokeWidth={2}
+                    points={r.map((p) => `${x(p.t)},${y(p.v as number)}`).join(" ")} />
+        ))}
+      </g>
       {pts.map((p, i) => p.censored && inView(p.t) ? (
         <text key={`c${i}`} x={x(p.t)} y={M.t + PH - 2} textAnchor="middle" fontSize={13}
               fill="var(--text-dim)" onClick={(ev) => { ev.stopPropagation(); pick(i); }}

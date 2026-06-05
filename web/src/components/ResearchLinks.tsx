@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import ConversationView from "./ConversationView";
+import ShareOptions from "./ShareOptions";
 import {
   post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
   researchResetBind, researchSetDetails, researchSession, researchDeleteSession,
@@ -163,17 +164,8 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
       <label className="share-field">Recipient greeting (intro)
         <textarea rows={2} value={s.intro} disabled={busy}
                   onChange={(e) => set({ intro: e.target.value })} /></label>
-      <div className="row" style={{ gap: 14, flexWrap: "wrap", marginTop: 4 }}>
-        <label className="row" style={{ gap: 6 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={s.bind} disabled={busy}
-                 onChange={(e) => set({ bind: e.target.checked })} /> Lock to first browser</label>
-        <label className="row" style={{ gap: 6 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={s.single_use} disabled={busy}
-                 onChange={(e) => set({ single_use: e.target.checked })} /> Single use</label>
-        <label className="row" style={{ gap: 6 }}>Expires in
-          <input type="number" min={0} style={{ width: 64 }} value={s.ttl_days} disabled={busy}
-                 onChange={(e) => set({ ttl_days: Math.max(0, +e.target.value) })} /> days (0 = never)</label>
-      </div>
+      <ShareOptions value={{ bind: s.bind, single_use: s.single_use, ttl_days: s.ttl_days }}
+                    onChange={(p) => set(p as Partial<Settings>)} show={{ singleUse: true }} disabled={busy} />
       <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>
         {d.expires_at ? `Currently expires ${d.expires_at} UTC.` : "Currently never expires."}
         {d.bound ? " · Locked to a device." : ""}

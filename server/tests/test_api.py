@@ -404,6 +404,24 @@ def test_labshare_public_recipient_flow_is_scoped(client):
     assert client.post(f"/api/share/{token}/labs/turn", json={"message": "hi"}).status_code == 403
 
 
+def test_labshare_create_honors_standard_options(client):
+    # The standardized share options (lock-to-browser, single-use, expiry, reply caps) flow
+    # through to the link/spec — but a finite TTL is still enforced for PHI (no permanent link).
+    from app.db import get_conn
+    from app.services import labshare
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('m3','t3','b') RETURNING id").fetchone()["id"]
+    conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,collected_at) "
+                 "VALUES (?,?,?,?,?,?,?)", (nid, "WBC", "wbc", "6.0", 6.0, "x", "2026-01-01"))
+    conn.commit()
+    r = client.post("/api/shares/labs", json={"analytes": ["wbc"], "bind": False, "single_use": True,
+                                              "ttl_days": 3, "max_total_replies": 50, "max_turns": 7}).json()
+    link = conn.execute("SELECT * FROM share_links WHERE id=?", (r["link_id"],)).fetchone()
+    spec = labshare.get_spec(conn, r["link_id"])
+    assert link["bind"] == 0 and link["expires_at"] is not None             # bind toggle respected; TTL still finite
+    assert spec["single_use"] == 1 and spec["max_total_replies"] == 50 and spec["max_turns"] == 7
+
+
 def test_labshare_ai_is_import_isolated():
     # Structural invariant: the recipient AI reaches labs ONLY via the scoped boundary — it must
     # not import architect / lab_series / notes / embeddings / sqlsafe (no path to the whole brain).

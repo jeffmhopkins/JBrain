@@ -532,6 +532,16 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
   PRIMARY KEY (kind, key)
 );
 
+-- Cached medical-reference lookups (NLM, public domain): RxNorm name->RxCUI and MedlinePlus
+-- Connect RxCUI->drug page, so a drug name/code is fetched at most once.
+CREATE TABLE IF NOT EXISTS medref_cache (
+  kind         TEXT NOT NULL,            -- 'rxcui' | 'approx' | 'mplus'
+  key          TEXT NOT NULL,            -- normalized name (rxcui/approx) or rxcui (mplus)
+  payload_json TEXT NOT NULL,
+  fetched_at   TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+
 -- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
 -- scheduler (never the ingest path) reads this to fire location triggers.
 CREATE TABLE IF NOT EXISTS location_state (

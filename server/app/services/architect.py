@@ -42,7 +42,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "read_inbox", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "reverse_geocode", "forward_geocode", "list_trips", "trip_detail", "add_list_item", "read_list",
+                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry", "capture_inbox",
                  "mark_inbox_processed", "set_tags", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -54,7 +54,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
-                 "entries_at_place", "reverse_geocode", "forward_geocode"],
+                 "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -131,6 +131,9 @@ _TOOL_SCHEMAS = {
         "query": {"type": "string", "description": "An address or place name to look up, e.g. '500 Chapman St, Cocoa FL'."},
         "limit": {"type": "integer", "default": 5, "description": "Max candidates (1-10)."}},
         "required": ["query"]},
+    "drug_reference": {"type": "object", "properties": {
+        "name": {"type": "string", "description": "A medication name (brand or generic), e.g. 'metformin' or 'Tylenol'."}},
+        "required": ["name"]},
     "list_recent_notes": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     "list_tags": {"type": "object", "properties": {}},
     "notes_with_tag": {"type": "object", "properties": {
@@ -940,6 +943,19 @@ def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
     return _untrusted("address", f"Suspected matches for “{query.strip()}” (OpenStreetMap):\n" + "\n".join(lines))
 
 
+def _tool_drug_reference(conn, name: str) -> str:
+    """The MedlinePlus consumer drug page for a medication name, resolved via RxNorm (NLM,
+    public domain). Read-only; a link to an authoritative source, not medical advice."""
+    from . import medref
+    res = medref.resolve(conn, name)
+    if not res:
+        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{(name or '').strip()}”.")
+    tail = "" if res["match"] == "exact" else f" (approximate match to “{res.get('candidate')}”, score {res.get('score')})"
+    return _untrusted("drug-ref",
+                      f"MedlinePlus drug information for {name.strip()}{tail}: {res['title']} — {res['url']} "
+                      f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
+
+
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     rows = embeddings.semantic_search_attachments(conn, query, limit)
     if not rows:
@@ -1524,6 +1540,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_reverse_geocode(conn, conversation_id, args.get("lat"), args.get("lon")), None
     if name == "forward_geocode":
         return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
+    if name == "drug_reference":
+        return _tool_drug_reference(conn, args["name"]), None
     if name == "list_recent_notes":
         return _tool_list_recent(conn, args.get("limit", 10)), None
     if name == "list_tags":

@@ -267,6 +267,13 @@ def _p_flag_ungrounded_reference(ctx):
     return wiki_build.flag_ungrounded_reference(ctx.conn)
 
 
+def _p_link_medications(ctx, limit=200):
+    """Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only;
+    exact -> auto-link, approximate -> talk todo for owner confirmation)."""
+    from . import medref
+    return medref.link_medications(ctx.conn, int(limit))
+
+
 def _p_redate_notes(ctx, limit=2000, dry_run=False):
     """File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N."""
     from . import note_normalize
@@ -1163,6 +1170,7 @@ _PRIMITIVES = {
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
+    "link_medications": _p_link_medications,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
     "seed_kb_watermark": _p_seed_kb_watermark,
@@ -1293,6 +1301,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                     "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
                                   "inputs": [], "output": "dict"},
+    "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",
+                         "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",
                      "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
     "title_notes": {"summary": "Give bare dated notes a generated leaf title (notes/<date>/N - title).",

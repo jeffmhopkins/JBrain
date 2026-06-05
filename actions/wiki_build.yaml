@@ -80,6 +80,9 @@ steps:
   - do: rebuild_entity_index
   # 6b2. Link the default person ("me") to their People article so the owner page isn't orphaned.
   - do: link_owner
+  # 6b3. Add MedlinePlus drug references to medication articles (RxNorm-resolved; exact → auto-link,
+  #      approximate → talk todo for confirmation). Public-domain NLM sources; link-only; cached.
+  - do: link_medications
   # 6c. Generate disambiguation pages for terms that resolve to multiple articles.
   - do: write_disambiguation
   # 6d. Flag any dangling cross-links (now that every article is saved + links reconciled).

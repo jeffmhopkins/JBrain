@@ -1416,6 +1416,61 @@ def test_export_original_notes(client):
     assert "notes/Scratch" not in titles                              # deleted excluded
 
 
+def test_medref_medications(client, monkeypatch):
+    """RxNorm->MedlinePlus: resolve a drug, auto-link a medication article on an exact match
+    (talk todo on approximate), and the read-only drug_reference tool."""
+    import json
+    from app.db import get_conn
+    from app.services import medref, entity_index as ei, architect, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+
+    def fake_get(url):
+        if "/rxcui.json" in url:                       # exact RxNorm: only true "metformin"
+            return {"idGroup": {"rxnormId": ["6809"]}} if "name=metformin&" in url else {"idGroup": {}}
+        if "/approximateTerm.json" in url:
+            return {"approximateGroup": {"candidate": [{"rxcui": "6809", "score": "90", "name": "metformin"}]}}
+        if "connect.medlineplus.gov" in url:
+            return {"feed": {"entry": [{"title": {"_value": "Metformin"},
+                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html"}]}]}}
+        return {}
+    monkeypatch.setattr(medref, "_http_get", fake_get)
+
+    r = medref.resolve(conn, "metformin")
+    assert r["match"] == "exact" and r["rxcui"] == "6809" and "medlineplus.gov" in r["url"]
+    r2 = medref.resolve(conn, "metformine xr")          # no exact → approximate
+    assert r2["match"] == "approx" and r2["score"] == 90
+
+    # A medication entity with an article → exact auto-links the article (idempotently).
+    ns.upsert_note(conn, "kb/Reference/Medicine/Medications/Metformin", "# Metformin\nA drug.", kind="kb")
+    nid = ns.upsert_note(conn, "n/m", "I take metformin daily.")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (nid, "h", json.dumps([{"type": "medication", "name": "Metformin"}])))
+    conn.commit()
+    ei.rebuild(conn)
+    assert medref.link_medications(conn)["linked"] == 1
+    art = conn.execute("SELECT content_md FROM notes WHERE title='kb/Reference/Medicine/Medications/Metformin'"
+                       ).fetchone()["content_md"]
+    assert "MedlinePlus drug information" in art and "medlineplus.gov" in art
+    assert medref.link_medications(conn)["linked"] == 0   # idempotent
+
+    # An approximate-only medication records a talk todo instead of auto-linking.
+    ns.upsert_note(conn, "kb/Reference/Medicine/Medications/Metformine XR", "# x\ny", kind="kb")
+    a2 = ns.upsert_note(conn, "n/m2", "metformine xr maybe")
+    conn.execute("INSERT INTO note_analysis (note_id, content_hash, entities_json) VALUES (?,?,?)",
+                 (a2, "h2", json.dumps([{"type": "medication", "name": "Metformine XR"}])))
+    conn.commit()
+    ei.rebuild(conn)
+    res = medref.link_medications(conn)
+    assert res["proposed"] >= 1
+    todos = article_talk.open_for(conn, "kb/Reference/Medicine/Medications/Metformine XR")
+    assert any("approximately matches" in t["body"] for t in todos)
+
+    # Read-only assistant tool (research mode).
+    txt, _ = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert "medlineplus.gov" in txt and "rxcui 6809" in txt
+
+
 def test_gauntlet_fixes(client, monkeypatch):
     """Regression bundle for the adversarial-review fixes."""
     import json

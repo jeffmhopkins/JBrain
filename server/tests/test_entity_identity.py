@@ -349,7 +349,7 @@ def test_split_endpoint_separates_two_entities(client):
     assert frozenset({"dana west", "dana north"}) in ed.load_splits(conn)
 
 
-def test_migration_v44_to_v45_upgrade(monkeypatch):
+def test_migration_v44_to_v46_upgrade(monkeypatch):
     """An existing v44 DB upgrades in place: entity_decisions table + the new columns appear,
     and the table is writable. Guards against schema.sql/migration drift."""
     import os, sqlite3, tempfile
@@ -377,7 +377,7 @@ def test_migration_v44_to_v45_upgrade(monkeypatch):
     def cols(t):
         return {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
 
-    assert db.get_meta("schema_version") == "45"
+    assert db.get_meta("schema_version") == "46"
     assert conn.execute("SELECT name FROM sqlite_master WHERE name='entity_decisions'").fetchone()
     assert "redirect_to" in cols("notes")
     assert {"kind", "payload_json"} <= cols("review_items")

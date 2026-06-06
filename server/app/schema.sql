@@ -86,6 +86,25 @@ CREATE TABLE IF NOT EXISTS staging_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_staging_status ON staging_actions(status);
 
+-- Per-assistant-turn tool-call log: the "how I answered this" history surfaced by
+-- swiping/expanding an AI reply. Full raw — the tool input (args_json) and its returned
+-- text (result_text) are stored verbatim. Rows cascade-delete with their conversation
+-- (and with their message), and are wiped for a conversation when the user runs /clear.
+CREATE TABLE IF NOT EXISTS message_steps (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  step_index      INTEGER NOT NULL,
+  tool_name       TEXT NOT NULL,
+  args_json       TEXT NOT NULL DEFAULT '{}',
+  result_text     TEXT NOT NULL DEFAULT '',
+  is_error        INTEGER NOT NULL DEFAULT 0,
+  event_json      TEXT,                     -- the staging/applied/chart event this call emitted, if any
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
+
 -- Standalone full-text index (kept in sync manually on note save).
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   note_id UNINDEXED,

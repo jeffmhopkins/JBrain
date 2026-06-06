@@ -1011,3 +1011,41 @@ table.sql-result th { background: var(--bg-elev-2); }
   border: 1px solid var(--border, #444); border-radius: 6px;
   background: var(--bg, #12161a); color: var(--text);
 }
+
+/* ---- Per-reply tool-call history ("how I answered this") ---- */
+.tool-history { margin-top: 6px; }
+.th-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border);
+}
+.th-pill:hover { border-color: var(--accent); color: var(--text); }
+.th-pill .icon { color: var(--text-dim); }
+.th-caret { transition: transform 0.15s ease; }
+.th-caret-open { transform: rotate(90deg); }
+.th-panel { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); overflow: hidden; }
+.th-msg { padding: 10px 12px; font-size: 13px; }
+.th-steps { list-style: none; margin: 0; padding: 0; }
+.th-step { border-top: 1px solid var(--border); padding: 8px 12px; }
+.th-step:first-child { border-top: none; }
+.th-step-err { background: rgba(180, 90, 90, 0.06); }
+.th-step-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; padding: 0; text-align: left; color: var(--text); font-size: 13px;
+}
+.th-step-head:hover { border: none; }
+.th-step-label { font-weight: 600; }
+.th-tool { font-size: 11px; color: var(--text-dim); background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.th-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: auto; }
+.th-badge-err { background: rgba(180,90,90,0.18); color: #d99; border: 1px solid rgba(180,90,90,0.4); }
+.th-event { font-size: 12px; color: var(--text-dim); margin: 4px 0 0 22px; }
+.th-refs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 22px; }
+.th-chip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--border); }
+.th-chip .wikilink { color: var(--text); }
+.th-raw { margin: 8px 0 2px 22px; }
+.th-raw-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin: 6px 0 2px; }
+.th-pre {
+  margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto;
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--text);
+}

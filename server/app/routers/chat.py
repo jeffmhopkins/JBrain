@@ -48,12 +48,38 @@ def list_conversations():
 
 @router.get("/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: int):
+    # `step_count` (a cheap LEFT JOIN aggregate) lets the client render the "how I answered
+    # this" pill without fetching the full tool log for every reply up front; `id` lets it
+    # lazily fetch that log per message when the pill/swipe opens it.
     rows = get_conn().execute(
-        "SELECT role, content, created_at FROM messages "
-        "WHERE conversation_id = ? ORDER BY id",
+        "SELECT m.id, m.role, m.content, m.created_at, COUNT(s.id) AS step_count "
+        "FROM messages m LEFT JOIN message_steps s ON s.message_id = m.id "
+        "WHERE m.conversation_id = ? GROUP BY m.id ORDER BY m.id",
         (conversation_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+@router.get("/messages/{message_id}/steps")
+def get_message_steps(message_id: int):
+    """The full raw tool-call history for one assistant reply (lazily fetched when the
+    reply's history panel is opened)."""
+    rows = get_conn().execute(
+        "SELECT step_index, tool_name, args_json, result_text, is_error, event_json, created_at "
+        "FROM message_steps WHERE message_id = ? ORDER BY step_index",
+        (message_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.delete("/conversations/{conversation_id}/steps")
+def clear_conversation_steps(conversation_id: int):
+    """Wipe the stored tool-call history for a conversation — invoked when the user runs
+    /clear, so the full-raw logs don't accumulate across throwaway chats."""
+    conn = get_conn()
+    conn.execute("DELETE FROM message_steps WHERE conversation_id = ?", (conversation_id,))
+    conn.commit()
+    return {"ok": True}
 
 
 @router.post("/conversations/{conversation_id}/message")

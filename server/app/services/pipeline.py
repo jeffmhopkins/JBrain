@@ -1233,6 +1233,13 @@ def _p_research_nudges(ctx):
     return {"nudged": research.post_candidate_nudges(ctx.conn)}
 
 
+def _p_promote_reference_candidates(ctx, min_hits=2, limit=5):
+    """Stage kb/Reference stubs for health topics the owner looked up repeatedly (read-only capture →
+    nightly promote → owner approves). Source-only, deterministic, never auto-live."""
+    from . import reference_promote
+    return reference_promote.run(ctx.conn, min_hits=int(min_hits), limit=int(limit))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1300,6 +1307,7 @@ _PRIMITIVES = {
     "plan_moves": _p_plan_moves,
     "stage_moves": _p_stage_moves,
     "research_nudges": _p_research_nudges,
+    "promote_reference_candidates": _p_promote_reference_candidates,
     "notify": _p_notify,
     "suggest_places": _p_suggest_places,
     "stage_places": _p_stage_places,
@@ -1340,6 +1348,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                     "inputs": [{"name": "moves", "type": "list", "required": True}], "output": "object"},
     "research_nudges": {"summary": "Nudge the owner about new candidate notes for active research links.",
                         "inputs": [], "output": "object"},
+    "promote_reference_candidates": {
+        "summary": "Stage kb/Reference stubs from repeatedly-looked-up external health topics for owner review.",
+        "inputs": [{"name": "min_hits", "type": "int"}, {"name": "limit", "type": "int"}], "output": "object"},
     "notify": {"summary": "Send a Web Push to all devices (custom title/body/deep-link).",
                "inputs": [{"name": "title", "type": "str", "required": True}, {"name": "body", "type": "str"},
                           {"name": "url", "type": "str"}], "output": "object"},

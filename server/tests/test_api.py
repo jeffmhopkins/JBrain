@@ -6974,3 +6974,20 @@ def test_analyze_mode_accepted_and_grounding_guard_fires(client, monkeypatch):
     events = _drive_run(cid, "do my labs fit TTP", "analyze", fake, monkeypatch)
     assert {"type": "replace_text", "text": ""} in events    # guard fired in analyze mode too
     assert fake.turn >= 3
+
+
+def test_external_lookup_approval_endpoint(client, monkeypatch):
+    # The gate's HTTP side: approve runs the (owner-authorized) external fetch; deny records it;
+    # a missing id 404s.
+    from app.db import get_conn
+    from app.services import architect, medref
+    conn = get_conn()
+    _, ev = architect._tool_medical_reference(conn, None, "atrial fibrillation")   # propose (nothing sent)
+    monkeypatch.setattr(medref, "health_topic", lambda c, q: {"url": "https://medlineplus.gov/afib.html",
+                                                              "title": "Atrial Fibrillation", "snippet": "s"})
+    r = client.post(f"/api/external-lookups/{ev['id']}/approve").json()
+    assert r["ok"] and r["found"] is True
+    assert conn.execute("SELECT status FROM external_lookups WHERE id=?", (ev["id"],)).fetchone()["status"] == "approved"
+    _, ev2 = architect._tool_medical_reference(conn, None, "hemolytic anemia")
+    assert client.post(f"/api/external-lookups/{ev2['id']}/deny").json()["ok"]
+    assert client.post("/api/external-lookups/999999/approve").status_code == 404

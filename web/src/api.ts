@@ -355,14 +355,24 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
 export interface ChatEvent {
   // "replace_text" carries the server-verified final reply (dead [[links]] / unsourced URLs removed) —
   // the client swaps the streamed text for it so a fabricated link is never left on screen.
-  type: "token" | "tool" | "staging" | "applied" | "chart" | "replace_text" | "done" | "error";
+  // "external_proposal" = the assistant wants to send a term to an external service (MedlinePlus);
+  // nothing is sent until the owner approves the exact term via the inline confirm chip.
+  type: "token" | "tool" | "staging" | "applied" | "chart" | "replace_text" | "external_proposal" | "done" | "error";
   chart?: { analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string };
   text?: string;
   tool?: string;
+  term?: string;            // external_proposal: the exact term that would be sent out
+  id?: number;              // external_proposal: the lookup id to approve/deny
   actions?: any[];
   action?: { id: number; summary: string };
   message?: string;
 }
+
+// External-lookup approval (the medical_reference gate): nothing is sent externally until approved.
+// `term` lets the owner EDIT what's sent (e.g. trim a PHI-laden question down to a clean topic).
+export const approveExternalLookup = (id: number, term?: string) =>
+  post<{ ok: boolean; found: boolean; term: string }>(`/api/external-lookups/${id}/approve`, term ? { term } : undefined);
+export const denyExternalLookup = (id: number) => post<{ ok: boolean }>(`/api/external-lookups/${id}/deny`);
 
 // Stream the architect's reply over SSE (POST + ReadableStream, so we can send
 // a body and rely on the session cookie).

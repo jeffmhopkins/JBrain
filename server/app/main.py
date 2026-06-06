@@ -37,6 +37,7 @@ from .routers import (
     share,
     share_admin,
     chat,
+    external,
     entities,
     graph,
     notes,
@@ -206,7 +207,7 @@ app.add_middleware(
     expose_headers=["X-Locations-Truncated", "X-Locations-Count"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, events):
+for r in (auth_router, notes, chat, external, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, events):
     app.include_router(r.router)
 # The dictation-capture route (POST /api/notes/entry) accepts a per-person location key
 # in addition to the full key, so it lives on a separate, less-restricted router.

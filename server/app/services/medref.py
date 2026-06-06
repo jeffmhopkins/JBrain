@@ -77,7 +77,9 @@ def _parse_first_topic(xml_text: str) -> dict:
     title = summary = ""
     for c in doc.findall("content"):
         name = c.get("name")
-        text = re.sub(r"<[^>]+>", "", "".join(c.itertext())).strip()
+        # Replace the (escaped) HTML highlight/markup with spaces — NOT nothing — so list items
+        # and paragraphs don't run together ("platelets:</li><li>If" -> "platelets: If"); collapse ws.
+        text = " ".join(re.sub(r"<[^>]+>", " ", "".join(c.itertext())).split())
         if name == "title" and not title:
             title = text
         elif name in ("FullSummary", "snippet") and not summary:

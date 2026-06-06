@@ -454,3 +454,24 @@ draft schema in §1.1** — those corrections are authoritative for Phase 1.
 - Multi-note pattern provenance → **earliest member note** (stable ⇒ idempotent).
 - Title (no LLM) → the earliest member note's title.
 - Only regular cadences are promoted (irregular ⇒ no row), bounding noise.
+
+---
+
+## 9. Phase 3 — reminders + note-write paths (as built)
+
+- **Reminders** (`calendar_reminders` action + `calendar-reminders` workflow, daily
+  cron): `calendar.due_reminders(workflow_id, lead_hours=48, push=True)` posts a
+  Review card and a Web Push for each live event (one-off, and the NEXT instance of
+  each recurring series via `expand_rrule`) whose occurrence is within the lead
+  window. Deduped per instance through `calendar_fired` (marker = identity_key|date)
+  so each occurrence reminds exactly once; superseded/cancelled events are skipped.
+- **Write paths** (`routers/calendar.py`, all owner-keyed) — the UI writes NOTES:
+  - `POST /api/calendar/quick-add` writes a dated note AND deterministically projects
+    its structured event (`source='manual'`). To avoid double-derivation, the LLM
+    extractor (`pending_notes`) SKIPS notes that already carry a `source='manual'`
+    row — those are edited via reschedule/cancel, not re-extracted.
+  - `POST /api/calendar/events/{id}/reschedule` and `/cancel` write a SUPERSEDING
+    note carrying the structured `supersedes/cancels [[old note]] <date>` marker, then
+    run `consolidate` — the same re-derivation path the nightly workflow uses.
+  - `GET /api/calendar/upcoming` / `/history` — JSON read side for the Phase 4 UI
+    (one-offs + recurring next-occurrence, owner-tz windowed).

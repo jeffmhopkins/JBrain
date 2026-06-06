@@ -718,3 +718,114 @@ def test_event_history_bound_excludes_undated(conn):
     # With no bounds, the undated terminal event is still visible.
     allh = architect._tool_event_history(conn)
     assert "Undated" in allh
+
+
+# ============================================================================
+# Phase 3 — reminders (Review + Web Push) + note-write paths
+# ============================================================================
+
+def _soon(hours):
+    from datetime import timedelta
+    from app.services import clock
+    return (clock.now_local().replace(tzinfo=None) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _mkwf(conn):
+    """A minimal workflow row (its id is what the scheduler passes as workflow_id —
+    calendar_fired.workflow_id is NOT NULL and review_items.workflow_id has an FK)."""
+    cur = conn.execute(
+        "INSERT INTO workflows (name, trigger_type, trigger_config, action_type, action_config) "
+        "VALUES ('t','schedule','{}','calendar_reminders','{}')"
+    )
+    return cur.lastrowid
+
+
+def test_due_reminders_fires_once_per_instance(conn):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [
+        {"title": "Dentist", "kind": "appointment", "starts_at": _soon(24)},   # within 48h -> due
+        {"title": "FarOff", "starts_at": "2099-01-01"},                        # not due
+    ])
+    out = cal.due_reminders(conn, wf, lead_hours=48, push=False)
+    assert out["fired"] == 1
+    revs = conn.execute("SELECT title FROM review_items").fetchall()
+    assert any("Dentist" in r["title"] for r in revs) and not any("FarOff" in r["title"] for r in revs)
+    # Idempotent: a second pass fires nothing more.
+    assert cal.due_reminders(conn, wf, lead_hours=48, push=False)["fired"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM review_items").fetchone()["c"] == 1
+
+
+def test_due_reminders_recurring_next_instance(conn):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Daily standup")
+    # A daily series anchored in the past — its next instance is today/tomorrow (within 48h).
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2020-01-01", "all_day": True,
+                                   "rrule": "FREQ=DAILY"}], source="workflow", sweep=False)
+    out = cal.due_reminders(conn, wf, lead_hours=48, push=False)
+    assert out["fired"] >= 1
+    assert any("Standup" in r["title"] for r in conn.execute("SELECT title FROM review_items"))
+
+
+def test_due_reminders_skips_superseded(conn):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Will move")
+    cal.upsert_events(conn, nid, [{"title": "Checkup", "starts_at": _soon(12)}])
+    ik = conn.execute("SELECT identity_key FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["identity_key"]
+    n2 = _mknote(conn, "Moved")
+    cal.record_supersession(conn, ik, None, n2, "structured")
+    assert cal.due_reminders(conn, wf, lead_hours=48, push=False)["fired"] == 0
+
+
+# --- write-path endpoints (called directly; they use get_conn + Pydantic bodies) ---
+
+def test_quick_add_writes_note_and_manual_row_and_skips_llm(conn):
+    from app.routers import calendar as r
+    out = r.quick_add(r.QuickAddIn(title="Dentist", date="2099-06-14", time="15:00", kind="appointment"))
+    assert out["event"]["title"] == "Dentist" and out["event"]["all_day"] == 0
+    row = conn.execute("SELECT source, starts_at FROM calendar_events WHERE id=?", (out["event"]["id"],)).fetchone()
+    assert row["source"] == "manual" and row["starts_at"] == "2099-06-14T15:00:00"
+    # The note exists (durable record) and is EXCLUDED from LLM extraction (manual row).
+    from app.services import calendar as cal
+    conn.execute("UPDATE notes SET updated_at='2099-06-14 00:00:00' WHERE id=?", (out["note_id"],))
+    assert all(p["id"] != out["note_id"] for p in cal.pending_notes(conn, "", 100))
+
+
+def test_reschedule_supersedes_old_and_adds_new(conn):
+    from app.routers import calendar as r
+    added = r.quick_add(r.QuickAddIn(title="Dentist", date="2099-06-14"))
+    old_id = added["event"]["id"]
+    r.reschedule(old_id, r.RescheduleIn(to_date="2099-06-21"))
+    up = {(row["title"], row["starts_at"]) for row in conn.execute("SELECT title, starts_at FROM v_upcoming")}
+    assert ("Dentist", "2099-06-21") in up
+    assert ("Dentist", "2099-06-14") not in up   # old occurrence superseded
+
+
+def test_cancel_removes_from_upcoming(conn):
+    from app.routers import calendar as r
+    added = r.quick_add(r.QuickAddIn(title="Lunch", date="2099-07-01"))
+    r.cancel(added["event"]["id"])
+    up = [row["title"] for row in conn.execute("SELECT title FROM v_upcoming")]
+    assert "Lunch" not in up
+
+
+def test_upcoming_endpoint_merges_oneoff_and_recurring(conn):
+    from app.routers import calendar as r
+    from app.services import calendar as cal
+    from datetime import timedelta
+    from app.services import clock
+    n1 = _mknote(conn, "One off")
+    flight = (clock.today_local() + timedelta(days=30)).isoformat()   # within the API's day cap
+    cal.upsert_events(conn, n1, [{"title": "Flight", "starts_at": flight}])
+    n2 = _mknote(conn, "Series")
+    cal.upsert_events(conn, n2, [{"title": "Gym", "kind": "recurring", "starts_at": "2020-01-06",
+                                  "all_day": True, "rrule": "FREQ=WEEKLY;BYDAY=MO"}],
+                     source="workflow", sweep=False)
+    rows = r.upcoming(within_days=365)
+    titles = {x["title"] for x in rows}
+    assert "Flight" in titles and "Gym" in titles
+    assert any(x["recurring"] for x in rows if x["title"] == "Gym")

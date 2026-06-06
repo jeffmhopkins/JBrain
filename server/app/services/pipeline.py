@@ -1295,6 +1295,13 @@ def _p_promote_recurrence_calendar(ctx, clusters):
     return {"emitted": emitted}
 
 
+def _p_calendar_reminders(ctx, lead_hours=48, push=True):
+    """Post a Review card (+ optional Web Push) for each live calendar event whose next
+    occurrence falls within the lead window, deduped per instance so it fires once."""
+    from . import calendar as cal
+    return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), bool(push))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1374,6 +1381,7 @@ _PRIMITIVES = {
     "consolidate_calendar": _p_consolidate_calendar,
     "propose_supersessions": _p_propose_supersessions,
     "promote_recurrence_calendar": _p_promote_recurrence_calendar,
+    "calendar_reminders": _p_calendar_reminders,
 }
 
 
@@ -1440,6 +1448,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                               "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
     "promote_recurrence_calendar": {"summary": "Promote regular-cadence recurring chatter clusters into kind='recurring' calendar rows with an inferred rrule.",
                                     "inputs": [{"name": "clusters", "type": "list", "required": True}], "output": "object"},
+    "calendar_reminders": {"summary": "Post Review cards (+ Web Push) for events whose next occurrence is within the lead window; deduped per instance.",
+                           "inputs": [{"name": "lead_hours", "type": "int"}, {"name": "push", "type": "bool"}], "output": "object"},
     "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",
                         "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",

@@ -591,6 +591,10 @@ def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
         "     OR EXISTS (SELECT 1 FROM calendar_events ce WHERE ce.note_id = n.id) "
         "     OR n.content_md LIKE '%supersede%' OR n.content_md LIKE '%cancel%' "
         "     OR n.content_md LIKE '%reschedul%') "
+        # Skip notes the calendar UI authored deterministically (a source='manual' row):
+        # those are projected from structured form data and edited via reschedule/cancel
+        # (superseding notes), not re-extracted by the LLM — so we never duplicate them.
+        "AND NOT EXISTS (SELECT 1 FROM calendar_events m WHERE m.note_id = n.id AND m.source = 'manual') "
         "ORDER BY n.updated_at, n.id LIMIT ?",
         (ts, ts, rid, max(1, min(int(limit), 1000))),
     ).fetchall()
@@ -675,3 +679,89 @@ def emit_recurrence(conn, cluster: dict) -> dict:
         "all_day": True, "rrule": rrule,
     }], source="workflow", sweep=False)
     return {"emitted": 1, "rrule": rrule, "title": title, "anchor_note_id": anchor}
+
+
+# --- reminders (Phase 3): Review cards + Web Push, deduped per instance ------
+
+def _reminder_due(starts_at: str, all_day, now, horizon, today_s: str, horizon_s: str) -> bool:
+    """Is this occurrence within the [now, horizon] lead window? All-day rows compare
+    by date; timed rows by datetime."""
+    if all_day:
+        return today_s <= starts_at[:10] <= horizon_s
+    from dateutil.parser import isoparse
+    try:
+        dt = isoparse(starts_at)
+    except Exception:  # noqa: BLE001
+        return today_s <= starts_at[:10] <= horizon_s
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return now <= dt <= horizon
+
+
+def _already_fired(conn, workflow_id, marker: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM calendar_fired WHERE workflow_id IS ? AND kind='reminder' AND marker=?",
+        (workflow_id, marker),
+    ).fetchone() is not None
+
+
+def _fire_reminder(conn, workflow_id, marker, title, when, slug, push) -> None:
+    from . import reviews as reviews_svc
+    reviews_svc.create_review_item(
+        conn, workflow_id, f"Upcoming: {title}", f"Scheduled for {when}.", slug)
+    conn.execute(
+        "INSERT OR IGNORE INTO calendar_fired (workflow_id, kind, marker) VALUES (?, 'reminder', ?)",
+        (workflow_id, marker),
+    )
+    if push:
+        try:
+            from . import push as push_svc
+            push_svc.notify(f"Upcoming: {title}", f"Scheduled for {when}.", f"/n/{slug}" if slug else "/")
+        except Exception:  # noqa: BLE001 — a push hiccup must never fail the reminder pass
+            pass
+
+
+def due_reminders(conn, workflow_id, lead_hours: int = 48, push: bool = True) -> dict:
+    """Post a Review card (+ optional Web Push) for each live event whose next occurrence
+    falls within the lead window, deduped per instance via calendar_fired so it fires
+    once. One-off events and the NEXT instance(s) of recurring series are both covered."""
+    from datetime import timedelta
+    from . import clock
+    now = clock.now_local().replace(tzinfo=None)
+    horizon = now + timedelta(hours=int(lead_hours))
+    today_s, horizon_s = now.date().isoformat(), horizon.date().isoformat()
+    fired = 0
+
+    for r in conn.execute(
+        "SELECT e.identity_key, e.title, e.starts_at, e.all_day, n.slug "
+        "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
+        "WHERE e.kind != 'recurring' AND e.status NOT IN ('cancelled','done') "
+        "AND e.starts_at IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key)"
+    ).fetchall():
+        if not _reminder_due(r["starts_at"], r["all_day"], now, horizon, today_s, horizon_s):
+            continue
+        marker = f"{r['identity_key']}|{r['starts_at'][:10]}"
+        if _already_fired(conn, workflow_id, marker):
+            continue
+        when = r["starts_at"][:16].replace("T", " ")
+        _fire_reminder(conn, workflow_id, marker, r["title"], when, r["slug"], push)
+        fired += 1
+
+    for r in conn.execute(
+        "SELECT e.identity_key, e.title, e.starts_at, e.rrule, e.exdate_json, n.slug "
+        "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
+        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.status NOT IN ('cancelled','done') "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key)"
+    ).fetchall():
+        try:
+            ex = json.loads(r["exdate_json"] or "[]")
+        except Exception:  # noqa: BLE001
+            ex = []
+        for inst in expand_rrule(r["rrule"], r["starts_at"] or today_s, today_s, horizon_s, exdates=ex):
+            marker = f"{r['identity_key']}|{inst}"
+            if _already_fired(conn, workflow_id, marker):
+                continue
+            _fire_reminder(conn, workflow_id, marker, r["title"], inst, r["slug"], push)
+            fired += 1
+    return {"fired": fired}

@@ -1,0 +1,18 @@
+# Daily calendar reminders.
+#
+# Each morning, surface events coming up within the lead window (default 48h) as
+# Review cards + Web Push — once per occurrence (deduped via calendar_fired). Covers
+# one-off events and the next instance of recurring series. Touches no notes.
+key: calendar-reminders
+name: Calendar reminders
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 7 * * *"   # 7am local (server TZ)
+
+action:
+  type: calendar_reminders
+  config:
+    lead_hours: 48
+    push: true

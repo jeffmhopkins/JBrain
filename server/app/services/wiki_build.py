@@ -574,7 +574,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         base["errors"] = ["no such article"]
         return base
     open_items = [it for it in article_talk.open_for(conn, article_title)
-                  if it["kind"] in ("conflict", "question", "todo", "directive")]
+                  if it["kind"] in ("conflict", "question", "todo", "directive", "correction")]
     extra_source_ids = [int(i) for i in (extra_source_ids or [])]
     removed_titles = [t for t in (removed_titles or []) if t]
     if not (open_items or extra_source_ids or removed_titles):
@@ -597,8 +597,10 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     subject = f"{article_title.rsplit('/', 1)[-1]} {content.splitlines()[0].lstrip('# ') if content.strip() else ''}".strip()
     srcs = _load_sources(conn, ids, query=subject)
     new_srcs = _load_sources(conn, extra_source_ids, query=subject)
-    items_text = "\n".join(f"[{it['id']}] ({it['kind']}, by {it['author']}) {it['body']}"
-                           for it in open_items) or "(none)"
+    items_text = "\n".join(
+        f"[{it['id']}] ({'correction — SOURCE OF TRUTH, authoritative' if it.get('is_correction') else it['kind']}, "
+        f"by {it['author']}) {it['body']}"
+        for it in open_items) or "(none)"
     new_block = _sources_text(new_srcs) or "(none)"
     removed_block = "\n".join(f"- [[{t}]]" for t in removed_titles) or "(none)"
     others = scoped_known_titles(conn, article_title, known_titles)
@@ -1065,6 +1067,11 @@ def recategorize_article(conn, title: str, new_title: str) -> dict:
     try:
         notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], kind="kb",
                               source="recategorize", version_note=f"recategorized from {title}")
+        # article_talk and entity_overrides are keyed by title (not a FK), so carry them —
+        # including source-of-truth corrections — to the new title or they'd be orphaned.
+        conn.execute("UPDATE article_talk SET article_title=? WHERE article_title=?", (new_title, title))
+        conn.execute("UPDATE OR IGNORE entity_overrides SET article_title=? WHERE article_title=?",
+                     (new_title, title))
         entity_index.rebuild(conn)
         flag_dead_links(conn)
         refresh_index(conn)
@@ -1203,6 +1210,12 @@ def merge_articles(conn, sources: list[str], into: str) -> dict:
             # [[old]]→[[into]] so live articles point straight at the canonical page.
             create_redirect(conn, s, into)
             notes_svc._rename_inbound_links(conn, s, into, into_id)   # [[old]]→[[into]], never unwrap
+            # Carry the source article's talk + entity override (incl. source-of-truth
+            # corrections) into the merge target — both are title-keyed, so they'd otherwise
+            # be orphaned. OR IGNORE: keep the target's own override if it already has one.
+            conn.execute("UPDATE article_talk SET article_title=? WHERE article_title=?", (into, s))
+            conn.execute("UPDATE OR IGNORE entity_overrides SET article_title=? WHERE article_title=?",
+                         (into, s))
         if out.get("talk"):
             article_talk.record(conn, into, out["talk"])
         _structure_log(conn, "merge", "|".join(sorted(sources)))
@@ -1402,7 +1415,7 @@ def maintain_batch(conn, limit: int = 20) -> dict:
     # the watermark's own second is re-examined rather than risk being skipped.
     items = conn.execute(
         "SELECT t.id, t.created_at, t.article_title AS title FROM article_talk t "
-        "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive') "
+        "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive','correction') "
         "AND t.created_at >= ? "
         "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
         "ORDER BY t.created_at, t.id",
@@ -1425,7 +1438,13 @@ def maintain_batch(conn, limit: int = 20) -> dict:
     changed = resolved = examined = failed = 0
     bad = set(deferred)
     for title in work:
-        out = maintain_one(conn, title, known)
+        # Feed in any promoted source-of-truth correction notes for this article as NEW
+        # sources (the [[wikilink]] alone does NOT route them — _articles_citing is
+        # reverse-direction), so the SUPERSEDE-by-recency rule rewrites the article from them.
+        corr_ids = [r["source_note_id"] for r in conn.execute(
+            "SELECT source_note_id FROM article_talk WHERE article_title=? AND kind='correction' "
+            "AND resolved_at IS NULL AND source_note_id IS NOT NULL", (title,)).fetchall()]
+        out = maintain_one(conn, title, known, extra_source_ids=corr_ids or None)
         if not out["ok"]:
             failed += 1
             bad.add(title)

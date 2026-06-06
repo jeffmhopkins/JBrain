@@ -377,7 +377,7 @@ def test_migration_v44_to_v46_upgrade(monkeypatch):
     def cols(t):
         return {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
 
-    assert db.get_meta("schema_version") == "46"
+    assert db.get_meta("schema_version") == str(db.SCHEMA_VERSION)
     assert conn.execute("SELECT name FROM sqlite_master WHERE name='entity_decisions'").fetchone()
     assert "redirect_to" in cols("notes")
     assert {"kind", "payload_json"} <= cols("review_items")

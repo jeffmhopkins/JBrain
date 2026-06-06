@@ -220,12 +220,22 @@ def get_talk(slug: str):
 def add_talk(slug: str, body: TalkIn):
     """Add an owner note/directive/question to an article's talk. (There is intentionally
     no user 'resolve' — open items are addressed through the Review flow / maintenance pass
-    when the underlying issue is actually handled, not by ticking a box.)"""
+    when the underlying issue is actually handled, not by ticking a box.)
+
+    A 'correction' is a source-of-truth fix: it's promoted to a dated entry note (the truth
+    layer) and the talk item links to it, so the next maintenance pass rewrites the article
+    from it. Source entries are never modified."""
     conn = get_conn()
-    from ..services import article_talk
-    tid = article_talk.add(conn, _note_title(conn, slug), body.kind, body.body, author="user")
+    from ..services import article_talk, corrections
+    article_title = _note_title(conn, slug)
+    tid = article_talk.add(conn, article_title, body.kind, body.body, author="user")
+    promoted = None
+    if tid is not None and body.kind == "correction":
+        promoted = corrections.maybe_promote(conn, tid, article_title, body.body)
     conn.commit()
-    return {"id": tid}
+    if promoted:
+        notes_svc.flush_entry_events(conn)  # fire analysis/auto-tag AFTER commit
+    return {"id": tid, "promoted": promoted}
 
 
 @router.get("/kb/dead-links")

@@ -292,9 +292,58 @@ def rebuild(conn, limit: int = 20000) -> int:
             conn.execute("DELETE FROM entities WHERE id=?", (r["id"],))   # mentions cascade
 
     _link_articles(conn)
-    _sync_embeddings(conn)
+    _apply_overrides(conn)            # owner source-of-truth names win over frequency
+    _sync_embeddings(conn)            # embed AFTER overrides so vectors use the corrected name
     conn.commit()
     return len(seen_keys)
+
+
+def set_canonical_override(conn, article_title: str, canonical_name: str,
+                           source_note_id: int | None = None) -> None:
+    """Record an owner source-of-truth override for an entity's display name, keyed by the kb
+    article it backs (a stable key that survives the normalize() diacritic/spelling fork).
+    Durable — rebuild() re-applies it via _apply_overrides — and patches the live entity now
+    (if one is linked) for immediate effect. No LLM/embeddings; safe on the request path."""
+    article_title = (article_title or "").strip()
+    canonical_name = (canonical_name or "").strip()
+    if not article_title or not canonical_name:
+        return
+    conn.execute(
+        "INSERT INTO entity_overrides (article_title, canonical_name, source_note_id) "
+        "VALUES (?,?,?) ON CONFLICT(article_title) DO UPDATE SET "
+        "canonical_name=excluded.canonical_name, source_note_id=excluded.source_note_id, "
+        "created_at=datetime('now')",
+        (article_title, canonical_name, source_note_id))
+    _apply_one_override(conn, article_title, canonical_name)
+
+
+def _apply_one_override(conn, article_title: str, canonical_name: str) -> None:
+    """Set the linked entity's display name to the override, keeping the prior name AND the
+    corrected name as aliases so both spellings still resolve in search/routing. Idempotent."""
+    ent = conn.execute("SELECT id, canonical_name FROM entities WHERE article_title=?",
+                       (article_title,)).fetchone()
+    if not ent:
+        return                        # no entity linked yet; rebuild will apply it later
+    old = ent["canonical_name"]
+    if old and normalize(old) != normalize(canonical_name):
+        conn.execute("INSERT OR IGNORE INTO entity_aliases (entity_id, alias_norm, alias_display) "
+                     "VALUES (?,?,?)", (ent["id"], normalize(old), old))
+    conn.execute("UPDATE entities SET canonical_name=?, updated_at=datetime('now') WHERE id=?",
+                 (canonical_name, ent["id"]))
+    conn.execute("INSERT OR IGNORE INTO entity_aliases (entity_id, alias_norm, alias_display) "
+                 "VALUES (?,?,?)", (ent["id"], normalize(canonical_name), canonical_name))
+
+
+def _apply_overrides(conn) -> None:
+    """Re-apply owner name overrides after rebuild recomputed display names from raw frequency.
+    An override whose source correction note was (soft-)deleted is skipped, so the entity name
+    auto-reverts to the frequency-derived one — the revert path for an undone correction."""
+    rows = conn.execute(
+        "SELECT o.article_title, o.canonical_name FROM entity_overrides o "
+        "LEFT JOIN notes n ON n.id = o.source_note_id "
+        "WHERE o.source_note_id IS NULL OR n.deleted_at IS NULL").fetchall()
+    for ov in rows:
+        _apply_one_override(conn, ov["article_title"], ov["canonical_name"])
 
 
 _LABEL = dict(_TYPE_LABELS)

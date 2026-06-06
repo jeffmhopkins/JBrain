@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 48
 
 
 def init_db() -> None:
@@ -683,6 +683,31 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         _add_column(conn, "notes", "redirect_to", "TEXT")
         _add_column(conn, "review_items", "kind", "TEXT")
         _add_column(conn, "review_items", "payload_json", "TEXT")
+
+    if current < 47:
+        # Source-of-truth corrections: an owner 'correction' talk item is promoted to a
+        # real dated entry note (the truth layer). is_correction marks the talk row;
+        # source_note_id links it to the promoted note (SET NULL on note delete so the
+        # talk record survives). schema.sql carries the identical columns + index.
+        _add_column(conn, "article_talk", "is_correction", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "article_talk", "source_note_id",
+                    "INTEGER REFERENCES notes(id) ON DELETE SET NULL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
+            "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
+
+    if current < 48:
+        # Durable entity-name healing: owner source-of-truth overrides for the derived entity
+        # index, keyed by the kb article the entity backs (stable across the normalize() fork).
+        # entity_index.rebuild() re-applies them; schema.sql carries the identical table.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_overrides (
+              article_title  TEXT PRIMARY KEY,
+              canonical_name TEXT NOT NULL,
+              source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+              created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

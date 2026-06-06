@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import re
 
-_KINDS = {"decision", "conflict", "question", "todo", "directive", "note", "restructure"}
+_KINDS = {"decision", "conflict", "question", "todo", "directive", "note", "restructure",
+          "correction"}
 # Kinds that represent unfinished work — what maintenance should act on. `restructure`
 # (split/merge/fold hints) is deliberately NOT here: a per-article maintain pass can't do
 # it, so it's logged for a later structural pass / Reorganize and never re-worked (no nag).
-OPEN_KINDS = {"conflict", "question", "todo", "directive"}
+# `correction` IS here: an owner source-of-truth correction must drive the next pass (its
+# promoted note is fed in as a source), then get resolved like a directive.
+OPEN_KINDS = {"conflict", "question", "todo", "directive", "correction"}
 
 
 def add(conn, article_title: str, kind: str, body: str, author: str = "ai") -> int | None:
@@ -122,10 +125,14 @@ def demote_stub_notes(conn, article_title: str | None = None) -> int:
 
 
 def list_for(conn, article_title: str) -> list[dict]:
-    """All talk for an article — open items first, then most-recent."""
+    """All talk for an article — open items first, then most-recent. A promoted correction
+    carries source_note_slug (the truth note it spawned), or NULL if that note was deleted."""
     rows = conn.execute(
-        "SELECT id, kind, body, author, created_at, resolved_at, resolution FROM article_talk "
-        "WHERE article_title=? ORDER BY (resolved_at IS NULL) DESC, created_at DESC",
+        "SELECT t.id, t.kind, t.body, t.author, t.created_at, t.resolved_at, t.resolution, "
+        "t.is_correction, t.source_note_id, n.slug AS source_note_slug "
+        "FROM article_talk t LEFT JOIN notes n "
+        "  ON n.id = t.source_note_id AND n.deleted_at IS NULL "
+        "WHERE t.article_title=? ORDER BY (t.resolved_at IS NULL) DESC, t.created_at DESC",
         (article_title,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -139,10 +146,12 @@ def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
 
 
 def open_for(conn, article_title: str) -> list[dict]:
-    """Unresolved entries — what the maintenance pass reads to target its work."""
+    """Unresolved entries — what the maintenance pass reads to target its work.
+    `is_correction`/`source_note_id` let the pass treat an owner correction as
+    authoritative and feed its promoted note in as a source."""
     rows = conn.execute(
-        "SELECT id, kind, body, author, created_at FROM article_talk "
-        "WHERE article_title=? AND resolved_at IS NULL ORDER BY created_at",
+        "SELECT id, kind, body, author, created_at, is_correction, source_note_id "
+        "FROM article_talk WHERE article_title=? AND resolved_at IS NULL ORDER BY created_at",
         (article_title,),
     ).fetchall()
     return [dict(r) for r in rows]

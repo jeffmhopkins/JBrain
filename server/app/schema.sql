@@ -202,14 +202,34 @@ CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, n
 CREATE TABLE IF NOT EXISTS article_talk (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   article_title TEXT NOT NULL,
-  kind          TEXT NOT NULL,        -- decision | conflict | question | todo | directive | note
+  kind          TEXT NOT NULL,        -- decision | conflict | question | todo | directive | note | correction
   body          TEXT NOT NULL,
   author        TEXT NOT NULL DEFAULT 'ai',   -- ai | user
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   resolved_at   TEXT,
-  resolution    TEXT                  -- how it was addressed (set by the maintenance pass)
+  resolution    TEXT,                 -- how it was addressed (set by the maintenance pass)
+  -- Source-of-truth correction: an owner 'correction' talk item is promoted to a real
+  -- dated entry note (the truth layer); source_note_id links here. The note — not this
+  -- row — carries the durable fact; recency-supersede then heals the article on the next
+  -- maintenance pass. Raw source entries are never modified.
+  is_correction  INTEGER NOT NULL DEFAULT 0,
+  source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
+CREATE INDEX IF NOT EXISTS idx_article_talk_source_note
+  ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL;
+
+-- Owner source-of-truth name overrides for the (derived) entity index. Keyed by the kb
+-- article the entity backs — a STABLE key that survives the normalize() fork (diacritics /
+-- spellings produce different normalized_keys, so a frequency-derived display name can't be
+-- corrected durably any other way). entity_index.rebuild() re-applies these every pass; an
+-- override whose source correction note was deleted is skipped, so the name auto-reverts.
+CREATE TABLE IF NOT EXISTS entity_overrides (
+  article_title  TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 
 

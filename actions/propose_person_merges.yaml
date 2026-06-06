@@ -1,0 +1,28 @@
+# Declarative action: PROPOSE likely-duplicate people for the owner to confirm.
+#
+# Finds pairs of person entities that share a surname and aren't already merged, split, or
+# awaiting review, asks the model whether they're the SAME individual (vs relatives /
+# namesakes), and posts a "Same person?" review card for each high-confidence match. It NEVER
+# merges on its own — approving a card records a durable merge (which survives every rebuild
+# and folds the articles with a redirect); rejecting records a durable split so the pair is
+# never re-proposed. Owner-triggered or scheduled. Requires an Anthropic key.
+#
+# config keys:
+#   limit          — max candidate pairs to adjudicate per run (default 40)
+#   min_confidence — confidence floor (0-1) for posting a card (default 0.7)
+type: propose_person_merges
+category: Knowledge base
+config:
+  - { key: limit, label: "Max candidate pairs", type: number, default: 40 }
+  - { key: min_confidence, label: "Confidence floor (0-1)", type: number, default: 0.7 }
+steps:
+  - id: pm
+    do: propose_person_merges
+    with:
+      limit: "{{ config.limit | default(40) }}"
+      min_confidence: "{{ config.min_confidence | default(0.7) }}"
+  - do: create_review
+    when: "{{ pm.proposed and pm.proposed > 0 }}"
+    with:
+      title: "Possible duplicate people"
+      message: "Posted {{ pm.proposed }} 'same person?' suggestion(s) from {{ pm.candidates }} candidate pair(s) — review to merge or keep separate."

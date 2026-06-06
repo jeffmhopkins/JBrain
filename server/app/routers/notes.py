@@ -59,7 +59,9 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
                include_hidden: bool = False):
     conn = get_conn()
-    clauses = ["deleted_at IS NULL"]
+    # Redirects are decluttered from browse: a merged-away page keeps its UNIQUE title slot
+    # live so old [[links]] resolve, but it must not show up in the notes list.
+    clauses = ["deleted_at IS NULL", "redirect_to IS NULL"]
     params: list = []
     if q:
         clauses.append("title LIKE ?")
@@ -108,6 +110,17 @@ def get_note(slug: str):
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")
     note = dict(row)
+    # Redirect resolution: when this row is a redirect, resolve the (chained) FINAL target
+    # to its slug so a client can forward there. redirect_to is already on the row (SELECT *).
+    note["redirect_to_slug"] = None
+    if row["redirect_to"]:
+        from ..services import wiki_build
+        final = wiki_build._resolve_redirect_chain(conn, row["redirect_to"])
+        tgt = conn.execute(
+            "SELECT slug FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (final,)
+        ).fetchone()
+        if tgt:
+            note["redirect_to_slug"] = tgt["slug"]
     note["backlinks"] = notes_svc.backlinks(conn, row["id"])
     note["tags"] = [
         t["name"]

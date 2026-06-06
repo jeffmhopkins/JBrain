@@ -22,16 +22,16 @@ def graph():
         SELECT n.id, n.title, n.slug, n.kind,
                (SELECT COUNT(*) FROM links l JOIN notes s ON s.id = l.source_note_id
                 WHERE l.target_note_id = n.id AND s.deleted_at IS NULL) AS in_degree
-        FROM notes n WHERE n.deleted_at IS NULL AND NOT {node_hidden}
+        FROM notes n WHERE n.deleted_at IS NULL AND n.redirect_to IS NULL AND NOT {node_hidden}
         """
     ).fetchall()
-    # Only edges between two LIVE, non-hidden notes — never a dangling edge to a deleted
-    # or hidden note (which would otherwise materialize a phantom node in the force graph).
+    # Only edges between two LIVE, non-hidden, non-redirect notes — never a dangling edge to a
+    # deleted/hidden/redirect note (which would otherwise materialize a phantom node).
     edges = conn.execute(
         "SELECT DISTINCT l.source_note_id AS source, l.target_note_id AS target "
         "FROM links l "
-        f"JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL AND NOT {src_hidden} "
-        f"JOIN notes t ON t.id = l.target_note_id AND t.deleted_at IS NULL AND NOT {tgt_hidden} "
+        f"JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL AND s.redirect_to IS NULL AND NOT {src_hidden} "
+        f"JOIN notes t ON t.id = l.target_note_id AND t.deleted_at IS NULL AND t.redirect_to IS NULL AND NOT {tgt_hidden} "
         "WHERE l.source_note_id != l.target_note_id"
     ).fetchall()
     return {

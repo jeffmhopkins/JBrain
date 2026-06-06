@@ -3,12 +3,13 @@ from __future__ import annotations
 
 
 def create_review_item(
-    conn, workflow_id: int | None, title: str, message: str = "", link_slug: str | None = None
+    conn, workflow_id: int | None, title: str, message: str = "", link_slug: str | None = None,
+    kind: str | None = None, payload_json: str | None = None
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO review_items (workflow_id, title, message, link_slug) "
-        "VALUES (?, ?, ?, ?)",
-        (workflow_id, title, message or "", link_slug),
+        "INSERT INTO review_items (workflow_id, title, message, link_slug, kind, payload_json) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (workflow_id, title, message or "", link_slug, kind, payload_json),
     )
     return cur.lastrowid
 

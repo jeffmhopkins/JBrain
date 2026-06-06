@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 
 def init_db() -> None:
@@ -659,6 +659,30 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
             CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
         """)
+
+    if current < 46:
+        # Durable person-identity decisions: an APPEND-only ledger of user merge/split/alias
+        # rulings that survive every entity_index.rebuild() (which re-derives entities from
+        # note_analysis each pass, so heuristic-only merges were lost). entity_index folds
+        # these in as forced unions/blocked splits/extra aliases. Self-contained table, so
+        # the index is safe inline here. schema.sql carries the identical block for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_decisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL CHECK (kind IN ('merge','split','alias')),
+              type TEXT NOT NULL DEFAULT 'person',
+              norm_a TEXT NOT NULL, norm_b TEXT,
+              display_a TEXT, display_b TEXT, canonical TEXT,
+              author TEXT NOT NULL DEFAULT 'user', source TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, norm_a);
+        """)
+        # A redirected (merged-away) note can point at its survivor; review_items gains a
+        # typed payload so identity-review cards carry structured context.
+        _add_column(conn, "notes", "redirect_to", "TEXT")
+        _add_column(conn, "review_items", "kind", "TEXT")
+        _add_column(conn, "review_items", "payload_json", "TEXT")
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

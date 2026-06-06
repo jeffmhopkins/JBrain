@@ -2461,8 +2461,9 @@ def test_recategorize_article_moves_and_rewrites_inbound_links(client):
 
 
 def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
-    """Merge unions sources into one article, soft-deletes the others, and rewrites inbound
-    [[source]]→[[into]] links (never unwraps them)."""
+    """Merge unions sources into one article, CONVERTS each source to a redirect (live row,
+    redirect_to set — not soft-deleted, so old [[source]] links / external URLs still
+    resolve), and rewrites inbound [[source]]→[[into]] links (never unwraps them)."""
     from app.db import get_conn
     from app.services import wiki_build, llm
     from app.services import notes as ns
@@ -2478,7 +2479,13 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
         "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
     res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
     assert res["ok"], res
-    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/Things/GroverCat' AND deleted_at IS NULL").fetchone()
+    # Source is now a REDIRECT: still live (keeps its title slot), redirect_to → the merged
+    # article, body replaced with the one-line marker.
+    src = conn.execute(
+        "SELECT deleted_at, redirect_to, content_md FROM notes WHERE title='kb/Things/GroverCat'"
+    ).fetchone()
+    assert src["deleted_at"] is None and src["redirect_to"] == "kb/Things/Grover"
+    assert src["content_md"] == "Redirects to [[kb/Things/Grover]]."
     owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 
@@ -3088,6 +3095,34 @@ def test_health_split_migration(client):
     assert routed == {"kb/Health/Jeff Hopkins"}
     # A non-medical note is never rerouted.
     assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
+
+
+def test_health_split_ignores_redirects(client):
+    """A merged-away (redirect) page is never treated as a real person/health page: the People
+    scan skips a People redirect even if it still carries a ## Health body, and health_page_for
+    never returns a Health redirect (which would route medical captures into a dead page and
+    resurrect it on write)."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_build
+    conn = get_conn()
+    # A People redirect that (artificially) still has a health body must NOT be scanned/extracted.
+    ns.upsert_note(conn, "kb/People/Ghost",
+                   "# Ghost\nLead.[^s1]\n\n## Health\nTakes prednisone 40 mg daily.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/medical/v]] — 2026-06-01\n", kind="kb")
+    conn.execute("UPDATE notes SET redirect_to='kb/People/Jeffrey Hopkins' WHERE title='kb/People/Ghost'")
+    conn.commit()
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert not any(p["person"] == "kb/People/Ghost" for p in rep["people"])      # redirect skipped despite health body
+
+    # A Health page merged away becomes a redirect — health_page_for must not return it.
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins", "# Jeffrey Hopkins\n\nOwner.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Old", "# Old\n\nrecord.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Jeffrey Hopkins",
+                   "# Jeffrey Hopkins\n\nPersonal health record for [[kb/People/Jeffrey Hopkins]].", kind="kb")
+    conn.commit()
+    wiki_build.create_redirect(conn, "kb/Health/Jeffrey Hopkins", "kb/Health/Old")
+    conn.commit()
+    assert health_split.health_page_for(conn, "kb/People/Jeffrey Hopkins") != "kb/Health/Jeffrey Hopkins"
 
 
 def test_geo_distance_resolves_place_geofence(client):

@@ -282,11 +282,12 @@ def _link_articles(conn) -> None:
     conn.execute("UPDATE entities SET article_title = NULL")
     leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
     for k in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall():
-        # A kb/Health/<Person> page shares its leaf with the person's kb/People/<Person> page.
-        # It is a PHI satellite, NEVER an entity's canonical article — excluding it keeps the
-        # person entity bound to their People page (the SELECT has no ORDER BY, so a collision
-        # would otherwise be nondeterministic and silently mis-route facts into the health page).
-        if wiki_guides.is_health_title(k["title"]):
+        # A private-domain page (kb/Health/<Person>, kb/Finance/People/<Person>) can share its leaf
+        # with the person's kb/People/<Person> page. It is a PII satellite, NEVER an entity's
+        # canonical article — excluding it keeps the person entity bound to their People page (the
+        # SELECT has no ORDER BY, so a collision would otherwise be nondeterministic and silently
+        # mis-route facts into the private page).
+        if wiki_guides.is_private_title(k["title"]):
             continue
         leaf_map.setdefault(normalize(k["title"].split("/")[-1]), k["title"])
     aliases: dict = {}       # entity_id -> [alias_norm, ...]

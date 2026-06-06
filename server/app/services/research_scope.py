@@ -62,11 +62,14 @@ def filter_match_ids(conn, scope: dict) -> set[int]:
         clauses.append("n.title = ?")
         params.append(t)
     sql = "SELECT n.id FROM notes n WHERE n.deleted_at IS NULL AND (" + " OR ".join(clauses) + ")"
-    # PHI firewall: personal-health pages (kb/Health/<Person>) are never surfaced as research
+    # PII firewall: private-domain pages (kb/Health/…, kb/Finance/…) are never surfaced as research
     # candidates, even if the owner's prefix would match — so they can't be approved into the
-    # allowlist and reach a recipient. Default-deny at the surfacing layer (defence-in-depth on
-    # top of the approved-id gate). scoped_search applies the same drop on retrieval.
-    sql += " AND lower(n.title) NOT LIKE 'kb/health/%'"
+    # allowlist and reach a recipient. Default-deny at the surfacing layer (defence-in-depth on top
+    # of the approved-id gate). scoped_search applies the same drop on retrieval.
+    from . import wiki_guides
+    for prefix in wiki_guides._PRIVATE_PREFIXES:
+        sql += " AND lower(n.title) NOT LIKE ?"
+        params.append(prefix + "%")
     if kinds:
         sql += " AND n.kind IN (%s)" % ",".join("?" * len(kinds))
         params += kinds
@@ -140,6 +143,8 @@ def scoped_search(conn, allowed: set[int], query: str, k: int = 6) -> list[dict]
     note BODIES relevant to `query` (semantic first, keyword fill), each re-verified
     to be in `allowed`. Titles/ids are NOT returned to the model — only content +
     the internal id for the server-side audit log. Output ⊆ allowed, ALWAYS."""
+    from . import wiki_guides
+    _is_private = wiki_guides.is_private_title
     if not allowed or not (query or "").strip():
         return []
     ids = list(allowed)
@@ -172,8 +177,8 @@ def scoped_search(conn, allowed: set[int], query: str, k: int = 6) -> list[dict]
         r = conn.execute(
             "SELECT id, title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (nid,)
         ).fetchone()
-        # Final re-verification AND a PHI drop: never return a kb/Health/<Person> body to a
-        # recipient, even if one were somehow approved into the allowlist (crown-jewel guard).
-        if r and r["id"] in allowed and not (r["title"] or "").lower().startswith("kb/health/"):
+        # Final re-verification AND a PII drop: never return a private-domain body (kb/Health/…,
+        # kb/Finance/…) to a recipient, even if one were somehow approved into the allowlist.
+        if r and r["id"] in allowed and not _is_private(r["title"]):
             out.append({"id": r["id"], "content": r["content_md"] or ""})
     return out

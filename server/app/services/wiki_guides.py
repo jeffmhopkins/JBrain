@@ -87,6 +87,29 @@ def is_health_title(title: str) -> bool:
     return (title or "").lower().startswith(HEALTH_PREFIX)
 
 
+# The PRIVATE/sensitive domains: PII vaults that are firewalled out of the shareable wiki
+# (no other domain may link them), share-hardened (any share is browser-bound + finite-TTL),
+# and hidden from research recipients. "Health" is live; "Finance" is registered here so the
+# firewall protects any kb/Finance/* note from the moment one exists — it is added to DOMAINS
+# (with its guide) separately, so this registry can lead the taxonomy without churn.
+PRIVATE_DOMAINS = ("Health", "Finance")
+_PRIVATE_PREFIXES = tuple(f"kb/{d.lower()}/" for d in PRIVATE_DOMAINS)
+
+
+def is_private_title(title: str) -> bool:
+    """True for any sensitive-domain page (kb/Health/… or kb/Finance/…) — the single firewall
+    predicate reused by the share layer, research scope, the structure lint, and the entity index."""
+    t = (title or "").lower()
+    return any(t.startswith(p) for p in _PRIVATE_PREFIXES)
+
+
+def private_domain_for(title: str) -> str | None:
+    """The private domain a title belongs to, or None. (Returns a domain only once it's also in
+    DOMAINS — i.e. fully wired with a guide; before that domain_for_title won't recognise it.)"""
+    d = domain_for_title(title)
+    return d if d in PRIVATE_DOMAINS else None
+
+
 def parse_spec(text: str) -> dict:
     """Extract and parse the fenced ```spec YAML block from a guide. {} if absent."""
     m = _SPEC_RE.search(text or "")

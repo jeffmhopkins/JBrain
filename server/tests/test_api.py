@@ -2804,6 +2804,16 @@ def test_wiki_guides(client):
     assert g.domain_for_title("kb/Nope/x") is None
     assert g.is_health_title("kb/Health/Jeff Hopkins") and g.is_health_title("KB/HEALTH/X")
     assert not g.is_health_title("kb/People/Jeff Hopkins")
+    # The generic private-domain predicate covers both sensitive domains (Health is live; Finance
+    # is registered in the firewall even before it joins DOMAINS).
+    assert g.is_private_title("kb/Health/Jeff Hopkins") and g.is_private_title("kb/Finance/Accounts/Chase")
+    assert not g.is_private_title("kb/People/Jeff Hopkins") and not g.is_private_title("kb/Reference/Finance/IRA")
+    assert "Finance" in g.PRIVATE_DOMAINS
+    # private_domain_for returns a domain only once it's also in DOMAINS (fully wired): Health is,
+    # Finance is not yet (its firewall leads its taxonomy entry) — lock that documented asymmetry.
+    assert g.private_domain_for("kb/Health/Allan") == "Health"
+    assert g.private_domain_for("kb/Finance/Accounts/Chase") is None
+    assert g.private_domain_for("kb/People/Allan") is None
 
     good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
             "## Key facts\n- Relationship: brother\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
@@ -2882,7 +2892,7 @@ def test_health_domain_firewall(client):
     tok2 = share_svc.create_link(conn, nid, "view", ttl_days=None, bind=False); conn.commit()
     row2 = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok2,)).fetchone()
     assert row2["bind"] == 0 and row2["expires_at"] is None
-    share_svc.assert_health_share_policy()                  # boot invariant holds
+    share_svc.assert_private_share_policy()                 # boot invariant holds
 
     # --- RT-2: the Jeff person entity binds to kb/People/Jeff Hopkins, NOT the Health page that
     # shares its leaf (the SELECT in _link_articles has no ORDER BY, so this must be deterministic).
@@ -2899,6 +2909,34 @@ def test_health_domain_firewall(client):
     assert pid in cand and hid not in cand
     # scoped_search never returns a Health body even if its id is force-injected into the allowlist.
     assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
+
+    # --- The same firewall generalizes to kb/Finance/* via the shared private-domain predicate
+    # (Finance is registered in PRIVATE_DOMAINS before it joins DOMAINS): a Finance note's share is
+    # force-hardened and the page is excluded from research candidates + retrieval, prefix-only.
+    fid = ns.upsert_note(conn, "kb/Finance/Accounts/Chase",
+                         "# Chase\nChecking account for [[kb/People/Jeff Hopkins]]; balance $4,200.", kind="kb")
+    conn.commit()
+    ftok = share_svc.create_link(conn, fid, "view", ttl_days=None, bind=False); conn.commit()
+    frow = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (ftok,)).fetchone()
+    assert frow["bind"] == 1 and frow["expires_at"]
+    assert fid not in research_scope.filter_match_ids(conn, {"prefixes": ["kb"]})
+    # Exercise the full clause/param assembly (prefix + private-exclusion + kinds) so a param-order
+    # regression in filter_match_ids is caught, not just the prefix-only path.
+    cand_k = research_scope.filter_match_ids(conn, {"prefixes": ["kb"], "kinds": ["kb"]})
+    assert pid in cand_k and hid not in cand_k and fid not in cand_k
+    assert not any(r["id"] == fid for r in research_scope.scoped_search(conn, {fid}, "chase balance"))
+    # And the leaf-collision fix generalizes — made LOAD-BEARING by giving the private page the
+    # LOWER rowid (inserted first): with first-wins leaf binding the kb/Finance page would steal the
+    # entity if it weren't excluded, so this fails the moment is_private_title stops covering Finance.
+    ns.upsert_note(conn, "kb/Finance/People/Sam Reed", "# Sam Reed\nFinances for [[kb/People/Sam Reed]].", kind="kb")
+    ns.upsert_note(conn, "kb/People/Sam Reed", "# Sam Reed\nA colleague.", kind="kb")
+    conn.execute("INSERT INTO entities (type, canonical_name, normalized_key, note_count) VALUES "
+                 "('person', ?, ?, 1)", ("Sam Reed", entity_index.normalize("Sam Reed")))
+    conn.commit()
+    entity_index._link_articles(conn); conn.commit()
+    at2 = conn.execute("SELECT article_title FROM entities WHERE normalized_key=?",
+                       (entity_index.normalize("Sam Reed"),)).fetchone()["article_title"]
+    assert at2 == "kb/People/Sam Reed"
 
 
 def test_health_split_migration(client):

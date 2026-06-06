@@ -187,8 +187,8 @@ export default function Shell({ children }: { children: ReactNode }) {
   // Vertical-only swipe navigation (horizontal swipes were removed — they collided with the
   // device's native back-swipe). All swipe handling lives here on the shell body, which wraps
   // every page, so individual pages don't wire up their own touch handlers:
-  //   chat:     ↑ from the composer, split in thirds — left → cycle mode, middle → Lists,
-  //             right → Advanced
+  //   chat:     from the composer, split in thirds — left third: a vertical swipe carousels
+  //             the mode (↑ forward, ↓ back); middle ↑ → Lists; right ↑ → Advanced
   //   lists:    ↓ from the top → Chat
   //   advanced: ↓ → Chat
   const swipe = useRef<{ x: number; y: number; fromComposer: boolean; atTop: boolean } | null>(null);
@@ -210,13 +210,14 @@ export default function Shell({ children }: { children: ReactNode }) {
     if (Math.abs(dy) < 70 || Math.abs(dy) < Math.abs(dx) * 1.5) return;   // require a clear vertical swipe
     const down = dy > 0;
     if (path === "/chat") {
-      // Swipe up from the composer text box, split in thirds: left cycles the chat mode
-      // (entry/assisted/research), middle opens Lists, right opens Advanced.
-      if (!down && s.fromComposer) {
+      // From the composer text box, split in thirds. Left third: a vertical swipe carousels
+      // the chat mode — up advances, down reverses (direction passed as event.detail ±1).
+      // Middle/right thirds keep their swipe-up shortcuts: middle → Lists, right → Advanced.
+      if (s.fromComposer) {
         const third = window.innerWidth / 3;
-        if (s.x < third) window.dispatchEvent(new Event("jbrain:cyclemode"));
-        else if (s.x < third * 2) nav("/lists");
-        else nav("/advanced");
+        if (s.x < third) window.dispatchEvent(new CustomEvent("jbrain:cyclemode", { detail: down ? -1 : 1 }));
+        else if (!down && s.x < third * 2) nav("/lists");
+        else if (!down) nav("/advanced");
       }
     } else if (path === "/lists") {
       if (down && s.atTop) nav("/chat");

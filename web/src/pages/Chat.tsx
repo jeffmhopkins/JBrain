@@ -40,11 +40,11 @@ function speechText(md: string): string {
     .trim();
 }
 
-const MODES: { key: Mode; label: string; icon: string }[] = [
-  { key: "entry", label: "Entry", icon: "plus" },
-  { key: "medical", label: "Medical", icon: "medical" },
-  { key: "assisted", label: "Assisted", icon: "robot" },
-  { key: "research", label: "Research", icon: "search" },
+const MODES: { key: Mode; label: string; icon: string; hint: string }[] = [
+  { key: "entry", label: "Entry", icon: "plus", hint: "Straight to your wiki · no AI" },
+  { key: "medical", label: "Medical", icon: "medical", hint: "Labs, notes & procedures" },
+  { key: "assisted", label: "Assisted", icon: "robot", hint: "Talk it out — AI proposes notes" },
+  { key: "research", label: "Research", icon: "search", hint: "Read-only · ask your brain" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
   entry: "Write an entry…",
@@ -278,11 +278,14 @@ export default function Chat() {
     } catch { alert("Couldn’t save that destination — please try again."); }
   }
 
-  // A swipe-up from the left third of the composer (detected by the shell) cycles the mode.
+  // A vertical swipe in the left third of the composer (detected by the shell) carousels the
+  // mode — swipe up advances, swipe down reverses (direction arrives as event.detail ±1).
   useEffect(() => {
-    function cycle() {
+    function cycle(e: Event) {
+      const dir = (e as CustomEvent).detail === -1 ? -1 : 1;
       setMode((m) => {
-        const next = MODES[(MODES.findIndex((x) => x.key === m) + 1) % MODES.length].key;
+        const i = MODES.findIndex((x) => x.key === m);
+        const next = MODES[(i + dir + MODES.length) % MODES.length].key;
         sessionStorage.setItem("jbrain_mode", next);
         return next;
       });
@@ -714,14 +717,17 @@ export default function Chat() {
         />
         <div className="composer-row">
           <span className="mode-wrap">
-            <button className="mode-chip" onClick={() => setMenuOpen((o) => !o)}>
+            <button className={`mode-chip m-${mode}`} onClick={() => setMenuOpen((o) => !o)}>
               <Icon name={cur.icon} size={18} /> {cur.label}
             </button>
             {menuOpen && (
               <div className="mode-menu">
                 {MODES.map((m) => (
-                  <button key={m.key} onClick={() => pick(m.key)}>
-                    <Icon name={m.icon} size={16} /> {m.label}
+                  <button key={m.key} className={`mode-row m-${m.key}${m.key === mode ? " sel" : ""}`}
+                          onClick={() => pick(m.key)}>
+                    <span className="mode-tile"><Icon name={m.icon} size={18} /></span>
+                    <span className="mode-label">{m.label}</span>
+                    <span className="mode-hint">{m.hint}</span>
                   </button>
                 ))}
               </div>

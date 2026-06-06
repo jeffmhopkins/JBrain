@@ -48,6 +48,15 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     # of. Video is transcribed via its audio track. The transcript lands on the attachment.
     elif audio_transcription.is_transcribable(mime, file.filename):
         result["analysis"] = audio_transcription.start_transcription(conn, result["id"])
+    # Documents (PDF / text / office) extract their text synchronously in add_attachment —
+    # there's no async completion to fold them into the note's AI analysis later (unlike
+    # images/audio/video). So, when "auto-analyze new notes" is on, refresh the note's
+    # analysis now that this attachment's text is indexed, so a doc uploaded right after a
+    # note still flows into its gist/facts. Best-effort, hash-guarded, no-ops without a key.
+    elif analyze and note_id is not None and result.get("has_text"):
+        from ..services import note_analysis as na
+        if na.auto_enabled(conn) and na.analyze(conn, note_id):
+            conn.commit()
     return result
 
 

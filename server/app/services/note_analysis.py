@@ -18,6 +18,23 @@ from . import llm, prompts
 
 log = logging.getLogger("jbrain")
 
+# The "auto-analyze new notes" feature is gated by a single source of truth: the
+# enabled flag of this event-workflow (toggled from System settings). When on, a new
+# note's analysis is computed at creation time (instead of waiting for the nightly
+# batch), and an image attachment's vision summary folds back into the note's analysis
+# as soon as it lands (parity with audio/video transcription). Keying off the workflow
+# row — rather than a separate meta flag — keeps the toggle, the on-create trigger, and
+# the attachment fold-back reading the exact same bit, so they can never drift.
+AUTO_ANALYZE_WORKFLOW_KEY = "analyze-new-note"
+
+
+def auto_enabled(conn) -> bool:
+    """Is "auto-analyze new notes" turned on? (See AUTO_ANALYZE_WORKFLOW_KEY.)"""
+    row = conn.execute(
+        "SELECT enabled FROM workflows WHERE key = ?", (AUTO_ANALYZE_WORKFLOW_KEY,)
+    ).fetchone()
+    return bool(row and row["enabled"])
+
 # Domains mirror the knowledge-base taxonomy roots; "Unsure" is a valid abstention.
 _DOMAINS = {"Reference", "People", "Groups", "Places", "Things", "Activities", "Unsure"}
 # Entity types: the four core kinds plus domain-specific kinds that make medical/

@@ -48,6 +48,11 @@ and a graph.
   search and available to the AI. The per-note
   **AI analysis** sidecar folds in this attachment text (PDF/document text, transcripts,
   image summaries) too, so its gist/facts/entities reflect what's in your files.
+- **Auto-analyze new notes** — an opt-in toggle (**System → Note analysis**, off by
+  default) that computes a note's **AI analysis** the moment you add it — and folds each
+  attachment in as it's processed (image vision summaries, audio/video transcripts, and
+  document/PDF text) — instead of waiting for the nightly analysis batch. Backed by the
+  `analyze-new-note` workflow (its enabled flag is the switch). Needs an LLM key.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

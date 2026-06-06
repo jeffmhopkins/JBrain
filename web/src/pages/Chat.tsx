@@ -6,7 +6,8 @@ import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
-import { makeLinkRenderer, renderWikiLinks } from "../util";
+import { renderWikiLinks } from "../util";
+import { makeChatLinkRenderer } from "../components/CitationLink";
 
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
 // but excluded from the LLM history server-side. `id` (when present) tags an
@@ -123,6 +124,10 @@ const toolLabel = (name?: string) => (name && TOOL_LABELS[name]) || "Working…"
 // The stamp is best-effort metadata, not the point of the post.
 const GEO_MAX_WAIT = 1500;
 
+// Module-scoped (survives route changes): set when the user navigates AWAY from chat, so on return
+// the next message starts with a fresh context (stale prior answers cleared server-side).
+let _leftChatAt: number | null = null;
+
 export default function Chat() {
   const online = useOnline();
   const geo = useGeo();
@@ -185,6 +190,9 @@ export default function Chat() {
   const bufRef = useRef("");            // full text received for the current turn
   const shownRef = useRef(0);           // chars revealed so far for the current turn
   const streamActiveRef = useRef(false); // true while SSE is still delivering tokens
+  // Set when the user left the app (tab/app backgrounded) or navigated away from chat and came
+  // back — the next message then re-grounds from a fresh context instead of reusing stale answers.
+  const freshCtxRef = useRef(false);
   // `tick` re-arms the typewriter effect: bumped when new tokens arrive (to wake a
   // caught-up loop) and once per reveal frame (to schedule the next frame).
   const [tick, setTick] = useState(0);
@@ -208,6 +216,19 @@ export default function Chat() {
       return c;
     });
   }
+  // Fresh-context signal: mark the next message "fresh" when the user backgrounds the app/tab
+  // (visibilitychange → hidden) or navigates away from chat and returns (the module marker set on
+  // unmount). A long idle gap is also caught server-side; this covers quick away-and-back.
+  useEffect(() => {
+    if (_leftChatAt != null) { freshCtxRef.current = true; _leftChatAt = null; }
+    const onHide = () => { if (document.visibilityState === "hidden") freshCtxRef.current = true; };
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      _leftChatAt = Date.now();   // leaving chat → next return starts fresh
+    };
+  }, []);
+
   // The typewriter loop: each frame advances `shown` toward the buffer length. The
   // step scales with how far behind we are so a long reply catches up instead of
   // lagging seconds behind, while short bursts still animate a couple chars at a
@@ -525,6 +546,7 @@ export default function Chat() {
       }
       const msg = (text + extra).trim();
       const coords = await coordsP;   // resolved (or null) by now; bounded by GEO_MAX_WAIT
+      const freshCtx = freshCtxRef.current; freshCtxRef.current = false;
       await streamChat(cid, msg, (ev) => {
         if (ev.type === "token") {
           if (ev.text) setStatus((s) => (s === "Responding…" ? s : "Responding…"));
@@ -545,6 +567,12 @@ export default function Chat() {
           setApplied((a) => [...a, ev.action!]);
         } else if (ev.type === "chart" && ev.chart) {
           setCharts((c) => [...c, ev.chart!]);
+        } else if (ev.type === "replace_text") {
+          // Server-verified final text (a fabricated [[link]] / unsourced URL was removed) — swap it
+          // in so a dead link never lingers on screen. Don't advance past the new length; repaint.
+          bufRef.current = ev.text || "";
+          shownRef.current = Math.min(shownRef.current, bufRef.current.length);
+          paint(shownRef.current);
         } else if (ev.type === "error") {
           errored = true;
           // Show the error immediately — don't typewriter-drip it. Clear the buffer
@@ -553,7 +581,7 @@ export default function Chat() {
           bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
-      }, coords, mode === "research" ? "research" : "assisted");
+      }, coords, mode === "research" ? "research" : "assisted", freshCtx);
       // Read the finished reply aloud when the top-bar toggle is on (Assisted + Research).
       if (speakable && !errored && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
@@ -637,7 +665,7 @@ export default function Chat() {
             <div key={i} className={`msg ${m.role}`}>
               {m.role === "assistant" ? (
                 <div className="md msg-md">
-                  <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                  <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
                 </div>
               ) : (
                 m.content

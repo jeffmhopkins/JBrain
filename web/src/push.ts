@@ -1,9 +1,8 @@
 // Web Push opt-in. Subscribes this browser to push and registers it with the API
 // so the owner gets a banner + icon badge for new review items even when the app
-// is closed. Same-origin only (the SW + API must share an origin); demo/cross-
-// origin/unsupported all no-op so the poll fallback stays in charge.
+// is closed. Same-origin only (the SW + API must share an origin); cross-origin
+// and unsupported browsers all no-op so the poll fallback stays in charge.
 import { getServer, post } from "./api";
-import { isDemo } from "./demo";
 
 function urlB64ToUint8Array(b64: string): Uint8Array {
   const pad = "=".repeat((4 - (b64.length % 4)) % 4);
@@ -19,7 +18,6 @@ export function pushSupportReason(): string {
   if (!("serviceWorker" in navigator)) return "this browser has no service worker (open the installed app, not an in-app browser)";
   if (!("PushManager" in window)) return "no Push API (on iPhone, push needs the app installed to the Home Screen)";
   if (!("Notification" in window)) return "no Notification API";
-  if (isDemo()) return "demo mode";
   const srv = getServer();
   if (srv) {
     try {

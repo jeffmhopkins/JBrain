@@ -25,6 +25,9 @@ class MessageIn(BaseModel):
     lat: float | None = None
     lon: float | None = None
     location_label: str | None = None
+    # Set by the client when the user left the app / navigated away and back / is resuming after a
+    # break — clears prior conversation context so the agent re-grounds instead of reusing stale answers.
+    fresh_context: bool = False
 
 
 @router.post("/conversations")
@@ -92,7 +95,8 @@ def send_message(conversation_id: int, body: MessageIn):
 
         async def pump():
             try:
-                async for event in architect.run(conversation_id, body.text, location, mode):
+                async for event in architect.run(conversation_id, body.text, location, mode,
+                                                 fresh_context=body.fresh_context):
                     await queue.put(("event", event))
             except Exception:  # don't hang the client; log detail server-side, not to the user
                 logging.getLogger("jbrain").exception("chat stream failed")

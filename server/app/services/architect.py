@@ -38,7 +38,7 @@ _FALLBACK_SYSTEM = {
                 "read/query_sql tools; never modify anything; cite notes as [[Title]].",
 }
 _DEFAULT_MODE_TOOLS = {
-    "assisted": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+    "assisted": ["find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -49,9 +49,9 @@ _DEFAULT_MODE_TOOLS = {
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
-                 "kb_taxonomy_health", "kb_needed_links", "kb_research_links",
+                 "kb_taxonomy_health", "kb_titles", "kb_needed_links", "kb_research_links",
                  "kb_read_talk", "kb_add_directive", "propose_actions"],
-    "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+    "research": ["find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -95,6 +95,8 @@ _TOOL_SCHEMAS = {
         "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["analyte", "which"]},
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
+    "find": {"type": "object", "properties": {
+        "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
     "read_notes": {"type": "object", "properties": {
         "titles": {"type": "array", "items": {"type": "string"}, "description": "Exact note titles to read in one call (max 12)."}},
@@ -284,6 +286,8 @@ _TOOL_SCHEMAS = {
     "kb_audit": {"type": "object", "properties": {
         "limit": {"type": "integer", "default": 1000, "description": "Max KB articles to scan."}}},
     "kb_taxonomy_health": {"type": "object", "properties": {}},
+    "kb_titles": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The kb/ article you're about to author/edit — anchors the relevant neighbourhood. Optional; omit for a broad list."}}},
     "kb_needed_links": {"type": "object", "properties": {
         "title": {"type": "string", "description": "The KB article (exact kb/… title) to check for missing cross-links."}},
         "required": ["title"]},
@@ -403,6 +407,54 @@ def _snippet(content: str, query: str, width: int = 160) -> str:
     start = max(0, pos - width // 3)
     seg = text[start:start + width]
     return ("…" if start > 0 else "") + seg + ("…" if start + width < len(text) else "")
+
+
+_SENT_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
+    """A longer, sentence-bounded excerpt centred on the best query match — clean enough for the
+    model to QUOTE verbatim (vs `_snippet`'s tiny relevance cue). Trims to sentence boundaries so a
+    quote isn't a mangled mid-word fragment."""
+    text = " ".join((content or "").split())
+    if not text:
+        return ""
+    low = text.lower()
+    pos = -1
+    for t in (w.lower() for w in query.split() if len(w) > 1):
+        p = low.find(t)
+        if p != -1 and (pos == -1 or p < pos):
+            pos = p
+    if pos == -1:
+        pos = 0
+    start = text.rfind(". ", 0, pos)
+    start = 0 if start == -1 or pos - (start + 2) > max_chars // 2 else start + 2
+    if pos - start > max_chars // 2:
+        start = max(0, pos - max_chars // 2)
+    seg = text[start:start + max_chars]
+    ends = list(_SENT_END_RE.finditer(seg))            # trim to the last full sentence in the window
+    if ends and ends[-1].start() > max_chars // 3:
+        seg = seg[:ends[-1].start() + 1]
+    seg = seg.strip()
+    return ("…" if start > 0 else "") + seg + ("…" if start + len(seg) < len(text) else "")
+
+
+def _tool_find(conn, query: str, limit: int = 6) -> str:
+    """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
+    + its [[Title]] — so the model can answer with a real citation in a single call (no separate
+    read_note round-trip). The passages are exactly what it should quote verbatim."""
+    from . import search as search_svc
+    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)))
+    if not rows:
+        return "No matching notes."
+    out = []
+    for r in rows:
+        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
+        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
+    return _untrusted("find-results",
+                      "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
+                      "(read_note one for its full text):\n\n" + "\n\n".join(out))
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
@@ -1215,10 +1267,16 @@ def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]
         conn.rollback()   # don't leave half-staged rows for a later commit to flush
         raise
     conn.commit()
-    return (
-        f"Staged {len(staged)} proposed action(s) for the user to confirm.",
-        {"type": "staging", "actions": staged},
-    )
+    # Warn the model (and let it self-correct before the user approves) about staged content that
+    # links to non-existent notes (those links are stripped on save) or breaks kb/ citation integrity.
+    from . import staged_verify
+    warns = [w for a in staged for w in staged_verify.warnings(conn, a.get("type"), a)]
+    msg = f"Staged {len(staged)} proposed action(s) for the user to confirm."
+    if warns:
+        msg += (" ⚠ Heads up before they approve — " + " ".join(f"({w})" for w in warns[:8])
+                + " Fix these and re-propose: call kb_titles for valid kb/ cross-link titles, or create"
+                " the missing note first; an unverified [[link]] is dropped to plain text on save.")
+    return msg, {"type": "staging", "actions": staged}
 
 
 def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=False):
@@ -1313,6 +1371,19 @@ def _tool_kb_taxonomy_health(conn, conversation_id):
     if rep.get("flat_reference_titles"):
         out.append("Un-foldered Reference: " + _untrusted("titles", ", ".join(rep["flat_reference_titles"][:8])))
     return "\n".join(out), None
+
+
+def _tool_kb_titles(conn, conversation_id, title=""):
+    """The canonical kb/ article titles the model may cross-link to — the interactive analog of the
+    nightly {known_titles} allow-list, scoped to the neighbourhood of `title`. Read-only."""
+    from . import wiki_build
+    allt = wiki_build._known_titles(conn)
+    if not allt:
+        return "No knowledge-base (kb/) articles exist yet — don't cross-link to any kb/ title.", None
+    titles = wiki_build.scoped_known_titles(conn, (title or "").strip(), allt)
+    head = (f"{len(titles)} existing kb/ article title(s) you may cross-link to. Copy a title EXACTLY; "
+            "never write a [[kb/…]] link to a title not in this list:\n")
+    return head + "\n".join(f"- {t}" for t in titles), None
 
 
 def _tool_kb_needed_links(conn, conversation_id, title):
@@ -1810,6 +1881,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_lab_value_at(conn, conversation_id, args["analyte"], args["which"], args.get("unit"),
                                   args.get("threshold"), args.get("direction", "above"),
                                   args.get("range"), args.get("from"), args.get("to"))
+    if name == "find":
+        return _tool_find(conn, args["query"], args.get("limit", 6)), None
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
@@ -1911,6 +1984,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
     if name == "kb_audit":
         return _tool_kb_audit(conn, conversation_id, args.get("limit", 1000))
+    if name == "kb_titles":
+        return _tool_kb_titles(conn, conversation_id, args.get("title", ""))
     if name == "kb_taxonomy_health":
         return _tool_kb_taxonomy_health(conn, conversation_id)
     if name == "kb_needed_links":
@@ -1924,11 +1999,180 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     return f"Unknown tool: {name}", None
 
 
+# --- Freshness window + reply verification ----------------------------------
+
+# A break longer than this clears prior conversation context: the user is effectively
+# returning fresh, so the model re-grounds from tools instead of trusting stale earlier answers.
+_RESUME_GAP_MINUTES = 30
+
+_URL_RE = re.compile(r"https?://[^\s<>)\]\"']+")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+
+def _norm_url(u: str) -> str:
+    return u.rstrip(".,;:)\"'")
+
+
+def _extract_urls(text: str) -> set[str]:
+    return {_norm_url(u) for u in _URL_RE.findall(text or "")}
+
+
+def _minutes_since_utc(ts: str | None) -> float | None:
+    """Minutes since a stored UTC timestamp ('YYYY-MM-DD HH:MM:SS'), or None if unparseable."""
+    if not ts:
+        return None
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(ts.replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[dict]:
+    """Load the conversational turns for the model, FRESHNESS-WINDOWED. Returns [] (a clean slate)
+    when the client signals a fresh context (left the app / navigated away and back) OR the gap
+    since the last turn exceeds _RESUME_GAP_MINUTES — so a returning user can't get a stale value
+    re-asserted from an old answer. Within a recent, continuous conversation, prior ASSISTANT turns
+    are tagged as possibly-stale so the model re-queries values rather than trusting its own prose.
+    (Prior turns stay in the DB for display; this only shapes what the model sees.)"""
+    rows = conn.execute(
+        # Only conversational turns go to the model; 'event' rows (applied-action records shown in
+        # the UI) are excluded from the LLM history.
+        "SELECT role, content, created_at FROM messages WHERE conversation_id = ? "
+        "AND role IN ('user', 'assistant') ORDER BY id",
+        (conversation_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    if not fresh_context:
+        gap = _minutes_since_utc(rows[-1]["created_at"])
+        fresh_context = gap is not None and gap > _RESUME_GAP_MINUTES
+    if fresh_context:
+        return []
+    out = []
+    for r in rows:
+        content = r["content"]
+        if r["role"] == "assistant":
+            content = ("[earlier turn — any specific values below were fetched then and may be "
+                       "stale; re-query the tools for current values]\n" + content)
+        out.append({"role": r["role"], "content": content})
+    return out
+
+
+def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
+    """Make the reply trustworthy before it's persisted/clicked: neutralize every [[Title]] that
+    resolves to no live note (reusing the KB dead-link sweep), and strip any URL no tool returned.
+    Returns (verified_text, changed)."""
+    from . import wikilinks, wiki_build
+    bad_titles = {
+        t for t in wikilinks.extract_links(text)
+        if conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                        (t,)).fetchone() is None
+    }
+    out = wiki_build._neutralize_links(text, bad_titles) if bad_titles else text
+
+    dropped_url = False
+
+    def _md(m):
+        nonlocal dropped_url
+        label, url = m.group(1), m.group(2)
+        if _norm_url(url) in allowed_urls:
+            return m.group(0)
+        dropped_url = True
+        return label                                   # keep the link text, drop the fabricated URL
+
+    def _bare(m):
+        nonlocal dropped_url
+        if _norm_url(m.group(0)) in allowed_urls:
+            return m.group(0)
+        dropped_url = True
+        return ""
+
+    out = _MD_LINK_RE.sub(_md, out)
+    out = _URL_RE.sub(_bare, out)
+    out = out.strip()
+    return out, bool(bad_titles) or dropped_url
+
+
+# A verbatim quotation in a reply: straight or curly quotes, one line, bounded length.
+_QUOTE_RE = re.compile(r"[\"“”]([^\"“”\n]{1,400})[\"“”]")
+_ELLIPSIS_RE = re.compile(r"\s*(?:\.\.\.|…)\s*")
+
+
+def _norm_quote(s: str) -> str:
+    """Fold a span to compare a quote against its source robustly: lowercase, drop all punctuation
+    and quote marks, collapse whitespace — so reformatting (smart quotes, spacing) isn't a mismatch
+    while genuine fabrication still fails."""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", s or "").lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
+    """Downgrade any "verbatim quotation" in `text` that does NOT appear in `corpus` (everything a
+    tool returned this turn + the user's message) by removing its quote marks — so the model can't
+    pass off an invented or mis-remembered quote as a real one. Conservative to avoid false positives:
+    only acts on multi-word (≥6) quotes, normalizes aggressively, and treats an elided quote ("a … b")
+    as verified when EACH part appears. Returns (text, changed)."""
+    cn = _norm_quote(corpus)
+    changed = False
+
+    def repl(m):
+        nonlocal changed
+        inner = m.group(1).strip()
+        if len(inner.split()) < 6:                      # short quotes (a title, a term) — too noisy to police
+            return m.group(0)
+        parts = [p for p in _ELLIPSIS_RE.split(inner) if p.strip()]
+        if all(_norm_quote(p) and _norm_quote(p) in cn for p in parts):
+            return m.group(0)                           # every part traces to this turn's data → keep
+        changed = True
+        return inner                                    # not grounded this turn → strip the verbatim marks
+
+    out = _QUOTE_RE.sub(repl, text)
+    if changed:
+        out = out.rstrip() + ("\n\n_(One or more quotations couldn't be matched to the records I "
+                              "pulled this turn, so they're shown without quote marks.)_")
+    return out, changed
+
+
+# Read-only tools that count as a FRESH retrieval over current data (research-mode grounding guard).
+_RETRIEVAL_TOOLS = frozenset({
+    "find", "search_notes", "read_note", "read_notes", "related_notes", "list_recent_notes",
+    "notes_with_tag", "list_tags", "search_attachments", "read_attachment", "query_sql",
+    "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
+    "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
+    "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
+    "show_lab_chart", "drug_reference", "reverse_geocode", "forward_geocode",
+})
+_RESEARCH_NUDGE = (
+    "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "
+    "earlier turns. Call a retrieval tool now (find / search_notes / read_note / query_sql / a lab or "
+    "location tool), then answer from exactly what it returns. If nothing is found, say the records "
+    "don't have it.")
+
+
+def _looks_factual(text: str) -> bool:
+    """Conservative: True if the reply ASSERTS something (so a zero-retrieval research answer should be
+    re-grounded), False for short acks, clarifying questions, or an honest 'I don't have it'."""
+    t = (text or "").strip()
+    if len(t) < 60 or t.endswith("?"):
+        return False
+    low = t.lower()
+    return not any(p in low for p in (
+        "i don't have", "i couldn't find", "no records", "don't have that", "i'm not sure",
+        "could you", "can you clarify", "what time", "which "))
+
+
 # --- Agent loop -------------------------------------------------------------
 
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
-              mode: str = "assisted") -> AsyncGenerator[dict, None]:
-    """Stream the architect's reply. `mode` = 'assisted' | 'research'."""
+              mode: str = "assisted", fresh_context: bool = False) -> AsyncGenerator[dict, None]:
+    """Stream the architect's reply. `mode` = 'assisted' | 'research'. `fresh_context` (set by the
+    client when the user left the app / navigated away and back / is resuming after a break) clears
+    prior conversation context so the model re-grounds instead of reusing stale earlier answers."""
     settings = get_settings()
     # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
     # claude* → Anthropic; blank → the LLM_PROVIDER default).
@@ -1940,15 +2184,8 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     conn = get_conn()
 
-    # Build message history from the DB, then append the new user turn.
-    history = conn.execute(
-        # Only conversational turns go to the model; 'event' rows (applied-action
-        # records shown in the UI) are excluded from the LLM history.
-        "SELECT role, content FROM messages WHERE conversation_id = ? "
-        "AND role IN ('user', 'assistant') ORDER BY id",
-        (conversation_id,),
-    ).fetchall()
-    messages = [{"role": r["role"], "content": r["content"]} for r in history]
+    # Build message history from the DB (freshness-windowed), then append the new user turn.
+    messages = _assemble_history(conn, conversation_id, fresh_context)
     messages.append({"role": "user", "content": user_text})
     loc = location or {}
     conn.execute(
@@ -1968,6 +2205,10 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     total_tokens = 0
     stopped_early = False
     need_sep = False   # insert a break when text resumes after a tool call
+    tool_urls: set[str] = set()   # URLs that tools actually returned (the only ones allowed in the reply)
+    turn_corpus: list[str] = [user_text]   # everything the model saw THIS turn — a quote must trace to it
+    did_retrieve = False   # has a fresh retrieval tool run this turn? (research-mode grounding guard)
+    nudged = False         # the grounding reminder fires at most once
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -2000,10 +2241,25 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                     total_tokens += max(1, max_tokens // 4)
 
         if not calls:
+            # GROUNDING GUARD (research mode): a factual answer that called ZERO retrieval tools this
+            # turn is answering from memory/stale context. Discard the draft, nudge once to re-ground,
+            # and let the loop run again — the streamed memory-draft is cleared from the screen.
+            if (mode == "research" and not did_retrieve and not nudged
+                    and _looks_factual("".join(assistant_text_parts))):
+                nudged = True
+                assistant_text_parts.clear()
+                turn_corpus[:] = [user_text]
+                yield {"type": "replace_text", "text": ""}        # wipe the memory-draft from the bubble
+                yield {"type": "tool", "tool": "search_notes"}    # status: "Searching your notes…"
+                messages.append({"role": "user", "content": _RESEARCH_NUDGE})
+                need_sep = False
+                continue
             break
 
         results = []
         for call in calls:
+            if call.name in _RETRIEVAL_TOOLS:
+                did_retrieve = True
             yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
             try:
                 result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)
@@ -2013,8 +2269,14 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 # exception text — it may embed note-derived (untrusted) data.
                 result_text, event = (
                     f"Tool '{call.name}' failed: {_untrusted('tool-error', str(exc))}", None)
+            tool_urls.update(_extract_urls(result_text))   # whitelist URLs the tool genuinely returned
+            turn_corpus.append(result_text)                 # a quoted span must appear in what a tool returned
             if event is not None:
                 yield event  # {"type": "staging"|"applied", ...}
+            else:
+                # Stamp READ results with the fetch time so the model knows they're fresh THIS turn
+                # (and that anything it's carrying from before is not). Action results keep their text.
+                result_text = f"[fetched {clock.now_prompt()}]\n{result_text}"
             results.append(llm.ToolResult(tool_call_id=call.id, content=result_text))
         provider.append_tool_results(messages, results)
         need_sep = True   # the next text block (post-tool) should be separated
@@ -2033,7 +2295,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
         yield {"type": "token", "text": notice}
 
     final_text = "".join(assistant_text_parts).strip()
+    # TRUTH GUARANTEE: neutralize any [[Title]] that resolves to no real note, strip any URL no tool
+    # returned, and DOWNGRADE any "verbatim quotation" that doesn't actually appear in what a tool
+    # returned this turn — so a fabricated link/citation/quote can never be persisted or clicked. If
+    # anything changed, tell the client to swap the streamed text for the verified version.
     if final_text:
+        final_text, dropped = _verify_reply(conn, final_text, tool_urls)
+        final_text, q_changed = _verify_quotes(final_text, "\n".join(turn_corpus))
+        if dropped or q_changed:
+            yield {"type": "replace_text", "text": final_text}
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
             (conversation_id, final_text),

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { get, post } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
+import MarkdownDiff from "./MarkdownDiff";
 import Modal from "./Modal";
 
 export interface TimelineEntry {
@@ -22,19 +23,25 @@ function rel(ts: string): string {
   return isNaN(d.getTime()) ? ts : d.toLocaleString();
 }
 
-/** Compact history list for the Note rail. */
+/** Compact history list for the Note rail.
+ *  `limit` caps how many entries render inline; when more exist and `seeAllHref`
+ *  is given, a "See full history" link is shown instead of a runaway list. */
 export function HistoryTimeline({
-  timeline, onView, onDiff,
+  timeline, onView, onDiff, limit, seeAllHref,
 }: {
   timeline: TimelineEntry[];
   onView: (v: TimelineEntry) => void;
   onDiff: (from: TimelineEntry, to: TimelineEntry) => void;
+  limit?: number;
+  seeAllHref?: string;
 }) {
   if (timeline.length === 0) return <p className="muted" style={{ fontSize: 13 }}>No history yet.</p>;
   const current = timeline[0];
+  const shown = limit != null ? timeline.slice(0, limit) : timeline;
+  const hidden = timeline.length - shown.length;
   return (
     <div>
-      {timeline.map((v, i) => (
+      {shown.map((v, i) => (
         <div key={v.version_id} className="list-item" style={{ cursor: "default" }}>
           <div className="row">
             <button className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => onView(v)}>
@@ -51,6 +58,11 @@ export function HistoryTimeline({
           )}
         </div>
       ))}
+      {seeAllHref && hidden > 0 && (
+        <Link to={seeAllHref} className="ghost" style={{ display: "inline-block", fontSize: 12, marginTop: 8, padding: "4px 10px" }}>
+          See full history ({timeline.length}) →
+        </Link>
+      )}
     </div>
   );
 }
@@ -110,26 +122,21 @@ export function DiffView({
   to: TimelineEntry;
   onClose: () => void;
 }) {
-  const [hunks, setHunks] = useState<{ type: string; lines: string[] }[]>([]);
+  const [content, setContent] = useState<{ before: string; after: string } | null>(null);
   const [titleChanged, setTitleChanged] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     get(`/api/notes/${slug}/diff/${from.version_id}/${to.version_id}`)
-      .then((d) => { setHunks(d.hunks); setTitleChanged(d.title_changed); })
-      .catch(() => setHunks([{ type: "equal", lines: ["(failed to load diff)"] }]));
+      .then((d) => { setContent({ before: d.before ?? "", after: d.after ?? "" }); setTitleChanged(d.title_changed); })
+      .catch(() => setFailed(true));
   }, [slug, from.version_id, to.version_id]);
 
-  const sym = (t: string) => (t === "insert" ? "+" : t === "delete" ? "−" : " ");
   return (
     <Modal title="Changes → current" onClose={onClose}>
       {titleChanged && <p className="muted">Title changed: “{from.title}” → “{to.title}”</p>}
-      <pre className="diff">
-        {hunks.flatMap((h, hi) =>
-          h.lines.map((ln, li) => (
-            <div key={`${hi}-${li}`} className={`diff-${h.type}`}>{sym(h.type)} {ln}</div>
-          )),
-        )}
-      </pre>
+      {failed && <p className="muted">(failed to load diff)</p>}
+      {content && <MarkdownDiff before={content.before} after={content.after} />}
     </Modal>
   );
 }

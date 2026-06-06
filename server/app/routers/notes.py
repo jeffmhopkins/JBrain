@@ -120,6 +120,29 @@ def get_note(slug: str):
     return note
 
 
+@router.get("/{slug}/preview")
+def note_preview(slug: str):
+    """A tiny title + excerpt for a note, so a [[citation]] in a chat reply can reveal its source on
+    hover (verify the cite without leaving the conversation). Prefers the AI gist; else the lead text."""
+    conn = get_conn()
+    row = conn.execute("SELECT id, title, content_md FROM notes WHERE slug=? AND deleted_at IS NULL",
+                       (slug,)).fetchone()
+    if not row:
+        return {"found": False}
+    from ..services import note_analysis as na_svc, clock
+    excerpt = ""
+    a = na_svc.get(conn, row["id"])
+    if a and a.get("gist"):
+        excerpt = clock.expand_tokens(a["gist"])
+    if not excerpt:
+        lines = (row["content_md"] or "").split("\n")
+        if lines and lines[0].lstrip().startswith("# "):   # drop a leading "# Title" heading
+            lines = lines[1:]
+        excerpt = clock.expand_tokens(" ".join("\n".join(lines).split()))
+    excerpt = excerpt.strip()
+    return {"found": True, "title": row["title"], "excerpt": excerpt[:280] + ("…" if len(excerpt) > 280 else "")}
+
+
 @router.get("/{slug}/analysis")
 def note_analysis(slug: str):
     """The read-only AI analysis sidecar for a note (gist, salient facts, entities,
@@ -372,6 +395,10 @@ def diff_versions(slug: str, from_id: int, to_id: int):
         "from": {"version_id": a["id"], "created_at": a["created_at"], "title": a["title"]},
         "to": {"version_id": b["id"], "created_at": b["created_at"], "title": b["title"]},
         "title_changed": a["title"] != b["title"],
+        # Raw before/after content powers the rendered-markdown diff in the client;
+        # `hunks` is kept for any plain-text consumer / backward compatibility.
+        "before": a["content_md"],
+        "after": b["content_md"],
         "hunks": diffing.line_diff(a["content_md"], b["content_md"]),
     }
 

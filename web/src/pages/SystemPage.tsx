@@ -38,6 +38,14 @@ export default function SystemPage() {
   // Voice preview: speak a sample line via the device's built-in (on-device) TTS,
   // so you can hear and choose a voice. No server, no streaming — pure Web Speech API.
   const tts = useTts();
+  const [showAllVoices, setShowAllVoices] = useState(false);
+  // Most devices install dozens of voices across many languages; default the picker to
+  // English only (the app's language) so it isn't a wall of unrelated voices. The
+  // currently-selected voice is always kept in the list even if it's filtered out.
+  const voiceList = (showAllVoices
+    ? tts.voices
+    : tts.voices.filter((v) => /^en\b/i.test(v.lang) || v.voiceURI === tts.voiceURI)
+  ).slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
   useEffect(() => { get("/api/system/stats").then(setStats).catch(() => {}); }, []);
@@ -297,7 +305,7 @@ export default function SystemPage() {
               <select value={tts.voiceURI} onChange={(e) => tts.setVoice(e.target.value)}
                       style={{ fontSize: 13, padding: "6px 8px" }}>
                 <option value="">Default voice</option>
-                {tts.voices.map((v) => (
+                {voiceList.map((v) => (
                   <option key={v.voiceURI} value={v.voiceURI}>
                     {v.name} ({v.lang}){v.default ? " — default" : ""}
                   </option>
@@ -308,6 +316,11 @@ export default function SystemPage() {
                   No installed voices found yet — your device may load them after a moment.
                 </span>
               )}
+            </label>
+            <label className="row" style={{ gap: 8 }}>
+              <input type="checkbox" style={{ width: "auto" }}
+                     checked={showAllVoices} onChange={(e) => setShowAllVoices(e.target.checked)} />
+              <span style={{ fontSize: 13 }}>Show all languages</span>
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 13 }}>Speed · {tts.rate.toFixed(1)}×</span>

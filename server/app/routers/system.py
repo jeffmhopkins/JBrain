@@ -352,6 +352,44 @@ def _media_settings() -> dict:
     }
 
 
+# --- Auto-analyze new notes (single source of truth: the analyze-new-note workflow's
+#     enabled flag; see note_analysis.auto_enabled) -----------------------------------
+
+
+class AutoAnalyzeIn(_BaseModel):
+    enabled: bool
+
+
+@router.get("/settings/auto-analyze")
+def get_auto_analyze():
+    from ..db import get_conn
+    from ..services import note_analysis as na
+    return {"enabled": na.auto_enabled(get_conn())}
+
+
+@router.put("/settings/auto-analyze")
+def set_auto_analyze(body: AutoAnalyzeIn):
+    """Toggle "auto-analyze new notes". Flips the analyze-new-note workflow's enabled
+    flag (the feature switch) and sets locked=1 so a repo re-ingest won't reset the
+    owner's choice. Seeds the workflow from repo if it isn't present yet (e.g. before
+    the first boot ingest)."""
+    from ..db import get_conn
+    from ..services import note_analysis as na
+    from ..services import workflows as wf_svc
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM workflows WHERE key = ?", (na.AUTO_ANALYZE_WORKFLOW_KEY,)).fetchone()
+    if row is None:
+        wf_svc.ingest_repo_workflows(conn)
+        row = conn.execute("SELECT id FROM workflows WHERE key = ?", (na.AUTO_ANALYZE_WORKFLOW_KEY,)).fetchone()
+    if row is not None:
+        conn.execute(
+            "UPDATE workflows SET enabled = ?, locked = 1, updated_at = datetime('now') WHERE id = ?",
+            (1 if body.enabled else 0, row["id"]),
+        )
+        conn.commit()
+    return {"enabled": na.auto_enabled(conn)}
+
+
 @router.get("/settings/media")
 def get_media_settings():
     return _media_settings()

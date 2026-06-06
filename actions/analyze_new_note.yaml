@@ -1,0 +1,27 @@
+# Declarative action: compute a new note's AI analysis sidecar at creation time,
+# instead of waiting for the nightly `analyze_notes` batch. Bound to the
+# `entry_created` event by the `analyze-new-note` workflow and toggled from
+# System → "Auto-analyze new notes" (off by default — it calls a cheap model per
+# new note). Disabled? The workflow never fires, so this recipe never runs.
+#
+# "Analyze the attachments, then the full note" falls out of how analysis already
+# works: `analyze_note` kicks off local transcription for any audio/video on the
+# note and folds every attachment's extracted text / image vision summary / transcript
+# into the note's gist/facts/entities (see note_analysis + attachments.context_block_for_note).
+# Attachments are uploaded just AFTER the note is created (so they aren't on the note
+# yet when this fires) — but each one re-runs this same analysis once its text is ready,
+# folding its content in: audio/video on transcript completion (always), images on vision
+# summary completion (when this feature is on), and documents/PDFs right on upload (when on,
+# since their text extracts synchronously). Net effect across the async timeline:
+# attachments get analyzed, then the note's analysis reflects them.
+#
+# This NEVER writes the note body (analysis is a sidecar in note_analysis), so it
+# can't re-fire entry_created — keep it that way (no write_note here).
+type: analyze_new_note
+category: Notes
+config: []
+steps:
+  - do: analyze_note
+    when: "{{ trigger.note_id }}"
+    with:
+      id: "{{ trigger.note_id }}"

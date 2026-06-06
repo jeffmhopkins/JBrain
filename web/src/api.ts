@@ -471,6 +471,11 @@ export const getMediaSettings = () => get<MediaSettings>("/api/system/settings/m
 export const setMediaSettings = (s: Partial<MediaSettings>) =>
   put<MediaSettings>("/api/system/settings/media", s);
 
+export interface AutoAnalyzeSettings { enabled: boolean }
+export const getAutoAnalyze = () => get<AutoAnalyzeSettings>("/api/system/settings/auto-analyze");
+export const setAutoAnalyze = (enabled: boolean) =>
+  put<AutoAnalyzeSettings>("/api/system/settings/auto-analyze", { enabled });
+
 // Notes that carry a capture coordinate — the Map's note pins.
 export interface LocatedNote { slug: string; title: string; lat: number; lon: number; location_label: string | null; kind: string; created_at: string; }
 export const getLocatedNotes = (since?: string, until?: string) => {

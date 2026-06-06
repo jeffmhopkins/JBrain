@@ -7,6 +7,7 @@ import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
 import OwnerSetting from "../components/OwnerSetting";
 import MediaSettings from "../components/MediaSettings";
+import AutoAnalyzeSetting from "../components/AutoAnalyzeSetting";
 
 // "System" card: version + server update (reusing the same endpoints the
 // header UpdateBanner reads), the opt-in location toggle (which previously had
@@ -258,6 +259,8 @@ export default function SystemPage() {
       <ModelPicker />
 
       <MediaSettings />
+
+      <AutoAnalyzeSetting />
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Appearance</h3>

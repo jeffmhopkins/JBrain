@@ -6970,6 +6970,105 @@ def test_media_settings_endpoint_roundtrip_and_runtime_read(client):
     assert at.video_frame_interval() == "15s" and at.video_frame_max() == 4
 
 
+def test_auto_analyze_setting_roundtrip_toggles_workflow(client):
+    # The "auto-analyze new notes" toggle is backed by the analyze-new-note workflow's
+    # enabled flag (single source of truth), seeded on demand and locked so re-ingest
+    # won't reset the owner's choice.
+    from app.services import note_analysis as na
+    from app.db import get_conn
+    assert client.get("/api/system/settings/auto-analyze").json()["enabled"] is False  # default off
+    assert client.put("/api/system/settings/auto-analyze", json={"enabled": True}).json()["enabled"] is True
+    assert na.auto_enabled(get_conn()) is True
+    row = get_conn().execute(
+        "SELECT enabled, locked FROM workflows WHERE key = ?", (na.AUTO_ANALYZE_WORKFLOW_KEY,)).fetchone()
+    assert row["enabled"] == 1 and row["locked"] == 1   # flipped on AND locked against re-ingest
+    assert client.put("/api/system/settings/auto-analyze", json={"enabled": False}).json()["enabled"] is False
+    assert na.auto_enabled(get_conn()) is False
+
+
+def test_new_entry_auto_analyzed_only_when_enabled(client, monkeypatch):
+    # With the feature ON, creating an entry fires entry_created → the analyze-new-note
+    # workflow → the note's analysis sidecar is computed at capture time (not nightly).
+    import json
+    from app.db import get_conn
+    from app.services import llm, note_analysis as na
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: json.dumps(
+        {"gist": "a kept thought", "facts": [], "entities": [], "domain": "Unsure", "dates": []}))
+    conn = get_conn()
+
+    # Feature OFF (default): a new entry is NOT analyzed at creation time.
+    off = client.post("/api/notes/entry", json={"text": "milk eggs bread", "title": "Off List"}).json()
+    off_id = conn.execute("SELECT id FROM notes WHERE slug = ?", (off["slug"],)).fetchone()["id"]
+    assert na.get(conn, off_id) is None
+
+    # Turn it ON, then a new entry IS analyzed right away.
+    client.put("/api/system/settings/auto-analyze", json={"enabled": True})
+    on = client.post("/api/notes/entry", json={"text": "call the dentist", "title": "On List"}).json()
+    on_id = conn.execute("SELECT id FROM notes WHERE slug = ?", (on["slug"],)).fetchone()["id"]
+    assert (na.get(conn, on_id) or {}).get("gist") == "a kept thought"
+
+
+def test_image_analysis_completion_refreshes_note_when_enabled(client, monkeypatch):
+    # Parity with audio: when an image's vision summary lands, the note's AI analysis re-runs
+    # with the summary folded in — but ONLY when "auto-analyze new notes" is on.
+    from app.db import get_conn
+    from app.services import image_analysis as ia, note_analysis as na, llm
+    conn = get_conn()
+    monkeypatch.setattr(ia, "_vision_summary", lambda *a, **k: "A photo of a golden retriever.")
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k:
+                        '{"gist":"about a dog photo","facts":[],"entities":[],"domain":"Unsure","dates":[]}')
+
+    def mk_image(slug_title):
+        note = client.post("/api/notes/entry", json={"text": "see photo", "title": slug_title}).json()
+        nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+        aid = conn.execute(
+            "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+            "VALUES (?,?,?,?,?,?,?) RETURNING id",
+            (nid, f"{slug_title}.png", "image/png", "", b"\x89PNG", 4, "sha-" + slug_title)).fetchone()["id"]
+        conn.commit()
+        return nid, aid
+
+    # Feature OFF: vision summary stored, but the note analysis is NOT auto-refreshed.
+    off_nid, off_aid = mk_image("OffPhoto")
+    ia.analyze(off_aid)                                  # synchronous worker
+    assert conn.execute("SELECT analysis_md FROM attachments WHERE id = ?", (off_aid,)).fetchone()["analysis_md"]
+    assert na.get(conn, off_nid) is None                 # not folded in
+
+    # Feature ON: the same completion folds the image into the note's analysis.
+    client.put("/api/system/settings/auto-analyze", json={"enabled": True})
+    on_nid, on_aid = mk_image("OnPhoto")
+    ia.analyze(on_aid)
+    assert (na.get(conn, on_nid) or {}).get("gist") == "about a dog photo"
+
+
+def test_document_upload_folds_into_note_analysis_when_enabled(client, monkeypatch):
+    # Documents (no async completion hook) fold into the note's analysis on upload when the
+    # feature is on — so a text/PDF attached right after a note still flows into its gist.
+    from app.db import get_conn
+    from app.services import llm, note_analysis as na
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    seen = {}
+
+    def fake_complete(messages, **k):
+        seen["prompt"] = messages[0]["content"]
+        return '{"gist":"about the spec doc","facts":[],"entities":[],"domain":"Unsure","dates":[]}'
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    conn = get_conn()
+    client.put("/api/system/settings/auto-analyze", json={"enabled": True})
+    note = client.post("/api/notes/entry", json={"text": "see attached", "title": "Spec Note"}).json()
+    nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
+
+    client.post(f"/api/notes/{note['slug']}/attachments",
+                files={"file": ("spec.txt", b"The widget tolerance is 0.2mm.", "text/plain")})
+    assert "0.2mm" in seen.get("prompt", "")                       # the doc text reached the analyzer
+    assert (na.get(conn, nid) or {}).get("gist") == "about the spec doc"
+
+
 # --- Assisted (research) share with attached labs ---------------------------
 
 class _FakeToolProvider:

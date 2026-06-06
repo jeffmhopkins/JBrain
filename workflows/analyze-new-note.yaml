@@ -1,0 +1,18 @@
+# "Auto-analyze new notes" — on every new entry, compute its AI analysis sidecar
+# right away (and fold in image attachments as they're enriched), rather than
+# waiting for the nightly `analyze-notes` batch.
+#
+# This workflow's enabled flag IS the feature switch: it's toggled from System →
+# "Auto-analyze new notes" (which sets locked=1 so a repo re-ingest won't reset it),
+# and the image→note analysis fold-back reads the same flag. Disabled by default
+# because it calls a cheap model on each new note (a little latency/cost).
+key: analyze-new-note
+name: Auto-analyze new notes
+enabled: false
+
+trigger:
+  type: event
+  event: entry_created   # fired when a user/architect creates a new entry note
+
+action:
+  type: analyze_new_note

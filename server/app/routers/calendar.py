@@ -97,7 +97,7 @@ def history(limit: int = 100):
     limit = max(1, min(int(limit or 100), 500))
     rows = conn.execute(
         "SELECT id, title, kind, starts_at, all_day, status, note_id, note_title, note_slug "
-        "FROM v_event_history LIMIT ?", (limit,),
+        "FROM v_event_history ORDER BY starts_at DESC LIMIT ?", (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
 

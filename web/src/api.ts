@@ -44,9 +44,13 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   });
   if (res.status === 401) throw new ApiError("Not authenticated", 401);
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -116,9 +120,13 @@ export const calCancel = (id: number) => post(`/api/calendar/events/${id}/cancel
 async function publicApi<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(u(path), { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   return res.json();
 }
@@ -369,9 +377,13 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
   const res = await fetch(u("/api/system/restore"), { method: "POST", headers, body: fd });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   return res.json();
 }

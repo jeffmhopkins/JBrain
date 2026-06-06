@@ -19,6 +19,7 @@ export default function CalendarPage() {
   const [tab, setTab] = useState<"upcoming" | "history">("upcoming");
   const [items, setItems] = useState<CalEvent[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
   // Quick-add form state.
@@ -27,15 +28,27 @@ export default function CalendarPage() {
   const [time, setTime] = useState("");
   const [kind, setKind] = useState("event");
 
+  // Refetch the current tab (used by the action handlers + Refresh).
   async function load() {
-    setErr("");
+    setLoading(true); setErr("");
     try {
       setItems(tab === "upcoming" ? await calUpcoming(365) : await calHistory());
     } catch (e: any) {
       setErr(String(e?.message || e));
-    }
+    } finally { setLoading(false); }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
+
+  // Tab-driven load with a stale-response guard so rapid toggles can't render the
+  // wrong tab's data.
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true); setErr("");
+    (tab === "upcoming" ? calUpcoming(365) : calHistory())
+      .then((d) => { if (!ignore) setItems(d); })
+      .catch((e: any) => { if (!ignore) setErr(String(e?.message || e)); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [tab]);
 
   async function add(ev: React.FormEvent) {
     ev.preventDefault();
@@ -54,8 +67,15 @@ export default function CalendarPage() {
   async function reschedule(e: CalEvent) {
     const to = window.prompt(`Reschedule "${e.title}" to which date? (YYYY-MM-DD)`, (e.starts_at || "").slice(0, 10));
     if (!to) return;
+    // Preserve the time for a timed event (don't silently downgrade it to all-day).
+    let toTime: string | undefined;
+    if (!e.all_day && (e.starts_at || "").includes("T")) {
+      const t = window.prompt("Time? (HH:MM, 24h — leave blank for all-day)", (e.starts_at || "").slice(11, 16));
+      if (t === null) return;             // cancelled the prompt
+      toTime = t.trim() || undefined;
+    }
     setBusy(true); setErr("");
-    try { await calReschedule(e.id, to.trim()); await load(); }
+    try { await calReschedule(e.id, to.trim(), toTime); await load(); }
     catch (er: any) { setErr(String(er?.message || er)); }
     finally { setBusy(false); }
   }
@@ -98,7 +118,9 @@ export default function CalendarPage() {
       </div>
 
       {err && <p style={{ color: "var(--danger, #c33)", fontSize: 13 }}>{err}</p>}
-      {items.length === 0 && !err && <p className="muted">Nothing {tab === "upcoming" ? "coming up" : "in history"}.</p>}
+      {loading && <p className="muted">Loading…</p>}
+      {!loading && items.length === 0 && !err &&
+        <p className="muted">Nothing {tab === "upcoming" ? "coming up" : "in history"}.</p>}
 
       {items.map((e) => (
         <div className="card" key={`${e.id}-${e.starts_at}`}>

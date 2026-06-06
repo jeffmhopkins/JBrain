@@ -1128,16 +1128,19 @@ def _tool_drug_reference(conn, conversation_id, name: str):
         return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{lookup_name}”."), None
     tail = "" if res["match"] == "exact" else f" (approximate match to “{res.get('candidate')}”, score {res.get('score')})"
     if res["match"] == "exact":
-        # Capture ONLY the resolved public drug topic + source — never the owner's phrasing/data. An
-        # approximate match is too uncertain to curate, so it isn't captured (still returned as a link).
+        # Capture ONLY the resolved public drug topic + its public-domain summary + source — never the
+        # owner's phrasing/data. An approximate match is too uncertain to curate, so it isn't captured.
         try:
             reference_candidates.record(conn, topic=_drug_topic_name(res.get("title", ""), lookup_name),
-                                        source="rxnorm", url=res["url"], snippet="", category="Medications")
+                                        source="rxnorm", url=res["url"], snippet=res.get("summary", ""),
+                                        category="Medications")
         except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
             pass
+    summary = f" {res['summary']}" if res.get("summary") else ""
     return (_untrusted("drug-ref",
-                       f"MedlinePlus drug information for {lookup_name}{tail}: {res['title']} — {res['url']} "
-                       f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice]."),
+                       f"MedlinePlus drug information for {lookup_name}{tail}: {res['title']} — {res['url']}.{summary} "
+                       "[RxNorm rxcui {rxcui}, NLM/MedlinePlus — informational, not medical advice; for specific dosing "
+                       "or personal guidance see the linked page or a clinician.]".format(rxcui=res['rxcui'])),
             None)
 
 

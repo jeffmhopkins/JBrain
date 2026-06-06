@@ -2011,7 +2011,9 @@ def test_medref_medications(client, monkeypatch):
             return {"approximateGroup": {"candidate": [{"rxcui": "6809", "score": "90", "name": "metformin"}]}}
         if "connect.medlineplus.gov" in url:
             return {"feed": {"entry": [{"title": {"_value": "Metformin"},
-                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html"}]}]}}
+                    "summary": {"_value": "Metformin is used to treat type 2 diabetes. It works by helping "
+                                          "to restore your body's proper response to insulin."},
+                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html?utm_source=mplusconnect"}]}]}}
         return {}
     monkeypatch.setattr(medref, "_http_get", fake_get)
 
@@ -2054,6 +2056,8 @@ def test_medref_medications(client, monkeypatch):
     external_lookups.decide(conn, ev["id"], approve=True)
     txt2, ev2 = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
     assert ev2 is None and "medlineplus.gov" in txt2 and "rxcui 6809" in txt2
+    assert "type 2 diabetes" in txt2 and "restore your body" in txt2   # the public-domain summary, not just a link
+    assert "?utm_source" not in txt2                                   # tracking params stripped from the cited URL
 
 
 def test_talk_dedup_cap_and_demote(client):

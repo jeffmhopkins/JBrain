@@ -198,8 +198,15 @@ def medlineplus_url(conn, rxcui: str) -> dict | None:
         title = e.get("title")
         if isinstance(title, dict):
             title = title.get("_value")
+        summary = e.get("summary")
+        if isinstance(summary, dict):
+            summary = summary.get("_value")
         if href:
-            out = {"url": href, "title": title or "MedlinePlus"}
+            out = {"url": href.split("?")[0], "title": title or "MedlinePlus"}   # drop utm tracking params
+            if summary:
+                # The public-domain consumer summary ("what it's for / how it works"). Strip any HTML and
+                # collapse whitespace; cap length. NOT dosing — that lives on the page, behind the link.
+                out["summary"] = " ".join(re.sub(r"<[^>]+>", " ", str(summary)).split())[:600]
     _cache_put(conn, "mplus", str(rxcui), out)
     return out or None
 
@@ -222,6 +229,8 @@ def resolve(conn, name: str) -> dict | None:
     if not mp:
         return None
     out = {"match": match, "rxcui": rxcui, "url": mp["url"], "title": mp["title"]}
+    if mp.get("summary"):
+        out["summary"] = mp["summary"]
     if match == "approx":
         out["score"], out["candidate"] = score, candidate
     return out

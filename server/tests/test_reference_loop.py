@@ -219,12 +219,15 @@ def test_drug_reference_gated_and_captures_medication(conn, monkeypatch):
     # owner trims the dose to a clean name and approves
     monkeypatch.setattr(medref, "resolve",
                         lambda c, n: {"match": "exact", "rxcui": "6809", "title": "Metformin: MedlinePlus Drug Information",
-                                      "url": "https://medlineplus.gov/druginfo/meds/a696005.html"})
+                                      "url": "https://medlineplus.gov/druginfo/meds/a696005.html",
+                                      "summary": "Metformin treats type 2 diabetes. It works by restoring insulin response."})
     external_lookups.decide(conn, ev["id"], approve=True, term="metformin")
     txt2, ev2 = architect._tool_drug_reference(conn, None, "metformin 500mg twice a day")
     assert ev2 is None and "medlineplus.gov/druginfo" in txt2 and "rxcui 6809" in txt2
+    assert "type 2 diabetes" in txt2 and "It works by" in txt2          # the summary, so it can actually explain it
     row = conn.execute("SELECT * FROM reference_candidates").fetchone()
     assert row["topic"] == "Metformin" and row["category"] == "Medications" and row["source"] == "rxnorm"
+    assert "type 2 diabetes" in row["snippet"]                          # the public-domain summary is curated too
     # topic-only: no dose / owner phrasing leaked into the candidate
     blob = " ".join(str(row[k]) for k in ("topic", "url", "snippet", "category", "source"))
     assert "500" not in blob and "twice" not in blob

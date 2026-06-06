@@ -452,6 +452,21 @@ def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
     return ("…" if start > 0 else "") + seg + ("…" if start + len(seg) < len(text) else "")
 
 
+def _searchable_text(conn, note_id: int) -> str:
+    """The note body PLUS its AI image-analysis sidecars, as one string for snippet/passage
+    extraction — so a hit that lives ONLY in a photo's vision summary (e.g. an address read
+    off a storefront image) still yields a relevant excerpt instead of a blind head slice.
+    @t[...] tokens are expanded so the excerpt reads like the rendered note."""
+    from . import image_analysis
+    c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
+    body = clock.expand_tokens(c["content_md"] if c else "")
+    img = image_analysis.block_for_note(conn, note_id, cap=1500)
+    if img:
+        img = clock.expand_tokens(img)
+        body = (body + "\n\n" + img) if body else img
+    return body
+
+
 def _tool_find(conn, query: str, limit: int = 6) -> str:
     """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
     + its [[Title]] — so the model can answer with a real citation in a single call (no separate
@@ -462,8 +477,7 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
         return "No matching notes."
     out = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        passage = _quotable_passage(_searchable_text(conn, r["id"]), query)
         out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
     return _untrusted("find-results",
                       "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
@@ -504,8 +518,7 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
         return "No matching notes."
     lines = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        snip = _snippet(c["content_md"] if c else "", query)
+        snip = _snippet(_searchable_text(conn, r["id"]), query)
         lines.append(f"- {r['title']}" + (f"\n    {snip}" if snip else ""))
     # Titles + snippets are user-controlled too -> fence them as untrusted data.
     return _untrusted("search-results", "\n".join(lines))

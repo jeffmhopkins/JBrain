@@ -1,6 +1,6 @@
 # Source-of-Truth Corrections (Talk → Truth Layer) — Plan
 
-**Status:** Phases 1 & 2 implemented on `claude/tokbox-source-truth-analysis-ZjoNq`
+**Status:** Phases 1, 2 & 3 implemented on `claude/tokbox-source-truth-analysis-ZjoNq`
 **Author:** Knowledge Architect (AI), best-of-N synthesis + adversarial review
 **Example article:** `kb/.../TokBox` (the feature is general; TokBox is the motivating case)
 **Schema version:** 44 → 46
@@ -16,7 +16,11 @@
 >   registers both spellings as aliases; a name/spelling-gated regex records the override at
 >   promotion (no LLM); deleting the correction note auto-reverts the name. Rename/merge rekey
 >   the override too.
-> - **Tests:** `server/tests/test_corrections.py` — **9 passing**.
+> - **Phase 3 (polish):** instant in-panel confirmation when a correction is promoted (the
+>   TalkPanel shows "✓ Saved as a source-of-truth note (…)"), a correction-specific input
+>   placeholder, and competing-name conflict surfacing (a second, different name correction on
+>   an article applies the latest and records a `conflict` talk item so the owner can reconcile).
+> - **Tests:** `server/tests/test_corrections.py` — **10 passing**.
 > - Open items C/D/E took their recommended defaults: **C** entity healing → done (Phase 2);
 >   **D** full-rebuild routing → eventually-consistent; **E** → dedup identical open corrections.
 
@@ -303,9 +307,13 @@ talk rekey; tests.
 aliases; name/spelling-gated extraction records the override at promotion; deleting the
 correction note auto-reverts; rename/merge rekey. Implemented; 9 tests pass.
 
-**Phase 3 — optional polish (not built):** instant promotion feedback in the panel;
-competing-correction surfacing; explicit full-rebuild association; broader correction
-extraction (beyond names) via the nightly LLM pass.
+**Phase 3 — polish (DONE, except where noted):** instant in-panel promotion feedback;
+correction-specific input placeholder; competing-name conflict surfacing. *Still optional /
+not built:* explicit full-rebuild association (accepted as eventually-consistent, Decision D —
+in practice covered because the correction note names the subject, so the outline's
+`note_ids_for_name` backfill routes it) and broader non-name correction extraction via the
+nightly LLM pass (non-name fixes already heal the article via Phase 1; only entity-name
+healing needs extraction).
 
 ---
 

@@ -217,3 +217,20 @@ def test_promotion_records_entity_override(client):
     # Immediate effect: the linked entity already displays the corrected name.
     name = conn.execute("SELECT canonical_name FROM entities WHERE article_title='kb/People/Bjorn'").fetchone()
     assert name["canonical_name"] == "Bjørn"
+
+
+def test_competing_name_corrections_flag_a_conflict(client):
+    slug = _make_article(client, title="kb/People/Bjorn")
+    client.post(f"/api/notes/{slug}/talk",
+                json={"kind": "correction", "body": "the name is spelled Bjørn"})
+    # A second, DIFFERENT name correction on the same article — latest wins, conflict flagged.
+    client.post(f"/api/notes/{slug}/talk",
+                json={"kind": "correction", "body": "the name is spelled Björn"})
+    talk = client.get(f"/api/notes/{slug}/talk").json()
+    conflicts = [t for t in talk if t["kind"] == "conflict"]
+    assert len(conflicts) == 1 and "Competing name corrections" in conflicts[0]["body"]
+
+    import app.db as db
+    ov = db.get_conn().execute(
+        "SELECT canonical_name FROM entity_overrides WHERE article_title='kb/People/Bjorn'").fetchone()
+    assert ov["canonical_name"] == "Björn"          # the latest correction wins

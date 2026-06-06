@@ -102,7 +102,19 @@ def maybe_promote(conn, talk_id: int, article_title: str, body: str) -> dict | N
     # and survives the nightly rebuild that would otherwise pick the frequency-derived name.
     name = extract_corrected_name(body)
     if name:
-        from . import entity_index
+        from . import entity_index, article_talk
+        # Phase 3: surface a competing name correction. If a different name was already
+        # declared for this article, the latest wins (SUPERSEDE) but flag it so the owner can
+        # reconcile if the newer one is the mistake.
+        prior = conn.execute(
+            "SELECT canonical_name FROM entity_overrides WHERE article_title=?",
+            (article_title,)).fetchone()
+        if prior and _norm(prior["canonical_name"]) != _norm(name):
+            article_talk.add(
+                conn, article_title, "conflict",
+                f"Competing name corrections: '{prior['canonical_name']}' vs '{name}'. "
+                f"Applied the latest ('{name}') — resolve if that's the wrong one.",
+                author="ai")
         entity_index.set_canonical_override(conn, article_title, name, source_note_id=note_id)
 
     log.info("corrections: promoted talk %s -> note %s (%s) for %s",

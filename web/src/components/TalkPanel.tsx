@@ -35,13 +35,17 @@ export default function TalkPanel({ slug }: { slug: string }) {
   const [items, setItems] = useState<Talk[]>([]);
   const [kind, setKind] = useState("directive");
   const [body, setBody] = useState("");
+  const [flash, setFlash] = useState("");
 
   function load() { get<Talk[]>(`/api/notes/${slug}/talk`).then(setItems).catch(() => setItems([])); }
   useEffect(load, [slug]);
 
   async function add() {
     if (!body.trim()) return;
-    await post(`/api/notes/${slug}/talk`, { kind, body });
+    const r = await post<{ id: number | null; promoted?: { slug: string; title: string } | null }>(
+      `/api/notes/${slug}/talk`, { kind, body });
+    // Instant confirmation that a correction entered the truth layer as a real note.
+    setFlash(r?.promoted ? `✓ Saved as a source-of-truth note (${r.promoted.title}).` : "");
     setBody(""); load();
   }
 
@@ -91,10 +95,13 @@ export default function TalkPanel({ slug }: { slug: string }) {
         <select className="modal-select" value={kind} onChange={(e) => setKind(e.target.value)}>
           {ADD_KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
-        <input className="modal-input" placeholder="Add a note for the next pass…" value={body}
+        <input className="modal-input"
+               placeholder={kind === "correction" ? "State the correct fact (e.g. spelled Bjørn, not Bjorn)…" : "Add a note for the next pass…"}
+               value={body}
                onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
         <button className="ghost" onClick={add}>Add</button>
       </div>
+      {flash && <p className="muted" style={{ fontSize: 11, color: "#2a6a2a", marginTop: 4 }}>{flash}</p>}
 
       {done.length > 0 && (
         <details style={{ marginTop: 8 }}>

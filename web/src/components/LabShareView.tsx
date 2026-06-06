@@ -1,87 +1,63 @@
-import { KeyboardEvent, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import { labsStart, labsTurn, getShareLabSeries, LabSeries, LabPoint } from "../api";
-import ShareChart from "./ShareChart";
-import { Icon } from "./Icon";
+import { useEffect, useMemo, useState } from "react";
+import { labsStart, getShareLabSeries, LabSeries, LabPoint } from "../api";
+import LabChart from "./LabChart";
+
+// Recipient view of a data-only lab-share link (kind='labs'): a fixed selection of results the
+// owner chose to share, viewed the SAME way as the owner's Labs page — pick a result and a single
+// chart updates (time-window presets, click a point for its value/range). No chatbot (the scoped
+// AI lives in assisted/research links). ALL series come through the token-scoped, allow-list-
+// rechecked, no-store endpoint — already clamped to the owner's window, so local zoom can't pan
+// past it. Nothing here is identity-bearing (no names, no notes, no source links).
 
 const OUT = new Set(["high", "low", "abnormal"]);
-const statusColor = (s: string) => OUT.has(s) ? "var(--danger)" : s === "normal" ? "var(--ok)" : "var(--text-dim)";
+const ms = (d: string) => Date.parse(d.length <= 10 ? d + "T00:00:00Z" : d);
+const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
+// Keep the SAME time window when switching results (parity with LabsPage), unless it'd be empty.
+function keepWin(w: { from: string; to: string } | null, s: LabSeries) {
+  if (!s.domain) return w;
+  if (!w) return { from: s.domain.from, to: s.domain.to };
+  return s.points.some((p) => p.t >= w.from && p.t <= w.to) ? w : { from: s.domain.from, to: s.domain.to };
+}
+const PRESETS: { label: string; years: number | null }[] = [
+  { label: "1y", years: 1 }, { label: "5y", years: 5 }, { label: "All", years: null },
+];
 
-// Recipient TABLE view: a trend table (rows = collection dates, columns = shared analytes) so a
-// recipient can read the exact value of any shared result at any time. Values are status-coloured.
-function LabShareTable({ token, analytes }: { token: string; analytes: { analyte: string; test_name: string; unit: string | null }[] }) {
-  const [series, setSeries] = useState<Record<string, LabSeries>>({});
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    Promise.all(analytes.map((a) =>
-      getShareLabSeries(token, a.analyte).then((s) => [a.analyte, s] as const).catch(() => [a.analyte, null] as const)))
-      .then((pairs) => {
-        const m: Record<string, LabSeries> = {};
-        pairs.forEach(([k, s]) => { if (s) m[k] = s; });
-        setSeries(m); setLoading(false);
-      });
-  }, [token]);
-  if (loading) return <div className="muted" style={{ fontSize: 13, padding: 8 }}>Loading…</div>;
-  const cols = analytes.filter((a) => series[a.analyte]?.points.length);
-  const lookup: Record<string, Record<string, LabPoint>> = {};
-  const dateSet = new Set<string>();
-  cols.forEach((a) => { lookup[a.analyte] = {}; series[a.analyte].points.forEach((p) => { lookup[a.analyte][p.t] = p; dateSet.add(p.t); }); });
-  const dates = [...dateSet].sort().reverse();   // newest first
-  if (!dates.length) return <div className="muted" style={{ fontSize: 13 }}>No results to show.</div>;
-  return (
-    <div className="lab-share-table-wrap">
-      <table className="lab-share-table">
-        <thead><tr><th>Date</th>{cols.map((a) => (
-          <th key={a.analyte}>{a.test_name}{a.unit ? <span className="muted"> {a.unit}</span> : ""}</th>))}</tr></thead>
-        <tbody>
-          {dates.map((d) => (
-            <tr key={d}>
-              <td className="muted" style={{ whiteSpace: "nowrap" }}>{d}</td>
-              {cols.map((a) => { const p = lookup[a.analyte][d];
-                return <td key={a.analyte} style={{ color: p ? statusColor(p.status) : undefined, fontWeight: p && OUT.has(p.status) ? 600 : undefined }}>
-                  {p ? p.vtext : "—"}</td>; })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+// A small coloured/shaped status pip — dual-encoded so it reads without colour.
+function Pip({ status }: { status: string }) {
+  const c = OUT.has(status) ? "var(--danger)" : status === "normal" ? "var(--ok)" : "var(--text-dim)";
+  const ch = status === "high" ? "▲" : status === "low" ? "▼" : status === "normal" ? "●" : "○";
+  return <span style={{ color: c, fontSize: 11 }} title={status}>{ch}</span>;
 }
 
-// Recipient view of a lab-share link (kind='labs'): a fixed selection of trend charts the owner
-// chose to share, plus an optional scoped AI chat. ALL series come through the token-scoped,
-// allow-list-rechecked, no-store endpoint — the recipient never touches /api/medical/*.
-
 type Analyte = { analyte: string; test_name: string; unit: string | null };
-type ChartSpec = { analyte: string; unit: string | null; from: string; to: string; title: string };
 
-interface Msg { role: "ai" | "me"; text: string; charts?: ChartSpec[]; }
-
-export default function LabShareView({ token, brainName, intro, consent, allowChat }: {
-  token: string; brainName: string; intro?: string; consent?: string; allowChat?: boolean;
+export default function LabShareView({ token, brainName, intro, consent }: {
+  token: string; brainName: string; intro?: string; consent?: string;
 }) {
   const [phase, setPhase] = useState<"consent" | "viewing">("consent");
-  const [view, setView] = useState<"charts" | "table">("charts");
   const [name, setName] = useState(localStorage.getItem("jbrain_share_name") || "");
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
-  const [win, setWin] = useState<{ from: string | null; to: string | null }>({ from: null, to: null });
-  const [chatOn, setChatOn] = useState(false);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
+  const [sel, setSel] = useState<string | null>(null);
+  const [series, setSeries] = useState<LabSeries | null>(null);
+  const [win, setWin] = useState<{ from: string; to: string } | null>(null);
+  const [picked, setPicked] = useState<LabPoint | null>(null);
+  const [showTable, setShowTable] = useState(false);
+  const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [thinking, setThinking] = useState(false);
   const [err, setErr] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, thinking]);
-  useEffect(() => {                                         // grow the composer with its content
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const max = Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.4);
-    el.style.height = Math.min(el.scrollHeight, max) + "px";
-    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
-  }, [input]);
+
+  // Load the selected result's (windowed) series; keep the time window across switches.
+  useEffect(() => {
+    if (!sel) return;
+    setSeries(null); setPicked(null); setErr("");
+    getShareLabSeries(token, sel).then((s) => { setSeries(s); setWin((w) => keepWin(w, s)); })
+      .catch(() => setErr("Couldn’t load that result."));
+  }, [sel, token]);
+
+  const filtered = useMemo(() => {
+    const f = q.trim().toLowerCase();
+    return analytes.filter((a) => !f || a.test_name.toLowerCase().includes(f) || a.analyte.includes(f));
+  }, [analytes, q]);
 
   async function begin() {
     if (!name.trim()) { alert("Please enter your name."); return; }
@@ -89,26 +65,21 @@ export default function LabShareView({ token, brainName, intro, consent, allowCh
     setBusy(true); setErr("");
     try {
       const r = await labsStart(token, name.trim());
-      setAnalytes(r.analytes || []);
-      setWin(r.window || { from: null, to: null });
-      setChatOn(!!r.allow_chat);
-      setMsgs((r.transcript || []).map((t: any) => ({ role: t.role === "assistant" ? "ai" : "me", text: t.content })));
+      const list: Analyte[] = r.analytes || [];
+      setAnalytes(list);
+      setSel(list.length ? list[0].analyte : null);
       setPhase("viewing");
     } catch (e: any) { setErr(e?.message || "Couldn't open this link."); }
     finally { setBusy(false); }
   }
 
-  async function send() {
-    const text = input.trim();
-    if (!text || thinking) return;
-    setInput(""); setMsgs((m) => [...m, { role: "me", text }]); setThinking(true); setErr("");
-    try {
-      const r = await labsTurn(token, text);
-      setMsgs((m) => [...m, { role: "ai", text: r.message, charts: r.charts || [] }]);
-    } catch (e: any) { setErr(e?.message || "Couldn't send — please try again."); }
-    finally { setThinking(false); }
+  function preset(years: number | null) {
+    if (!series?.domain) return;
+    const to = ms(series.domain.to);
+    const from = years == null ? ms(series.domain.from)
+      : Math.max(ms(series.domain.from), to - years * 365 * 24 * 3600 * 1000);
+    setWin({ from: iso(from), to: iso(to) });
   }
-  function onKey(e: KeyboardEvent) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }
 
   if (phase === "consent") return (
     <div className="share-page"><div className="share-card">
@@ -131,58 +102,90 @@ export default function LabShareView({ token, brainName, intro, consent, allowCh
     </div></div>
   );
 
+  const cur = analytes.find((a) => a.analyte === sel);
   return (
-    <div className="guided-wrap">
-      <div className="guided-head">
+    <div className="tool-body">
+      <div className="guided-head" style={{ marginBottom: 8 }}>
         <span className="brand">{brainName}<span className="dot">.</span></span>
         <span className="badge">Shared · Lab results</span>
       </div>
-      <div className="messages" style={{ paddingBottom: chatOn ? undefined : 24 }}>
-        <div className="share-banner">⚕️ Not a diagnosis — always confirm against the source reports.
-          Some values may have been read from a photo.</div>
-        {analytes.length > 1 && (
-          <div className="row" style={{ gap: 6, marginBottom: 4 }}>
-            <button className={"chip" + (view === "charts" ? " active" : "")} onClick={() => setView("charts")}>Charts</button>
-            <button className={"chip" + (view === "table" ? " active" : "")} onClick={() => setView("table")}>Table</button>
-          </div>
-        )}
-        {view === "table"
-          ? <LabShareTable token={token} analytes={analytes} />
-          : analytes.map((a) => (
-              <ShareChart key={a.analyte} token={token} analyte={a.analyte}
-                          from={win.from || undefined} to={win.to || undefined} title={a.test_name} />
-            ))}
-        {analytes.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No results to show.</div>}
+      <div className="share-banner">⚕️ Not a diagnosis — always confirm against the source reports.
+        Some values may have been read from a photo.</div>
 
-        {chatOn && msgs.length === 0 && (
-          <div className="msg assistant muted">Ask a question about these results — e.g. “anything abnormal?”</div>
-        )}
-        {chatOn && msgs.map((m, i) => (
-          <div key={i} className={`msg ${m.role === "me" ? "user" : "assistant"}`}>
-            {m.role === "ai" ? <div className="md msg-md"><ReactMarkdown>{m.text}</ReactMarkdown></div> : m.text}
-            {m.charts?.map((c, j) => (
-              <ShareChart key={j} token={token} analyte={c.analyte} from={c.from} to={c.to} title={c.title} />
-            ))}
+      {analytes.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No results to show.</div>}
+
+      {analytes.length > 1 && (
+        <input placeholder="Find a result…" value={q} onChange={(e) => setQ(e.target.value)}
+               style={{ marginBottom: 8 }} />
+      )}
+      {analytes.length > 1 && (
+        <div className="lab-picker">
+          {filtered.map((a) => (
+            <button key={a.analyte} className={"lab-pick" + (a.analyte === sel ? " active" : "")}
+                    onClick={() => setSel(a.analyte)}>
+              <span className="lab-pick-name">{a.test_name}</span>
+              {a.unit && <span className="muted" style={{ fontSize: 11 }}>{a.unit}</span>}
+            </button>
+          ))}
+          {filtered.length === 0 && <div className="muted" style={{ padding: 8, fontSize: 13 }}>No results match.</div>}
+        </div>
+      )}
+
+      {err && <p className="share-error">{err}</p>}
+
+      {cur && series && win && (
+        <div className="lab-chart-wrap">
+          <div className="lab-head">
+            <strong>{series.test_name}</strong>
+            {series.unit && <span className="muted" style={{ fontSize: 12 }}> ({series.unit})</span>}
+            {series.other_units.length > 0 &&
+              <span className="muted" style={{ fontSize: 11 }}> · also recorded in {series.other_units.join(", ")}</span>}
           </div>
-        ))}
-        {thinking && (
-          <div className="chat-status" aria-live="polite">
-            <span className="typing-dots"><span /><span /><span /></span>
-            <span className="chat-status-text">Looking…</span>
-          </div>
-        )}
-        {err && <div className="msg assistant share-error">{err}</div>}
-        <div ref={endRef} />
-      </div>
-      {chatOn && (
-        <div className="composer-box">
-          <textarea ref={taRef} rows={1} placeholder="Ask about these results…" value={input}
-                    onChange={(e) => setInput(e.target.value)} onKeyDown={onKey} />
-          <div className="composer-row">
-            <span className="spacer" />
-            <button className="icon-btn send" title="Send" onClick={send}
-                    disabled={thinking || !input.trim()}><Icon name="send" /></button>
-          </div>
+
+          {series.points.length === 0 ? (
+            <p className="muted" style={{ fontSize: 13 }}>No plottable values for this result.</p>
+          ) : series.points.filter((p) => !p.censored).length < 2 ? (
+            <p className="muted" style={{ fontSize: 13 }}>Only one result on {series.points[0]?.t} — a trend appears with a second draw.</p>
+          ) : (
+            <>
+              <div className="lab-controls">
+                {PRESETS.map((p) => <button key={p.label} className="chip" onClick={() => preset(p.years)}>{p.label}</button>)}
+                <input type="date" value={win.from} min={series.domain?.from} max={win.to}
+                       onChange={(e) => setWin({ ...win, from: e.target.value })} />
+                <input type="date" value={win.to} min={win.from} max={series.domain?.to}
+                       onChange={(e) => setWin({ ...win, to: e.target.value })} />
+                <button className="chip" onClick={() => series.domain && setWin({ ...series.domain })}>Reset</button>
+              </div>
+              <LabChart series={series} from={win.from} to={win.to} onPick={setPicked}
+                        onViewChange={(f, t) => setWin({ from: f, to: t })} />
+              {picked && (
+                <div className="lab-detail">
+                  <Pip status={picked.status} /> <strong>{picked.vtext}{picked.unit ? " " + picked.unit : ""}</strong>
+                  <span className="muted"> on {picked.t}{picked.ref_text ? ` · ref ${picked.ref_text}` : ""}
+                    {picked.flag ? ` · lab flag ${picked.flag}` : ""}</span>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Accessible / colour-blind / offline fallback: the same data as a table. Controlled so
+              it stays open when you switch to another result. No source column (identity-stripped). */}
+          <details className="lab-table" open={showTable}
+                   onToggle={(e) => setShowTable((e.target as HTMLDetailsElement).open)}>
+            <summary className="muted" style={{ fontSize: 12 }}>Show as table</summary>
+            <table>
+              <thead><tr><th>Date</th><th>Value</th><th>Range</th><th>Status</th></tr></thead>
+              <tbody>
+                {series.points.map((p, i) => (
+                  <tr key={i}>
+                    <td>{p.t}</td><td>{p.vtext}{p.unit ? " " + p.unit : ""}</td>
+                    <td className="muted">{p.ref_text || "—"}</td>
+                    <td><Pip status={p.status} /> {p.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
         </div>
       )}
     </div>

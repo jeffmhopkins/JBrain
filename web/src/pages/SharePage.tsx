@@ -66,10 +66,10 @@ export default function SharePage() {
     return <ResearchChat token={token} brainName={data.brain_name} intro={data.intro} hasLabs={data.has_labs} />;
   }
 
-  // --- Lab share: scoped trend charts (+ optional scoped chat) -------------
+  // --- Lab share: scoped trend charts, viewed like the owner's Labs page ---
   if (data.kind === "labs") {
     return <LabShareView token={token} brainName={data.brain_name} intro={data.intro}
-                         consent={data.consent} allowChat={data.allow_chat} />;
+                         consent={data.consent} />;
   }
 
   // --- Consent landing for a not-yet-accepted bind link --------------------

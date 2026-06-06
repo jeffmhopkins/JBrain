@@ -571,12 +571,35 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 -- Cached medical-reference lookups (NLM, public domain): RxNorm name->RxCUI and MedlinePlus
 -- Connect RxCUI->drug page, so a drug name/code is fetched at most once.
 CREATE TABLE IF NOT EXISTS medref_cache (
-  kind         TEXT NOT NULL,            -- 'rxcui' | 'approx' | 'mplus'
+  kind         TEXT NOT NULL,            -- 'rxcui' | 'approx' | 'mplus' | 'mplus_topic'
   key          TEXT NOT NULL,            -- normalized name (rxcui/approx) or rxcui (mplus)
   payload_json TEXT NOT NULL,
   fetched_at   TEXT NOT NULL,
   PRIMARY KEY (kind, key)
 );
+
+-- Reference candidates: health TOPICS an external reference tool (medical_reference) surfaced
+-- that the owner does NOT yet have under kb/Reference. A TOPIC-ONLY usage signal — it stores the
+-- public topic name + the server-returned source URL/snippet, and NEVER any owner data (no query
+-- text, no lab values/dates, no conversation id) so a "general" reference page can't inherit PHI.
+-- Analyze is read-only over NOTES, so recording a candidate never writes a note; the nightly
+-- promote pass turns repeated candidates (hits >= threshold) into STAGED kb/Reference articles the
+-- owner approves. status walks new -> staged -> published | dismissed; norm_key dedups.
+CREATE TABLE IF NOT EXISTS reference_candidates (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic       TEXT NOT NULL,                  -- canonical (public) topic title
+  norm_key    TEXT NOT NULL UNIQUE,           -- normalized topic for dedup/upsert
+  source      TEXT NOT NULL DEFAULT 'medlineplus',
+  url         TEXT NOT NULL,                  -- the server-returned source URL (host-pinned)
+  snippet     TEXT,                           -- short public-domain summary (no owner data)
+  category    TEXT,                           -- 'Conditions' | 'Medications' | 'Procedures' (best-effort)
+  hits        INTEGER NOT NULL DEFAULT 1,
+  first_seen  TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen   TEXT NOT NULL DEFAULT (datetime('now')),
+  status      TEXT NOT NULL DEFAULT 'new'     -- new | staged | published | dismissed
+);
+CREATE INDEX IF NOT EXISTS idx_refcand_status ON reference_candidates(status, hits);
+
 
 -- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
 -- scheduler (never the ingest path) reads this to fire location triggers.

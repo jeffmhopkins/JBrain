@@ -257,8 +257,8 @@ modes:
   analyze:
     max_iterations: 14          # deeper, multi-step questions than a one-hop Q&A
     max_total_tokens: 120000
-    tools: [reference_lookup, find, search_notes, read_note, read_notes, related_notes, list_tags,
-            notes_with_tag, list_recent_notes, search_attachments, read_attachment, query_sql,
+    tools: [reference_lookup, medical_reference, find, search_notes, read_note, read_notes, related_notes,
+            list_tags, notes_with_tag, list_recent_notes, search_attachments, read_attachment, query_sql,
             current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place, reverse_geocode, forward_geocode, drug_reference,
@@ -299,7 +299,8 @@ modes:
       1. The owner's OWN reference library FIRST — call reference_lookup for their curated
          kb/Reference/… articles (e.g. kb/Reference/Medicine/Conditions/…). Cite these as
          [[Title]]; they are the owner's trusted, curated references and outrank anything external.
-      2. drug_reference for a MEDICATION (an NLM/MedlinePlus link — a source, not advice).
+      2. If your library lacks it, an EXTERNAL source: medical_reference for a condition / test /
+         topic, or drug_reference for a MEDICATION (NLM/MedlinePlus links — a source, not advice).
       3. ONLY if neither has it, you MAY supply brief general background to interpret the data —
          but LABEL it exactly "(general knowledge — not from a source)" and keep it to
          definitions/criteria, never a specific claim about the owner. Always prefer a sourced answer.
@@ -349,6 +350,7 @@ tools:
   show_lab_chart: "When the user wants to SEE a lab analyte's trend over time: renders a chart of that analyte's results (with its reference band) directly to the user, and returns you a short summary (counts/dates/latest status) to narrate. Pass an analyte_key (from list_abnormal_labs or an exact match), optionally a unit, and the time window the user named via range (3mo/6mo/1y/2y/5y/all) or from/to ISO — the chart opens to that window and the summary is scoped to it. Describe only the summary counts/dates and which the lab flagged — never restate individual values, never interpret clinically. Read-only."
   lab_stat: "For a SCALAR question about ONE lab analyte — lowest/highest/latest/first/average, the DATE of an extreme, how many results / how many out of range, over an optional window (range or from/to). Accepts a lab name or analyte_key (resolved; lists candidates if ambiguous). Returns each value together with its real collection date, reference range, and flag status IN ONE RESULT — so you can answer 'what date was that?' / 'was it normal?' from the same call; never claim a value has no date. Min/max are within one equivalent-unit group and exclude censored ('<0.01') values (which are counted separately). Use this instead of query_sql for lab numbers. Read-only."
   lab_value_at: "For a 'WHEN' question about ONE lab analyte: which='latest'|'first'|'first_out_of_range'|'last_out_of_range'|'first_cross'|'last_cross' (with threshold + direction for crosses). Returns the matching result row with its value, date, and flag status in one call. Use for 'when did X first go abnormal', 'when did creatinine cross 2.0', 'most recent value'. Read-only; report the value/date/status exactly, no clinical interpretation."
+  medical_reference: "EXTERNAL, SECOND-LINE reference: look up a health condition / test / topic on MedlinePlus (NLM, public domain) — use this ONLY after reference_lookup finds nothing in the owner's own kb/Reference library. Returns a short summary + a citable link; cite the link and treat it as reference information, NEVER medical advice and never a fact about the owner. (Topics you look up here are remembered so the owner's own reference library can grow from them over time.) For a MEDICATION use drug_reference instead. Read-only; cached."
   reference_lookup: "FIRST-LINE reference: search the owner's OWN curated reference library (their kb/Reference/… articles, e.g. kb/Reference/Medicine/Conditions/…) and return the best-matching articles each with a quotable passage + its [[Title]]. Use this BEFORE any external lookup when you need authoritative background on a condition, test, procedure, or topic to analyze the owner's data against — these are the owner's trusted, curated sources. Cite them [[Title]] and quote verbatim. If it finds nothing, fall back to drug_reference (for a medication) or clearly-labelled general knowledge. Read-only."
   find: "FASTEST way to find AND quote: searches notes by keyword + meaning and returns the best-matching notes each with a sentence-bounded, QUOTABLE passage already extracted + its [[Title]] — so you can answer with a real, cited quote in ONE call, no separate read_note. Prefer this when the user wants a fact/quote you'll cite. Quote a returned passage VERBATIM; a quotation that doesn't match what a tool returned this turn is shown to the user WITHOUT quote marks. read_note a hit for its full text when you need more than the passage."
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Each hit returns its title PLUS a short query-relevant snippet — judge relevance from the snippet (don't dismiss an opaquely-titled note like notes/daily/… without checking its snippet), and read_note the promising ones for full content before you answer or propose. The snippet is a relevance cue, NOT a quotable source — never assert a value/date/dose from a snippet, and never cite a [[title]] this search did not return."

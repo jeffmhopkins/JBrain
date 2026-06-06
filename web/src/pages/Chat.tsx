@@ -89,6 +89,7 @@ const TOOL_LABELS: Record<string, string> = {
   reverse_geocode: "Looking up an address…",
   forward_geocode: "Looking up coordinates…",
   drug_reference: "Looking up a medication…",
+  medical_reference: "Looking up a health topic…",
   list_abnormal_labs: "Finding out-of-range labs…",
   show_lab_chart: "Charting lab results…",
   lab_stat: "Checking lab values…",

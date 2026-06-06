@@ -58,7 +58,7 @@ _DEFAULT_MODE_TOOLS = {
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
                  "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
     # "Analyze" = research's read set + reference_lookup (the owner's own kb/Reference library).
-    "analyze": ["reference_lookup", "find", "search_notes", "read_note", "read_notes", "related_notes",
+    "analyze": ["reference_lookup", "medical_reference", "find", "search_notes", "read_note", "read_notes", "related_notes",
                 "list_tags", "notes_with_tag", "list_recent_notes", "search_attachments",
                 "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes",
                 "geo_distance", "nearby_notes", "where_was_i", "time_at_place", "places_visited",
@@ -180,6 +180,9 @@ _TOOL_SCHEMAS = {
     "drug_reference": {"type": "object", "properties": {
         "name": {"type": "string", "description": "A medication name (brand or generic), e.g. 'metformin' or 'Tylenol'."}},
         "required": ["name"]},
+    "medical_reference": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "A health condition/topic/test, e.g. 'thrombotic thrombocytopenic purpura' or 'atrial fibrillation'."}},
+        "required": ["query"]},
     "save_place": {"type": "object", "properties": {
         "name": {"type": "string", "description": "The place to save as a geofence, e.g. 'Portland VA Hospital' or 'the gym'."}},
         "required": ["name"]},
@@ -1100,6 +1103,26 @@ def _tool_drug_reference(conn, name: str) -> str:
                       f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
 
 
+def _tool_medical_reference(conn, query: str) -> str:
+    """EXTERNAL, second-line reference: a MedlinePlus consumer health-topic page for a condition /
+    test / topic (NLM, public domain). Read-only; a citable source, not medical advice. On a hit it
+    records a TOPIC-ONLY usage signal (never owner data) so the nightly pass can build the topic into
+    the owner's own kb/Reference library over time."""
+    from . import medref, reference_candidates
+    res = medref.health_topic(conn, query)
+    if not res:
+        return _untrusted("medical-ref", f"No MedlinePlus health topic found for “{(query or '').strip()}”.")
+    try:
+        reference_candidates.record(conn, topic=res["title"], source="medlineplus",
+                                    url=res["url"], snippet=res.get("snippet", ""))
+    except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+        pass
+    summary = f" {res['snippet']}" if res.get("snippet") else ""
+    return _untrusted("medical-ref",
+                      f"MedlinePlus health topic for {query.strip()}: {res['title']} — {res['url']}.{summary} "
+                      "[NLM/MedlinePlus, public domain — reference information, not medical advice, not NLM-endorsed].")
+
+
 def _tool_save_place(conn, name: str) -> str:
     """Save a place the owner names as a geofence (forward-geocoded) so visits get tracked.
     Already-saved → reports it; else creates at the best match and reports the address."""
@@ -1962,6 +1985,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_reverse_geocode(conn, conversation_id, args.get("lat"), args.get("lon")), None
     if name == "forward_geocode":
         return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
+    if name == "medical_reference":
+        return _tool_medical_reference(conn, args["query"]), None
     if name == "drug_reference":
         return _tool_drug_reference(conn, args["name"]), None
     if name == "save_place":
@@ -2207,7 +2232,7 @@ _RETRIEVAL_TOOLS = frozenset({
     "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
     "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
     "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
-    "show_lab_chart", "drug_reference", "reverse_geocode", "forward_geocode",
+    "show_lab_chart", "drug_reference", "medical_reference", "reverse_geocode", "forward_geocode",
 })
 _RESEARCH_NUDGE = (
     "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "

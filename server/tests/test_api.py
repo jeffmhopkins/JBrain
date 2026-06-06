@@ -6620,3 +6620,100 @@ def test_staging_list_surfaces_dead_link_warning(client):
     aid = _stage(conn, "CREATE", {"title": "notes/Y", "content": "ref [[notes/DoesNotExist]]"})
     item = next(x for x in client.get("/api/staging").json() if x["id"] == aid)
     assert item.get("warnings") and any("don't exist" in w for w in item["warnings"])
+
+
+def test_find_tool_returns_quotable_passages(client):
+    # `find` returns the best note WITH a ready quotable passage + its [[Title]] in one call.
+    from app.db import get_conn
+    from app.services import architect
+    client.post("/api/notes/entry", json={"text": "The marathon split was 3:42:15, a personal record set in Chicago.",
+                                           "title": "Marathon PR"})
+    out = architect._tool_find(get_conn(), "marathon split", 5)
+    assert "Marathon PR" in out and "3:42:15" in out
+
+
+class _ScriptedProvider:
+    """Drives architect.run for the grounding-guard test: turn 1 = a factual answer with NO tools;
+    turn 2 (after the nudge) = a search_notes call; turn 3 = a grounded answer."""
+    def __init__(self, draft, grounded):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._draft, self._grounded = draft, grounded
+        self._call = ToolCall(id="1", name="search_notes", args={"query": "x"})
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, ToolCallEvent, TurnEnd
+        self.turn += 1
+        if self.turn == 1:
+            yield TextDelta(self._draft); yield TurnEnd([], usage=None)
+        elif self.turn == 2:
+            yield ToolCallEvent(self._call); yield TurnEnd([self._call], usage=None)
+        else:
+            yield TextDelta(self._grounded); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): messages.append({"role": "user", "content": "tr"})
+    def complete(self, *a, **k): return ""
+
+
+def _drive_run(cid, text, mode, fake, monkeypatch):
+    import asyncio
+    from app.services import architect, llm
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: fake)
+    monkeypatch.setattr(architect, "_run_tool", lambda *a, **k: ("(no relevant records)", None))
+    events = []
+    async def go():
+        async for ev in architect.run(cid, text, None, mode):
+            events.append(ev)
+    asyncio.run(go())
+    return events
+
+
+def _new_conv(conn):
+    conn.execute("INSERT INTO conversations DEFAULT VALUES")
+    return conn.execute("SELECT id FROM conversations ORDER BY id DESC LIMIT 1").fetchone()["id"]
+
+
+def test_research_grounding_guard_renudges_on_zero_retrieval(client, monkeypatch):
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — this is a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    events = _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    assert {"type": "replace_text", "text": ""} in events     # memory-draft wiped from the screen
+    assert fake.turn >= 3                                      # nudged → retrieved → re-answered
+    final = conn.execute("SELECT content FROM messages WHERE conversation_id=? AND role='assistant' "
+                         "ORDER BY id DESC LIMIT 1", (cid,)).fetchone()["content"]
+    assert "fabricated memory" not in final                   # the grounded answer persisted, not the draft
+
+
+def test_assisted_mode_does_not_force_retrieval(client, monkeypatch):
+    # Assisted legitimately reasons/asks without a tool call — the hard guard must NOT fire there.
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(draft="Here's a thought worth exploring further, in some real detail here.",
+                             grounded="unused")
+    events = _drive_run(cid, "let's brainstorm", "assisted", fake, monkeypatch)
+    assert {"type": "replace_text", "text": ""} not in events
+    assert fake.turn == 1                                      # answered once, no forced retrieval
+
+
+def test_looks_factual_heuristic():
+    from app.services import architect
+    assert architect._looks_factual("Your LDL was 142 mg/dL on 2026-05-01, flagged high by the lab here.")
+    assert not architect._looks_factual("Sure!")                      # short ack
+    assert not architect._looks_factual("Which time range did you mean for that?")   # clarifying question
+    assert not architect._looks_factual("I don't have that in the records, sorry about that, friend.")
+
+
+def test_note_preview_for_citation_hover(client):
+    # A [[citation]] in a chat reply can reveal its source on hover via this lightweight preview.
+    from app.db import get_conn
+    client.post("/api/notes/entry", json={"text": "The marathon split was 3:42:15, set in Chicago.",
+                                           "title": "Marathon"})
+    slug = get_conn().execute("SELECT slug FROM notes WHERE title LIKE 'notes/Marathon%' "
+                              "ORDER BY id DESC LIMIT 1").fetchone()["slug"]
+    pv = client.get(f"/api/notes/{slug}/preview").json()
+    assert pv["found"] is True and pv["title"].endswith("Marathon") and "3:42:15" in pv["excerpt"]
+    assert client.get("/api/notes/no-such-slug/preview").json() == {"found": False}

@@ -945,3 +945,18 @@ table.sql-result th { background: var(--bg-elev-2); }
   display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px;
   background: rgba(192,133,133,0.12); border: 1px solid var(--danger); border-radius: 8px; color: var(--text);
 }
+
+/* Citation hover preview: reveal a [[cite]]'s source note inline in chat so you can verify it
+   without leaving the conversation. */
+.cite-wrap { position: relative; }
+.cite-pop {
+  position: absolute; left: 0; bottom: 1.5em; z-index: 30;
+  width: min(340px, 80vw); display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; font-size: 12px; line-height: 1.4;
+  background: var(--card, #1b1f24); color: var(--text); text-align: left;
+  border: 1px solid var(--border, #333); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.35); white-space: normal;
+}
+.cite-pop-head { color: var(--ok, #7fb37f); }
+.cite-pop-head strong { color: var(--text); }
+.cite-pop-body { color: var(--text-dim); }

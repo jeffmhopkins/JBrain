@@ -103,3 +103,53 @@ def test_large_time_gap_clears_history(conn):
 
 def test_empty_history(conn):
     assert architect._assemble_history(conn, _conv(conn), fresh_context=False) == []
+
+
+# --- quote verification + anchoring (A) -------------------------------------
+
+def test_quotable_passage_centers_on_match():
+    content = "Intro line. The LDL was 142 mg/dL, flagged high by the lab. Later notes follow here."
+    p = architect._quotable_passage(content, "LDL")
+    assert "LDL was 142 mg/dL" in p
+
+
+def test_verify_quotes_keeps_grounded_quote():
+    corpus = "the record says: LDL was 142 mg/dL flagged high. patient otherwise stable."
+    text = 'Your result was "LDL was 142 mg/dL flagged high" per the record.'
+    out, changed = architect._verify_quotes(text, corpus)
+    assert not changed and out == text
+
+
+def test_verify_quotes_strips_fabricated_quote():
+    text = 'The note said "you are in perfect health and need no further followup at all".'
+    out, changed = architect._verify_quotes(text, "labs: glucose 90 mg/dL, normal range.")
+    assert changed
+    assert '"you are in perfect health' not in out                  # quote marks removed
+    assert "you are in perfect health and need no further followup at all" in out  # text kept
+    assert "without quote marks" in out                              # honest notice appended
+
+
+def test_verify_quotes_tolerates_reformatting():
+    corpus = "The   LDL   was 142 mg/dL, flagged HIGH today."
+    text = 'It shows “the ldl was 142 mg dL flagged high” there.'   # curly quotes, recased, respaced
+    out, changed = architect._verify_quotes(text, corpus)
+    assert not changed                                               # normalization → still verified
+
+
+def test_verify_quotes_ignores_short_quotes():
+    out, changed = architect._verify_quotes('It was "high" today.', "unrelated corpus text")
+    assert not changed and out == 'It was "high" today.'
+
+
+def test_verify_quotes_handles_ellipsis():
+    corpus = "the patient was admitted on monday and discharged on friday in stable condition"
+    text = 'Records: "the patient was admitted on monday … discharged on friday in stable" overall.'
+    out, changed = architect._verify_quotes(text, corpus)
+    assert not changed                                               # each elided part is present
+
+
+def test_verify_quotes_grounds_against_user_message():
+    # the corpus includes the user's own message, so quoting the user back is allowed
+    user = "please summarize: the trip to Chicago was for the marathon expo"
+    out, changed = architect._verify_quotes('You said "the trip to Chicago was for the marathon expo".', user)
+    assert not changed

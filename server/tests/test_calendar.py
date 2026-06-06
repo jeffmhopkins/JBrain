@@ -922,3 +922,67 @@ def test_quick_add_title_cannot_inject_marker(conn):
     body = conn.execute("SELECT content_md FROM notes WHERE id=?", (out["note_id"],)).fetchone()["content_md"]
     assert "[[" not in body                                   # brackets neutralized
     assert conn.execute("SELECT COUNT(*) c FROM calendar_supersedes").fetchone()["c"] == 0
+
+
+# ============================================================================
+# Calendar UI: the /range endpoint (Day/Week/Month grids)
+# ============================================================================
+
+def test_range_validation(conn):
+    import pytest as _pt
+    from fastapi import HTTPException
+    from app.routers import calendar as r
+    for bad in [("nope", "2099-06-30"), ("2099-06-30", "2099-06-01")]:  # bad fmt, start>end
+        with _pt.raises(HTTPException) as ei:
+            r.range_events(bad[0], bad[1])
+        assert ei.value.status_code == 422
+    with _pt.raises(HTTPException) as ei:   # span > 366 days
+        r.range_events("2099-01-01", "2101-01-01")
+    assert ei.value.status_code == 422
+
+
+def test_range_returns_window_oneoffs_only(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Sched")
+    cal.upsert_events(conn, nid, [
+        {"title": "InWindow", "starts_at": "2099-06-15"},
+        {"title": "OutOfWindow", "starts_at": "2099-07-15"},
+    ])
+    rows = r.range_events("2099-06-01", "2099-06-30")
+    titles = {x["title"] for x in rows}
+    assert "InWindow" in titles and "OutOfWindow" not in titles
+
+
+def test_range_excludes_superseded(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Moved appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-10"}])
+    ik = conn.execute("SELECT identity_key FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["identity_key"]
+    n2 = _mknote(conn, "Cancel note")
+    cal.record_supersession(conn, ik, None, n2, "structured")   # cancellation edge
+    rows = r.range_events("2099-06-01", "2099-06-30")
+    assert all(x["title"] != "Dentist" for x in rows)
+
+
+def test_range_expands_recurring_with_true_times(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Daily timed")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2099-06-01T09:00:00",
+                                   "rrule": "FREQ=DAILY;COUNT=3"}], source="workflow", sweep=False)
+    rows = [x for x in r.range_events("2099-06-01", "2099-06-30") if x["title"] == "Standup"]
+    assert len(rows) == 3
+    assert all(x["recurring"] and x["all_day"] == 0 and x["starts_at"].endswith("T09:00:00") for x in rows)
+    assert {x["starts_at"][:10] for x in rows} == {"2099-06-01", "2099-06-02", "2099-06-03"}
+
+
+def test_range_includes_done_past_events(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Done note")
+    cal.upsert_events(conn, nid, [{"title": "Finished thing", "starts_at": "2000-03-03", "status": "done"}])
+    rows = r.range_events("2000-03-01", "2000-03-31")
+    assert any(x["title"] == "Finished thing" for x in rows)

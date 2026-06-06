@@ -138,6 +138,7 @@ function ReviewBell() {
 const TOOL_TITLES: Record<string, string> = {
   "/wiki": "Wiki",
   "/lists": "Lists",
+  "/calendar": "Calendar",
   "/shares": "Shares",
   "/search": "Search",
   "/graph": "Graph",

@@ -1,151 +1,464 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { calUpcoming, calHistory, calQuickAdd, calReschedule, calCancel, CalEvent } from "../api";
+import {
+  calUpcoming, calHistory, calRange, calQuickAdd, calReschedule, calCancel, CalEvent,
+} from "../api";
+import { useAuth } from "../App";
 
-// Calendar tab — an agenda over the calendar projection. Everything here ultimately
-// writes NOTES (the source of truth): quick-add writes a dated note, reschedule/cancel
-// write superseding notes. The list is the re-derived sidecar (v_upcoming/v_event_history).
+type View = "list" | "day" | "week" | "month";
+const LS_VIEW = "jbrain_cal_view";
+const KINDS = ["event", "appointment", "deadline", "reminder"];
+const WD = ["S", "M", "T", "W", "T", "F", "S"];
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const ROWH = 40;
 
-function fmtWhen(e: CalEvent): string {
-  const s = e.starts_at || "";
-  if (!s) return "(undated)";
-  if (e.all_day || !s.includes("T")) return s.slice(0, 10);
-  return s.slice(0, 16).replace("T", " ");
+// --- date helpers (wall-clock; event strings are owner-local, treated verbatim) ---
+const pad = (n: number) => String(n).padStart(2, "0");
+const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function parseYmd(s: string): Date { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addMonths(d: Date, n: number): Date { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
+const startOfWeek = (d: Date) => addDays(d, -d.getDay());                 // Sunday
+const startOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
+const sameYmd = (a: Date, b: string) => ymd(a) === b;
+
+// Owner-local "today"/now via the app timezone (falls back to the browser).
+function todayIso(tz: string): string {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date()); }
+  catch { return ymd(new Date()); }
+}
+function nowMinutes(tz: string): number {
+  try {
+    const s = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+    const [h, m] = s.split(":").map(Number); return h * 60 + m;
+  } catch { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
 }
 
-const KINDS = ["event", "appointment", "deadline", "reminder"];
+// --- event helpers ---
+const dayKey = (e: CalEvent) => (e.starts_at || "").slice(0, 10);
+const isTimed = (e: CalEvent) => !e.all_day && !!e.starts_at && e.starts_at.includes("T");
+function timeLabel(e: CalEvent): string {
+  if (!e.starts_at) return "—";
+  return isTimed(e) ? e.starts_at.slice(11, 16) : "all-day";
+}
+function minutesOf(s: string | null | undefined): number {
+  if (!s || !s.includes("T")) return 0;
+  const [h, m] = s.slice(11, 16).split(":").map(Number); return h * 60 + (m || 0);
+}
+function kindTag(e: CalEvent): string | null {
+  if (e.recurring) return null;                       // recurring shown via the ↻ glyph
+  return e.kind && e.kind !== "event" ? e.kind : null;
+}
+function sortEvents(a: CalEvent, b: CalEvent): number {
+  const at = isTimed(a), bt = isTimed(b);
+  if (at !== bt) return at ? 1 : -1;                  // all-day first
+  if (at && bt) return minutesOf(a.starts_at) - minutesOf(b.starts_at);
+  return a.title.localeCompare(b.title);
+}
+
+function bucket(events: CalEvent[]): Map<string, CalEvent[]> {
+  const m = new Map<string, CalEvent[]>();
+  for (const e of events) {
+    const k = dayKey(e); if (!k) continue;
+    (m.get(k) || m.set(k, []).get(k)!).push(e);
+  }
+  for (const v of m.values()) v.sort(sortEvents);
+  return m;
+}
 
 export default function CalendarPage() {
-  const [tab, setTab] = useState<"upcoming" | "history">("upcoming");
-  const [items, setItems] = useState<CalEvent[]>([]);
-  const [busy, setBusy] = useState(false);
+  const { appTz } = useAuth();
+  const tz = appTz || "UTC";
+  const [view, setView] = useState<View>(() => (localStorage.getItem(LS_VIEW) as View) || "list");
+  const [cursor, setCursor] = useState<Date>(() => parseYmd(todayIso(appTz || "UTC")));
+  const [selDay, setSelDay] = useState<string>(() => todayIso(appTz || "UTC"));
+  const [listTab, setListTab] = useState<"upcoming" | "history">("upcoming");
+  const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [sheet, setSheet] = useState<{ ev?: CalEvent; addDate?: string; addTime?: string } | null>(null);
+  const cache = useRef<Map<string, CalEvent[]>>(new Map());
+  const today = todayIso(tz);
 
-  // Quick-add form state.
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
-  const [kind, setKind] = useState("event");
-
-  // Refetch the current tab (used by the action handlers + Refresh).
-  async function load() {
-    setLoading(true); setErr("");
-    try {
-      setItems(tab === "upcoming" ? await calUpcoming(365) : await calHistory());
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    } finally { setLoading(false); }
+  function rangeFor(v: View, c: Date): [string, string] {
+    if (v === "day") return [ymd(c), ymd(c)];
+    if (v === "week") { const s = startOfWeek(c); return [ymd(s), ymd(addDays(s, 6))]; }
+    const s = startOfWeek(startOfMonth(c)); return [ymd(s), ymd(addDays(s, 41))]; // month: 6 weeks
   }
 
-  // Tab-driven load with a stale-response guard so rapid toggles can't render the
-  // wrong tab's data.
-  useEffect(() => {
+  function reload() { cache.current.clear(); load(); }
+
+  function load() {
+    setLoading(true); setErr("");
     let ignore = false;
-    setLoading(true); setErr("");
-    (tab === "upcoming" ? calUpcoming(365) : calHistory())
-      .then((d) => { if (!ignore) setItems(d); })
-      .catch((e: any) => { if (!ignore) setErr(String(e?.message || e)); })
-      .finally(() => { if (!ignore) setLoading(false); });
-    return () => { ignore = true; };
-  }, [tab]);
-
-  async function add(ev: React.FormEvent) {
-    ev.preventDefault();
-    if (!title.trim() || !date) return;
-    setBusy(true); setErr("");
-    try {
-      await calQuickAdd({ title: title.trim(), date, time: time || undefined, kind });
-      setTitle(""); setTime("");
-      setTab("upcoming");
-      await load();
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    } finally { setBusy(false); }
-  }
-
-  async function reschedule(e: CalEvent) {
-    const to = window.prompt(`Reschedule "${e.title}" to which date? (YYYY-MM-DD)`, (e.starts_at || "").slice(0, 10));
-    if (!to) return;
-    // Preserve the time for a timed event (don't silently downgrade it to all-day).
-    let toTime: string | undefined;
-    if (!e.all_day && (e.starts_at || "").includes("T")) {
-      const t = window.prompt("Time? (HH:MM, 24h — leave blank for all-day)", (e.starts_at || "").slice(11, 16));
-      if (t === null) return;             // cancelled the prompt
-      toTime = t.trim() || undefined;
+    const finish = (d: CalEvent[]) => { if (!ignore) { setEvents(d); setLoading(false); } };
+    const fail = (e: any) => { if (!ignore) { setErr(String(e?.message || e)); setLoading(false); } };
+    if (view === "list") {
+      (listTab === "upcoming" ? calUpcoming(365) : calHistory()).then(finish).catch(fail);
+    } else {
+      const [from, to] = rangeFor(view, cursor);
+      const key = `${from}..${to}`;
+      const hit = cache.current.get(key);
+      if (hit) { setEvents(hit); setLoading(false); }
+      else calRange(from, to).then((d) => { cache.current.set(key, d); finish(d); }).catch(fail);
     }
-    setBusy(true); setErr("");
-    try { await calReschedule(e.id, to.trim(), toTime); await load(); }
-    catch (er: any) { setErr(String(er?.message || er)); }
-    finally { setBusy(false); }
+    return () => { ignore = true; };
   }
+  // Re-fetch on every view/cursor/tab change (stale-guarded via the returned cleanup).
+  useEffect(() => load(), [view, listTab, view === "list" ? 0 : +cursor]);  // eslint-disable-line
 
-  async function cancel(e: CalEvent) {
-    if (!window.confirm(`Cancel "${e.title}"? This writes a cancellation note.`)) return;
-    setBusy(true); setErr("");
-    try { await calCancel(e.id); await load(); }
-    catch (er: any) { setErr(String(er?.message || er)); }
-    finally { setBusy(false); }
+  function switchView(v: View) { setView(v); localStorage.setItem(LS_VIEW, v); }
+  function step(dir: number) {
+    setCursor((c) => view === "month" ? addMonths(c, dir) : addDays(c, dir * (view === "week" ? 7 : 1)));
+  }
+  function goToday() { const t = parseYmd(today); setCursor(t); setSelDay(today); }
+
+  const byDay = useMemo(() => bucket(events), [events]);
+
+  const periodLabel = useMemo(() => {
+    if (view === "month") return `${MON[cursor.getMonth()]} ${cursor.getFullYear()}`;
+    if (view === "week") { const s = startOfWeek(cursor), e = addDays(s, 6);
+      return `${MON[s.getMonth()]} ${s.getDate()} – ${s.getMonth() === e.getMonth() ? "" : MON[e.getMonth()] + " "}${e.getDate()}`; }
+    if (view === "day") return `${DOW[cursor.getDay()]} ${MON[cursor.getMonth()]} ${cursor.getDate()}`;
+    return listTab === "upcoming" ? "Upcoming" : "Past";
+  }, [view, cursor, listTab]);
+
+  // --- actions ---
+  async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string }) {
+    await calQuickAdd(b); setSheet(null); reload();
+  }
+  async function doReschedule(ev: CalEvent, to_date: string, to_time?: string) {
+    await calReschedule(ev.id, to_date, to_time); setSheet(null); reload();
+  }
+  async function doCancel(ev: CalEvent) {
+    await calCancel(ev.id); setSheet(null); reload();
   }
 
   return (
-    <div className="content">
-      <h2>Calendar</h2>
-      <p className="muted" style={{ fontSize: 13 }}>
-        Appointments, deadlines and recurring patterns derived from your notes. Adding or
-        editing here writes a note — the calendar is re-derived, so your notes stay the
-        source of truth.
-      </p>
-
-      <form className="card" onSubmit={add}>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          <input placeholder="What…" value={title} onChange={(e) => setTitle(e.target.value)}
-                 style={{ flex: "2 1 160px" }} />
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ flex: "1 1 130px" }} />
-          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ flex: "0 1 110px" }} />
-          <select value={kind} onChange={(e) => setKind(e.target.value)} style={{ flex: "0 1 130px" }}>
-            {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
-          <button className="primary" disabled={busy || !title.trim() || !date}>Add</button>
+    <div className="tool-body cal">
+      <div className="cal-bar">
+        <div className="seg" role="tablist" aria-label="Calendar view">
+          {(["Day", "Week", "Month", "List"] as const).map((s) => {
+            const v = s.toLowerCase() as View;
+            return <button key={v} className={view === v ? "on" : ""} role="tab"
+              aria-selected={view === v} onClick={() => switchView(v)}>{s}</button>;
+          })}
         </div>
-      </form>
-
-      <div className="row" style={{ gap: 8, margin: "12px 0" }}>
-        <button className={tab === "upcoming" ? "primary" : "ghost"} onClick={() => setTab("upcoming")}>Upcoming</button>
-        <button className={tab === "history" ? "primary" : "ghost"} onClick={() => setTab("history")}>History</button>
-        <span className="spacer" />
-        <button className="ghost" onClick={load} disabled={busy}>Refresh</button>
+        <div className="cal-nav">
+          {view !== "list" && <>
+            <button className="icon-btn" aria-label="Previous" onClick={() => step(-1)}>‹</button>
+            <span className="cal-period">{periodLabel}</span>
+            <button className="icon-btn" aria-label="Next" onClick={() => step(1)}>›</button>
+            <span className="spacer" />
+            <button className="cal-today" onClick={goToday}>Today</button>
+          </>}
+          {view === "list" && <>
+            <div className="seg cal-sub" role="tablist" aria-label="List scope">
+              <button className={listTab === "upcoming" ? "on" : ""} aria-selected={listTab === "upcoming"}
+                onClick={() => setListTab("upcoming")}>Upcoming</button>
+              <button className={listTab === "history" ? "on" : ""} aria-selected={listTab === "history"}
+                onClick={() => setListTab("history")}>Past</button>
+            </div>
+          </>}
+        </div>
       </div>
 
-      {err && <p style={{ color: "var(--danger, #c33)", fontSize: 13 }}>{err}</p>}
+      {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
       {loading && <p className="muted">Loading…</p>}
-      {!loading && items.length === 0 && !err &&
-        <p className="muted">Nothing {tab === "upcoming" ? "coming up" : "in history"}.</p>}
 
-      {items.map((e) => (
-        <div className="card" key={`${e.id}-${e.starts_at}`}>
-          <div className="row">
-            <strong>{e.title}</strong>
-            {e.recurring && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>· recurring</span>}
-            {e.kind && e.kind !== "event" && !e.recurring &&
-              <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>· {e.kind}</span>}
-            <span className="spacer" />
-            <span className="muted" style={{ fontSize: 12 }}>{fmtWhen(e)}</span>
+      {!loading && view === "list" && <ListView byDay={byDay} today={today} onPick={(ev) => setSheet({ ev })} />}
+      {!loading && view === "month" && (
+        <MonthView cursor={cursor} byDay={byDay} today={today} sel={selDay}
+          onDay={(k) => setSelDay(k)} onAdd={(k) => setSheet({ addDate: k })}
+          onPick={(ev) => setSheet({ ev })} onOpenDay={(k) => { setCursor(parseYmd(k)); switchView("day"); }} />
+      )}
+      {!loading && view === "week" && (
+        <WeekView cursor={cursor} byDay={byDay} today={today}
+          onAdd={(k) => setSheet({ addDate: k })} onPick={(ev) => setSheet({ ev })} />
+      )}
+      {!loading && view === "day" && (
+        <DayView cursor={cursor} byDay={byDay} today={today} nowMin={nowMinutes(tz)}
+          onAdd={(k, t) => setSheet({ addDate: k, addTime: t })} onPick={(ev) => setSheet({ ev })} />
+      )}
+
+      {sheet && (sheet.ev
+        ? <EventSheet ev={sheet.ev} onClose={() => setSheet(null)}
+            onReschedule={doReschedule} onCancel={doCancel} />
+        : <QuickAddSheet date={sheet.addDate!} time={sheet.addTime} onClose={() => setSheet(null)} onAdd={doQuickAdd} />)}
+    </div>
+  );
+}
+
+// ---------- shared event row ----------
+function Row({ e, onPick, chevron = true }: { e: CalEvent; onPick: (e: CalEvent) => void; chevron?: boolean }) {
+  const tag = kindTag(e);
+  return (
+    <div className={"cal-row" + (e.status === "cancelled" ? " cancelled" : "")} role="button" tabIndex={0}
+      onClick={() => onPick(e)} onKeyDown={(ev) => { if (ev.key === "Enter") onPick(e); }}>
+      <span className="when">{timeLabel(e)}</span>
+      <span className={"ttl" + (e.kind === "deadline" ? " deadline" : "")}>{e.title}</span>
+      <span className="meta">
+        {e.recurring && <span title="recurring">↻</span>}
+        {tag && <span>{tag}</span>}
+        {chevron && <span style={{ color: "var(--text-dim)" }}>›</span>}
+      </span>
+    </div>
+  );
+}
+
+function groupHeader(k: string, today: string): string {
+  if (k === today) return "TODAY · " + fmtDate(k);
+  const t = parseYmd(today), d = parseYmd(k);
+  if (ymd(addDays(t, 1)) === k) return "TOMORROW · " + fmtDate(k);
+  return fmtDate(k).toUpperCase();
+}
+function fmtDate(k: string): string { const d = parseYmd(k); return `${DOW[d.getDay()]}, ${MON[d.getMonth()]} ${d.getDate()}`; }
+
+// ---------- List ----------
+function ListView({ byDay, today, onPick }: { byDay: Map<string, CalEvent[]>; today: string; onPick: (e: CalEvent) => void }) {
+  const days = [...byDay.keys()].sort();
+  if (days.length === 0) return <p className="muted">Nothing scheduled.</p>;
+  return <>{days.map((k) => (
+    <div key={k}>
+      <div className="cal-grp">{groupHeader(k, today)}</div>
+      <div className="cal-card">{byDay.get(k)!.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} />)}</div>
+    </div>
+  ))}</>;
+}
+
+// ---------- Month ----------
+function MonthView({ cursor, byDay, today, sel, onDay, onAdd, onPick, onOpenDay }: {
+  cursor: Date; byDay: Map<string, CalEvent[]>; today: string; sel: string;
+  onDay: (k: string) => void; onAdd: (k: string) => void; onPick: (e: CalEvent) => void; onOpenDay: (k: string) => void;
+}) {
+  const first = startOfWeek(startOfMonth(cursor));
+  const cells = Array.from({ length: 42 }, (_, i) => addDays(first, i));
+  const mo = cursor.getMonth();
+  const selEvents = byDay.get(sel) || [];
+  return <>
+    <div className="cal-wd">{WD.map((d, i) => <span key={i}>{d}</span>)}</div>
+    <div className="cal-month" role="grid">
+      {cells.map((d) => {
+        const k = ymd(d); const evs = byDay.get(k) || [];
+        const cls = "cal-cell" + (d.getMonth() !== mo ? " dim" : "") + (k === sel ? " sel" : "") + (k === today ? " today" : "");
+        return (
+          <div key={k} className={cls} role="gridcell"
+            aria-label={`${fmtDate(k)}, ${evs.length} event${evs.length === 1 ? "" : "s"}`}
+            onClick={() => (evs.length ? onDay(k) : onAdd(k))}>
+            <span className="num">{d.getDate()}</span>
+            <span className="cal-dots">
+              {evs.slice(0, 3).map((_, i) => <i key={i} />)}
+              {evs.length > 3 && <span className="more">+{evs.length - 3}</span>}
+            </span>
           </div>
-          {(e.status && e.status !== "confirmed") &&
-            <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{e.status}</p>}
-          <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            {e.note_slug &&
-              <Link className="ghost" style={{ padding: "6px 12px", borderRadius: 8 }} to={`/note/${e.note_slug}`}>
-                Open note
-              </Link>}
-            {tab === "upcoming" && !e.recurring && <>
-              <button className="ghost" onClick={() => reschedule(e)} disabled={busy}>Reschedule</button>
-              <button className="ghost" onClick={() => cancel(e)} disabled={busy}>Cancel</button>
-            </>}
-          </div>
+        );
+      })}
+    </div>
+    <div className="cal-grp">{fmtDate(sel).toUpperCase()}
+      <span className="open-day" onClick={() => onOpenDay(sel)}>Open day →</span></div>
+    {selEvents.length === 0
+      ? <p className="cal-empty" onClick={() => onAdd(sel)}>Nothing scheduled — tap to add.</p>
+      : <div className="cal-card">{selEvents.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} chevron={false} />)}</div>}
+  </>;
+}
+
+// ---------- Week (stacked day-sections) ----------
+function WeekView({ cursor, byDay, today, onAdd, onPick }: {
+  cursor: Date; byDay: Map<string, CalEvent[]>; today: string; onAdd: (k: string) => void; onPick: (e: CalEvent) => void;
+}) {
+  const start = startOfWeek(cursor);
+  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  return <>{days.map((d) => {
+    const k = ymd(d); const evs = byDay.get(k) || [];
+    return (
+      <div key={k}>
+        <div className={"cal-dhdr" + (k === today ? " today" : "")}>
+          <span>{DOW[d.getDay()].toUpperCase()} {MON[d.getMonth()]} {d.getDate()}{k === today ? " · today" : ""}</span>
+          <span className="rule" />
+        </div>
+        {evs.length === 0
+          ? <p className="cal-empty" onClick={() => onAdd(k)}>—</p>
+          : <div className="cal-card">{evs.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} />)}</div>}
+      </div>
+    );
+  })}</>;
+}
+
+// ---------- Day (time-axis grid) ----------
+interface Laid { e: CalEvent; top: number; height: number; col: number; cols: number; }
+function layoutDay(timed: CalEvent[], loMin: number): Laid[] {
+  // Greedy column packing within overlap clusters.
+  const items = timed.map((e) => {
+    const s = minutesOf(e.starts_at);
+    const en = e.ends_at && e.ends_at.includes("T") ? minutesOf(e.ends_at) : s + 60;
+    return { e, s, en: Math.max(en, s + 20) };
+  }).sort((a, b) => a.s - b.s || b.en - a.en);
+  const out: Laid[] = [];
+  let i = 0;
+  while (i < items.length) {
+    let j = i, clusterEnd = items[i].en;
+    while (j + 1 < items.length && items[j + 1].s < clusterEnd) { j++; clusterEnd = Math.max(clusterEnd, items[j].en); }
+    const cluster = items.slice(i, j + 1);
+    const colEnds: number[] = [];
+    const cols: number[] = [];
+    for (const it of cluster) {
+      let c = colEnds.findIndex((end) => end <= it.s);
+      if (c === -1) { c = colEnds.length; colEnds.push(it.en); } else colEnds[c] = it.en;
+      cols.push(c);
+    }
+    const ncols = colEnds.length;
+    cluster.forEach((it, idx) => out.push({
+      e: it.e, top: (it.s - loMin) / 60 * ROWH, height: Math.max((it.en - it.s) / 60 * ROWH - 2, 16),
+      col: cols[idx], cols: ncols,
+    }));
+    i = j + 1;
+  }
+  return out;
+}
+function DayView({ cursor, byDay, today, nowMin, onAdd, onPick }: {
+  cursor: Date; byDay: Map<string, CalEvent[]>; today: string; nowMin: number;
+  onAdd: (k: string, t?: string) => void; onPick: (e: CalEvent) => void;
+}) {
+  const k = ymd(cursor);
+  const all = byDay.get(k) || [];
+  const allDay = all.filter((e) => !isTimed(e));
+  const timed = all.filter(isTimed);
+  let lo = 7, hi = 19;
+  for (const e of timed) { lo = Math.min(lo, Math.floor(minutesOf(e.starts_at) / 60));
+    const en = e.ends_at && e.ends_at.includes("T") ? minutesOf(e.ends_at) : minutesOf(e.starts_at) + 60;
+    hi = Math.max(hi, Math.ceil(en / 60)); }
+  const hours = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+  const laid = layoutDay(timed, lo * 60);
+  const showNow = k === today && nowMin >= lo * 60 && nowMin <= hi * 60;
+  return <>
+    <div className="cal-allday">
+      <span className="lbl">ALL DAY</span>
+      <div className="lane">
+        {allDay.length === 0 ? <span className="muted" style={{ fontSize: 12 }}>—</span>
+          : allDay.map((e) => <span key={e.id + "-" + e.starts_at} className="cal-pill" onClick={() => onPick(e)}>
+              {e.recurring ? "↻ " : ""}{e.title}</span>)}
+      </div>
+    </div>
+    <div className="cal-tg">
+      {hours.map((h) => (
+        <div className="cal-hour" key={h}>
+          <span className="hl">{h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}</span>
+          <span className="slot" onClick={() => onAdd(k, `${pad(h)}:00`)} />
         </div>
       ))}
+      <div className="cal-blocks">
+        {laid.map((l) => (
+          <div key={l.e.id + "-" + l.e.starts_at} className="cal-block" onClick={() => onPick(l.e)}
+            style={{ top: l.top, height: l.height, left: `${(l.col / l.cols) * 100}%`, width: `calc(${100 / l.cols}% - 3px)` }}>
+            <div className="bt">{l.e.recurring ? "↻ " : ""}{l.e.title}</div>
+            <div className="bs">{timeLabel(l.e)}{kindTag(l.e) ? ` · ${kindTag(l.e)}` : ""}</div>
+          </div>
+        ))}
+      </div>
+      {showNow && <div className="cal-now" style={{ top: (nowMin - lo * 60) / 60 * ROWH }} />}
     </div>
+  </>;
+}
+
+// ---------- sheets ----------
+function Backdrop({ children, onClose }: { children: any; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop compact" onClick={onClose}>
+      <div className="modal-compact" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function EventSheet({ ev, onClose, onReschedule, onCancel }: {
+  ev: CalEvent; onClose: () => void;
+  onReschedule: (e: CalEvent, d: string, t?: string) => Promise<void>; onCancel: (e: CalEvent) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"view" | "resched">("view");
+  const [date, setDate] = useState((ev.starts_at || "").slice(0, 10));
+  const [time, setTime] = useState(isTimed(ev) ? ev.starts_at!.slice(11, 16) : "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function run(fn: () => Promise<void>) {
+    setBusy(true); setErr("");
+    try { await fn(); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
+  }
+  return (
+    <Backdrop onClose={onClose}>
+      <div className="modal-head"><span className="modal-title">{ev.title}</span></div>
+      <div className="modal-body">
+        <p className="muted" style={{ margin: "0 0 6px" }}>
+          {timeLabel(ev) === "all-day" ? fmtDate(dayKey(ev)) : `${fmtDate(dayKey(ev))} · ${timeLabel(ev)}`}
+          {ev.kind !== "event" ? ` · ${ev.kind}` : ""}{ev.recurring ? " · recurring" : ""}
+        </p>
+        {ev.location_label && <p className="muted" style={{ margin: "0 0 6px" }}>◇ {ev.location_label}</p>}
+        {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
+        {mode === "resched" && <>
+          <div className="cal-field"><label>NEW DATE</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+          <div className="cal-field"><label>NEW TIME (blank = all-day)</label>
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
+        </>}
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          {ev.note_slug && <Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link>}
+          {ev.recurring
+            ? <span className="cal-recnote">Recurring — edit the source note to change the pattern.</span>
+            : mode === "view"
+              ? <>
+                  <button className="ghost" onClick={() => setMode("resched")} disabled={busy}>Reschedule</button>
+                  <button className="ghost" style={{ color: "var(--danger)" }} disabled={busy}
+                    onClick={() => run(() => onCancel(ev))}>Cancel event</button>
+                </>
+              : <>
+                  <button className="primary" disabled={busy || !date}
+                    onClick={() => run(() => onReschedule(ev, date, time || undefined))}>Save</button>
+                  <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Back</button>
+                </>}
+        </div>
+        <p className="cal-recnote">Edits write a note — the calendar re-derives.</p>
+      </div>
+    </Backdrop>
+  );
+}
+
+function QuickAddSheet({ date, time, onClose, onAdd }: {
+  date: string; time?: string; onClose: () => void;
+  onAdd: (b: { title: string; date: string; time?: string; kind: string }) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [d, setD] = useState(date);
+  const [t, setT] = useState(time || "");
+  const [kind, setKind] = useState("event");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function add() {
+    if (!title.trim() || !d) return;
+    setBusy(true); setErr("");
+    try { await onAdd({ title: title.trim(), date: d, time: t || undefined, kind }); }
+    catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
+  }
+  return (
+    <Backdrop onClose={onClose}>
+      <div className="modal-head"><span className="modal-title">New event</span></div>
+      <div className="modal-body">
+        {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
+        <div className="cal-field"><label>TITLE</label>
+          <input autoFocus placeholder="What…" value={title} onChange={(e) => setTitle(e.target.value)} /></div>
+        <div className="row" style={{ gap: 8 }}>
+          <div className="cal-field" style={{ flex: 1 }}><label>DATE</label>
+            <input type="date" value={d} onChange={(e) => setD(e.target.value)} /></div>
+          <div className="cal-field" style={{ flex: 1 }}><label>TIME</label>
+            <input type="time" value={t} onChange={(e) => setT(e.target.value)} /></div>
+        </div>
+        <div className="cal-field"><label>KIND</label>
+          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+            {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select></div>
+        <button className="primary" disabled={busy || !title.trim() || !d} onClick={add}>Add</button>
+        <p className="cal-recnote">Writes a dated note — your notes stay the source of truth.</p>
+      </div>
+    </Backdrop>
   );
 }

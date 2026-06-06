@@ -137,7 +137,8 @@ def _clean_event(ev: dict) -> dict | None:
 
 # --- write path (deterministic; the core that tests exercise directly) -------
 
-def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extracted") -> dict:
+def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extracted",
+                  sweep: bool = True) -> dict:
     """Idempotently project a note's events into calendar_events. Re-running with the
     SAME logical events updates rows in place (a changed date MOVES, never duplicates);
     events dropped from the note are swept. Returns {upserted, retired}."""
@@ -182,6 +183,10 @@ def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extr
     # doomed identity_keys so we can also purge any supersession edges that referenced
     # them — otherwise a stale edge would survive and (because identity_key is stable)
     # silently re-hide the event if the same date is later re-added to the note.
+    # sweep=False for callers that write ONE logical row to a shared anchor note
+    # (recurrence promotion), where other rows of the same source must not be retired.
+    if not sweep:
+        return {"note_id": note_id, "upserted": upserted, "retired": 0}
     if seen:
         placeholders = ",".join("?" * len(seen))
         doomed = [r["identity_key"] for r in conn.execute(
@@ -590,3 +595,63 @@ def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
         (ts, ts, rid, max(1, min(int(limit), 1000))),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- recurrence promotion (Phase 2) -----------------------------------------
+
+_WEEKDAY_RR = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+
+def infer_rrule(dates: list[str]) -> str | None:
+    """Infer an iCal RRULE from a cluster's DISTINCT occurrence days. Only REGULAR
+    cadences promote (so irregular chatter doesn't become a fake recurring event):
+    WEEKLY (all gaps 6–8 days; BYDAY = the dominant weekday), DAILY (all gaps 1),
+    MONTHLY (all gaps 27–31). Needs >= 3 distinct days. Returns None when irregular."""
+    from datetime import date as _date
+    days = sorted({(str(d) or "")[:10] for d in (dates or []) if str(d).strip()})
+    days = [d for d in days if len(d) == 10]
+    if len(days) < 3:
+        return None
+    try:
+        ds = [_date.fromisoformat(d) for d in days]
+    except ValueError:
+        return None
+    gaps = [(ds[i + 1] - ds[i]).days for i in range(len(ds) - 1)]
+    if not gaps:
+        return None
+    lo, hi = min(gaps), max(gaps)
+    if lo >= 1 and hi <= 1:
+        return "FREQ=DAILY"
+    if lo >= 6 and hi <= 8:
+        # Dominant weekday across the occurrences.
+        counts: dict[int, int] = {}
+        for d in ds:
+            counts[d.weekday()] = counts.get(d.weekday(), 0) + 1
+        wd = max(counts, key=counts.get)
+        return f"FREQ=WEEKLY;BYDAY={_WEEKDAY_RR[wd]}"
+    if lo >= 27 and hi <= 31:
+        return "FREQ=MONTHLY"
+    return None
+
+
+def emit_recurrence(conn, cluster: dict) -> dict:
+    """Promote ONE recurring chatter cluster into a kind='recurring' calendar row.
+    Anchored to the EARLIEST member note (stable provenance ⇒ idempotent across a
+    growing cluster). No-op unless a regular cadence is inferable. Does not sweep
+    (other workflow rows on the anchor note must survive)."""
+    entries = [e for e in (cluster or {}).get("entries", []) if e.get("id") is not None]
+    if not entries:
+        return {"emitted": 0}
+    entries = sorted(entries, key=lambda e: (e.get("created_at") or ""))
+    earliest = entries[0]
+    days = [(e.get("created_at") or "")[:10] for e in entries]
+    rrule = infer_rrule(days)
+    if not rrule:
+        return {"emitted": 0, "reason": "irregular cadence"}
+    first_day = (earliest.get("created_at") or "")[:10]
+    title = (earliest.get("title") or "Recurring pattern")[:200]
+    upsert_events(conn, int(earliest["id"]), [{
+        "title": title, "kind": "recurring", "starts_at": first_day,
+        "all_day": True, "rrule": rrule,
+    }], source="workflow", sweep=False)
+    return {"emitted": 1, "rrule": rrule, "title": title, "anchor_note_id": earliest["id"]}

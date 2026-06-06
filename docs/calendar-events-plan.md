@@ -417,3 +417,40 @@ draft schema in §1.1** — those corrections are authoritative for Phase 1.
    structured supersession + the "what replaced X" SELECT, rrule expansion,
    the views' filters, full `extract_events` run with a stubbed LLM, and the
    `_PRIMITIVE_META` pin (kept green).
+
+---
+
+## 8. Phase 2 — Research tools + recurrence promotion (plan)
+
+### Part A — read-only Research-mode tools (mirror the lab tools in `architect.py`)
+
+- Register `list_upcoming` and `event_history` in `_MODE_TOOLS` for `research`,
+  `assisted`, `analyze`, and add both to `_RETRIEVAL_TOOLS` (they are fresh
+  retrievals over current data — the research-mode grounding guard).
+- `_TOOL_SCHEMAS`: `list_upcoming {within_days?:int=90, kind?:enum, limit?:int=20}`;
+  `event_history {since?:str, until?:str, limit?:int=20}`.
+- `_tool_list_upcoming` queries `v_upcoming` (all-day-aware window by `within_days`,
+  optional `kind`, undated TODOs last), `_tool_event_history` queries
+  `v_event_history` windowed. Both format each row with its source `[[note_title]]`
+  for citation and wrap output in `_untrusted(...)` like the lab tools.
+- Dispatch branches in `_run_tool`; descriptions in `prompts.yaml` `tools.*`
+  (read-only, cite the note, report only what's on file).
+
+### Part B — recurrence promotion → a `kind='recurring'` calendar row
+
+- `calendar.infer_rrule(dates) -> str | None`: from the sorted DISTINCT ISO days of
+  a cluster, infer a cadence — WEEKLY (median gap 6–8; `BYDAY`=dominant weekday),
+  DAILY (gap 1), MONTHLY (gap 27–31); irregular ⇒ `None` (so noise isn't promoted).
+- `calendar.emit_recurrence(conn, cluster)`: anchor to the EARLIEST member note
+  (STABLE provenance ⇒ idempotent across growing clusters), infer the rrule from
+  member `created_at` days; if a cadence is found, upsert a `kind='recurring'`,
+  `source='workflow'` row (`starts_at`=first day, title=earliest member's title).
+- Primitive `promote_recurrence_calendar(clusters)`; a step in
+  `actions/promote_recurrences.yaml` (additive; gated by `config.emit_calendar`,
+  default true). Emitting on the staging path is fine — the row is a re-derivable
+  sidecar, and the cadence filter keeps it from surfacing one-off chatter.
+
+### Resolved design points
+- Multi-note pattern provenance → **earliest member note** (stable ⇒ idempotent).
+- Title (no LLM) → the earliest member note's title.
+- Only regular cadences are promoted (irregular ⇒ no row), bounding noise.

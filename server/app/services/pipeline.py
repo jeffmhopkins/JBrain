@@ -1284,6 +1284,17 @@ def _p_propose_supersessions(ctx, notes):
     return cal.propose_supersessions(ctx.conn, list(notes or []), workflow_id=ctx.workflow_id)
 
 
+def _p_promote_recurrence_calendar(ctx, clusters):
+    """Promote regular-cadence recurring chatter clusters into kind='recurring' calendar
+    rows (anchored to the earliest member note, with an inferred rrule). Irregular
+    clusters are skipped. Returns {emitted}."""
+    from . import calendar as cal
+    emitted = 0
+    for c in clusters or []:
+        emitted += cal.emit_recurrence(ctx.conn, c).get("emitted", 0)
+    return {"emitted": emitted}
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1362,6 +1373,7 @@ _PRIMITIVES = {
     "upsert_calendar_events": _p_upsert_calendar_events,
     "consolidate_calendar": _p_consolidate_calendar,
     "propose_supersessions": _p_propose_supersessions,
+    "promote_recurrence_calendar": _p_promote_recurrence_calendar,
 }
 
 
@@ -1426,6 +1438,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                              "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
     "propose_supersessions": {"summary": "Free-prose (LLM) supersession: match reschedule/cancel notes without a marker — high confidence applies, low posts a review.",
                               "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
+    "promote_recurrence_calendar": {"summary": "Promote regular-cadence recurring chatter clusters into kind='recurring' calendar rows with an inferred rrule.",
+                                    "inputs": [{"name": "clusters", "type": "list", "required": True}], "output": "object"},
     "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",
                         "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",

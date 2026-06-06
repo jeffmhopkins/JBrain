@@ -505,3 +505,126 @@ def test_extract_events_action_noop_without_dates(conn, monkeypatch):
     pipeline.run_pipeline(conn, recipe, {}, None, None)
     assert called["n"] == 0
     assert conn.execute("SELECT COUNT(*) c FROM calendar_events").fetchone()["c"] == 0
+
+
+# ============================================================================
+# Phase 2 — Research tools + recurrence promotion
+# ============================================================================
+
+def test_infer_rrule_cadences():
+    from app.services import calendar as cal
+    assert cal.infer_rrule(["2099-01-01", "2099-01-08", "2099-01-15", "2099-01-22"]) == "FREQ=WEEKLY;BYDAY=TH"
+    assert cal.infer_rrule(["2099-01-01", "2099-01-02", "2099-01-03"]) == "FREQ=DAILY"
+    assert cal.infer_rrule(["2099-01-15", "2099-02-15", "2099-03-15"]) == "FREQ=MONTHLY"
+    assert cal.infer_rrule(["2099-01-01", "2099-01-05", "2099-01-20"]) is None   # irregular
+    assert cal.infer_rrule(["2099-01-01", "2099-01-08"]) is None                 # < 3 days
+    assert cal.infer_rrule([]) is None
+
+
+def test_emit_recurrence_creates_row_idempotent(conn):
+    from app.services import calendar as cal
+    ids = []
+    for i, day in enumerate(["2099-01-01", "2099-01-08", "2099-01-15"]):
+        nid = _mknote(conn, f"Gym day {i}")
+        conn.execute("UPDATE notes SET created_at=? WHERE id=?", (f"{day} 07:00:00", nid))
+        ids.append({"id": nid, "title": "Morning gym", "created_at": f"{day} 07:00:00"})
+    cluster = {"entries": ids, "distinct_days": 3}
+    out = cal.emit_recurrence(conn, cluster)
+    assert out["emitted"] == 1 and out["rrule"].startswith("FREQ=WEEKLY")
+    anchor = ids[0]["id"]
+    row = conn.execute("SELECT kind, rrule, source FROM calendar_events WHERE note_id=?", (anchor,)).fetchone()
+    assert row["kind"] == "recurring" and row["source"] == "workflow"
+    # Idempotent: re-emit keeps a single row on the anchor.
+    cal.emit_recurrence(conn, cluster)
+    assert conn.execute("SELECT COUNT(*) c FROM calendar_events WHERE note_id=?", (anchor,)).fetchone()["c"] == 1
+
+
+def test_emit_recurrence_skips_irregular(conn):
+    from app.services import calendar as cal
+    ids = []
+    for i, day in enumerate(["2099-01-01", "2099-01-05", "2099-01-20"]):
+        nid = _mknote(conn, f"Headache {i}")
+        ids.append({"id": nid, "title": "headache again", "created_at": f"{day} 09:00:00"})
+    out = cal.emit_recurrence(conn, {"entries": ids})
+    assert out["emitted"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM calendar_events").fetchone()["c"] == 0
+
+
+def test_emit_recurrence_two_clusters_same_anchor_dont_clobber(conn):
+    """sweep=False: two recurring rows whose earliest member is the SAME note coexist."""
+    from app.services import calendar as cal
+    base = _mknote(conn, "Busy Monday")
+    conn.execute("UPDATE notes SET created_at='2099-01-04 07:00:00' WHERE id=?", (base,))
+    others = []
+    for day in ["2099-01-11", "2099-01-18"]:
+        o = _mknote(conn, f"f{day}")
+        others.append(o)
+    def cluster(title):
+        ents = [{"id": base, "title": title, "created_at": "2099-01-04 07:00:00"}]
+        for k, o in enumerate(others):
+            ents.append({"id": o, "title": title, "created_at": f"{['2099-01-11','2099-01-18'][k]} 07:00:00"})
+        return {"entries": ents}
+    cal.emit_recurrence(conn, cluster("Gym"))
+    cal.emit_recurrence(conn, cluster("Standup"))
+    rows = {r["title"] for r in conn.execute("SELECT title FROM calendar_events WHERE note_id=?", (base,))}
+    assert rows == {"Gym", "Standup"}
+
+
+# --- Research-mode tools ----------------------------------------------------
+
+def test_calendar_tools_registered_in_research_mode():
+    from app.services import architect
+    names = architect._mode_tool_names("research")
+    assert "list_upcoming" in names and "event_history" in names
+    assert "list_upcoming" in architect._RETRIEVAL_TOOLS
+
+
+def test_tool_list_upcoming_and_event_history(conn):
+    from app.services import calendar as cal
+    from app.services import architect
+    nid = _mknote(conn, "Schedule")
+    cal.upsert_events(conn, nid, [
+        {"title": "Dentist", "kind": "appointment", "starts_at": "2099-06-14"},
+        {"title": "Old thing", "starts_at": "2000-01-01"},
+    ])
+    up = architect._tool_list_upcoming(conn, within_days=400000)
+    assert "Dentist" in up and "Old thing" not in up and "Schedule" in up   # cites source note
+    hist = architect._tool_event_history(conn)
+    assert "Old thing" in hist and "Dentist" not in hist
+
+
+def test_list_upcoming_expands_recurring_to_next_occurrence(conn):
+    """A recurring series (stored starts_at is its first, past occurrence) surfaces in
+    list_upcoming via rrule expansion to the NEXT occurrence."""
+    from app.services import calendar as cal
+    from app.services import architect
+    nid = _mknote(conn, "Gym")
+    # A weekly series anchored in the past; the next occurrence is in the future.
+    cal.upsert_events(conn, nid, [{"title": "Morning gym", "kind": "recurring",
+                                   "starts_at": "2020-01-06", "all_day": True,
+                                   "rrule": "FREQ=WEEKLY;BYDAY=MO"}], source="workflow", sweep=False)
+    out = architect._tool_list_upcoming(conn, within_days=30)
+    assert "Morning gym" in out and "[recurring]" in out
+
+
+def test_tool_list_upcoming_kind_filter_and_empty(conn):
+    from app.services import calendar as cal
+    from app.services import architect
+    nid = _mknote(conn, "Sched2")
+    cal.upsert_events(conn, nid, [
+        {"title": "Pay rent", "kind": "deadline", "starts_at": "2099-02-01"},
+        {"title": "Lunch", "kind": "appointment", "starts_at": "2099-02-02"},
+    ])
+    only = architect._tool_list_upcoming(conn, within_days=400000, kind="deadline")
+    assert "Pay rent" in only and "Lunch" not in only
+    assert "No upcoming" in architect._tool_list_upcoming(conn, within_days=1)   # nothing within a day
+
+
+def test_run_tool_mode_boundary_blocks_calendar_in_unknown_mode(conn):
+    from app.services import architect
+    # Research mode advertises it -> dispatches.
+    out, _ = architect._run_tool(conn, None, "list_upcoming", {}, mode="research")
+    assert "calendar" in out.lower() or "No upcoming" in out
+    # A mode that doesn't advertise it is refused (fail-closed boundary).
+    blocked, _ = architect._run_tool(conn, None, "list_upcoming", {}, mode="entry")
+    assert "not available" in blocked.lower()

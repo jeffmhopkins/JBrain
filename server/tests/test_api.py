@@ -2851,8 +2851,8 @@ def test_wiki_guides(client):
         rr = g.validate_structure(owner_title, body)
         assert not rr["ok"] and any("PII firewall" in e for e in rr["errors"]), owner_title
     # A Finance page MAY link out to its People/Things/Reference subjects (it has no forbid list).
-    fin = ("# Chase\nChecking account for [[kb/People/Jeff Hopkins]], pays the "
-           "[[kb/Things/Vehicles/F-150]]; background [[kb/Reference/Finance/Checking]].[^s1]\n\n"
+    fin = ("# Chase\nChecking account for [[kb/People/Jeff Hopkins]] at [[kb/Groups/Acme Bank]], pays "
+           "the [[kb/Things/Vehicles/F-150]]; background [[kb/Reference/Finance/Checking]].[^s1]\n\n"
            "## Balances\nTracked here.[^s1]\n\n## References\n[^s1]: [[notes/statement]] — 2026-06-03\n")
     r = g.validate_structure("kb/Finance/Accounts/Chase", fin)
     assert r["ok"] and not r["errors"]
@@ -2889,6 +2889,11 @@ def test_wiki_guides(client):
     titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
     assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles and "kb/Finance/_Guide" in titles
     assert all(g.is_protected(t) for t in titles)
+
+    # The org-map index renders a Finance domain section once a Finance article exists.
+    from app.services.wiki_build import build_index_md
+    idx = build_index_md([{"title": "kb/Finance/Accounts/Chase", "domain": "Finance", "scope": ""}])
+    assert "## Finance" in idx and "[[kb/Finance/Accounts/Chase]]" in idx
 
 
 def test_health_domain_firewall(client):

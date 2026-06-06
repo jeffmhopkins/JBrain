@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { get, post, u } from "../api";
 import { useAuth } from "../App";
 import { enablePush, pushSupported, pushSupportReason } from "../push";
-import { useGeo } from "../hooks";
+import { useGeo, useTts } from "../hooks";
 import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
 import OwnerSetting from "../components/OwnerSetting";
@@ -35,6 +35,9 @@ export default function SystemPage() {
   const [notifMsg, setNotifMsg] = useState("");
   const [notifBusy, setNotifBusy] = useState(false);
   const [notifDelay, setNotifDelay] = useState(0);   // seconds before the test fires
+  // Voice preview: speak a sample line via the device's built-in (on-device) TTS,
+  // so you can hear and choose a voice. No server, no streaming — pure Web Speech API.
+  const tts = useTts();
 
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
   useEffect(() => { get("/api/system/stats").then(setStats).catch(() => {}); }, []);
@@ -130,6 +133,15 @@ export default function SystemPage() {
     } finally { setNotifBusy(false); }
   }
 
+  // Speak a sample line with the chosen voice + speed. Tapping while talking stops it.
+  const VOICE_SAMPLE =
+    "Hi, I’m JBrain. This is what my voice sounds like at this speed. " +
+    "I can read your notes back to you, answer questions, and confirm changes out loud.";
+  function previewVoice() {
+    if (tts.speaking) tts.stop();
+    else tts.speak(VOICE_SAMPLE);
+  }
+
   const fmtBytes = (n: number) => {
     if (!n) return "0 B";
     const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0, v = n;
@@ -195,12 +207,6 @@ export default function SystemPage() {
         {up === "idle" && msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
       </div>
 
-      <OwnerSetting />
-
-      <ModelPicker />
-
-      <MediaSettings />
-
       {stats && (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>Maintenance</h3>
@@ -238,6 +244,12 @@ export default function SystemPage() {
         </div>
       )}
 
+      <OwnerSetting />
+
+      <ModelPicker />
+
+      <MediaSettings />
+
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Location stamping</h3>
         <p className="muted" style={{ fontSize: 13 }}>
@@ -268,6 +280,47 @@ export default function SystemPage() {
           </select>
         </div>
         {notifMsg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{notifMsg}</p>}
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Voice</h3>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Pick a voice and speed, then hear a sample read aloud. Speech is generated on
+          this device — nothing is sent to a server. Your choice is saved on this device.
+        </p>
+        {!tts.supported ? (
+          <p className="muted" style={{ fontSize: 13 }}>This device’s browser doesn’t support speech.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13 }}>Voice</span>
+              <select value={tts.voiceURI} onChange={(e) => tts.setVoice(e.target.value)}
+                      style={{ fontSize: 13, padding: "6px 8px" }}>
+                <option value="">Default voice</option>
+                {tts.voices.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} ({v.lang}){v.default ? " — default" : ""}
+                  </option>
+                ))}
+              </select>
+              {tts.voices.length === 0 && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  No installed voices found yet — your device may load them after a moment.
+                </span>
+              )}
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13 }}>Speed · {tts.rate.toFixed(1)}×</span>
+              <input type="range" min={0.5} max={2} step={0.1} value={tts.rate}
+                     onChange={(e) => tts.setRate(Number(e.target.value))} />
+            </label>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="ghost" onClick={previewVoice}>
+                {tts.speaking ? "Stop" : "Hear sample"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card">

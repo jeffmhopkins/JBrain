@@ -27,9 +27,12 @@ def approve_lookup(lookup_id: int, body: ApproveIn | None = None):
     if row is None:
         raise HTTPException(status_code=404, detail="Lookup not found")
     found = False
-    if row["tool"] == "medical_reference":
+    if row["tool"] in ("medical_reference", "drug_reference"):
         from ..services import medref
-        found = bool(medref.health_topic(conn, row["term"]))   # owner-approved external fetch (edited term)
+        # The owner-approved external fetch (edited term) — caches the result so the assistant's next
+        # call returns it. A drug resolves via RxNorm→MedlinePlus Connect; a topic via health-topics.
+        found = bool(medref.drug_topic(conn, row["term"]) if row["tool"] == "drug_reference"
+                     else medref.health_topic(conn, row["term"]))
     return {"ok": True, "found": found, "term": row["term"]}
 
 

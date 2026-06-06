@@ -2045,9 +2045,15 @@ def test_medref_medications(client, monkeypatch):
     todos = article_talk.open_for(conn, "kb/Reference/Medicine/Medications/Metformine XR")
     assert any("approximately matches" in t["body"] for t in todos)
 
-    # Read-only assistant tool (research mode).
-    txt, _ = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
-    assert "medlineplus.gov" in txt and "rxcui 6809" in txt
+    # Read-only assistant tool (research mode) — now GATED: the first call only PROPOSES (sends nothing),
+    # and the page comes back only after the owner approves the exact name.
+    from app.services import external_lookups
+    txt, ev = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev and ev["type"] == "external_proposal" and ev["tool"] == "drug_reference"
+    assert "PROPOSED" in txt and "medlineplus.gov" not in txt
+    external_lookups.decide(conn, ev["id"], approve=True)
+    txt2, ev2 = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev2 is None and "medlineplus.gov" in txt2 and "rxcui 6809" in txt2
 
 
 def test_talk_dedup_cap_and_demote(client):

@@ -1090,17 +1090,55 @@ def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
     return _untrusted("address", f"Suspected matches for “{query.strip()}” (OpenStreetMap):\n" + "\n".join(lines))
 
 
-def _tool_drug_reference(conn, name: str) -> str:
-    """The MedlinePlus consumer drug page for a medication name, resolved via RxNorm (NLM,
-    public domain). Read-only; a link to an authoritative source, not medical advice."""
-    from . import medref
-    res = medref.resolve(conn, name)
+def _drug_topic_name(title: str, fallback: str) -> str:
+    """The clean medication topic to capture/curate from a MedlinePlus drug page title — strip a
+    trailing ': MedlinePlus …' suffix (e.g. 'Metformin: MedlinePlus Drug Information' -> 'Metformin').
+    Falls back to the approved lookup name if the title is empty."""
+    leaf = (title or "").split(":")[0].strip()
+    return leaf or (fallback or "").strip()
+
+
+def _tool_drug_reference(conn, conversation_id, name: str):
+    """EXTERNAL medication reference: the MedlinePlus consumer drug page for a name, resolved via RxNorm
+    (NLM, public domain). GATED — it sends NOTHING externally (no RxNav / MedlinePlus Connect call) until
+    the owner approves the EXACT name, so no PII leaks in a drug query. An un-approved name is PROPOSED
+    (surfaced as a confirm chip); once approved the lookup runs and an EXACT match records a Medications
+    TOPIC-ONLY usage signal for the kb/Reference loop. Returns (result_text, event_or_None)."""
+    from . import medref, reference_candidates, external_lookups
+    term = (name or "").strip()
+    if not term:
+        return _untrusted("drug-ref", "No medication name given for a reference lookup."), None
+    state = external_lookups.check_or_propose(conn, "drug_reference", term)
+    if state["status"] == "denied":
+        return _untrusted("drug-ref", f"The owner declined an external MedlinePlus drug lookup for “{term}”. "
+                          "Answer from their own reference library and notes only; do not propose it again."), None
+    if state["status"] == "pending":
+        # Nothing has been sent. Surface the EXACT name to the owner as a confirm chip; tell the model to stop.
+        event = {"type": "external_proposal", "id": state["id"], "tool": "drug_reference", "term": term}
+        return (_untrusted("drug-ref",
+                f"EXTERNAL LOOKUP PROPOSED: “{term}” → MedlinePlus drug info (via RxNorm). NOTHING has been sent "
+                "externally. Tell the owner you'd like their approval to look up this exact medication, then STOP "
+                "— do not call more external tools this turn. Their own reference library and notes are still available."),
+                event)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED name (what the owner
+    # approved — possibly edited from the model's phrasing), not the raw argument.
+    lookup_name = state.get("term") or term
+    res = medref.drug_topic(conn, lookup_name)
     if not res:
-        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{(name or '').strip()}”.")
+        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{lookup_name}”."), None
     tail = "" if res["match"] == "exact" else f" (approximate match to “{res.get('candidate')}”, score {res.get('score')})"
-    return _untrusted("drug-ref",
-                      f"MedlinePlus drug information for {name.strip()}{tail}: {res['title']} — {res['url']} "
-                      f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
+    if res["match"] == "exact":
+        # Capture ONLY the resolved public drug topic + source — never the owner's phrasing/data. An
+        # approximate match is too uncertain to curate, so it isn't captured (still returned as a link).
+        try:
+            reference_candidates.record(conn, topic=_drug_topic_name(res.get("title", ""), lookup_name),
+                                        source="rxnorm", url=res["url"], snippet="", category="Medications")
+        except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+            pass
+    return (_untrusted("drug-ref",
+                       f"MedlinePlus drug information for {lookup_name}{tail}: {res['title']} — {res['url']} "
+                       f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice]."),
+            None)
 
 
 def _tool_medical_reference(conn, conversation_id, query: str):
@@ -2008,7 +2046,7 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "medical_reference":
         return _tool_medical_reference(conn, conversation_id, args["query"])
     if name == "drug_reference":
-        return _tool_drug_reference(conn, args["name"]), None
+        return _tool_drug_reference(conn, conversation_id, args["name"])
     if name == "save_place":
         return _tool_save_place(conn, args["name"]), None
     if name == "list_recent_notes":

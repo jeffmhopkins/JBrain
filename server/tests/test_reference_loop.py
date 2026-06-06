@@ -204,3 +204,59 @@ def test_medical_reference_owner_edits_term_on_approval(conn, monkeypatch):
     # and a direct call with the edited topic is also already approved (no fresh proposal)
     _, ev3 = architect._tool_medical_reference(conn, None, "thrombotic thrombocytopenic purpura")
     assert ev3 is None
+
+
+# --- drug_reference: the same gate + Medications capture, resolved via RxNorm ---------
+
+def test_drug_reference_gated_and_captures_medication(conn, monkeypatch):
+    from app.services import architect, external_lookups
+    # The exact-match drug resolution (RxNorm → MedlinePlus Connect), host-pinned.
+    monkeypatch.setattr(medref, "resolve", _boom)                  # must NOT resolve while pending
+    txt, ev = architect._tool_drug_reference(conn, None, "metformin 500mg twice a day")
+    assert ev and ev["type"] == "external_proposal" and ev["tool"] == "drug_reference"
+    assert "PROPOSED" in txt
+    assert conn.execute("SELECT COUNT(*) c FROM reference_candidates").fetchone()["c"] == 0   # nothing captured
+    # owner trims the dose to a clean name and approves
+    monkeypatch.setattr(medref, "resolve",
+                        lambda c, n: {"match": "exact", "rxcui": "6809", "title": "Metformin: MedlinePlus Drug Information",
+                                      "url": "https://medlineplus.gov/druginfo/meds/a696005.html"})
+    external_lookups.decide(conn, ev["id"], approve=True, term="metformin")
+    txt2, ev2 = architect._tool_drug_reference(conn, None, "metformin 500mg twice a day")
+    assert ev2 is None and "medlineplus.gov/druginfo" in txt2 and "rxcui 6809" in txt2
+    row = conn.execute("SELECT * FROM reference_candidates").fetchone()
+    assert row["topic"] == "Metformin" and row["category"] == "Medications" and row["source"] == "rxnorm"
+    # topic-only: no dose / owner phrasing leaked into the candidate
+    blob = " ".join(str(row[k]) for k in ("topic", "url", "snippet", "category", "source"))
+    assert "500" not in blob and "twice" not in blob
+
+
+def test_drug_reference_approximate_match_not_captured(conn, monkeypatch):
+    from app.services import architect, external_lookups
+    _, ev = architect._tool_drug_reference(conn, None, "metformine")
+    monkeypatch.setattr(medref, "resolve",
+                        lambda c, n: {"match": "approx", "rxcui": "6809", "candidate": "metformin", "score": 90.0,
+                                      "title": "Metformin", "url": "https://medlineplus.gov/druginfo/meds/a696005.html"})
+    external_lookups.decide(conn, ev["id"], approve=True)
+    txt, _ = architect._tool_drug_reference(conn, None, "metformine")
+    assert "approximate match" in txt                              # surfaced as a link…
+    assert conn.execute("SELECT COUNT(*) c FROM reference_candidates").fetchone()["c"] == 0   # …but not curated
+
+
+def test_promote_medication_candidate_refetches_via_rxnorm(conn, monkeypatch):
+    # A Medications candidate must re-fetch the drug page via resolve()/drug_topic, NOT health_topic
+    # (which would find an unrelated health topic and cite the wrong URL).
+    from app.services import architect
+    monkeypatch.setattr(medref, "health_topic", _boom)            # promote must not use the topics search here
+    monkeypatch.setattr(medref, "resolve",
+                        lambda c, n: {"match": "exact", "rxcui": "6809", "title": "Metformin",
+                                      "url": "https://medlineplus.gov/druginfo/meds/a696005.html"})
+    conn.execute("INSERT INTO reference_candidates (topic,norm_key,source,url,snippet,category,hits) "
+                 "VALUES ('Metformin', ?, 'rxnorm', 'https://medlineplus.gov/druginfo/meds/a696005.html', '', 'Medications', 3)",
+                 (rc._norm("Metformin"),))
+    conn.commit()
+    out = reference_promote.run(conn, min_hits=2)
+    assert out["promoted"] == 1
+    act = conn.execute("SELECT payload_json FROM staging_actions WHERE status='pending'").fetchone()
+    payload = json.loads(act["payload_json"])
+    assert payload["title"] == "kb/Reference/Medicine/Medications/Metformin"
+    assert "medlineplus.gov/druginfo" in payload["content"] and "medication you looked up" in payload["content"]

@@ -1,12 +1,32 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { get, post } from "../api";
 
-interface Talk { id: number; kind: string; body: string; author: string; created_at: string; resolved_at: string | null; resolution?: string | null; }
+interface Talk {
+  id: number; kind: string; body: string; author: string; created_at: string;
+  resolved_at: string | null; resolution?: string | null;
+  is_correction?: number; source_note_slug?: string | null;
+}
 
 const KIND_ICON: Record<string, string> = {
   decision: "🧠", conflict: "⚠️", question: "❓", todo: "☑️", directive: "📌", note: "📝",
+  correction: "✅",
 };
-const ADD_KINDS = [["note", "Note"], ["directive", "Directive"], ["question", "Question"], ["todo", "TODO"]];
+const ADD_KINDS = [
+  ["note", "Note"], ["directive", "Directive"], ["correction", "Correction"],
+  ["question", "Question"], ["todo", "TODO"],
+];
+
+// A promoted correction's badge: links to the dated truth note it spawned, or shows the
+// note was deleted (FK set null) — either way the talk row stays as a record.
+function CorrectionBadge({ t }: { t: Talk }) {
+  if (!t.is_correction) return null;
+  const style = { marginLeft: 6, fontSize: 10, background: "#d4edda", color: "#155724",
+                  borderRadius: 3, padding: "1px 5px", whiteSpace: "nowrap" as const };
+  return t.source_note_slug
+    ? <Link to={`/note/${t.source_note_slug}`} style={style} title="Promoted to a truth-layer note">✓ truth note →</Link>
+    : <span style={{ ...style, background: "#eee", color: "#777" }} title="The promoted note was deleted">✓ truth (note deleted)</span>;
+}
 
 // The article "talk" panel — Wikipedia-Talk-style memory the KB maintenance loop reads
 // and writes. Shows the AI's decisions/conflicts/questions and lets you add a directive
@@ -29,7 +49,7 @@ export default function TalkPanel({ slug }: { slug: string }) {
   const done = items.filter((t) => t.resolved_at);
   // Keep the actionable items (owner directives, conflicts/questions/todos) up top; fold
   // the inert informational 'note'/'decision' logs behind a summary so they never crowd them.
-  const PRIORITY = new Set(["directive", "conflict", "question", "todo"]);
+  const PRIORITY = new Set(["correction", "directive", "conflict", "question", "todo"]);
   const primary = open.filter((t) => PRIORITY.has(t.kind) || t.author === "user");
   const minor = open.filter((t) => !PRIORITY.has(t.kind) && t.author !== "user");
 
@@ -39,13 +59,16 @@ export default function TalkPanel({ slug }: { slug: string }) {
       <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
         The AI's reasoning for this article. Open items are worked through the Review inbox and
         the maintenance pass — they clear when the issue is actually handled, not by a click.
-        Add a directive to steer the next pass.
+        Add a directive to steer the next pass, or a <strong>Correction</strong> to fix a fact —
+        a correction becomes a real note (source of truth) and rewrites the article next pass.
       </p>
 
       {primary.map((t) => (
         <div key={t.id} className="talk-item">
           <span title={t.kind}>{KIND_ICON[t.kind] || "•"}</span>
-          <span className="talk-text">{t.body}{t.author === "user" && <em className="muted"> — you</em>}</span>
+          <span className="talk-text">
+            {t.body}{t.author === "user" && <em className="muted"> — you</em>}<CorrectionBadge t={t} />
+          </span>
         </div>
       ))}
       {open.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No open items.</p>}

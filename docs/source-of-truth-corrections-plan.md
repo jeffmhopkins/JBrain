@@ -1,9 +1,17 @@
 # Source-of-Truth Corrections (Talk → Truth Layer) — Plan
 
-**Status:** Draft for owner review
+**Status:** Phase 1 implemented on `claude/tokbox-source-truth-analysis-ZjoNq` (Phase 2 pending)
 **Author:** Knowledge Architect (AI), best-of-N synthesis + adversarial review
 **Example article:** `kb/.../TokBox` (the feature is general; TokBox is the motivating case)
 **Schema version:** 44 → 45
+
+> **Implementation status (Phase 1 — shipped on this branch):** the deterministic
+> **"Correction" kind**, promotion to a dated truth note, the `is_correction`/`source_note_id`
+> columns (migration 45), `maintain_batch` routing via `source_note_id`, the `wiki_maintain`
+> "authoritative correction" prompt rules, rename/merge talk rekey, TalkPanel badge + kind, and
+> tests (`server/tests/test_corrections.py`, 5 passing). Open items C/D/E took their recommended
+> defaults: **C** entity healing → Phase 2; **D** full-rebuild routing → eventually-consistent;
+> **E** → dedup identical open corrections. **Phase 2 (durable entity healing) is not yet built.**
 
 ---
 

@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 
 def init_db() -> None:
@@ -638,6 +638,18 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # the startup warm task (run_pending_rechunk) — re-embedding the whole corpus must
         # not block boot. No DDL: chunk tables are unchanged, only their contents.
         set_meta(conn, "rechunk:pending", "1")
+
+    if current < 45:
+        # Source-of-truth corrections: an owner 'correction' talk item is promoted to a
+        # real dated entry note (the truth layer). is_correction marks the talk row;
+        # source_note_id links it to the promoted note (SET NULL on note delete so the
+        # talk record survives). schema.sql carries the identical columns + index.
+        _add_column(conn, "article_talk", "is_correction", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "article_talk", "source_note_id",
+                    "INTEGER REFERENCES notes(id) ON DELETE SET NULL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
+            "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

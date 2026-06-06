@@ -798,6 +798,9 @@ actions:
 
     Work each OPEN ITEM:
     - directive — a standing instruction from the owner; APPLY it (it stays OPEN until applied).
+    - correction — an owner SOURCE-OF-TRUTH fact fix (its note is in NEW/CHANGED SOURCES);
+      APPLY it as AUTHORITATIVE, overriding any conflicting claim, then resolve "applied"
+      (see CORRECTION NOTES below).
     - conflict  — sources disagree; reconcile only if the sources now allow, else leave it open.
     - question  — answer it in the article if the sources support an answer, else leave it open.
     - todo      — do it if the sources support it, else leave it open.
@@ -821,6 +824,13 @@ actions:
       with the current one and cite the newer source — never leave the stale value and the
       new one both standing as if current. Prefer the most recent source on conflict; keep
       a superseded value only if the article is explicitly a timeline/history.
+    - CORRECTION NOTES (source of truth): a source note whose first line begins
+      "CORRECTION (source of truth):" — and any OPEN ITEM tagged "SOURCE OF TRUTH,
+      authoritative" — is an owner-verified fact. Treat it as AUTHORITATIVE: apply it and
+      let it OVERRIDE any conflicting claim in the article or in other sources, even older
+      ones. Replace every instance of the wrong value with the corrected one (never leave
+      both), and cite the correction note where the corrected fact appears. Resolve the
+      matching open item with outcome "applied".
     - If a new source finally supplies the anchor for a value the article froze as a number
       (e.g. an age, now that a birthdate is known), convert it to the live @t[...] token.
 

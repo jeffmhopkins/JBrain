@@ -3142,6 +3142,41 @@ def test_rechunk_migration_flag_and_run(client, monkeypatch):
     assert embeddings.run_pending_rechunk(conn) is None         # idempotent — no-op next boot
 
 
+def test_wiki_sources_relevance_selects_buried_fact(client, monkeypatch):
+    """KB source-gathering: a subject-relevant fact buried PAST the 2000-char head of a long
+    source note reaches the writer via relevance selection (the chunking payoff), where a
+    blind head slice misses it. A no-query caller keeps the old head-slice behavior, and the
+    selector is a safety-net — it only deviates when a buried passage out-scores the head."""
+    import hashlib
+    from app.db import get_conn
+    from app.services import embeddings, notes as ns, wiki_build
+    dim = embeddings.EMBEDDING_DIM
+
+    def fake(t):
+        v = [0.0] * dim
+        for tok in str(t).lower().split():
+            v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+        return v
+    monkeypatch.setattr(embeddings, "embed", fake)
+    monkeypatch.setattr(embeddings, "embed_many", lambda ts: [fake(t) for t in ts])
+
+    conn = get_conn()
+    filler = "parking catering badges schedule minutes agenda " * 80    # ~3800 chars, off-subject
+    buried = "marathon long run twenty miles at race pace building endurance"
+    body = filler + "\n\n" + buried
+    nid = ns.upsert_note(conn, "notes/x", body)
+    # The client fixture stubs the upsert_note_embedding wrapper, so build the note's chunk
+    # vectors directly (this is what relevance selection reads).
+    embeddings.upsert_note_chunk_embeddings(conn, nid, f"notes/x\n\n{body}")
+    conn.commit()
+
+    assert "marathon" not in body[:wiki_build.SOURCE_BUDGET]            # the fact is past the head
+    srcs = wiki_build._load_sources(conn, [nid], query="Marathon Training")
+    assert "marathon long run" in srcs[0]["content"].lower()            # relevance pulled it in
+    # Legacy / no-query path is unchanged: still a blind head slice that misses the fact.
+    assert "marathon" not in wiki_build._load_sources(conn, [nid])[0]["content"].lower()
+
+
 def test_geotrail_math(client):
     """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
     from app.db import get_conn

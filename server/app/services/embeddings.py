@@ -151,6 +151,62 @@ def run_pending_rechunk(conn) -> int | None:
     return n
 
 
+def relevant_note_excerpt(conn, note_id: int, query: str, budget_chars: int) -> str | None:
+    """A long note's SUBJECT-RELEVANT passages for feeding a writer (KB synthesis), instead
+    of a blind head slice that can miss a fact buried past the cut. The note's stored chunks
+    are scored against `query` (local embeddings — NO LLM call); the lead is kept for framing
+    and the most on-subject buried passages are folded in, in document order, within
+    `budget_chars`.
+
+    A deliberate safety-net, not an override: returns None — caller falls back to a head
+    slice — unless some buried chunk is MORE on-subject than the note's own head. That keeps
+    the head's behaviour wherever it was already capturing the relevant content, so the change
+    can only help the off-topic-head case it targets (and can't fire on a vocabulary mismatch
+    where nothing buried stands out)."""
+    import numpy as np
+    from .attachments import CHUNK_MAX_CHARS  # lazy: avoid an import cycle at module load
+    rows = conn.execute(
+        "SELECT c.chunk_index, c.text, v.embedding FROM note_chunks c "
+        "JOIN vec_note_chunks v ON v.chunk_id = c.id "
+        "WHERE c.note_id = ? ORDER BY c.chunk_index",
+        (note_id,),
+    ).fetchall()
+    if len(rows) <= 1:                       # 0/1 chunk: a head slice already is the whole note
+        return None
+    try:
+        qv = np.asarray(embed(query), dtype=np.float32)
+        qv = qv / (float(np.linalg.norm(qv)) or 1.0)
+        mat = np.stack([np.frombuffer(r["embedding"], dtype="<f4") for r in rows])
+        norms = np.linalg.norm(mat, axis=1)
+        norms[norms == 0] = 1.0
+        sims = (mat / norms[:, None]) @ qv
+    except Exception:                        # embeddings unavailable → caller head-slices
+        return None
+    lead_sim = float(sims[0])                # chunk_index is contiguous from 0, so row 0 is the lead
+    buried = sorted((i for i in range(1, len(rows)) if float(sims[i]) > lead_sim),
+                    key=lambda i: -float(sims[i]))
+    if not buried:                           # head is already the most on-subject part → no change
+        return None
+    # Reserve enough budget that the single most-relevant buried chunk always fits beside the
+    # framing, so we never end up showing LESS than a head slice would.
+    lead_cap = max(budget_chars - CHUNK_MAX_CHARS, budget_chars // 3)
+    lead_text = rows[0]["text"][:lead_cap]
+    used, keep = len(lead_text), [0]
+    for i in buried:
+        if used + len(rows[i]["text"]) > budget_chars:
+            break
+        keep.append(i)
+        used += len(rows[i]["text"])
+    parts, prev_idx = [], None
+    for i in sorted(keep):
+        idx = rows[i]["chunk_index"]
+        if prev_idx is not None and idx > prev_idx + 1:
+            parts.append("[…]")             # mark elided spans so the writer knows there's a gap
+        parts.append(lead_text if i == 0 else rows[i]["text"])
+        prev_idx = idx
+    return "\n\n".join(parts)
+
+
 def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, chunks: list[str]) -> None:
     """Store one vector per chunk for an attachment (multi-vector)."""
     delete_attachment_embeddings(conn, attachment_id)

@@ -191,7 +191,10 @@ def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
     return {"articles": grounded, "index_md": build_index_md(grounded), "dropped": dropped}
 
 
-def _load_sources(conn, ids: list[int]) -> list[dict]:
+SOURCE_BUDGET = 2000   # chars of note body fed to the writer per source note
+
+
+def _load_sources(conn, ids: list[int], query: str = "") -> list[dict]:
     ids = [int(i) for i in ids if _isint(i)]
     if not ids:
         return []
@@ -202,12 +205,23 @@ def _load_sources(conn, ids: list[int]) -> list[dict]:
         ids,
     ).fetchall()
     from . import attachments as att_svc
+    from . import embeddings
     out = []
     for r in rows:
         # Pass RAW content (do NOT expand @t[...] tokens): the writer must see the live
         # tokens so it can carry them through into the evergreen article — expanding
         # here would freeze "Jeff is @t[age:1986-03-15]" into a literal that rots.
-        content = (r["content_md"] or "")[:2000]
+        body = r["content_md"] or ""
+        # For a note longer than the budget, a blind head slice can miss a subject-relevant
+        # fact buried past the cut. When we have a subject (`query`), pick the relevant
+        # passages from the note's chunks instead — local embeddings, no extra LLM call. The
+        # helper is a safety-net: it returns None (→ head slice) unless a buried passage is
+        # genuinely more on-subject than the head, so short/already-relevant notes are unchanged.
+        content = None
+        if query and len(body) > SOURCE_BUDGET:
+            content = embeddings.relevant_note_excerpt(conn, r["id"], query, SOURCE_BUDGET)
+        if content is None:
+            content = body[:SOURCE_BUDGET]
         # Fold in attachment text (own bounded budget, after the body): image summaries,
         # audio/video transcripts, and document (PDF/text/office) text — all keep feeding
         # synthesis now that they live beside the note rather than in its body.
@@ -274,7 +288,9 @@ def write_one(conn, art: dict, instructions: str | None = None,
     title = str(art.get("title") or "").strip()
     domain = art.get("domain") or wiki_guides.domain_for_title(title)
     scope = str(art.get("scope") or "")
-    srcs = _load_sources(conn, art.get("sources") or [])
+    # Subject query for relevance-selecting long sources: the article's leaf name + its scope.
+    subject = f"{title.rsplit('/', 1)[-1]} {scope}".strip()
+    srcs = _load_sources(conn, art.get("sources") or [], query=subject)
     base = {"title": title, "domain": domain, "content_md": "", "ok": False,
             "errors": [], "warnings": [], "stub": False, "talk": []}
     if not srcs:
@@ -501,8 +517,10 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (t,)).fetchone()
         if r:
             ids.append(r["id"])
-    srcs = _load_sources(conn, ids)
-    new_srcs = _load_sources(conn, extra_source_ids)
+    # Subject query for relevance-selecting long sources: the article's leaf name + its lead.
+    subject = f"{article_title.rsplit('/', 1)[-1]} {content.splitlines()[0].lstrip('# ') if content.strip() else ''}".strip()
+    srcs = _load_sources(conn, ids, query=subject)
+    new_srcs = _load_sources(conn, extra_source_ids, query=subject)
     items_text = "\n".join(f"[{it['id']}] ({it['kind']}, by {it['author']}) {it['body']}"
                            for it in open_items) or "(none)"
     new_block = _sources_text(new_srcs) or "(none)"

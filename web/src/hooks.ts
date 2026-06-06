@@ -101,6 +101,70 @@ export function useNowTick(active: boolean, intervalMs = 1000): number {
   return now;
 }
 
+// On-device text-to-speech via the Web Speech API. Voice + speed persist per device
+// (localStorage), so the choice you make in Settings is reused everywhere speech is
+// used later (e.g. reading Assisted replies aloud). No server, no network.
+const TTS_VOICE_KEY = "jbrain_tts_voice";   // stored by voiceURI (stable id)
+const TTS_RATE_KEY = "jbrain_tts_rate";
+
+/** Manage TTS voices + speed and speak/stop on demand. Returns null-safe state when
+ *  the browser has no speechSynthesis so callers can disable their UI. */
+export function useTts() {
+  const supported = typeof window !== "undefined" && "speechSynthesis" in window;
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voiceURI, setVoiceURI] = useState<string>(() => localStorage.getItem(TTS_VOICE_KEY) || "");
+  const [rate, setRateState] = useState<number>(() => {
+    const r = parseFloat(localStorage.getItem(TTS_RATE_KEY) || "1");
+    return Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1;
+  });
+  const [speaking, setSpeaking] = useState(false);
+
+  // getVoices() is async on most browsers — it's empty until `voiceschanged` fires.
+  useEffect(() => {
+    if (!supported) return;
+    const synth = window.speechSynthesis;
+    const load = () => setVoices(synth.getVoices());
+    load();
+    synth.addEventListener("voiceschanged", load);
+    return () => synth.removeEventListener("voiceschanged", load);
+  }, [supported]);
+
+  // Stop any in-flight speech when the consuming component unmounts.
+  useEffect(() => () => { if (supported) window.speechSynthesis.cancel(); }, [supported]);
+
+  function setVoice(uri: string) {
+    setVoiceURI(uri);
+    localStorage.setItem(TTS_VOICE_KEY, uri);
+  }
+  function setRate(r: number) {
+    const clamped = Math.min(2, Math.max(0.5, r));
+    setRateState(clamped);
+    localStorage.setItem(TTS_RATE_KEY, String(clamped));
+  }
+  function stop() {
+    if (!supported) return;
+    window.speechSynthesis.cancel();
+    setSpeaking(false);
+  }
+  /** Speak `text` with the saved voice + speed. No-ops (returns false) if unsupported. */
+  function speak(text: string): boolean {
+    if (!supported || !text.trim()) return false;
+    const synth = window.speechSynthesis;
+    synth.cancel();   // clear any stale/queued utterance first
+    const utter = new SpeechSynthesisUtterance(text);
+    const v = voices.find((x) => x.voiceURI === voiceURI);
+    if (v) utter.voice = v;
+    utter.rate = rate;
+    utter.onend = () => setSpeaking(false);
+    utter.onerror = () => setSpeaking(false);
+    setSpeaking(true);
+    synth.speak(utter);
+    return true;
+  }
+
+  return { supported, voices, voiceURI, setVoice, rate, setRate, speaking, speak, stop };
+}
+
 /** Track online/offline so the UI can show a banner and gate writes. */
 export function useOnline(): boolean {
   const [online, setOnline] = useState(() => navigator.onLine);

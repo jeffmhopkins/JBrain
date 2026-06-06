@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, require_capture_writer
 from ..db import get_conn
-from ..services import clock, diffing
+from ..services import clock, diffing, wikilinks
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[CurrentUser])
@@ -401,6 +401,40 @@ def diff_versions(slug: str, from_id: int, to_id: int):
         "after": b["content_md"],
         "hunks": diffing.line_diff(a["content_md"], b["content_md"]),
     }
+
+
+@router.get("/links/audit")
+def links_audit():
+    """List [[Target|Display]] links whose shortened label names a different article than
+    the target (high-confidence only) — the interactive Wiki link-label audit."""
+    return {"findings": wikilinks.audit_display_mismatches(get_conn())}
+
+
+class LinkFixIn(BaseModel):
+    note_id: int
+    target: str
+    display: str
+
+
+@router.post("/links/audit/fix")
+def links_audit_fix(body: LinkFixIn):
+    """Correct one flagged link (re-derives the right label from the live target)."""
+    conn = get_conn()
+    changed = wikilinks.fix_note_link(conn, body.note_id, body.target, body.display)
+    conn.commit()
+    return {"fixed": bool(changed)}
+
+
+@router.post("/links/audit/fix-all")
+def links_audit_fix_all():
+    """Correct every currently-flagged link. Returns how many were changed."""
+    conn = get_conn()
+    fixed = 0
+    for f in wikilinks.audit_display_mismatches(conn):
+        if wikilinks.fix_note_link(conn, f["source_id"], f["target"], f["display"]):
+            fixed += 1
+    conn.commit()
+    return {"fixed": fixed}
 
 
 @router.post("/{slug}/restore")

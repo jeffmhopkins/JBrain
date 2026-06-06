@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { get } from "../api";
+import { fireEvent, get } from "../api";
 import { Icon } from "../components/Icon";
+import LinkAuditPanel from "../components/LinkAuditPanel";
 
 interface NoteRow { id: number; title: string; slug: string; kind: string; updated_at: string; }
 type Filter = "" | "entry" | "kb" | "list" | "place";
@@ -50,6 +51,10 @@ export default function Wiki() {
     const qs = params.toString();
     get<NoteRow[]>(`/api/notes${qs ? `?${qs}` : ""}`).then(setNotes).catch(() => {});
   }, [q, kind]);
+
+  // Signal a "wiki viewed" event so subscribed event-workflows can run (server-debounced).
+  // The generic hook for on-view automations; the link-label flag itself is read-only above.
+  useEffect(() => { fireEvent("wiki_viewed").catch(() => {}); }, []);
 
   const tree = useMemo(() => buildTree(notes), [notes]);
 
@@ -149,6 +154,7 @@ export default function Wiki() {
         <input className="tool-filter" placeholder="Filter notes by title…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <div className="tool-body">
+        <LinkAuditPanel />
         {top.length === 0 && <p className="muted">Nothing here yet.</p>}
         {renderNodes(top, 0, "")}
         <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>

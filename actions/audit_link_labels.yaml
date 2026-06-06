@@ -1,0 +1,38 @@
+# Declarative action: WIKI-LINK LABEL AUDIT + TIDY.
+#
+# Drops [[Target|Display]] aliases so links render the article's clean short name. Two cases:
+#   • mismatch — the label names a DIFFERENT article than the target (most often a stale
+#     alias kept verbatim across a rename/merge, e.g. [[kb/People/Summer E. Hopkins|Jeff
+#     Hopkins]]); high-confidence (resolves to a different same-folder article, or is a
+#     former title of the target).
+#   • verbose — the label just repeats the article's path/name (e.g. |People/Jeff or |Jeff
+#     Hopkins), clutter we tidy. A genuine, different shortening/nickname (|Dad, |Jeff for
+#     "Jeff Hopkins") is left alone.
+# With fix on (default) it drops the alias (versioned, undoable) and logs each in the
+# article's talk; a Review card summarises what changed. No LLM — a clean run is a no-op.
+#
+# config keys:
+#   limit  — max links to fix per run (default 500)
+#   fix    — auto-correct mismatches (default true; off = flag-only)
+#   review — post a review card summarising the run (default true)
+type: audit_link_labels
+category: Knowledge base
+config:
+  - { key: limit, label: Max links per run, type: number, default: 500 }
+  - { key: fix, label: Auto-fix mismatched labels, type: boolean, default: true }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  - id: audit
+    do: audit_link_labels
+    with: { limit: "{{ config.limit | default(500) }}", fix: "{{ config.fix != false }}" }
+
+  - stop_when: "{{ not audit.changes }}"
+    stop_message: "scanned the wiki — every shortened link label matches its target"
+
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ audit.verb }} {{ audit.count }} wiki-link label(s)"
+      message: |
+        {% for x in audit.changes %}• {{ x.source_leaf }}: "{{ x.display }}" → "{{ x.desired }}" (links to {{ x.target_leaf }})
+        {% endfor %}

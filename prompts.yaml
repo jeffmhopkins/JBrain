@@ -912,6 +912,27 @@ actions:
 
     CANDIDATE REFERENCE ARTICLES (title: lead):
     {candidates}
+  entity_same_person: |
+    You are de-duplicating a personal knowledge base. Decide whether two name records refer
+    to the SAME real individual, or to DIFFERENT people (e.g. relatives, a parent and child,
+    spouses, or unrelated namesakes) who merely share a surname.
+
+    Treat as the SAME person when one name is plausibly a nickname, initial, maiden/married
+    name, misspelling, or fuller/shorter form of the other AND their context (who they appear
+    alongside) is consistent. Treat as DIFFERENT when the given names are distinct real names
+    with no nickname relationship, or the contexts clearly indicate two individuals. When the
+    evidence is weak or ambiguous, prefer DIFFERENT (a wrong merge is worse than a missed one).
+
+    Person A: {name_a}
+    A also known as: {aka_a}
+    A often appears with: {partners_a}
+
+    Person B: {name_b}
+    B also known as: {aka_b}
+    B often appears with: {partners_b}
+
+    Output ONLY a single JSON object and nothing else:
+    {"same": true|false, "confidence": 0.0-1.0, "why": "one short clause"}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

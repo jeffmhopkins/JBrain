@@ -258,6 +258,12 @@ def _p_surface_aliases(ctx):
     return wiki_build.surface_aliases(ctx.conn)
 
 
+def _p_propose_person_merges(ctx, limit=40, min_confidence=0.7):
+    """Post 'same person?' review cards for likely-duplicate people (propose-only)."""
+    from . import entity_index
+    return entity_index.propose_person_merges(ctx.conn, limit=limit, min_confidence=min_confidence)
+
+
 def _p_wiki_maintain(ctx, limit=20):
     """Component 3: address open talk items on existing articles against their sources."""
     from . import wiki_build
@@ -1214,6 +1220,7 @@ _PRIMITIVES = {
     "split_article": _p_split_article,
     "link_owner": _p_link_owner,
     "surface_aliases": _p_surface_aliases,
+    "propose_person_merges": _p_propose_person_merges,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
@@ -1346,6 +1353,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                    "inputs": [], "output": "dict"},
     "surface_aliases": {"summary": "Add/update the 'Also known as' line on person articles with aliases.",
                         "inputs": [], "output": "dict"},
+    "propose_person_merges": {"summary": "Post 'same person?' review cards for likely-duplicate people (propose-only).",
+                              "inputs": [{"name": "limit", "type": "int"},
+                                         {"name": "min_confidence", "type": "float"}], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",

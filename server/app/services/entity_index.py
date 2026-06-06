@@ -520,3 +520,129 @@ def write_disambiguation_pages(conn) -> int:
         n += 1
     conn.commit()
     return n
+
+
+# ---- Phase 5: LLM "same person?" proposals (propose-only; never auto-merge) ---------------
+
+def _open_proposed_pairs(conn) -> set:
+    """Unordered {norm_a, norm_b} pairs that already have a PENDING entity_merge review card —
+    so the proposer never re-nags about a pair awaiting the owner's decision."""
+    out: set = set()
+    for r in conn.execute(
+        "SELECT payload_json FROM review_items WHERE kind='entity_merge' AND status='pending'"
+    ).fetchall():
+        try:
+            p = json.loads(r["payload_json"] or "{}")
+            a = (p.get("source") or {}).get("norm")
+            b = (p.get("into") or {}).get("norm")
+            if a and b:
+                out.add(frozenset({a, b}))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _adjudicate_same_person(conn, a: dict, b: dict) -> dict:
+    """Ask the model whether two same-surname person entities are the SAME individual (vs
+    relatives/namesakes), given their aliases + frequent co-occurring partners. Returns
+    {same: bool, confidence: float, why: str}; defensive on parse failure."""
+    from . import llm, prompts
+    aka_a = [x["alias_display"] for x in conn.execute(
+        "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (a["id"],)).fetchall()]
+    aka_b = [x["alias_display"] for x in conn.execute(
+        "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (b["id"],)).fetchall()]
+    prompt = (prompts.get("actions.entity_same_person", "")
+              .replace("{name_a}", a["canonical_name"])
+              .replace("{aka_a}", ", ".join(aka_a) or "(none)")
+              .replace("{partners_a}", ", ".join(_partners(conn, a["id"], 6)) or "(none)")
+              .replace("{name_b}", b["canonical_name"])
+              .replace("{aka_b}", ", ".join(aka_b) or "(none)")
+              .replace("{partners_b}", ", ".join(_partners(conn, b["id"], 6)) or "(none)"))
+    try:
+        raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=300)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+        return {"same": bool(data.get("same")),
+                "confidence": float(data.get("confidence") or 0),
+                "why": str(data.get("why") or "")[:300]}
+    except Exception:  # noqa: BLE001
+        return {"same": False, "confidence": 0.0, "why": ""}
+
+
+def propose_person_merges(conn, limit: int = 40, min_confidence: float = 0.7) -> dict:
+    """Surface likely-duplicate PEOPLE for the owner to confirm — never auto-merging. Candidates
+    are pairs of distinct person entities that SHARE A SURNAME (their last distinctive token) and
+    aren't already merged, split, or awaiting review; the model then adjudicates same-person vs
+    relative/namesake, and only high-confidence 'same' verdicts post an 'entity_merge' Review card
+    (approve -> a durable merge decision; reject -> a durable split). Returns counts."""
+    from . import entity_decisions, llm, reviews
+    if not llm.has_credentials():
+        return {"candidates": 0, "proposed": 0, "reason": "no LLM credentials"}
+    merges = entity_decisions.load_merges(conn, "person")
+    splits = entity_decisions.load_splits(conn, "person")
+    open_pairs = _open_proposed_pairs(conn)
+
+    ents = []
+    for e in conn.execute(
+        "SELECT id, canonical_name, normalized_key, note_count, article_title "
+        "FROM entities WHERE type='person'").fetchall():
+        toks = _tokens(e["canonical_name"])
+        surnames = [t for t in toks if _distinctive(t)]
+        if surnames:
+            ents.append({**dict(e), "tokens": toks, "surname": surnames[-1]})
+
+    by_surname: dict = defaultdict(list)
+    for e in ents:
+        by_surname[e["surname"]].append(e)
+
+    def canon_of(n):
+        return merges.get(n, n)
+
+    # Bound generation, not just adjudication: skip pathologically large same-surname buckets
+    # (a 200-person "Smith" family is O(N^2) noise the model can't usefully disambiguate) and
+    # stop once we have a healthy multiple of `limit` candidate pairs in hand.
+    cap = max(int(limit) * 5, 50)
+    candidates, seen = [], set()
+    for group in by_surname.values():
+        if len(candidates) >= cap:
+            break
+        if len(group) > 40:                                    # too large to be a real "is this the same person?"
+            continue
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                a, b = group[i], group[j]
+                na, nb = a["normalized_key"], b["normalized_key"]
+                if na == nb or canon_of(na) == canon_of(nb):
+                    continue                                   # already the same/merged entity
+                pair = frozenset({na, nb})
+                if pair in splits or pair in open_pairs or pair in seen:
+                    continue
+                seen.add(pair)
+                candidates.append((a, b))
+
+    proposed = 0
+    for a, b in candidates[:limit]:
+        v = _adjudicate_same_person(conn, a, b)
+        if not (v["same"] and v["confidence"] >= min_confidence):
+            continue
+        # Canonical = the more descriptive (more tokens), then more-mentioned, name.
+        into, src = ((a, b) if (len(a["tokens"]), a["note_count"]) >= (len(b["tokens"]), b["note_count"])
+                     else (b, a))
+        payload = {"type": "person",
+                   "source": {"id": src["id"], "norm": src["normalized_key"],
+                              "display": src["canonical_name"], "article_title": src["article_title"]},
+                   "into": {"id": into["id"], "norm": into["normalized_key"],
+                            "display": into["canonical_name"], "article_title": into["article_title"]},
+                   "why": v["why"]}
+        link_slug = None
+        if into["article_title"]:
+            r = conn.execute("SELECT slug FROM notes WHERE title=? AND deleted_at IS NULL",
+                             (into["article_title"],)).fetchone()
+            link_slug = r["slug"] if r else None
+        reviews.create_review_item(
+            conn, None, "Same person?",
+            f"Merge “{src['canonical_name']}” into “{into['canonical_name']}”? {v['why']}",
+            link_slug, kind="entity_merge", payload_json=json.dumps(payload))
+        proposed += 1
+    conn.commit()
+    return {"candidates": len(candidates), "proposed": proposed}

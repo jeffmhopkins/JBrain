@@ -153,7 +153,6 @@ export default function Chat() {
   const [uploadLabel, setUploadLabel] = useState("");   // "(2/3) photo.jpg" while a multi-file batch uploads
   const [streaming, setStreaming] = useState(false);
   const [status, setStatus] = useState("");   // live "thinking…/searching…" status while streaming
-  const [ttsDiag, setTtsDiag] = useState("");  // TEMP: on-device TTS diagnostic readout
   const [busy, setBusy] = useState(false);
   const [stagingTick, setStagingTick] = useState(0);
   // Transient chips for actions auto-applied during the current stream; at stream
@@ -417,9 +416,11 @@ export default function Chat() {
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
+    // Both chat modes stream a spoken-able prose reply; entry/medical don't.
+    const speakable = mode === "assisted" || mode === "research";
     // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
     // later (from an async callback) isn't blocked by mobile autoplay policies.
-    if (mode === "assisted" && ttsOn.enabled) tts.prime();
+    if (speakable && ttsOn.enabled) tts.prime();
 
     // --- Optimistic UI FIRST (synchronous), async work second. Everything the user should
     // see the instant they hit Send happens here, BEFORE we await anything: the composer
@@ -550,20 +551,8 @@ export default function Chat() {
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
       }, coords, mode === "research" ? "research" : "assisted");
-      // Read the finished reply aloud when the top-bar toggle is on (Assisted only).
-      if (mode === "assisted") {
-        const cleaned = speechText(bufRef.current);
-        let spoke: boolean | string = false;
-        if (!errored && ttsOn.enabled) {
-          try { spoke = tts.speak(cleaned); }
-          catch (e: any) { spoke = "throw:" + (e?.message || String(e)); }
-        }
-        setTtsDiag(
-          `TTS sup=${tts.supported} on=${ttsOn.enabled} err=${errored} ` +
-          `raw=${bufRef.current.length} clean=${cleaned.length} ` +
-          `voices=${tts.voices.length} rate=${tts.rate} spoke=${spoke}`,
-        );
-      }
+      // Read the finished reply aloud when the top-bar toggle is on (Assisted + Research).
+      if (speakable && !errored && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
       // text to completion before we swap in the authoritative server copy (which is
       // identical), so the reload is a visual no-op rather than a jarring jump.
@@ -692,12 +681,6 @@ export default function Chat() {
 
       {/* Compose box (rounded), shared across modes. */}
       <div className="composer-box">
-        {ttsDiag && (
-          <div className="attach-chip" style={{ fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}
-               onClick={() => setTtsDiag("")} title="Tap to dismiss">
-            {ttsDiag}
-          </div>
-        )}
         {pendingFiles.map((f, i) => (
           <div key={`${f.name}-${i}`} className="attach-chip">
             <Icon name="clip" size={14} /> {f.name}

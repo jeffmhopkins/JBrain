@@ -416,6 +416,9 @@ export default function Chat() {
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
+    // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
+    // later (from an async callback) isn't blocked by mobile autoplay policies.
+    if (mode === "assisted" && ttsOn.enabled) tts.prime();
 
     // --- Optimistic UI FIRST (synchronous), async work second. Everything the user should
     // see the instant they hit Send happens here, BEFORE we await anything: the composer

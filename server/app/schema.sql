@@ -898,3 +898,106 @@ CREATE VIEW IF NOT EXISTS v_encounter_timeline AS
   UNION ALL
   SELECT encounter_id, authored_at, 'document', COALESCE(title, doc_type), doc_type, note_id
     FROM clinical_documents WHERE authored_at IS NOT NULL;
+
+-- ============================================================================
+-- Calendar (temporal projection): a queryable sidecar of dated commitments
+-- (appointments, deadlines, reminders, recurring patterns) DERIVED from note
+-- bodies — never authored here. The note stays the source of truth (exactly like
+-- note_analysis / lab_results); every row carries note_id provenance and is
+-- re-derivable, so the calendar UI (later phases) writes NOTES and this sidecar is
+-- re-derived, never edited directly. identity_key is a stable dedup hash
+-- (note_id|normalized_title|kind|seq — deliberately NOT the date, so editing a
+-- note's date MOVES the row in place instead of duplicating it). Kept identical to
+-- _CALENDAR_SCHEMA_SQL in db.py.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id        INTEGER REFERENCES notes(id) ON DELETE CASCADE,        -- provenance
+  attachment_id  INTEGER REFERENCES attachments(id) ON DELETE SET NULL, -- if from a file
+  title          TEXT NOT NULL,                  -- "Dentist — Dr. Lee", "Mortgage due"
+  detail         TEXT,                           -- free-text context
+  kind           TEXT NOT NULL DEFAULT 'event'
+                   CHECK (kind IN ('appointment','deadline','reminder','event','recurring')),
+  starts_at      TEXT,                           -- ISO date ('YYYY-MM-DD' all-day) or datetime; NULL = undated
+  ends_at        TEXT,
+  all_day        INTEGER NOT NULL DEFAULT 0,     -- explicit bit (don't infer from string length)
+  tz             TEXT,                            -- IANA tz the local time was authored in (display-only)
+  rrule          TEXT,                            -- iCal RRULE (RFC 5545) for recurrence; NULL = one-off
+  rdate_json     TEXT NOT NULL DEFAULT '[]',      -- explicit extra dates
+  exdate_json    TEXT NOT NULL DEFAULT '[]',      -- recurrence exceptions (skipped instances)
+  location_label TEXT, lat REAL, lon REAL,        -- optional; can resolve to a place
+  place_id       INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  person_id      INTEGER REFERENCES people(id) ON DELETE SET NULL,      -- whose event (reuse people)
+  entity_id      INTEGER REFERENCES entities(id) ON DELETE SET NULL,    -- the doctor/org/etc.
+  status         TEXT NOT NULL DEFAULT 'confirmed'
+                   CHECK (status IN ('confirmed','tentative','cancelled','done')),
+  seq            INTEGER NOT NULL DEFAULT 0,      -- disambiguates same-title/kind events in ONE note (doc order)
+  identity_key   TEXT,                            -- dedup hash; every derived row has one
+  source         TEXT NOT NULL DEFAULT 'extracted', -- how the source note line was authored
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calevents_identity
+  ON calendar_events(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_calevents_starts ON calendar_events(starts_at);
+CREATE INDEX IF NOT EXISTS idx_calevents_note   ON calendar_events(note_id);
+CREATE INDEX IF NOT EXISTS idx_calevents_kind   ON calendar_events(kind, starts_at);
+
+-- Supersession edges, keyed by the STABLE identity_key (NOT the churning row id), so
+-- "this event was rescheduled/cancelled by a later note" survives re-extraction of the
+-- ORIGINAL note (whose body still mentions the event, and whose row is rewritten in
+-- place each run). old_identity_key = the retired event; new_identity_key = its
+-- replacement (NULL = pure cancellation). confidence 'structured' = a [[wiki-link]]+date
+-- marker; 'llm' = a fuzzy free-prose match (staged for review, never auto-applied).
+CREATE TABLE IF NOT EXISTS calendar_supersedes (
+  old_identity_key      TEXT NOT NULL,
+  new_identity_key      TEXT,                       -- NULL = cancellation (no replacement)
+  superseded_by_note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  confidence            TEXT NOT NULL DEFAULT 'structured',  -- 'structured' | 'llm'
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (old_identity_key, superseded_by_note_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cal_supersedes_old ON calendar_supersedes(old_identity_key);
+
+-- Per-workflow reminder dedup so an upcoming/recurring event fires once per
+-- instance, not once per run (mirrors location_fired). marker = identity_key|instance_date.
+-- Created now (Phase 1); populated by the reminder workflow in Phase 3.
+CREATE TABLE IF NOT EXISTS calendar_fired (
+  workflow_id INTEGER NOT NULL,
+  kind        TEXT NOT NULL,            -- 'upcoming' | 'recurring' | ...
+  marker      TEXT NOT NULL,            -- identity_key|instance_date (per-instance)
+  fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (workflow_id, kind, marker)
+);
+
+-- Read VIEWS: the low-overhead query API (SQL console / Research-mode query_sql).
+-- v_upcoming = live, future events; v_event_history = past or terminal, newest first.
+CREATE VIEW IF NOT EXISTS v_upcoming AS
+  SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day,
+         e.status, e.location_label, e.rrule, e.person_id, e.note_id,
+         p.name AS person, n.title AS note_title, n.slug AS note_slug
+  FROM calendar_events e
+  LEFT JOIN people p ON p.id = e.person_id
+  LEFT JOIN notes  n ON n.id = e.note_id
+  WHERE e.status NOT IN ('cancelled','done')
+    AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s
+                    WHERE s.old_identity_key = e.identity_key)
+    AND (e.starts_at IS NULL
+         OR (e.all_day = 1 AND date(e.starts_at) >= date('now'))
+         OR (e.all_day = 0 AND e.starts_at >= datetime('now')))
+  ORDER BY e.starts_at;
+
+CREATE VIEW IF NOT EXISTS v_event_history AS
+  SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day,
+         e.status, e.location_label, e.rrule,
+         e.person_id, e.note_id, p.name AS person, n.title AS note_title, n.slug AS note_slug
+  FROM calendar_events e
+  LEFT JOIN people p ON p.id = e.person_id
+  LEFT JOIN notes  n ON n.id = e.note_id
+  WHERE e.status IN ('cancelled','done')
+     OR EXISTS (SELECT 1 FROM calendar_supersedes s
+                WHERE s.old_identity_key = e.identity_key)
+     OR (e.starts_at IS NOT NULL
+         AND ((e.all_day = 1 AND date(e.starts_at) < date('now'))
+              OR (e.all_day = 0 AND e.starts_at < datetime('now'))))
+  ORDER BY e.starts_at DESC;

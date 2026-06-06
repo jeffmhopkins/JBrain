@@ -9,6 +9,7 @@ fastembed==0.5.1
 PyYAML==6.0.2
 Jinja2==3.1.6          # action-engine templating (pipeline.py): SandboxedEnvironment
 croniter==3.0.3
+python-dateutil==2.9.0.post0   # dateutil.rrule: RFC 5545 recurrence expansion (calendar events). Already pulled in by croniter; pinned here to make the direct use explicit.
 tzdata==2024.2
 pypdf==5.1.0
 pdfplumber==0.11.4   # geometry-aware PDF parsing (lab-result tables: map values->date columns by x)

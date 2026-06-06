@@ -1,0 +1,20 @@
+# Nightly calendar extraction.
+#
+# After per-note analysis (1am) has refreshed each note's detected dates, derive the
+# calendar projection: turn dated commitments in changed notes into calendar_events
+# rows, and apply any structured supersession markers. A re-derivable sidecar — it
+# touches no note bodies, and is queryable immediately via the SQL console / Research
+# mode (v_upcoming / v_event_history). Cheap-model, bounded, watermarked (only changed
+# dated notes cost a call). No-ops without an LLM key.
+key: extract-events
+name: Calendar extraction
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 2 * * *"   # 2am local (server TZ) — after note-analysis at 1am
+
+action:
+  type: extract_events
+  config:
+    batch_limit: 80

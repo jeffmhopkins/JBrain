@@ -332,3 +332,73 @@ No new notification infrastructure — both channels already ship.
 5. **Scope of the recurrence branch** — should detecting a recurrence *replace*
    the kb/Patterns article it currently writes, or produce both (article for the
    narrative, calendar row for the schedule)?
+
+Open questions 1 & 2 are resolved by the Phase 1 plan below (1: use `dateutil` —
+it is already a transitive dependency via `croniter`, so no new dep; 2: single
+`starts_at` column + an explicit `all_day` bit).
+
+---
+
+## 7. Phase 1 — consolidated implementation plan (best-of-N + adjudication)
+
+Two independent plans (a convention-follower and an adversarial simplicity pass)
+were produced and reconciled. They converged on the major calls and split on
+three; the adjudicated decisions below are what gets built. Several **correct the
+draft schema in §1.1** — those corrections are authoritative for Phase 1.
+
+### Adjudicated decisions
+
+- **Auto-write, not stage.** Extraction writes `calendar_events` rows directly,
+  like `note_analysis`/`entities` (a re-derivable sidecar that never mutates a
+  note and carries no PHI). The "no destructive auto-apply" rule governs *note/KB*
+  writes, which this is not. The ONLY staged surface is a low-confidence
+  free-prose supersession match (it could retire a live row) — that posts a Review
+  card instead of auto-cancelling. **Corrects §2.1 step 4 / §5 ("staged").**
+- **`identity_key = sha256(note_id │ normalized_title │ kind │ seq)` — the date is
+  NOT in the key.** Keying on the date would make editing a note's date create a
+  duplicate instead of moving the event; the date is a mutable attribute the
+  upsert UPDATEs in place. `seq` (0-based, by document order within the note)
+  disambiguates two genuinely-distinct same-title/kind events in one note so the
+  second can't silently overwrite the first. **Corrects §2.1 step 3.**
+- **Supersession edge = a `superseded_by_id` column** on `calendar_events`
+  (the retired row points at its replacement row) + `status='superseded'`.
+  Rows are upsert-stable (`ON CONFLICT DO UPDATE`), so the row id is a stable
+  target; `ON DELETE SET NULL` and a sweep that skips non-live rows keep
+  re-derivation idempotent. "Live events" and "what replaced X" are both clean
+  one-line SELECTs. **Replaces §1.1/§2.4's `supersedes_note_id`.**
+- **rrule via `dateutil.rrule`** (already present transitively through `croniter`;
+  added explicitly to requirements). Correct BYDAY/COUNT/UNTIL/DST handling
+  without re-implementing RFC 5545. **Resolves open question 1.**
+- **all-day:** single `starts_at` (date-or-datetime string, like
+  `lab_results.collected_at`) + an explicit `all_day` bit; `tz` is display-only,
+  no UTC conversion in v1. **Resolves open question 2.**
+- **`calendar_fired`** (reminder dedup, created now, used in Phase 3) mirrors
+  `location_fired`: `(workflow_id, kind, marker)` PK, `marker = identity_key│instance_date`
+  so recurring instances dedup individually.
+- **Views** (`v_upcoming`, `v_event_history`) live in both schema.sql and the
+  factored `_CALENDAR_SCHEMA_SQL` migration constant, matching `_MEDICAL_SCHEMA_SQL`.
+
+### File-by-file (ordered)
+
+1. `server/app/schema.sql` — add a "Calendar (temporal projection)" section:
+   `calendar_events` (corrected columns above), `calendar_fired`, `v_upcoming`,
+   `v_event_history`.
+2. `server/app/db.py` — `SCHEMA_VERSION 44 → 45`; add `_CALENDAR_SCHEMA_SQL`
+   (identical to the schema.sql section); `if current < 45:` migration runs it.
+3. `server/requirements.txt` — add `python-dateutil` (make the direct use explicit).
+4. `server/app/services/calendar.py` (new) — deterministic core: `normalize_title`,
+   `identity_key`, `upsert_events` (ON CONFLICT upsert + per-note deletion sweep of
+   live rows), `apply_supersession` (structured marker → set superseded), 
+   `parse_supersession_marker` (regex over `[[link]]` + ISO date), `consolidate`
+   (idempotent re-assert), `expand_rrule` (dateutil), `classify_dates` (LLM front
+   end, stubbable), `pending_ids`.
+5. `server/app/services/pipeline.py` — thin primitives `calendar_pending`,
+   `extract_events`, `upsert_calendar_events`, `consolidate_calendar` + their
+   `_PRIMITIVE_META` entries (the pinned test must stay green).
+6. `actions/extract_events.yaml` + `workflows/extract-events.yaml` — scheduled
+   `cron: "0 2 * * *"` (after note-analysis at 1am, so `dates_json` is fresh).
+7. `server/tests/test_calendar.py` (new) — migration idempotency/upgrade,
+   identity-key MOVE-not-duplicate, upsert idempotency, deletion sweep,
+   structured supersession + the "what replaced X" SELECT, rrule expansion,
+   the views' filters, full `extract_events` run with a stubbed LLM, and the
+   `_PRIMITIVE_META` pin (kept green).

@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 
 def init_db() -> None:
@@ -639,6 +639,12 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # not block boot. No DDL: chunk tables are unchanged, only their contents.
         set_meta(conn, "rechunk:pending", "1")
 
+    if current < 45:
+        # Calendar events temporal projection (+ reminder-dedup table + read views).
+        # A re-derivable sidecar over note dates (no note bodies touched). schema.sql
+        # carries the identical block for fresh DBs.
+        conn.executescript(_CALENDAR_SCHEMA_SQL)
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -834,6 +840,91 @@ CREATE VIEW IF NOT EXISTS v_encounter_timeline AS
   UNION ALL
   SELECT encounter_id, authored_at, 'document', COALESCE(title, doc_type), doc_type, note_id
     FROM clinical_documents WHERE authored_at IS NOT NULL;
+"""
+
+
+# The calendar schema, factored out so the migration (existing DBs) and schema.sql
+# (fresh DBs) stay in lockstep — keep this identical to the "Calendar" section of
+# schema.sql (tables + indexes + views).
+_CALENDAR_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id        INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  attachment_id  INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+  title          TEXT NOT NULL,
+  detail         TEXT,
+  kind           TEXT NOT NULL DEFAULT 'event'
+                   CHECK (kind IN ('appointment','deadline','reminder','event','recurring')),
+  starts_at      TEXT, ends_at TEXT,
+  all_day        INTEGER NOT NULL DEFAULT 0,
+  tz             TEXT, rrule TEXT,
+  rdate_json     TEXT NOT NULL DEFAULT '[]',
+  exdate_json    TEXT NOT NULL DEFAULT '[]',
+  location_label TEXT, lat REAL, lon REAL,
+  place_id       INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  person_id      INTEGER REFERENCES people(id) ON DELETE SET NULL,
+  entity_id      INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+  status         TEXT NOT NULL DEFAULT 'confirmed'
+                   CHECK (status IN ('confirmed','tentative','cancelled','done')),
+  seq            INTEGER NOT NULL DEFAULT 0,
+  identity_key   TEXT,
+  source         TEXT NOT NULL DEFAULT 'extracted',
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calevents_identity
+  ON calendar_events(identity_key) WHERE identity_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_calevents_starts ON calendar_events(starts_at);
+CREATE INDEX IF NOT EXISTS idx_calevents_note   ON calendar_events(note_id);
+CREATE INDEX IF NOT EXISTS idx_calevents_kind   ON calendar_events(kind, starts_at);
+
+CREATE TABLE IF NOT EXISTS calendar_supersedes (
+  old_identity_key      TEXT NOT NULL,
+  new_identity_key      TEXT,
+  superseded_by_note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+  confidence            TEXT NOT NULL DEFAULT 'structured',
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (old_identity_key, superseded_by_note_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cal_supersedes_old ON calendar_supersedes(old_identity_key);
+
+CREATE TABLE IF NOT EXISTS calendar_fired (
+  workflow_id INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
+  marker      TEXT NOT NULL,
+  fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (workflow_id, kind, marker)
+);
+
+CREATE VIEW IF NOT EXISTS v_upcoming AS
+  SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day,
+         e.status, e.location_label, e.rrule, e.person_id, e.note_id,
+         p.name AS person, n.title AS note_title, n.slug AS note_slug
+  FROM calendar_events e
+  LEFT JOIN people p ON p.id = e.person_id
+  LEFT JOIN notes  n ON n.id = e.note_id
+  WHERE e.status NOT IN ('cancelled','done')
+    AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s
+                    WHERE s.old_identity_key = e.identity_key)
+    AND (e.starts_at IS NULL
+         OR (e.all_day = 1 AND date(e.starts_at) >= date('now'))
+         OR (e.all_day = 0 AND e.starts_at >= datetime('now')))
+  ORDER BY e.starts_at;
+
+CREATE VIEW IF NOT EXISTS v_event_history AS
+  SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day,
+         e.status, e.location_label, e.rrule,
+         e.person_id, e.note_id, p.name AS person, n.title AS note_title, n.slug AS note_slug
+  FROM calendar_events e
+  LEFT JOIN people p ON p.id = e.person_id
+  LEFT JOIN notes  n ON n.id = e.note_id
+  WHERE e.status IN ('cancelled','done')
+     OR EXISTS (SELECT 1 FROM calendar_supersedes s
+                WHERE s.old_identity_key = e.identity_key)
+     OR (e.starts_at IS NOT NULL
+         AND ((e.all_day = 1 AND date(e.starts_at) < date('now'))
+              OR (e.all_day = 0 AND e.starts_at < datetime('now'))))
+  ORDER BY e.starts_at DESC;
 """
 
 

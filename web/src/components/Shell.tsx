@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
-import { useOnline } from "../hooks";
+import { useOnline, useTtsEnabled } from "../hooks";
 import { reviewHref } from "../util";
 import { Icon } from "./Icon";
 
@@ -169,6 +169,7 @@ function scrollParent(el: HTMLElement | null): HTMLElement | null {
 
 export default function Shell({ children }: { children: ReactNode }) {
   const online = useOnline();
+  const tts = useTtsEnabled();   // read Assisted replies aloud (top-bar toggle)
   const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const loc = useLocation();
   const nav = useNavigate();
@@ -238,6 +239,11 @@ export default function Shell({ children }: { children: ReactNode }) {
         )}
         <span className="spacer" />
         <ReviewBell />
+        <button className={"bolt" + (tts.enabled ? " active" : "")}
+                title={tts.enabled ? "Read replies aloud: on" : "Read replies aloud: off"}
+                aria-pressed={tts.enabled} onClick={tts.toggle}>
+          <Icon name={tts.enabled ? "speaker" : "speakerOff"} size={20} />
+        </button>
         {review && <button className="ghost" style={{ padding: "4px 10px" }} onClick={() => nav("/chat")}>Done</button>}
         {!review && (
           <button className={"bolt" + (advanced ? " active" : "")} title={advanced ? "Back to compose" : "Advanced"}

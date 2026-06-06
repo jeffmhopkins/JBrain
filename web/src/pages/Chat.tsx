@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { createEntry, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
-import { useGeo, useOnline } from "../hooks";
+import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
@@ -23,6 +23,21 @@ function renderSummary(text: string) {
     /^https?:\/\//.test(part)
       ? <a key={i} href={part} target="_blank" rel="noreferrer">{part}</a>
       : <span key={i}>{part}</span>);
+}
+
+// Flatten the reply's Markdown into something that reads cleanly aloud: drop wiki/link
+// syntax, emphasis, headings, code fences and list bullets, keeping the words.
+function speechText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " ")              // code blocks
+    .replace(/`([^`]+)`/g, "$1")                  // inline code
+    .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1")  // [[wiki|alias]] → text
+    .replace(/!?\[([^\]]+)\]\([^)]+\)/g, "$1")    // [text](url) / images → text
+    .replace(/^#{1,6}\s+/gm, "")                  // headings
+    .replace(/^\s*[-*+]\s+/gm, "")                // list bullets
+    .replace(/(\*\*|__|\*|_|~~)/g, "")            // emphasis markers
+    .replace(/[ \t]+/g, " ")
+    .trim();
 }
 
 const MODES: { key: Mode; label: string; icon: string }[] = [
@@ -111,6 +126,8 @@ const GEO_MAX_WAIT = 1500;
 export default function Chat() {
   const online = useOnline();
   const geo = useGeo();
+  const tts = useTts();                 // on-device speech (saved voice + speed)
+  const ttsOn = useTtsEnabled();        // top-bar "read replies aloud" toggle
   const navigate = useNavigate();
   // Mode persists within a session (so navigating away from chat and back keeps it)
   // but a fresh PWA launch starts a new session → empty → defaults to Research mode.
@@ -459,6 +476,7 @@ export default function Chat() {
     let bubbleShown = true;
     // Reset the typewriter cleanly for this new turn.
     bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = true;
+    tts.stop();   // cut off any reply still being read aloud from the previous turn
     setStreaming(true);
     setStatus("Thinking…");
     let errored = false;
@@ -528,6 +546,8 @@ export default function Chat() {
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
       }, coords, mode === "research" ? "research" : "assisted");
+      // Read the finished reply aloud when the top-bar toggle is on (Assisted only).
+      if (!errored && mode === "assisted" && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
       // text to completion before we swap in the authoritative server copy (which is
       // identical), so the reload is a visual no-op rather than a jarring jump.

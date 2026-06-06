@@ -114,8 +114,8 @@ export function useTts() {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceURI, setVoiceURI] = useState<string>(() => localStorage.getItem(TTS_VOICE_KEY) || "");
   const [rate, setRateState] = useState<number>(() => {
-    const r = parseFloat(localStorage.getItem(TTS_RATE_KEY) || "1");
-    return Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1;
+    const r = parseFloat(localStorage.getItem(TTS_RATE_KEY) || "1.3");
+    return Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1.3;
   });
   const [speaking, setSpeaking] = useState(false);
 
@@ -163,6 +163,36 @@ export function useTts() {
   }
 
   return { supported, voices, voiceURI, setVoice, rate, setRate, speaking, speak, stop };
+}
+
+// Global "read replies aloud" flag, toggled from the top bar and read by the Chat
+// page. Mirrors the geo-flag pattern so a flip takes effect everywhere instantly.
+const TTS_ON_EVENT = "jbrain-tts-enabled-changed";
+const ttsOn = () => localStorage.getItem("jbrain_tts_enabled") === "1";
+
+function useTtsEnabledSync(setOn: (on: boolean) => void): void {
+  useEffect(() => {
+    const sync = () => setOn(ttsOn());
+    window.addEventListener(TTS_ON_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(TTS_ON_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [setOn]);
+}
+
+/** Whether Assisted replies should be spoken aloud. Persisted per device. */
+export function useTtsEnabled() {
+  const [enabled, setEnabled] = useState(ttsOn);
+  useTtsEnabledSync(setEnabled);
+  function toggle() {
+    const next = !ttsOn();
+    localStorage.setItem("jbrain_tts_enabled", next ? "1" : "0");
+    setEnabled(next);
+    window.dispatchEvent(new Event(TTS_ON_EVENT));
+  }
+  return { enabled, toggle };
 }
 
 /** Track online/offline so the UI can show a banner and gate writes. */

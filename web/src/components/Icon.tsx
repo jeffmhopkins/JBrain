@@ -24,6 +24,9 @@ const PATHS: Record<string, string> = {
   refresh: "M21 12a9 9 0 1 1-2.64-6.36L21 8 M21 3v5h-5",
   // A health/first-aid cross in a rounded square.
   medical: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M12 8v8 M8 12h8",
+  // Speaker with sound waves (TTS on) and the muted variant (TTS off).
+  speaker: "M11 5 6 9H2v6h4l5 4z M15.54 8.46a5 5 0 0 1 0 7.07 M19.07 4.93a10 10 0 0 1 0 14.14",
+  speakerOff: "M11 5 6 9H2v6h4l5 4z M22 9l-6 6 M16 9l6 6",
 };
 
 export function Icon({ name, size = 19 }: { name: keyof typeof PATHS | string; size?: number }) {

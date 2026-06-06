@@ -111,6 +111,27 @@ def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     return n
 
 
+def reindex_missing_attachment_analysis(conn, batch: int | None = None) -> int:
+    """Backfill chunk vectors for analyzed attachments whose sidecar was never embedded
+    (e.g. images analyzed before image analysis started embedding its summary). Their text
+    is already in attachments_fts, so keyword search worked all along — this adds the
+    SEMANTIC half. Returns how many attachments were indexed; commits if it did work."""
+    from .attachments import chunk_text  # lazy: attachments imports this module
+    sql = ("SELECT id, note_id, analysis_md FROM attachments "
+           "WHERE analysis_md IS NOT NULL AND analysis_md != '' "
+           "AND id NOT IN (SELECT DISTINCT attachment_id FROM attachment_chunks)")
+    if batch:
+        sql += f" LIMIT {int(batch)}"
+    rows = conn.execute(sql).fetchall()
+    n = 0
+    for r in rows:
+        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(r["analysis_md"]))
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
 def reindex_all_chunks(conn) -> int:
     """Re-chunk and re-embed EVERY note and attachment under the CURRENT chunking
     strategy — used once after a strategy change, when existing chunk vectors (and the
@@ -129,9 +150,14 @@ def reindex_all_chunks(conn) -> int:
         if n % 50 == 0:
             conn.commit()
     for r in conn.execute(
-        "SELECT id, note_id, content_text FROM attachments WHERE content_text != ''"
+        "SELECT id, note_id, content_text, analysis_md FROM attachments "
+        "WHERE content_text != '' OR (analysis_md IS NOT NULL AND analysis_md != '')"
     ).fetchall():
-        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(r["content_text"]))
+        # Prefer the enrichment sidecar (image vision summary / transcript) over extracted
+        # text, mirroring the read paths — so an analyzed image embeds its analysis, not its
+        # (usually empty) OCR.
+        body = (r["analysis_md"] or "").strip() or (r["content_text"] or "")
+        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(body))
         n += 1
         if n % 50 == 0:
             conn.commit()

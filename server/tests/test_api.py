@@ -4006,6 +4006,34 @@ def test_search_note_hit_reports_attachments(client):
     assert note["attachments"] == 1            # surfaced via the note hit, not an attachment-text hit
 
 
+def test_search_notes_surfaces_image_analysis_sidecar(client):
+    """A fact that lives ONLY in a photo's AI vision summary (attachments.analysis_md,
+    indexed into attachments_fts) must surface via search_notes — not just the separate
+    search_attachments tool. This is the 'thrift store address read off a Messenger image'
+    case: the note body has none of the query terms; the answer is in the sidecar.
+
+    Semantic search is stubbed to [] by the fixture, so this proves the KEYWORD fold-in:
+    the attachment-FTS hit credits its parent note in hybrid_notes."""
+    from app.db import get_conn
+    from app.services import architect, attachments as att_svc
+    client.post("/api/notes", json={"title": "notes/messenger-image", "content_md": "saved from Messenger"})
+    conn = get_conn()
+    note_id = conn.execute("SELECT id FROM notes WHERE slug = 'notes-messenger-image'").fetchone()["id"]
+    # Image attachment whose sidecar carries the storefront address (mirrors image_analysis.analyze).
+    sidecar = "Storefront photo. **Salient facts**\n- MY ISLAND THRIFT STORE, 234 E Merritt Island Cswy"
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, sha256, byte_size, analysis_md, analysis_status) "
+        "VALUES (?, 'store.jpg', 'image/jpeg', 'sha', 1, ?, 'done')",
+        (note_id, sidecar),
+    ).lastrowid
+    att_svc._sync_attachment_fts(conn, aid, note_id, "store.jpg", sidecar)
+    conn.commit()
+
+    msg, _ = architect._run_tool(conn, None, "search_notes", {"query": "thrift store"})
+    assert "notes/messenger-image" in msg          # parent note surfaced via the sidecar
+    assert "THRIFT STORE" in msg.upper()           # and the snippet centres on the sidecar match
+
+
 def test_model_tier_resolution(client, monkeypatch):
     """Per-task model tiers: models.<tier> wins, else models.default, else None
     (provider default)."""

@@ -159,10 +159,14 @@ export function useTts() {
   function speak(text: string): boolean {
     if (!supported || !text.trim()) return false;
     const synth = window.speechSynthesis;
-    synth.cancel();   // clear any stale/queued utterance first
+    // Only cancel when something is actually queued — a cancel() immediately before
+    // speak() can make some engines fall back to the default voice (a known Chrome bug).
+    if (synth.speaking || synth.pending) synth.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     const v = voices.find((x) => x.voiceURI === voiceURI);
-    if (v) utter.voice = v;
+    // Set BOTH voice and lang: several engines ignore `voice` unless `lang` matches it,
+    // which is why picking a voice appeared to do nothing.
+    if (v) { utter.voice = v; utter.lang = v.lang; }
     utter.rate = rate;
     utter.onend = () => setSpeaking(false);
     utter.onerror = () => setSpeaking(false);

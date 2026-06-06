@@ -43,7 +43,7 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
-                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at", "list_trips", "trip_detail", "add_list_item", "read_list",
+                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at", "list_upcoming", "event_history", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry",
                  "set_tags", "save_place", "create_share_link", "create_guided_share",
                  "create_research_share",
@@ -56,7 +56,8 @@ _DEFAULT_MODE_TOOLS = {
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
-                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
+                 "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at",
+                 "list_upcoming", "event_history"],
     # "Analyze" = research's read set + reference_lookup (the owner's own kb/Reference library).
     "analyze": ["reference_lookup", "medical_reference", "find", "search_notes", "read_note", "read_notes", "related_notes",
                 "list_tags", "notes_with_tag", "list_recent_notes", "search_attachments",
@@ -64,7 +65,7 @@ _DEFAULT_MODE_TOOLS = {
                 "geo_distance", "nearby_notes", "where_was_i", "time_at_place", "places_visited",
                 "distance_traveled", "trail_summary", "entries_at_place", "reverse_geocode",
                 "forward_geocode", "drug_reference", "list_abnormal_labs", "show_lab_chart",
-                "lab_stat", "lab_value_at"],
+                "lab_stat", "lab_value_at", "list_upcoming", "event_history"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -124,6 +125,15 @@ _TOOL_SCHEMAS = {
         "since": {"type": "string", "description": "Window start — owner's local time (offset/Z honored). Optional."},
         "until": {"type": "string", "description": "Window end — owner's local time (offset/Z honored). Optional."},
         "limit": {"type": "integer", "default": 20, "description": "Max fixes for a window (evenly sampled if more exist; hard cap 500)."}}},
+    "list_upcoming": {"type": "object", "properties": {
+        "within_days": {"type": "integer", "default": 90, "description": "Only events starting within this many days from today (default 90). Use a larger number for 'everything coming up'."},
+        "kind": {"type": "string", "enum": ["appointment", "deadline", "reminder", "event", "recurring"],
+                 "description": "Optional filter to one kind of item."},
+        "limit": {"type": "integer", "default": 20, "description": "Max events (soonest first; capped 100)."}}},
+    "event_history": {"type": "object", "properties": {
+        "since": {"type": "string", "description": "Optional ISO lower bound on the event date."},
+        "until": {"type": "string", "description": "Optional ISO upper bound on the event date."},
+        "limit": {"type": "integer", "default": 20, "description": "Max events (most recent first; capped 100)."}}},
     "list_trips": {"type": "object", "properties": {
         "person": {"type": "string", "description": "A registered person's name/alias. Omit for the owner/default person."},
         "since": {"type": "string", "description": "Lower bound — owner's local time (offset/Z honored). Optional."},
@@ -810,6 +820,104 @@ def _trip_line(t: dict) -> str:
     live = " [in progress]" if t.get("status") == "open" else ""
     return (f"#{t['id']} {t['started_at'][:16]} UTC: {a} → {b} · "
             f"{t['distance_km']:.1f} km · {_dur(t['duration_s'])}{spd}{live}")
+
+
+def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
+    """Upcoming calendar events (live, soonest first). One-off future events come from
+    the v_upcoming projection; RECURRING series are expanded to their NEXT occurrence
+    within the window (a recurring row's stored starts_at is its first, past, occurrence,
+    so it wouldn't otherwise surface). Read-only; reports only what's derived from notes."""
+    from datetime import timedelta
+    from . import clock
+    limit = max(1, min(int(limit or 20), 100))
+    within = int(within_days) if within_days else 90
+    # Owner-local "today"/"horizon" for BOTH branches (v_upcoming's own lower bound is
+    # UTC date('now'); we at least keep the tool's horizon consistent with the recurring
+    # expansion, which also uses this same owner-tz date — no UTC-vs-process-local split).
+    today = clock.today_iso()
+    horizon = (clock.today_local() + timedelta(days=within)).isoformat()
+
+    items: list[tuple] = []   # (sortkey, when, title, kind, note_title, recurring)
+
+    # 1) One-off (non-recurring) future events, windowed to the owner-local horizon.
+    params: list = ["recurring"]
+    where = " AND kind != ?"
+    if kind and kind != "recurring":
+        where += " AND kind = ?"
+        params.append(str(kind))
+    where += " AND (starts_at IS NULL OR date(starts_at) <= ?)"
+    params.append(horizon)
+    for r in conn.execute(
+        f"SELECT title, kind, starts_at, note_title FROM v_upcoming WHERE 1=1{where} LIMIT 200",
+        params,
+    ).fetchall():
+        when = (r["starts_at"] or "")[:16].replace("T", " ") or "(undated)"
+        items.append((r["starts_at"] or "9999", when, r["title"], r["kind"], r["note_title"], False))
+
+    # 2) Recurring series — expand each to its next occurrence within the window.
+    if not kind or kind == "recurring":
+        from . import calendar as cal
+        rec = conn.execute(
+            "SELECT e.title, e.starts_at, e.rrule, e.exdate_json, n.title AS note_title "
+            "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
+            "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.status NOT IN ('cancelled','done') "
+            "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key)"
+        ).fetchall()
+        for r in rec:
+            try:
+                ex = json.loads(r["exdate_json"] or "[]")
+            except Exception:  # noqa: BLE001
+                ex = []
+            occ = cal.expand_rrule(r["rrule"], r["starts_at"] or today, today, horizon, exdates=ex)
+            if occ:
+                nxt = occ[0]
+                items.append((nxt, nxt, r["title"], "recurring", r["note_title"], True))
+
+    if not items:
+        return _untrusted("calendar-upcoming",
+                          f"No upcoming calendar events on file{(' of kind ' + kind) if kind else ''} "
+                          f"within {within} days. (Absence of a derived event is NOT a guarantee "
+                          "nothing is scheduled — it only reflects what's been captured in notes.)")
+    items.sort(key=lambda t: t[0])
+    lines = []
+    for _, when, title, k, note_title, recurring in items[:limit]:
+        cite = f" — from [[{note_title}]]" if note_title else ""
+        tag = " [recurring]" if recurring else (f" [{k}]" if k and k != "event" else "")
+        lines.append(f"- {when}: {title}{tag}{cite}")
+    return _untrusted("calendar-upcoming",
+                      "Upcoming events, soonest first (cite the source note):\n" + "\n".join(lines))
+
+
+def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
+    """Past / terminal calendar events from v_event_history (most recent first) — for
+    'when did I last…' / 'how often…'. Read-only."""
+    limit = max(1, min(int(limit or 20), 100))
+    params: list = []
+    where = ""
+    if since:
+        # A bound excludes undated rows (date(NULL) is NULL ⇒ comparison drops it),
+        # so "history since 2010" can't return an undated 2024 event.
+        where += " AND date(starts_at) >= date(?)"
+        params.append(str(since))
+    if until:
+        where += " AND date(starts_at) <= date(?)"
+        params.append(str(until))
+    rows = conn.execute(
+        f"SELECT title, kind, starts_at, status, note_title FROM v_event_history "
+        f"WHERE 1=1{where} LIMIT ?", (*params, limit),
+    ).fetchall()
+    if not rows:
+        span = (f" between {since} and {until}" if since and until else
+                f" since {since}" if since else f" through {until}" if until else "")
+        return _untrusted("calendar-history", f"No past calendar events on file{span}.")
+    lines = []
+    for r in rows:
+        when = (r["starts_at"] or "")[:16].replace("T", " ") or "(undated)"
+        cite = f" — from [[{r['note_title']}]]" if r["note_title"] else ""
+        st = f" ({r['status']})" if r["status"] and r["status"] != "confirmed" else ""
+        lines.append(f"- {when}: {r['title']}{st}{cite}")
+    return _untrusted("calendar-history",
+                      "Past events, most recent first (cite the source note):\n" + "\n".join(lines))
 
 
 def _tool_list_trips(conn, person=None, since=None, until=None, limit=20) -> str:
@@ -2030,6 +2138,12 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "location_fixes":
         return _tool_location_fixes(conn, args.get("person"), args.get("when"),
                                     args.get("since"), args.get("until"), args.get("limit", 20)), None
+    if name == "list_upcoming":
+        return _tool_list_upcoming(conn, args.get("within_days", 90), args.get("kind"),
+                                   args.get("limit", 20)), None
+    if name == "event_history":
+        return _tool_event_history(conn, args.get("since"), args.get("until"),
+                                   args.get("limit", 20)), None
     if name == "list_trips":
         return _tool_list_trips(conn, args.get("person"), args.get("since"),
                                 args.get("until"), args.get("limit", 20)), None
@@ -2307,6 +2421,7 @@ _RETRIEVAL_TOOLS = frozenset({
     "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
     "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
     "show_lab_chart", "drug_reference", "medical_reference", "reverse_geocode", "forward_geocode",
+    "list_upcoming", "event_history",
 })
 _RESEARCH_NUDGE = (
     "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "

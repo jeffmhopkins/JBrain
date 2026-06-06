@@ -1,0 +1,54 @@
+# Declarative action: derive the CALENDAR projection from notes. For entry/daily
+# notes changed since the last run that carry a detected date, an LLM classifies the
+# dated commitments (appointments / deadlines / reminders / recurring) into
+# calendar_events rows — a re-derivable SIDECAR that never touches a note body (the
+# note stays the source of truth). Idempotent: editing a note's date MOVES the row in
+# place (the identity_key excludes the date), dropped dates are swept, and structured
+# `supersedes [[Note]] YYYY-MM-DD` markers retire rescheduled/cancelled events via the
+# calendar_supersedes edge. Auto-derive (like analyze_notes) — no staging, since
+# nothing destructive to a note happens. No-ops cleanly without an LLM key.
+#
+# config keys:
+#   batch_limit — max dated notes scanned per run (default 80)
+type: extract_events
+category: Calendar
+config:
+  - { key: batch_limit, label: Max dated notes per run, type: number, default: 80 }
+steps:
+  - id: since
+    do: get_meta
+    with: { key: "calendar:watermark", default: "" }
+
+  - id: pending
+    do: calendar_pending
+    with:
+      since: "{{ since }}"
+      limit: "{{ config.batch_limit | default(80) }}"
+    stop_when_empty: "no dated notes changed since last run"
+
+  - for_each: "{{ pending }}"
+    steps:
+      - id: ev
+        do: extract_events
+        with: { note: "{{ item }}" }
+      - do: upsert_calendar_events
+        with:
+          note_id: "{{ item.id }}"
+          events: "{{ ev.events }}"
+
+  # Apply structured `supersedes/cancels [[Note]] DATE` markers (the (a) path).
+  - do: consolidate_calendar
+    with: { notes: "{{ pending }}" }
+
+  # Free-prose reschedules/cancellations without a marker (the (b) path): high
+  # confidence applies, low posts a Review card. No-op without an LLM key.
+  - do: propose_supersessions
+    with: { notes: "{{ pending }}" }
+
+  # Advance the composite (updated_at, id) watermark to the last note processed —
+  # pending is ordered by (updated_at, id), so its last row is the cursor. A bare
+  # max(updated_at) would starve notes sharing a timestamp past the batch cap.
+  - do: set_meta
+    with:
+      key: "calendar:watermark"
+      value: "{{ pending[-1].updated_at ~ '|' ~ pending[-1].id }}"

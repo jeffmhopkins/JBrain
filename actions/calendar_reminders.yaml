@@ -1,0 +1,19 @@
+# Declarative action: remind about upcoming calendar events. For each LIVE event
+# (one-off or the next instance of a recurring series) whose occurrence falls within
+# the lead window, post a Review card and (if Web Push is configured) a push — deduped
+# per instance via calendar_fired, so each occurrence reminds exactly once. Read-only
+# over the calendar projection; writes only review/push, never a note.
+#
+# config keys:
+#   lead_hours — remind when an occurrence is within this many hours (default 48)
+#   push       — also send a Web Push (default true; no-op without VAPID keys)
+type: calendar_reminders
+category: Calendar
+config:
+  - { key: lead_hours, label: Remind within (hours), type: number, default: 48 }
+  - { key: push, label: Also send Web Push, type: boolean, default: true }
+steps:
+  - do: calendar_reminders
+    with:
+      lead_hours: "{{ config.lead_hours | default(48) }}"
+      push: "{{ config.push | default(true) }}"

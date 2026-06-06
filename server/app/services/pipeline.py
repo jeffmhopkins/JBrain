@@ -1268,6 +1268,60 @@ def _p_refresh_reference_seeds(ctx, ttl_days=180, limit=5):
     return reference_refresh.run(ctx.conn, ttl_days=int(ttl_days), limit=int(limit))
 
 
+def _p_calendar_pending(ctx, since="", limit=40):
+    """Entry/daily notes changed since the watermark that carry a detected date — the
+    batch for calendar extraction + supersession scanning. No LLM."""
+    from . import calendar as cal
+    return cal.pending_notes(ctx.conn, str(since or ""), int(limit))
+
+
+def _p_extract_events(ctx, note):
+    """LLM-classify ONE note's dated commitments into event dicts (no-op without a
+    key). Returns {note_id, events} for the upsert step."""
+    from . import calendar as cal
+    return {"note_id": note.get("id"), "events": cal.classify_dates(ctx.conn, note)}
+
+
+def _p_upsert_calendar_events(ctx, note_id, events, source="extracted"):
+    """Idempotently project a note's events into calendar_events (move-not-duplicate;
+    sweeps dropped events). Auto-derive — like analyze_note, no staging."""
+    from . import calendar as cal
+    return cal.upsert_events(ctx.conn, int(note_id), list(events or []), source=str(source))
+
+
+def _p_consolidate_calendar(ctx, notes):
+    """Apply structured supersession markers in the given notes (a later note
+    reschedules/cancels an earlier event). Idempotent."""
+    from . import calendar as cal
+    return cal.consolidate(ctx.conn, list(notes or []))
+
+
+def _p_propose_supersessions(ctx, notes):
+    """The free-prose (b) supersession path: LLM-match reschedule/cancel notes that lack
+    a structured marker — high confidence applies an 'llm' edge, low posts a Review card.
+    No-op without an LLM key."""
+    from . import calendar as cal
+    return cal.propose_supersessions(ctx.conn, list(notes or []), workflow_id=ctx.workflow_id)
+
+
+def _p_promote_recurrence_calendar(ctx, clusters):
+    """Promote regular-cadence recurring chatter clusters into kind='recurring' calendar
+    rows (anchored to the earliest member note, with an inferred rrule). Irregular
+    clusters are skipped. Returns {emitted}."""
+    from . import calendar as cal
+    emitted = 0
+    for c in clusters or []:
+        emitted += cal.emit_recurrence(ctx.conn, c).get("emitted", 0)
+    return {"emitted": emitted}
+
+
+def _p_calendar_reminders(ctx, lead_hours=48, push=True):
+    """Post a Review card (+ optional Web Push) for each live calendar event whose next
+    occurrence falls within the lead window, deduped per instance so it fires once."""
+    from . import calendar as cal
+    return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), _truthy(push))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1344,6 +1398,13 @@ _PRIMITIVES = {
     "suggest_places": _p_suggest_places,
     "stage_places": _p_stage_places,
     "discover_stays": _p_discover_stays,
+    "calendar_pending": _p_calendar_pending,
+    "extract_events": _p_extract_events,
+    "upsert_calendar_events": _p_upsert_calendar_events,
+    "consolidate_calendar": _p_consolidate_calendar,
+    "propose_supersessions": _p_propose_supersessions,
+    "promote_recurrence_calendar": _p_promote_recurrence_calendar,
+    "calendar_reminders": _p_calendar_reminders,
 }
 
 
@@ -1396,6 +1457,22 @@ _PRIMITIVE_META: dict[str, dict] = {
     "discover_stays": {"summary": "Find unlabeled spots the trail shows you revisiting across several days (place candidates).",
                        "inputs": [{"name": "min_days", "type": "int"}, {"name": "days_back", "type": "int"},
                                   {"name": "min_minutes", "type": "int"}], "output": "object"},
+    "calendar_pending": {"summary": "Entry/daily notes changed since a watermark that carry a detected date (calendar extraction batch).",
+                         "inputs": [{"name": "since", "type": "str"}, {"name": "limit", "type": "int"}], "output": "list"},
+    "extract_events": {"summary": "LLM-classify one note's dated commitments into calendar event dicts.",
+                       "inputs": [{"name": "note", "type": "object", "required": True}], "output": "object"},
+    "upsert_calendar_events": {"summary": "Idempotently project a note's events into calendar_events (move-not-duplicate; sweeps dropped events).",
+                               "inputs": [{"name": "note_id", "type": "int", "required": True},
+                                          {"name": "events", "type": "list", "required": True},
+                                          {"name": "source", "type": "str"}], "output": "object"},
+    "consolidate_calendar": {"summary": "Apply structured supersession markers in the given notes (a later note reschedules/cancels an earlier event).",
+                             "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
+    "propose_supersessions": {"summary": "Free-prose (LLM) supersession: match reschedule/cancel notes without a marker — high confidence applies, low posts a review.",
+                              "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
+    "promote_recurrence_calendar": {"summary": "Promote regular-cadence recurring chatter clusters into kind='recurring' calendar rows with an inferred rrule.",
+                                    "inputs": [{"name": "clusters", "type": "list", "required": True}], "output": "object"},
+    "calendar_reminders": {"summary": "Post Review cards (+ Web Push) for events whose next occurrence is within the lead window; deduped per instance.",
+                           "inputs": [{"name": "lead_hours", "type": "int"}, {"name": "push", "type": "bool"}], "output": "object"},
     "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",
                         "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",

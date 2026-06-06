@@ -21,6 +21,7 @@ config:
   - { key: tau, label: Similarity threshold (cosine distance), type: number, default: 0.35 }
   - { key: promote_limit, label: Max patterns per run, type: number, default: 5 }
   - { key: auto_apply, label: Write KB directly (skip review), type: boolean, default: false }
+  - { key: emit_calendar, label: Also add a recurring calendar event, type: boolean, default: true }
 steps:
   - id: pool
     do: chatter_pending
@@ -39,6 +40,13 @@ steps:
 
   - stop_when: "{{ not clustered.promotable }}"
     stop_message: "no recurring pattern reached the threshold"
+
+  # Phase 2: also project each REGULAR-cadence cluster into a recurring calendar row
+  # (kind='recurring', inferred rrule, anchored to the earliest member note). Additive
+  # + idempotent; irregular clusters are skipped. A re-derivable sidecar — no note touched.
+  - do: promote_recurrence_calendar
+    when: "{{ config.emit_calendar | default(true) }}"
+    with: { clusters: "{{ clustered.promotable }}" }
 
   - id: kb
     do: query_notes

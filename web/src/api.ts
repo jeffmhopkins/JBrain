@@ -44,9 +44,13 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   });
   if (res.status === 401) throw new ApiError("Not authenticated", 401);
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -84,6 +88,30 @@ export const fixLinkLabel = (note_id: number, target: string, display: string) =
   post<{ fixed: boolean }>("/api/notes/links/audit/fix", { note_id, target, display });
 export const fixAllLinkLabels = () => post<{ fixed: number }>("/api/notes/links/audit/fix-all");
 
+// Calendar (temporal projection) — read + the note-writing edit paths.
+export interface CalEvent {
+  id: number;
+  title: string;
+  kind: string;
+  starts_at: string | null;
+  ends_at?: string | null;
+  all_day: number;
+  status?: string;
+  location_label?: string | null;
+  note_id?: number;
+  note_title?: string;
+  note_slug?: string | null;
+  recurring?: boolean;
+}
+export const calUpcoming = (withinDays = 90) =>
+  get<CalEvent[]>(`/api/calendar/upcoming?within_days=${withinDays}`);
+export const calHistory = () => get<CalEvent[]>("/api/calendar/history");
+export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string }) =>
+  post<{ note_id: number; note_title: string; event: CalEvent | null }>("/api/calendar/quick-add", b);
+export const calReschedule = (id: number, to_date: string, to_time?: string) =>
+  post(`/api/calendar/events/${id}/reschedule`, { to_date, to_time });
+export const calCancel = (id: number) => post(`/api/calendar/events/${id}/cancel`, {});
+
 // Public, UNAUTHENTICATED share endpoints — no bearer key (a recipient has none).
 // Uses default same-origin credentials so the bind cookie rides along (recipients
 // always open the canonical JBRAIN_DOMAIN share URL = same origin as the API). Do
@@ -92,9 +120,13 @@ export const fixAllLinkLabels = () => post<{ fixed: number }>("/api/notes/links/
 async function publicApi<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(u(path), { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   return res.json();
 }
@@ -345,9 +377,13 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
   const res = await fetch(u("/api/system/restore"), { method: "POST", headers, body: fd });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: any = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
-    throw new ApiError(detail, res.status);
+    // FastAPI/Pydantic validation errors return `detail` as an array of objects —
+    // turn those into a readable string instead of "[object Object]".
+    if (Array.isArray(detail)) detail = detail.map((d: any) => d?.msg || JSON.stringify(d)).join("; ");
+    else if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+    throw new ApiError(String(detail), res.status);
   }
   return res.json();
 }

@@ -395,6 +395,10 @@ def diff_versions(slug: str, from_id: int, to_id: int):
         "from": {"version_id": a["id"], "created_at": a["created_at"], "title": a["title"]},
         "to": {"version_id": b["id"], "created_at": b["created_at"], "title": b["title"]},
         "title_changed": a["title"] != b["title"],
+        # Raw before/after content powers the rendered-markdown diff in the client;
+        # `hunks` is kept for any plain-text consumer / backward compatibility.
+        "before": a["content_md"],
+        "after": b["content_md"],
         "hunks": diffing.line_diff(a["content_md"], b["content_md"]),
     }
 

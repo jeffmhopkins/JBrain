@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { clearAccessKey, get, getAccessKey, getServer, setAccessKey, setServer } from "./api";
-import { isDemo, setDemo } from "./demo";
 import Shell from "./components/Shell";
 import ErrorBoundary from "./components/ErrorBoundary";
 import KeyEntry from "./pages/KeyEntry";
@@ -10,6 +9,7 @@ import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
 import ListsPage from "./pages/ListsPage";
 import NotePage from "./pages/NotePage";
+import NoteHistoryPage from "./pages/NoteHistoryPage";
 import GraphPage from "./pages/GraphPage";
 import MapPage from "./pages/MapPage";
 import SearchPage from "./pages/SearchPage";
@@ -38,9 +38,7 @@ interface AuthState {
   hasLlm: boolean;
   appTz: string;
   vapidPublicKey: string;
-  demo: boolean;
   connect: (key: string, server: string) => Promise<void>;
-  exploreDemo: () => void;
   disconnect: () => void;
 }
 
@@ -87,16 +85,7 @@ export default function App() {
     setAuthed(true);
   }
 
-  function exploreDemo() {
-    setDemo(true);
-    setBrainName("Demo Brain");
-    setHasLlm(true);   // demo stubs the analysis calls, so the toggle can show
-    setOwnerSet(true); // no onboarding in the demo
-    setAuthed(true);
-  }
-
   function disconnect() {
-    setDemo(false);
     clearAccessKey();
     // Clear cached API responses too, so a shared device leaves nothing behind.
     if ("caches" in window) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
@@ -104,7 +93,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (isDemo()) { setBrainName("Demo Brain"); setOwnerSet(true); setAuthed(true); setLoading(false); return; }
     loadInfo().catch(() => {});
     const stored = getAccessKey();
     if (stored) {
@@ -123,8 +111,8 @@ export default function App() {
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {
     authenticated: authed, brainName, server: getServer(),
-    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, hasLlm, appTz, vapidPublicKey, demo: isDemo(),
-    connect, exploreDemo, disconnect,
+    pwaVersion: PWA_VERSION, serverVersion, versionMismatch, hasLlm, appTz, vapidPublicKey,
+    connect, disconnect,
   };
 
   return (
@@ -146,6 +134,7 @@ export default function App() {
                 <Route path="/lists" element={<ListsPage />} />
                 <Route path="/shares" element={<SharesPage />} />
                 <Route path="/note/:slug" element={<NotePage />} />
+                <Route path="/note/:slug/history" element={<NoteHistoryPage />} />
                 <Route path="/graph" element={<GraphPage />} />
                 <Route path="/map" element={<MapPage />} />
                 <Route path="/people" element={<PeoplePage />} />

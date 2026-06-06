@@ -6,6 +6,7 @@ import ShareOptions from "../components/ShareOptions";
 import ResearchLinks from "../components/ResearchLinks";
 import LabShareLinks from "../components/LabShareLinks";
 import ConversationView from "../components/ConversationView";
+import MarkdownDiff from "../components/MarkdownDiff";
 import { useAuth } from "../App";
 import { fmtTs, fmtTsShort } from "../time";
 
@@ -23,14 +24,6 @@ const STATUS_CLR: Record<string, string> = {
   superseded: "var(--text-dim)", discarded: "var(--text-dim)", distress: "#fbbf24",
 };
 
-// Cheap line-level diff (set difference of non-empty trimmed lines) so the owner
-// can see what an editor added/removed — the guard against a list-wipe proposal.
-function diff(cur: string, prop: string) {
-  const a = new Set((cur || "").split("\n").map((s) => s.trim()).filter(Boolean));
-  const b = new Set((prop || "").split("\n").map((s) => s.trim()).filter(Boolean));
-  return { removed: [...a].filter((x) => !b.has(x)), added: [...b].filter((x) => !a.has(x)) };
-}
-
 export default function SharesPage() {
   const { appTz } = useAuth();
   const [links, setLinks] = useState<ShareLink[]>([]);
@@ -44,7 +37,6 @@ export default function SharesPage() {
   const [labLinks, setLabLinks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
-  const [openDiff, setOpenDiff] = useState<number | null>(null);
   const [openPrompt, setOpenPrompt] = useState<number | null>(null);
   const [openConvo, setOpenConvo] = useState<number | null>(null);
   const [openSessions, setOpenSessions] = useState<number | null>(null);
@@ -140,7 +132,6 @@ export default function SharesPage() {
         <>
           <div className="adv-section" style={{ marginTop: 0 }}>Pending proposals</div>
           {proposals.map((p) => {
-            const d = diff(p.current_content, p.proposed_content);
             return (
               <div className="card" key={p.id}>
                 <div className="row">
@@ -151,15 +142,7 @@ export default function SharesPage() {
                   <Link className="ghost" to={`/note/${p.note_slug}`} style={{ fontSize: 13, padding: "4px 8px" }}>Open note</Link>
                 </div>
                 {p.proposer_note && <div className="muted" style={{ fontSize: 13, margin: "4px 0" }}>“{p.proposer_note}”</div>}
-                <div className="share-diff">
-                  {d.removed.length === 0 && d.added.length === 0 && <span className="muted">No textual change.</span>}
-                  {d.removed.map((l, i) => <div key={"r" + i} style={{ color: "var(--danger)" }}>− {l}</div>)}
-                  {d.added.map((l, i) => <div key={"a" + i} style={{ color: "#4ade80" }}>+ {l}</div>)}
-                </div>
-                <button className="ghost" style={{ fontSize: 12 }} onClick={() => setOpenDiff(openDiff === p.id ? null : p.id)}>
-                  {openDiff === p.id ? "Hide" : "Show"} full proposed content
-                </button>
-                {openDiff === p.id && <pre className="share-diff" style={{ marginTop: 6 }}>{p.proposed_content}</pre>}
+                <MarkdownDiff before={p.current_content} after={p.proposed_content} className="share-diff-md" />
                 <div className="row" style={{ marginTop: 8, gap: 8 }}>
                   <button className="primary" onClick={() => accept(p)}>Accept</button>
                   <button className="ghost" onClick={() => reject(p)}>Reject</button>

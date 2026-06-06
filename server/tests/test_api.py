@@ -771,6 +771,9 @@ def test_diff_and_restore(client):
     diff = client.get(f"/api/notes/delta/diff/{prev}/{cur}").json()
     types = {h["type"] for h in diff["hunks"]}
     assert "insert" in types and "delete" in types
+    # Raw before/after content is returned too (powers the rendered-markdown diff).
+    assert diff["before"] == "line one\nline two"
+    assert diff["after"] == "line one\nline THREE"
 
     # Restore the original; live content should revert, history preserved.
     client.post("/api/notes/delta/restore", json={"version_id": prev})

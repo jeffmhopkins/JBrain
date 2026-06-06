@@ -175,7 +175,8 @@ export default function NotePage() {
       </div>
 
       <h3 style={{ marginTop: 20 }}>History</h3>
-      <HistoryTimeline timeline={timeline} onView={setViewing} onDiff={(from, to) => setDiffing({ from, to })} />
+      <HistoryTimeline timeline={timeline} onView={setViewing} onDiff={(from, to) => setDiffing({ from, to })}
+        limit={3} seeAllHref={`/note/${note.slug}/history`} />
     </>
   );
 

@@ -3,6 +3,8 @@
 //   { kind: "text"|"fields"|"place"|"tags", before, after, label, stale?, conflict? }
 // `before`/`after` are the actual states apply will move between — see what's changing.
 
+import MarkdownDiff from "./MarkdownDiff";
+
 export interface Preview {
   kind: "text" | "fields" | "place" | "tags";
   before: any;
@@ -67,29 +69,15 @@ export default function ApprovalView({ preview, full }: { preview: Preview; full
   const p = preview;
 
   if (p.kind === "text") {
-    const isNew = p.before == null;
     const isDelete = p.after == null;
-    if (isNew) return <pre className="share-diff">{p.after}</pre>;
-    if (isDelete) return (
-      <>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>This note will be deleted (soft, undoable):</div>
-        <pre className="share-diff deleting">{p.before}</pre>
-      </>
-    );
-    const d = lineDiff(p.before || "", p.after || "");
     return (
       <>
-        <div className="share-diff">
-          {d.removed.length === 0 && d.added.length === 0 && <span className="muted">No textual change.</span>}
-          {d.removed.map((l, i) => <div key={"r" + i} style={{ color: "var(--danger)" }}>− {l}</div>)}
-          {d.added.map((l, i) => <div key={"x" + i} style={{ color: "#4ade80" }}>+ {l}</div>)}
-        </div>
-        {full && (
-          <details style={{ marginTop: 6 }}>
-            <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>Full proposed content</summary>
-            <pre className="share-diff" style={{ marginTop: 6 }}>{p.after}</pre>
-          </details>
+        {isDelete && (
+          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+            This note will be deleted (soft, undoable):
+          </div>
         )}
+        <MarkdownDiff before={p.before} after={p.after} />
       </>
     );
   }

@@ -880,6 +880,36 @@ pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--rad
 .diff-delete { color: var(--danger); text-decoration: line-through; }
 .diff-equal { color: var(--text-dim); }
 
+/* ---- Rendered-markdown diff (MarkdownDiff) ------------------------------- */
+/* The note is shown with FULL markdown formatting; the change is highlighted in
+   place — green = added, red strikethrough = removed. Inherits the .md note
+   styles, framed as a panel like the old .share-diff so it reads as a preview. */
+.md-diff { background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 12px; margin: 8px 0;
+  max-height: 380px; overflow: auto; }
+.md-diff > :first-child { margin-top: 0; }
+.md-diff > :last-child { margin-bottom: 0; }
+/* Inline word-level change. */
+.md-diff ins, .md-diff .jb-ins {
+  text-decoration: none; color: #a9cdb6;
+  background: rgba(132, 165, 145, 0.22); border-radius: 3px; padding: 0 2px; }
+.md-diff del, .md-diff .jb-del {
+  text-decoration: line-through; color: #d6a3a3;
+  background: rgba(192, 133, 133, 0.20); border-radius: 3px; padding: 0 2px; }
+/* Whole added / removed block (a new or deleted line, list item, heading…). */
+.md-diff .jb-block-ins {
+  background: rgba(132, 165, 145, 0.12); box-shadow: inset 3px 0 0 var(--ok);
+  border-radius: 4px; padding: 1px 10px; }
+.md-diff .jb-block-del {
+  background: rgba(192, 133, 133, 0.12); box-shadow: inset 3px 0 0 var(--danger);
+  border-radius: 4px; padding: 1px 10px; color: var(--danger); text-decoration: line-through; }
+/* Brand-new note (all add) and deletion (all del) wrappers. */
+.md-diff.jb-all-add { box-shadow: inset 3px 0 0 var(--ok); }
+.md-diff.jb-all-del { box-shadow: inset 3px 0 0 var(--danger);
+  color: var(--danger); text-decoration: line-through; }
+/* The Shares proposal card already frames the diff; drop the inner panel chrome. */
+.share-diff-md { border: none; background: transparent; padding: 0; }
+
 table.sql-result { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.sql-result th, table.sql-result td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 table.sql-result th { background: var(--bg-elev-2); }

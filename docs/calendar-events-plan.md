@@ -238,11 +238,22 @@ maintenance already solves by "superseding stale facts"
 
 Schema support: add `supersedes_note_id INTEGER REFERENCES notes(id)` to
 `calendar_events` (the note that this row was superseded *by* is found by walking
-forward; the simplest stored edge is "this note supersedes that note"). The exact
-identity model for matching a superseding note to the right prior row — explicit
-link vs. LLM best-effort vs. a stable logical `series_key` — is **open question #3
-below**, now the central design question rather than the source-of-truth question
-(which this section settles).
+forward; the simplest stored edge is "this note supersedes that note").
+
+**Identity model — DECIDED (a)+(b):**
+
+- **(a) Structured edge when the UI provides it.** The reschedule/cancel action
+  pre-fills the superseding note with a precise marker — a `[[wiki-link]]` to the
+  original note plus the original event's date — so consolidation matches the
+  prior row unambiguously and sets its `status`.
+- **(b) LLM best-effort otherwise.** For free-prose edits ("pushed the dentist to
+  Friday") with no marker, the consolidation LLM step matches against recent
+  open events by title/person/date proximity. Lower-confidence matches stage for
+  review rather than auto-cancelling.
+
+A fully-deterministic logical `series_key` (option c) is **deferred** to a later
+hardening pass — it's the most robust but hard to compute reliably from prose, and
+(a)+(b) covers the real cases for v1.
 
 ---
 
@@ -310,15 +321,12 @@ No new notification infrastructure — both channels already ship.
    events (mixing date and datetime in one column, as `lab_results.collected_at`
    already does), or split a separate `date`/`time`? The medical tables chose the
    single-column approach; matching it is simpler.
-3. **Supersession identity model** *(source-of-truth question RESOLVED — §0/§2.2:
-   the UI always writes notes, the sidecar is re-derived)*. The open part is how a
-   superseding note is matched to the prior row it replaces (§2.4): (a) explicit
-   `[[wiki-link]]` + date marker the reschedule/cancel UI pre-fills (precise, but
-   relies on going through the UI); (b) LLM best-effort over free prose (handles
-   "moved the dentist to Friday" but can mis-match); (c) a stable logical
-   `series_key` the extractor assigns so the same real-world event keeps one
-   identity across notes (most robust, hardest to compute deterministically).
-   Likely (a)+(b): structured edge when the UI provides it, LLM fallback otherwise.
+3. **Supersession identity model — DECIDED (a)+(b)** (§2.4). UI-driven
+   reschedule/cancel writes a structured `[[wiki-link]]` + date marker for an
+   unambiguous match; free-prose edits fall back to LLM best-effort matching
+   (low-confidence matches stage for review). A deterministic `series_key`
+   (option c) is deferred. The source-of-truth question is also settled (§0/§2.2:
+   the UI always writes notes; the sidecar is re-derived).
 4. **Lead time / quiet hours** — should reminder lead-time and a no-push window
    be workflow config (per the editable-workflow pattern) or fixed?
 5. **Scope of the recurrence branch** — should detecting a recurrence *replace*

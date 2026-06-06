@@ -26,8 +26,8 @@ android {
         applicationId = "com.jbrain.tracker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
 
         buildConfigField("String", "JBRAIN_DOMAIN", "\"${secret("JBRAIN_DOMAIN", "https://example.com")}\"")
         buildConfigField("String", "JBRAIN_KEY", "\"${secret("JBRAIN_KEY", "")}\"")
@@ -87,6 +87,9 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
+
+    // Durable background upload for the home-screen capture widgets (photo + dictation).
+    implementation(libs.androidx.work.runtime.ktx)
 
     // Background location (FusedLocationProviderClient) for the trail tracker.
     implementation(libs.play.services.location)

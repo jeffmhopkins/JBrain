@@ -246,6 +246,14 @@ def _p_taxonomy_health(ctx):
     return wiki_build.taxonomy_health(ctx.conn)
 
 
+def _p_extract_health(ctx, dry_run=True, limit=200, on_conflict="skip"):
+    """One-time migration: move each person's personal medical section out of their kb/People
+    article into a dedicated kb/Health/<Person> PHI page. Deterministic + versioned/undoable;
+    dry_run reports what would move and writes nothing. Apply runs under the KB write lock."""
+    from . import health_split
+    return health_split.extract_health(ctx.conn, dry_run=dry_run, limit=int(limit), on_conflict=str(on_conflict))
+
+
 def _p_link_owner(ctx):
     """Link the default person to their freshly-written People article."""
     from . import wiki_build
@@ -1285,6 +1293,7 @@ _PRIMITIVES = {
     "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
+    "extract_health": _p_extract_health,
     "corpus_digest": _p_corpus_digest,
     "wiki_outline": _p_wiki_outline,
     "wiki_write_batch": _p_wiki_write_batch,
@@ -1441,6 +1450,9 @@ _PRIMITIVE_META: dict[str, dict] = {
                                   {"name": "valid", "type": "list", "required": True}], "output": "dict"},
     "kb_reset": {"summary": "Soft-delete all kb/ articles except protected kb/_* pages; clear synthesis markers.",
                  "inputs": [], "output": "dict"},
+    "extract_health": {"summary": "One-time: move each person's ## Health section into a kb/Health/<Person> page.",
+                       "inputs": [{"name": "dry_run", "type": "bool"}, {"name": "limit", "type": "int"},
+                                  {"name": "on_conflict", "type": "str"}], "output": "dict"},
     "corpus_digest": {"summary": "Compact survey (gist/domain/entities per note) for the outline.",
                       "inputs": [{"name": "limit", "type": "int"}], "output": "list"},
     "wiki_outline": {"summary": "Survey -> entity-first taxonomy (articles + assigned sources + index).",

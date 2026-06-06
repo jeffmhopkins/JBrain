@@ -278,9 +278,16 @@ def _link_articles(conn) -> None:
     A leaf-exact match missed common variants (entity 'Thrombotic Thrombocytopenic Purpura'
     vs article leaf 'TTP', or aliased/merged names), silently leaving article_title NULL and
     breaking incremental routing, disambiguation, and the browse link."""
+    from . import wiki_guides
     conn.execute("UPDATE entities SET article_title = NULL")
     leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
     for k in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall():
+        # A kb/Health/<Person> page shares its leaf with the person's kb/People/<Person> page.
+        # It is a PHI satellite, NEVER an entity's canonical article — excluding it keeps the
+        # person entity bound to their People page (the SELECT has no ORDER BY, so a collision
+        # would otherwise be nondeterministic and silently mis-route facts into the health page).
+        if wiki_guides.is_health_title(k["title"]):
+            continue
         leaf_map.setdefault(normalize(k["title"].split("/")[-1]), k["title"])
     aliases: dict = {}       # entity_id -> [alias_norm, ...]
     for a in conn.execute("SELECT entity_id, alias_norm FROM entity_aliases").fetchall():

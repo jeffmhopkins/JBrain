@@ -20,7 +20,6 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
   const [q, setQ] = useState("");
   const [from, setFrom] = useState("");   // optional date window — empty = full history
   const [to, setTo] = useState("");
-  const [allowChat, setAllowChat] = useState(true);
   // PHI defaults: locked to one device, finite expiry (no "never"), modest reply caps.
   const [opts, setOpts] = useState<ShareCommonOptions>(
     { bind: true, single_use: false, ttl_days: 14, max_turns: 30, max_total_replies: 120 });
@@ -49,7 +48,7 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
     if (!sel.size) { setErr("Pick at least one result to share."); return; }
     setBusy(true); setErr("");
     try {
-      const r = await createLabShare([...sel], { allow_chat: allowChat,
+      const r = await createLabShare([...sel], {
         window_from: from || null, window_to: to || null,
         bind: opts.bind, single_use: opts.single_use, ttl_days: opts.ttl_days,
         max_turns: opts.max_turns, max_total_replies: opts.max_total_replies });
@@ -92,7 +91,6 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
               <div className="share-minted-head">
                 <strong>Link created</strong>
                 <span className="badge">{sel.size} result{sel.size === 1 ? "" : "s"}</span>
-                {allowChat && <span className="badge">AI chat</span>}
               </div>
               <input className="share-url" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
               <p className="share-hint">
@@ -128,14 +126,10 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
                 {filtered.length === 0 && <div className="muted" style={{ padding: 12, fontSize: 13 }}>No results match.</div>}
               </div>
 
-              <div className="adv-section">What they can do</div>
-              <label className="share-row share-toggle">
-                <span className="share-row-label">Let them ask an AI about these results</span>
-                <input type="checkbox" className="share-check" checked={allowChat}
-                       onChange={(e) => setAllowChat(e.target.checked)} />
-                <span className="share-help share-toggle-help">
-                  Scoped to the shared results only — it can’t see anything else.</span>
-              </label>
+              <p className="share-hint" style={{ margin: "4px 4px 0", fontSize: 12 }}>
+                This is a charts &amp; table view only — no chatbot. To let someone ask an AI about
+                results, create an <strong>assisted</strong> link from the chat and attach these labs.
+              </p>
 
               <div className="adv-section">Date range (optional)</div>
               <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -151,7 +145,7 @@ export default function LabShareCreator({ analytes }: { analytes: LabAnalyte[] }
 
               <div className="adv-section">Link settings</div>
               <ShareOptions value={opts} onChange={(p) => setOpts((o) => ({ ...o, ...p }))}
-                            show={{ singleUse: true, caps: allowChat, ttlMin: 1 }} disabled={busy} />
+                            show={{ singleUse: true, caps: false, ttlMin: 1 }} disabled={busy} />
               {err && <p className="share-error">{err}</p>}
             </div>
           )}

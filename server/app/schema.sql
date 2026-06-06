@@ -384,6 +384,9 @@ CREATE TABLE IF NOT EXISTS research_specs (
   dismissed_ids_json TEXT NOT NULL DEFAULT '[]',       -- candidates the owner rejected (don't re-nag)
   persona_voice     TEXT NOT NULL DEFAULT '',          -- optional tone/role; '' = neutral default
   topics            TEXT NOT NULL DEFAULT '',          -- owner's discussion scope (what to/not discuss)
+  lab_analytes_json TEXT NOT NULL DEFAULT '[]',        -- optional ATTACHED labs allow-list (default-deny; the lab boundary)
+  lab_window_from   TEXT,                              -- optional labs date clamp (inclusive)
+  lab_window_to     TEXT,
   intro             TEXT NOT NULL DEFAULT '',          -- recipient consent-landing text
   bind              INTEGER NOT NULL DEFAULT 0,
   single_use        INTEGER NOT NULL DEFAULT 0,
@@ -405,7 +408,8 @@ CREATE TABLE IF NOT EXISTS research_sessions (
   status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
   transcript_json   TEXT NOT NULL DEFAULT '[]',
   retrieved_ids_json TEXT NOT NULL DEFAULT '[]',       -- audit: notes that informed answers
-  denied_count      INTEGER NOT NULL DEFAULT 0,        -- audit: out-of-scope retrieval attempts
+  charted_json      TEXT NOT NULL DEFAULT '[]',        -- audit: lab analytes charted/served (attached-labs path)
+  denied_count      INTEGER NOT NULL DEFAULT 0,        -- audit: out-of-scope retrieval/tool attempts
   turn_count        INTEGER NOT NULL DEFAULT 0,
   client_ip         TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),

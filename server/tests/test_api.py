@@ -6481,3 +6481,98 @@ def test_media_settings_endpoint_roundtrip_and_runtime_read(client):
     # Consuming code sees the override immediately (no restart, no env change).
     assert at.audio_model() == "small"
     assert at.video_frame_interval() == "15s" and at.video_frame_max() == 4
+
+
+# --- Assisted (research) share with attached labs ---------------------------
+
+class _FakeToolProvider:
+    """A scripted provider for the assisted-labs path: turn 1 charts wbc, turn 2 finalizes."""
+    def __init__(self):
+        from app.services.llm import ToolCall
+        self._turns = [("", [ToolCall(id="1", name="show_lab_chart", args={"analyte": "wbc"})]),
+                       ("Here's the trend.", [])]
+    def supports_tools(self):
+        return True
+    def complete_with_tools(self, messages, *, system, tools, model=None, max_tokens=1024):
+        text, calls = self._turns.pop(0) if self._turns else ("done", [])
+        messages.append({"role": "assistant", "content": text or None})
+        return text, calls, {"input_tokens": 5, "output_tokens": 3}
+    def append_tool_results(self, messages, results):
+        for r in results:
+            messages.append({"role": "user", "content": r.content})
+    def complete(self, messages, *, system=None, model=None, max_tokens=1024):
+        return "fallback"
+
+
+def _seed_research_labs(client):
+    """Insert a note + wbc/hiv labs, mint a research link, attach labs {wbc}, return the link id."""
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('rl','notes/medical/Name/labs','b') "
+                       "RETURNING id").fetchone()["id"]
+    for ak, name, vt, vn, d in [("wbc", "WBC", "6.0", 6.0, "2026-01-02"), ("wbc", "WBC", "12.0", 12.0, "2026-02-02"),
+                                ("hiv_ab", "HIV Ab", "0.1", 0.1, "2026-01-02")]:
+        conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,"
+                     "ref_low,ref_high,collected_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (nid, name, ak, vt, vn, "thou/cumm", 3.9, 11.0, d))
+    conn.commit()
+    r = client.post("/api/shares/research/mint", json={"prefixes": ["notes/medical"]}).json()
+    client.post(f"/api/shares/research/{r['link_id']}/labs", json={"analytes": ["wbc"]})
+    return r["link_id"], r["token"]
+
+
+def test_research_labs_series_is_scoped_and_session_gated(client, monkeypatch):
+    # The on-demand series endpoint under a RESEARCH token: draft 404s, no-session 403s, and once
+    # active+started it serves ONLY the attached analyte (identity-stripped, no-store) — an
+    # un-attached analyte 404s even by hitting the endpoint directly (defense in depth).
+    from app.services import llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)        # research_start requires creds
+    link_id, token = _seed_research_labs(client)
+
+    # Draft (not activated yet) → the labs series endpoint must 404, exposing nothing.
+    assert client.get(f"/api/share/{token}/research/labs/series?analyte=wbc").status_code == 404
+
+    # Activation is allowed with labs only (no approved notes), then the link is live.
+    assert client.post(f"/api/shares/research/{link_id}/activate").status_code == 200
+    land = client.get(f"/api/share/{token}").json()
+    assert land["kind"] == "research" and land["has_labs"] is True
+    assert "analytes" not in land and "charts" not in land            # nothing dumped up front
+
+    # No session yet → 403 (must start first).
+    assert client.get(f"/api/share/{token}/research/labs/series?analyte=wbc").status_code == 403
+
+    client.post(f"/api/share/{token}/research/start", json={"name": "Dr Smith"})
+    ser = client.get(f"/api/share/{token}/research/labs/series?analyte=wbc")
+    assert ser.status_code == 200 and "no-store" in ser.headers.get("cache-control", "")
+    pts = ser.json()["points"]
+    assert pts and all("note_title" not in p and "note_id" not in p for p in pts)   # identity stripped
+    assert ser.json()["encounters"] == []
+    # An un-attached analyte is unreachable even via the raw endpoint.
+    assert client.get(f"/api/share/{token}/research/labs/series?analyte=hiv_ab").status_code == 404
+
+
+def test_research_turn_with_labs_bills_once_and_charts_on_demand(client, monkeypatch):
+    # A multi-tool labs turn bills EXACTLY one reply (cap can't be bypassed by the loop), surfaces
+    # charts only when asked, and records the charted analyte for the owner audit.
+    from app.db import get_conn
+    from app.services import llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)        # patch BEFORE start (it needs creds)
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _FakeToolProvider())
+    link_id, token = _seed_research_labs(client)
+    client.post(f"/api/shares/research/{link_id}/activate")
+    client.post(f"/api/share/{token}/research/start", json={"name": "Dr Smith"})
+
+    r = client.post(f"/api/share/{token}/research/turn", json={"message": "show wbc"}).json()
+    assert [c["analyte"] for c in r.get("charts", [])] == ["wbc"]      # chart only when asked
+    conn = get_conn()
+    spec = conn.execute("SELECT reply_count FROM research_specs WHERE share_link_id=?", (link_id,)).fetchone()
+    assert spec["reply_count"] == 1                                   # one billed reply for the whole turn
+    sess = conn.execute("SELECT charted_json FROM research_sessions WHERE share_link_id=?", (link_id,)).fetchone()
+    assert "wbc" in sess["charted_json"]
+
+
+def test_research_activate_refuses_empty_notes_and_labs(client):
+    # The relaxed gate still default-denies: a link with neither approved notes NOR labs can't go live.
+    r = client.post("/api/shares/research/mint", json={"prefixes": ["notes/medical"]}).json()
+    resp = client.post(f"/api/shares/research/{r['link_id']}/activate")
+    assert resp.status_code == 400                                    # nothing approved → refused

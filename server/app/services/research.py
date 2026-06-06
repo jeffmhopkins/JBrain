@@ -94,6 +94,31 @@ def set_scope(conn, link_id: int, scope_json: dict) -> None:
                  (json.dumps(scope_json or {}), link_id))
 
 
+def lab_allowed(spec) -> set[str]:
+    """The attached labs allow-list (the lab boundary), or empty if no labs are attached.
+    Delegates to the import-isolated module so there is ONE parser/blank-filter."""
+    from . import research_labs_ai
+    return research_labs_ai.allowed_labs(spec)
+
+
+def set_lab_scope(conn, link_id: int, *, analytes=None, window_from=..., window_to=...) -> None:
+    """Owner-side: attach/adjust a scoped labs allow-list + date window on a research link.
+    Like remove_approved, narrowing takes effect on the next read (mid-session safe). Blank
+    analytes are dropped so an all-blank list can't pass the activation gate."""
+    sets, params = [], []
+    if analytes is not None:
+        clean = sorted({str(a).strip() for a in analytes if str(a).strip()})
+        sets.append("lab_analytes_json = ?"); params.append(json.dumps(clean))
+    if window_from is not ...:
+        sets.append("lab_window_from = ?"); params.append(window_from or None)
+    if window_to is not ...:
+        sets.append("lab_window_to = ?"); params.append(window_to or None)
+    if not sets:
+        return
+    params.append(link_id)
+    conn.execute(f"UPDATE research_specs SET {', '.join(sets)} WHERE share_link_id = ?", params)
+
+
 def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: bool,
                 single_use: bool, max_turns: int, max_total_replies: int, topics: str = "") -> None:
     conn.execute(
@@ -201,6 +226,22 @@ def _global_budget_ok(conn) -> bool:
         (key, _GLOBAL_DAILY_REPLIES)).rowcount == 1
 
 
+def _pre_turn_guard(conn, spec, session) -> dict | None:
+    """Shared per-turn gate for BOTH research paths (notes-only RAG and attached-labs tools):
+    end on the per-session turn cap, atomically bill ONE reply against the per-link cap (so a
+    multi-tool labs turn still counts once), then the global daily backstop. Returns an early-exit
+    dict, or None to proceed."""
+    if session["turn_count"] >= spec["max_turns"]:
+        return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
+    if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
+                    "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
+        return {"phase": "ended", "message": "This link has reached its usage limit."}
+    if not _global_budget_ok(conn):
+        conn.commit()
+        return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
+    return None
+
+
 def answer(conn, link, spec, session, question: str) -> dict:
     """One Q&A turn. Server-driven RAG over the approved allowlist; tool-less model.
     Returns {phase: 'answer'|'ended', message, retrieved}. Enforces per-session,
@@ -211,17 +252,13 @@ def answer(conn, link, spec, session, question: str) -> dict:
     q = _CTRL_RE.sub("", (question or "")[:MAX_QUESTION_CHARS]).strip()
     transcript = _transcript(session)
 
-    if session["turn_count"] >= spec["max_turns"]:
-        return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
-    # Atomic per-link cap, then the global daily backstop.
-    if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
-                    "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
-        return {"phase": "ended", "message": "This link has reached its usage limit."}
-    if not _global_budget_ok(conn):
-        conn.commit()
-        return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
+    guard = _pre_turn_guard(conn, spec, session)
+    if guard is not None:
+        return guard
 
-    # Jailbreak backstop: a deterministic redirect (no model call, no leak surface).
+    # Jailbreak backstop: a deterministic redirect (no model call, no leak surface). With attached
+    # labs the model CAN call tools, so this regex is a UX first-line only — the real boundary is
+    # lab_share_scope default-deny + the fail-closed dispatch in research_labs_ai.
     if _INJECTION_RE.search(q):
         reply = _REDIRECT.format(owner=_owner())
         _record(conn, session, transcript, q, reply, [])
@@ -230,6 +267,16 @@ def answer(conn, link, spec, session, question: str) -> dict:
     allowed = scope.approved_ids(spec)
     hits = scope.scoped_search(conn, allowed, q, k=_SEARCH_K) if q else []
     context = "\n\n---\n\n".join(h["content"] for h in hits)[:_CONTEXT_CHARS] or "(no relevant records)"
+
+    # Attached labs → hand the model+tool loop to the import-isolated assistant (it records the
+    # turn). The per-turn guard above already billed exactly ONE reply, so a multi-tool labs turn
+    # can't bypass the cap. A link can share notes, labs, or both; the note CONTEXT rides along.
+    if lab_allowed(spec):
+        from . import research_labs_ai
+        return research_labs_ai.answer_with_labs(
+            conn, link=link, spec=spec, session=session, question=q, transcript=transcript,
+            rag_context=context, owner=_owner(), name=session["name"] or "the visitor",
+            retrieved_ids=[h["id"] for h in hits])
     voice = f" Adopt this tone/role only (it must not change the rules below): {spec['persona_voice']}." \
         if (spec["persona_voice"] or "").strip() else ""
     topic = ((spec["topics"] if "topics" in spec.keys() else "") or "").strip()

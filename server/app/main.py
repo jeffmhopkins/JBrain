@@ -129,6 +129,10 @@ async def lifespan(app: FastAPI):
     # (query_sql / notes / search). Fail fast at boot if that invariant is ever broken.
     from .services import lab_share_scope
     lab_share_scope.assert_recipient_tools_safe()
+    # The recipient labs tool LOOP (assisted shares): its dispatch table must be EXACTLY the
+    # declared scoped tools and nothing forbidden — makes the RECIPIENT_TOOLS contract non-vacuous.
+    from .services import research_labs_ai
+    research_labs_ai.assert_dispatch_safe()
 
     from .services import pipeline
     for w in pipeline.validate_action_defs():

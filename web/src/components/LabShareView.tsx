@@ -1,7 +1,7 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { labsStart, labsTurn, getShareLabSeries, LabSeries, LabPoint } from "../api";
-import LabChart from "./LabChart";
+import ShareChart from "./ShareChart";
 import { Icon } from "./Icon";
 
 const OUT = new Set(["high", "low", "abnormal"]);
@@ -54,26 +54,6 @@ function LabShareTable({ token, analytes }: { token: string; analytes: { analyte
 
 type Analyte = { analyte: string; test_name: string; unit: string | null };
 type ChartSpec = { analyte: string; unit: string | null; from: string; to: string; title: string };
-
-// One chart: fetches its scoped series for THIS token and renders the shared LabChart SVG.
-function ShareChart({ token, analyte, from, to, title }:
-  { token: string; analyte: string; from?: string; to?: string; title?: string }) {
-  const [series, setSeries] = useState<LabSeries | null>(null);
-  const [err, setErr] = useState(false);
-  useEffect(() => { getShareLabSeries(token, analyte).then(setSeries).catch(() => setErr(true)); }, [token, analyte]);
-  // A failed/empty chart shows a quiet placeholder rather than vanishing silently.
-  if (err) return <div className="lab-chart-wrap"><div className="lab-head"><strong>{title || analyte}</strong></div>
-    <p className="muted" style={{ fontSize: 12, margin: 0 }}>Couldn’t load this result.</p></div>;
-  if (!series) return <div className="muted" style={{ fontSize: 12, padding: 8 }}>Loading {title || analyte}…</div>;
-  if (!series.points.length) return null;
-  return (
-    <div className="lab-chart-wrap">
-      <div className="lab-head"><strong>{series.test_name}</strong>
-        {series.unit && <span className="muted" style={{ fontSize: 12 }}> ({series.unit})</span>}</div>
-      <LabChart series={series} from={from} to={to} height={170} />
-    </div>
-  );
-}
 
 interface Msg { role: "ai" | "me"; text: string; charts?: ChartSpec[]; }
 

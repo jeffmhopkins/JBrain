@@ -224,6 +224,10 @@ _TOOL_SCHEMAS = {
         "intro": {"type": "string", "description": "Optional 1-2 sentence greeting the recipient sees."},
         "persona_voice": {"type": "string", "description": "Optional tone/role for the answering AI (cannot change its rules)."},
         "topics": {"type": "string", "description": "What the AI MAY and may NOT discuss — a hard scope it must follow (e.g. 'only medications and allergies; never finances or family'). Ask the owner; it shows in the proposal."},
+        "lab_analytes": {"type": "array", "items": {"type": "string"},
+                         "description": "Optional analyte_key(s) (e.g. ['wbc','creatinine']) to ALSO let the assistant look up & chart from the owner's labs. The owner still approves & activates in Shares; nothing is exposed until then."},
+        "lab_from": {"type": "string", "description": "Optional ISO lower bound clamping the shared labs window."},
+        "lab_to": {"type": "string", "description": "Optional ISO upper bound clamping the shared labs window."},
         "ttl_days": {"type": "integer", "default": 0},
         "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that opens it."},
         "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}}},
@@ -1703,33 +1707,41 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
 
 
 def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, notes=None, intro="",
-                                persona_voice="", topics="", ttl_days=0, bind=False, single_use=False):
+                                persona_voice="", topics="", lab_analytes=None, lab_from=None, lab_to=None,
+                                ttl_days=0, bind=False, single_use=False):
     """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
     (it ANSWERS from the owner's notes instead of collecting). `prefixes` (folders) and
     `notes` (exact titles) only FIND candidate notes; the owner approves exactly which
-    are exposed and activates the link in Shares. Never expose a root/whole-brain scope."""
+    are exposed and activates the link in Shares. Never expose a root/whole-brain scope.
+    Optionally `lab_analytes` ALSO lets the assistant look up & chart specific labs (still
+    owner-approved & activated). A labs-only assisted link is allowed (no folder/note needed)."""
     from . import share as share_svc
     from . import research as research_svc
     from . import research_scope as rscope
     pre = [p.strip().strip("/") for p in (prefixes or []) if p and p.strip().strip("/")]
     titles = [t.strip().strip("/") for t in (notes or []) if t and t.strip().strip("/")]
-    if not pre and not titles:
-        return ("I need at least one folder (prefixes) or specific note title (notes) to scope this to — "
-                "a whole-brain research link isn't allowed.", None)
+    analytes = [str(a).strip() for a in (lab_analytes or []) if str(a).strip()]
+    if not pre and not titles and not analytes:
+        return ("I need at least one folder (prefixes), specific note title (notes), or lab analyte "
+                "(lab_analytes) to scope this to — a whole-brain research link isn't allowed.", None)
     scope = {"prefixes": pre, "titles": titles, "kinds": []}
     candidates = rscope.filter_match_ids(conn, scope)   # blast-radius preview for the owner
-    label = (label or (pre[0] if pre else titles[0])).strip()[:80]
+    label = (label or (pre[0] if pre else titles[0] if titles else "Labs")).strip()[:80]
     # No backing note — a research link answers from the approved notes and creates no page.
     token, link_id = share_svc.create_research_link(conn, label=label,
                                                     ttl_days=ttl_days or None, bind=bool(bind))
     research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=persona_voice,
                              topics=topics, intro=intro, bind=bool(bind), single_use=bool(single_use))
+    if analytes:
+        research_svc.set_lab_scope(conn, link_id, analytes=analytes, window_from=lab_from, window_to=lab_to)
     url = share_svc.share_url(token)
     scope_line = f"\nDiscussion scope: {topics.strip()}" if (topics or "").strip() else ""
+    labs_line = f"\nPlus {len(analytes)} lab result(s) the assistant can look up & chart." if analytes else ""
+    src = ", ".join(pre + titles) or "labs only"
     display = (f"Created a DRAFT research link “{label}” → {url}\n"
-               f"It matches {len(candidates)} note(s) from {', '.join(pre + titles)}, but NOTHING is exposed yet. "
+               f"It matches {len(candidates)} note(s) from {src}, but NOTHING is exposed yet. "
                f"Go to Advanced → Shares, APPROVE exactly which of those notes it may read, then ACTIVATE it. "
-               f"It's read-only — recipients can only ask questions, never change anything.{scope_line}")
+               f"It's read-only — recipients can only ask questions, never change anything.{scope_line}{labs_line}")
     _notify_share_created("Research link", url)
     undo = {"op": "revoke_share", "token": token}
     return f"applied: {display}", _record_applied(conn, conversation_id, "RESEARCH_SHARE", display, undo)
@@ -1878,7 +1890,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     if name == "create_research_share":
         return _tool_create_research_share(conn, conversation_id, args.get("label"), args.get("prefixes"),
                                            args.get("notes"), args.get("intro", ""), args.get("persona_voice", ""),
-                                           args.get("topics", ""), args.get("ttl_days", 0),
+                                           args.get("topics", ""), args.get("lab_analytes"), args.get("lab_from"),
+                                           args.get("lab_to"), args.get("ttl_days", 0),
                                            args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None

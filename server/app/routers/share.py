@@ -17,7 +17,6 @@ from ..services import attachments as att_svc
 from ..services import guided as guided_svc
 from ..services import lab_share_scope
 from ..services import labshare as labshare_svc
-from ..services import labshare_ai
 from ..services import research as research_svc
 from ..services import share as share_svc
 
@@ -263,6 +262,9 @@ def _research_landing(conn, link) -> dict:
         "brain_name": get_settings().brain_name,
         "owner": get_settings().brain_name,
         "intro": spec["intro"],
+        # When labs are attached the assistant can pull up specific shared results on demand; the
+        # recipient page uses this only for the affordance — no charts/analytes are dumped up front.
+        "has_labs": bool(research_svc.lab_allowed(spec)),
         "consent": (f"You’re chatting with an AI assistant set up by {get_settings().brain_name} that "
                     "can answer questions from a specific set of records they’ve shared. It only "
                     "reads what they approved, and conversations are logged for them. Not professional advice."),
@@ -325,6 +327,29 @@ def research_turn(token: str, body: ResearchTurnIn, request: Request):
     return research_svc.answer(conn, link, spec, session, body.message)
 
 
+@router.get("/{token}/research/labs/series")
+def research_labs_series(token: str, analyte: str, request: Request):
+    """Scoped series for ONE analyte attached to a RESEARCH (assisted) link — only if it's in the
+    link's labs allow-list (independent re-check via lab_share_scope, so a forged/jailbroken chart
+    spec still 404s), identity-stripped, clamped to the owner window, never cached. Requires an
+    active research session on THIS browser (the samesite=strict jb_research cookie)."""
+    conn = get_conn()
+    link = _resolve_or_404(conn, request, token)
+    if link["kind"] != "research":
+        raise HTTPException(status_code=404, detail="Not found.")
+    spec = research_svc.get_spec(conn, link["id"])
+    if spec is None or spec["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn’t available.")
+    session = research_svc.find_session(conn, link["id"], request.cookies.get(f"jb_research_{link['id']}"))
+    if session is None or session["status"] != "active":
+        raise HTTPException(status_code=403, detail="Start the session first.")
+    s = lab_share_scope.series_scoped(conn, analyte, allowed=research_svc.lab_allowed(spec),
+                                      dfrom=spec["lab_window_from"], dto=spec["lab_window_to"])
+    if s is None:                                          # out-of-scope analyte — defense in depth
+        raise HTTPException(status_code=404, detail="Not available.")
+    return JSONResponse(s, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
+
 # --- Lab-share links (kind='labs') ------------------------------------------
 # A recipient views a SCOPED set of lab trend charts (+ optional scoped AI chat). All lab data
 # comes through lab_share_scope (allow-list + identity-stripped); series responses are no-store.
@@ -338,7 +363,10 @@ def _labs_landing(conn, link) -> dict:
         "brain_name": get_settings().brain_name,
         "owner": get_settings().brain_name,
         "intro": spec["intro"],
-        "allow_chat": bool(spec["allow_chat"]) and llm_ready(),
+        # Standalone labs shares are DATA-ONLY now — the scoped AI lives in assisted (research)
+        # links. Reported False unconditionally so legacy chat-enabled labs links degrade to
+        # charts/table only (no broken composer); /labs/turn is also hard-disabled below.
+        "allow_chat": False,
         "consent": (f"You’re viewing a selection of lab results {get_settings().brain_name} chose to share. "
                     "It’s a fixed selection, not their full records, and may not be current. "
                     "This is not medical advice or a diagnosis. Views are logged for them."),
@@ -390,7 +418,7 @@ def labs_start(token: str, body: LabsStartIn, request: Request, response: Respon
     analytes = [{"analyte": a["analyte"], "test_name": a["test_name"], "unit": a["unit"]}
                 for a in lab_share_scope.list_analytes_scoped(conn, labshare_svc.allowed_analytes(spec))]
     out = {"name": (existing["name"] if existing else (body.name or "").strip()[:80]) or None,
-           "allow_chat": bool(spec["allow_chat"]) and llm_ready(), "analytes": analytes,
+           "allow_chat": False, "analytes": analytes,         # data-only now (chat moved to assisted links)
            "window": {"from": spec["window_from"], "to": spec["window_to"]}}
     if existing and existing["status"] == "active":
         import json as _json
@@ -427,17 +455,10 @@ def labs_series(token: str, analyte: str, request: Request):
 
 @router.post("/{token}/labs/turn")
 def labs_turn(token: str, body: LabsTurnIn, request: Request):
-    if request.headers.get("sec-fetch-site") == "cross-site":
-        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
-    conn = get_conn()
-    link, spec = _resolve_labs(conn, request, token)
-    if not (spec["allow_chat"] and llm_ready()):
-        raise HTTPException(status_code=403, detail="Chat isn’t enabled for this link.")
-    _require_access(link, request)
-    session = _labs_session(conn, link, request)
-    if session is None or session["status"] != "active":
-        raise HTTPException(status_code=409, detail="Your session has ended — reload to start over.")
-    return labshare_ai.answer(conn, link, spec, session, body.message)
+    # Standalone labs shares are DATA-ONLY (charts/table). The scoped AI moved to assisted
+    # (research) links, where it gets real tools over the attached labs. Hard-disabled here so
+    # even a legacy allow_chat=1 link can never bill an AI turn.
+    raise HTTPException(status_code=403, detail="Chat isn’t enabled for this link.")
 
 
 # Only these render inline on the public page; everything else (esp. SVG/HTML,

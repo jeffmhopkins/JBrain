@@ -82,6 +82,10 @@ class LLMProvider(Protocol):
     def complete(self, messages: list[Message], *, system: str | None = None,
                  model: str | None = None, max_tokens: int = 1024) -> str: ...
 
+    def complete_with_tools(self, messages: list[Message], *, system: str | None,
+                            tools: list[ToolDef], model: str | None,
+                            max_tokens: int) -> tuple[str, list[ToolCall], dict | None]: ...
+
     def stream_turn(self, messages: list[Message], *, system: str | None,
                     tools: list[ToolDef], model: str | None,
                     max_tokens: int) -> AsyncGenerator[StreamEvent, None]: ...
@@ -113,6 +117,34 @@ class AnthropicProvider:
         msg = client.messages.create(**kwargs)
         _record_usage(kwargs["model"], getattr(msg, "usage", None), "action")
         return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
+    def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
+        """One SYNCHRONOUS tool-capable turn (non-streaming). Appends the model's turn to
+        `messages` (opaque SDK blocks, re-sent next iteration) and returns
+        (text, tool_calls, usage). The caller dispatches the calls and hands answers back
+        via append_tool_results — the same loop shape as stream_turn, minus streaming.
+        Used by the recipient labs assistant, which can't run the async stream."""
+        from anthropic import Anthropic
+
+        client = Anthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
+        wire_tools = [
+            {"name": t.name, "description": t.description, "input_schema": t.json_schema}
+            for t in tools
+        ]
+        kwargs: dict = {"model": model or self.default_model(), "max_tokens": max_tokens,
+                        "messages": messages, "tools": wire_tools}
+        if system:
+            kwargs["system"] = system
+        msg = client.messages.create(**kwargs)
+        _record_usage(kwargs["model"], getattr(msg, "usage", None), "agent")
+        messages.append({"role": "assistant", "content": msg.content})
+        text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        calls = [ToolCall(id=b.id, name=b.name, args=b.input)
+                 for b in msg.content if getattr(b, "type", None) == "tool_use"]
+        u = getattr(msg, "usage", None)
+        usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
+                 "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
+        return text, calls, usage
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens):
         from anthropic import AsyncAnthropic
@@ -220,6 +252,37 @@ class XAIProvider:
             messages=self._wire(messages, system))
         _record_openai_usage(model or self.default_model(), getattr(resp, "usage", None), "action")
         return (resp.choices[0].message.content or "").strip()
+
+    def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
+        """Synchronous tool-capable turn (OpenAI-compatible). Mirrors the Anthropic adapter:
+        appends the assistant turn (incl. any tool_calls) to `messages` and returns
+        (text, tool_calls, usage)."""
+        client = self._client()
+        wire_tools = [{"type": "function", "function": {
+            "name": t.name, "description": t.description, "parameters": t.json_schema}} for t in tools] or None
+        resp = client.chat.completions.create(
+            model=model or self.default_model(), max_tokens=max_tokens,
+            messages=self._wire(messages, system), tools=wire_tools)
+        _record_openai_usage(model or self.default_model(), getattr(resp, "usage", None), "agent")
+        choice = resp.choices[0].message
+        text = choice.content or ""
+        calls, oa_calls = [], []
+        for tc in (getattr(choice, "tool_calls", None) or []):
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:  # noqa: BLE001 — malformed args blob → empty
+                args = {}
+            calls.append(ToolCall(id=tc.id, name=tc.function.name, args=args))
+            oa_calls.append({"id": tc.id, "type": "function",
+                             "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"}})
+        amsg: dict = {"role": "assistant", "content": text or None}
+        if oa_calls:
+            amsg["tool_calls"] = oa_calls
+        messages.append(amsg)
+        u = getattr(resp, "usage", None)
+        usage = {"input_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                 "output_tokens": getattr(u, "completion_tokens", 0) or 0} if u else None
+        return text, calls, usage
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens):
         client = self._client(async_=True)
@@ -372,3 +435,13 @@ def has_credentials() -> bool:
 def complete(messages: list[Message], *, system: str | None = None,
              model: str | None = None, max_tokens: int = 1024) -> str:
     return get_provider(model).complete(messages, system=system, model=model, max_tokens=max_tokens)
+
+
+def complete_with_tools(messages: list[Message], *, system: str | None = None, tools: list[ToolDef],
+                        model: str | None = None, max_tokens: int = 1024) -> tuple[str, list[ToolCall], dict | None]:
+    return get_provider(model).complete_with_tools(messages, system=system, tools=tools,
+                                                   model=model, max_tokens=max_tokens)
+
+
+def append_tool_results(messages: list[Message], results: list[ToolResult], *, model: str | None = None) -> None:
+    get_provider(model).append_tool_results(messages, results)

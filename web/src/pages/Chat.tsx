@@ -147,6 +147,10 @@ export default function Chat() {
   // newConversation() can await the id (ensureConversation) instead of being dropped.
   const convIdRef = useRef<number | null>(null);
   const convPromiseRef = useRef<Promise<number> | null>(null);
+  // Bumped whenever the visible thread is reset (/clear → newConversation). A loadMessages()
+  // that was already in flight when the reset happened captures the old value and bails on
+  // settle, so a late server re-sync can't repopulate the view of a thread the user just cleared.
+  const loadGenRef = useRef(0);
   const entrySeq = useRef(0);   // unique id for optimistic capture-mode entry rows
   const turnSeq = useRef(0);    // unique id for optimistic chat message rows (user/assistant)
   const activeAsstRef = useRef<number | null>(null);   // id of the assistant bubble the stream is painting
@@ -305,12 +309,16 @@ export default function Chat() {
   const CHAT_CONV_KEY = "jbrain_conv_chat";
 
   async function loadMessages(id: number) {
+    const gen = loadGenRef.current;
     try {
       const rows = await get<{ id: number; role: Msg["role"]; content: string; step_count?: number }[]>(`/api/chat/conversations/${id}/messages`);
       // A turn may have started streaming while this fetch was in flight (e.g. the user
       // sent before the initial restore-load resolved). Don't clobber the optimistic /
       // actively-streaming view with stale server rows — the post-stream re-sync handles it.
       if (streamActiveRef.current) return;
+      // The thread was cleared (/clear) while this fetch was in flight — these rows are for
+      // the now-discarded conversation, so dropping them in would resurrect a cleared chat.
+      if (gen !== loadGenRef.current) return;
       setMessages(rows.map((r) => ({ role: r.role, content: r.content, dbId: r.id, stepCount: r.step_count })));
     } catch { /* keep what we have */ }
   }
@@ -327,6 +335,7 @@ export default function Chat() {
 
   // /clear and friends: start a brand-new thread AND wipe the current view.
   async function newConversation(): Promise<number> {
+    loadGenRef.current++;   // invalidate any in-flight loadMessages so it can't repaint the cleared thread
     setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
     return createConversation();
   }
@@ -409,7 +418,7 @@ export default function Chat() {
       // Also wipe the cleared thread's stored tool-call history (full-raw logs shouldn't
       // pile up across throwaway chats). Fire-and-forget against the OLD conversation id.
       const old = convIdRef.current;
-      setInput(""); setEntries([]); newConversation();
+      setInput(""); setPendingFiles([]); setEntries([]); newConversation();
       if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
       return;
     }

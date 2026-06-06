@@ -25,13 +25,29 @@ export const leaf = (t: string) => (t || "").replace(/^(notes|kb|lists|logs)\//i
 // overlap; the focused node still shows its full (leaf) title elsewhere.
 export const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
+// Display label for a wiki-link with no explicit alias. For kb/ titles the
+// category folders are taxonomy, not the article's name, so show the last path
+// segment ("kb/People/Jeffrey Mark Hopkins" → "Jeffrey Mark Hopkins", not
+// "People/Jeffrey Mark Hopkins"). Other roots keep their root-stripped leaf.
+export function wikiLabel(title: string): string {
+  const t = (title || "").trim();
+  if (/^kb\//i.test(t)) {
+    const segs = t.split("/").filter(Boolean);
+    return segs[segs.length - 1] || leaf(t);
+  }
+  return leaf(t);
+}
+
 // Rewrite [[Title]] and [[Title|display]] into markdown links to the note route.
 export function renderWikiLinks(md: string): string {
   return (md || "").replace(/\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g, (_m, title, disp) => {
     const t = String(title).trim();
-    // No explicit display text → show the root-stripped leaf ("kb/Jeff" → "Jeff").
-    const label = (disp ?? "").trim() || leaf(t);
-    return `[${label}](/note/${slugify(t)})`;
+    const explicit = (disp ?? "").trim();
+    const label = explicit || wikiLabel(t);
+    // When we shortened a bare link, keep the full title as a hover tooltip so the
+    // namespace stays discoverable. Markdown link title: [label](url "title").
+    const tip = !explicit && label !== t ? ` "${t.replace(/"/g, "")}"` : "";
+    return `[${label}](/note/${slugify(t)}${tip})`;
   });
 }
 
@@ -46,7 +62,7 @@ export function stripSummarySentinels(md: string): string {
 // Shared ReactMarkdown `a` renderer: internal /note/ links use the router,
 // external links open in a new tab. Reused by NotePage and the version viewer.
 export function makeLinkRenderer(navigate: NavigateFunction) {
-  return ({ href, children }: any) => {
+  return ({ href, children, title }: any) => {
     if (href?.startsWith("#dyn:")) {
       // A dynamic (live) time value — render as a marked span with the anchor tooltip,
       // not a link. The carrier comes from expandTimeTokensMarked.
@@ -56,10 +72,10 @@ export function makeLinkRenderer(navigate: NavigateFunction) {
     if (href?.startsWith("/note/")) {
       return createElement(
         "a",
-        { className: "wikilink", href, onClick: (e: any) => { e.preventDefault(); navigate(href); } },
+        { className: "wikilink", href, title, onClick: (e: any) => { e.preventDefault(); navigate(href); } },
         children,
       );
     }
-    return createElement("a", { href, target: "_blank", rel: "noreferrer" }, children);
+    return createElement("a", { href, target: "_blank", rel: "noreferrer", title }, children);
   };
 }

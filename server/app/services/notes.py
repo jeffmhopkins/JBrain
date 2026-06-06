@@ -68,22 +68,18 @@ def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int)
     that links to it, so inline links keep resolving. Backlinks (tracked by note id) already
     survive; this fixes the link *text/href* in referencing notes.
 
-    A |display alias is preserved EXCEPT when it merely echoed the old name (the old title
-    or its bare leaf): that alias would otherwise become a stale label naming a now-different
-    article (e.g. renaming People/Jeff → People/Summer would leave [[…Summer…|Jeff]]). In
-    that case the alias is refreshed to the new bare name (or dropped when redundant)."""
-    old_leaf = old_title.split("/")[-1].strip()
-    new_leaf = new_title.split("/")[-1].strip()
-    # Dropping the alias only renders the bare leaf when the title has no folder depth past
-    # its root; otherwise keep an explicit |new-leaf so the label stays short.
-    from .wikilinks import _root_leaf
-    new_alias = "" if _root_leaf(new_title).lower() == new_leaf.lower() else f"|{new_leaf}"
+    A |display alias is preserved EXCEPT when it merely echoed the old name (any path form
+    of the old title): that alias would otherwise become a stale label naming a now-different
+    article (e.g. renaming People/Jeff → People/Summer would leave [[…Summer…|Jeff]]). Such an
+    echo is dropped — the bare link renders the new article's clean short name (wikiLabel)."""
+    from .wikilinks import _path_forms
+    old_forms = _path_forms(old_title)   # {'jeff', 'people/jeff', 'kb/people/jeff'}
 
     def _rewrite(m: "re.Match") -> str:
         alias = m.group(1) or ""           # includes leading "|", or ""
         label = alias[1:].strip() if alias else ""
-        if label and label.lower() in (old_title.lower(), old_leaf.lower()):
-            alias = new_alias               # stale echo of the old name → refresh/drop
+        if label and label.lower() in old_forms:
+            alias = ""                      # stale echo of the old name → drop it
         return f"[[{new_title}{alias}]]"
 
     pat = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(\|[^\]]*)?\]\]", re.IGNORECASE)

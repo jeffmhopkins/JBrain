@@ -800,16 +800,40 @@ def test_link_label_audit_flags_and_fixes_mismatch(client):
     assert f["display"] == "Jeff Hopkins"
     assert f["target_title"] == "kb/People/Summer E. Hopkins"
     assert f["resolved_title"] == "kb/People/Jeff Hopkins"
-    assert f["fixed"] == "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]"
+    assert f["fixed"] == "[[kb/People/Summer E. Hopkins]]"   # drop alias → renders short name
 
-    # Fix it; the label now matches the target, and re-audit is clean.
+    # Fix it; the alias is gone (renders the target's name), and re-audit is clean.
     assert client.post("/api/notes/links/audit/fix",
                        json={"note_id": f["source_id"], "target": f["target"],
                              "display": f["display"]}).json()["fixed"] is True
     note = client.get(f"/api/notes/{f['source_slug']}").json()
-    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in note["content_md"]
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]
     assert "|Jeff]]" in note["content_md"]   # the legit short link is untouched
     assert client.get("/api/notes/links/audit").json()["findings"] == []
+
+
+def test_verbose_alias_tidy_drops_path_echoes(client):
+    # Maintenance sweep: aliases that just echo the article's path/name are tidied to bare
+    # links (render the clean short name); a genuine shortening is left alone.
+    from app.db import get_conn
+    from app.services import wikilinks
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Den",
+        "content_md": ("A [[kb/People/Jeff Hopkins|People/Jeff Hopkins]], "
+                       "B [[kb/People/Jeff Hopkins|Jeff Hopkins]], "
+                       "C [[kb/People/Jeff Hopkins|Jeff]], "
+                       "D [[kb/People/Jeff Hopkins]]."),
+    })
+    conn = get_conn()
+    verbose = [f for f in wikilinks.scan_link_labels(conn) if f["kind"] == "verbose"]
+    assert len(verbose) == 2          # A (path echo) + B (name echo); C (short) + D (bare) untouched
+    assert wikilinks.normalize_all_link_labels(conn)["verbose"] == 2
+    conn.commit()
+    den = client.get("/api/notes/kb-places-den").json()["content_md"]
+    assert den.count("[[kb/People/Jeff Hopkins]]") == 3   # A, B, D now bare
+    assert "|People/Jeff Hopkins]]" not in den and "|Jeff Hopkins]]" not in den
+    assert "|Jeff]]" in den                                # genuine shortening kept
 
 
 def test_audit_link_labels_workflow_action(client):
@@ -829,7 +853,7 @@ def test_audit_link_labels_workflow_action(client):
     conn.commit()
 
     note = client.get("/api/notes/kb-places-cabin").json()
-    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in note["content_md"]
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]   # alias dropped
     rc = conn.execute("SELECT title, message FROM review_items ORDER BY id DESC LIMIT 1").fetchone()
     assert "wiki-link label" in rc["title"] and "Jeff Hopkins" in rc["message"]
 
@@ -875,7 +899,7 @@ def test_rename_refreshes_stale_echo_alias(client):
     client.put(f"/api/notes/{jeff['slug']}",
                json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
     house = client.get("/api/notes/kb-places-house").json()
-    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in house["content_md"]
+    assert "[[kb/People/Summer E. Hopkins]]" in house["content_md"]   # echo alias dropped
     assert "Jeff Hopkins" not in house["content_md"]
 
 

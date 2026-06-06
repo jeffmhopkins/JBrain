@@ -47,17 +47,45 @@ def resolve_dangling_links(conn, note_id: int, title: str) -> None:
     )
 
 
-# --- Display-label audit -----------------------------------------------------
-# A [[Target|Display]] link is meant to show a shortened label for the SAME
-# article (e.g. [[kb/People/Jeff Hopkins|Jeff Hopkins]]). A class of bug — most
-# often minted when a note is renamed/merged and the inbound-link rewrite keeps
-# the old |Display verbatim — leaves the label naming a DIFFERENT article than
-# the target (e.g. [[kb/People/Summer E. Hopkins|Jeff Hopkins]]). This audit
-# finds those high-confidence mismatches and corrects the label.
+# --- Link-label hygiene ------------------------------------------------------
+# A [[Target|Display]] link should show a clean, short label for the article it
+# points at. Two problems get fixed here, both by DROPPING the alias so the link
+# renders the article's bare name (the PWA's wikiLabel() shows the last path
+# segment for kb/ titles — "Jeffrey Mark Hopkins", not "People/Jeffrey Mark Hopkins"):
+#   • mismatch — the label names a DIFFERENT article than the target (e.g. a stale
+#     alias left by a rename: [[kb/People/Summer E. Hopkins|Jeff Hopkins]]);
+#   • verbose — the label just repeats the article's path/name (e.g.
+#     [[kb/People/Jeff|People/Jeff]] or [[kb/People/Jeff|Jeff]]), clutter we tidy.
+# A genuine, different shortening/nickname (e.g. |Dad, or |Jeff for "Jeff Hopkins")
+# is left untouched.
 
 # Capture target + optional display (the links table doesn't store the display).
 WIKILINK_FULL_RE = re.compile(r"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]")
 _ROOTS = ("notes", "kb", "lists", "logs")
+
+
+def wiki_label(title: str) -> str:
+    """The bare display label for a link, mirroring the PWA's wikiLabel(): for kb/
+    titles the category folders are taxonomy, so show the last path segment
+    ('kb/People/Jeffrey Mark Hopkins' → 'Jeffrey Mark Hopkins'); other roots keep
+    their root-stripped leaf."""
+    t = _norm(title)
+    if t.lower().startswith("kb/"):
+        segs = [s for s in t.split("/") if s.strip()]
+        return segs[-1] if segs else _root_leaf(t)
+    return _root_leaf(t)
+
+
+def _path_forms(title: str) -> set[str]:
+    """Progressive trailing path forms of a title, lowercased — the 'verbose' label
+    variants a writer might bake in. 'kb/People/Jeff Hopkins' → {'jeff hopkins',
+    'people/jeff hopkins', 'kb/people/jeff hopkins'}."""
+    segs = [s.strip() for s in _norm(title).split("/") if s.strip()]
+    forms, suffix = set(), ""
+    for seg in reversed(segs):
+        suffix = seg if not suffix else f"{seg}/{suffix}"
+        forms.add(suffix.lower())
+    return forms
 
 
 def _norm(s: str | None) -> str:
@@ -100,17 +128,12 @@ def _iter_display_links(content_md: str):
         yield m.group(0), target, display
 
 
-def _desired_label(target: str, target_title: str) -> str:
-    """The corrected link: keep an explicit bare-name label unless dropping the alias
-    would already render it (target has no folder depth past its root)."""
-    seg = _last_segment(target_title)
-    return f"[[{target}]]" if _root_leaf(target_title).lower() == seg.lower() else f"[[{target}|{seg}]]"
-
-
-def audit_display_mismatches(conn) -> list[dict]:
-    """Scan every live note for [[Target|Display]] links whose label names a different
-    article than the target. High-confidence only: the label resolves to a different
-    note in the SAME parent folder, or equals a former title of the target."""
+def scan_link_labels(conn) -> list[dict]:
+    """Scan every live note for [[Target|Display]] links that should drop their alias.
+    Each finding has kind 'mismatch' (label names a different article — high-confidence:
+    a different note in the same folder, or a former title of the target) or 'verbose'
+    (the label just repeats the article's path/name). The fix is always the bare
+    [[Target]], which renders the article's clean short name."""
     notes = conn.execute(
         "SELECT id, title, slug, content_md FROM notes WHERE deleted_at IS NULL"
     ).fetchall()
@@ -126,50 +149,56 @@ def audit_display_mismatches(conn) -> list[dict]:
         s.add((r["title"] or "").lower())
         s.add(_last_segment(r["title"]).lower())
 
+    def finding(kind, n, raw, target, tgt, display, reason, resolved=None):
+        return {
+            "kind": kind, "source_id": n["id"], "source_title": n["title"], "source_slug": n["slug"],
+            "raw": raw, "target": target, "target_title": tgt["title"], "target_slug": tgt["slug"],
+            "display": display, "desired_display": wiki_label(tgt["title"]), "fixed": f"[[{target}]]",
+            "resolved_title": resolved["title"] if resolved else None,
+            "resolved_slug": resolved["slug"] if resolved else None, "reason": reason,
+        }
+
     findings: list[dict] = []
     for n in notes:
         for raw, target, display in _iter_display_links(n["content_md"]):
             tgt = by_title.get(target.lower())
             if not tgt:
                 continue  # dangling/unresolved target — out of scope
-            tseg, tleaf = _last_segment(tgt["title"]), _root_leaf(tgt["title"])
-            dlow = display.lower()
-            # Canonical label, or a legit shortening/expansion of the SAME name → fine.
-            if dlow in (tgt["title"].lower(), tleaf.lower(), tseg.lower()):
+            # Verbose: the label just echoes the article's path/name → tidy to bare.
+            if display.lower() in _path_forms(tgt["title"]):
+                findings.append(finding("verbose", n, raw, target, tgt, display,
+                                        "label repeats the article's path/name"))
                 continue
-            dt, st = _tokens(display), _tokens(tseg)
+            # A genuine, different shortening/expansion of the same name → leave it.
+            dt, st = _tokens(display), _tokens(_last_segment(tgt["title"]))
             if dt and (dt <= st or st <= dt):
                 continue
-
-            reason, resolved = None, None
+            # Mismatch: names a different same-folder article, or a former title.
+            dlow = display.lower()
             if dlow in former.get(tgt["id"], set()):
-                reason = "stale rename alias — the label is a former title of the target"
-            else:
-                cand = by_title.get(dlow)
-                if cand is None:
-                    seg_hits = by_seg.get(dlow, [])
-                    cand = seg_hits[0] if len(seg_hits) == 1 else None
-                if (cand and cand["id"] != tgt["id"]
-                        and _parent(cand["title"]).lower() == _parent(tgt["title"]).lower()):
-                    reason = "the label names a different article in the same folder"
-                    resolved = cand
-            if not reason:
+                findings.append(finding("mismatch", n, raw, target, tgt, display,
+                                        "stale rename alias — the label is a former title of the target"))
                 continue
-
-            findings.append({
-                "source_id": n["id"], "source_title": n["title"], "source_slug": n["slug"],
-                "raw": raw, "target": target, "target_title": tgt["title"], "target_slug": tgt["slug"],
-                "display": display, "desired_display": tseg, "fixed": _desired_label(target, tgt["title"]),
-                "resolved_title": resolved["title"] if resolved else None,
-                "resolved_slug": resolved["slug"] if resolved else None,
-                "reason": reason,
-            })
+            cand = by_title.get(dlow)
+            if cand is None:
+                hits = by_seg.get(dlow, [])
+                cand = hits[0] if len(hits) == 1 else None
+            if (cand and cand["id"] != tgt["id"]
+                    and _parent(cand["title"]).lower() == _parent(tgt["title"]).lower()):
+                findings.append(finding("mismatch", n, raw, target, tgt, display,
+                                        "the label names a different article in the same folder", cand))
     return findings
 
 
+def audit_display_mismatches(conn) -> list[dict]:
+    """High-confidence label mismatches only (a label naming a different article) — what
+    the on-view Wiki panel flags. Verbose-alias tidying is left to the maintenance sweep."""
+    return [f for f in scan_link_labels(conn) if f["kind"] == "mismatch"]
+
+
 def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
-    """Correct one [[Target|Display]] in a note: re-derive the right label from the live
-    target and rewrite the matching link. Versioned/undoable. Returns whether it changed."""
+    """Drop the alias on one [[Target|Display]] in a note so it renders the target's clean
+    short name. Versioned/undoable. Returns whether anything changed."""
     from . import notes as notes_svc  # lazy — notes imports this module
 
     row = conn.execute(
@@ -177,12 +206,10 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
     ).fetchone()
     if not row:
         return False
-    tgt = conn.execute(
-        "SELECT title FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NULL", (target,)
-    ).fetchone()
-    if not tgt:
-        return False
-    fixed = _desired_label(target, tgt["title"])
+    if not conn.execute(
+        "SELECT 1 FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NULL", (target,)
+    ).fetchone():
+        return False  # don't rewrite a link whose target no longer resolves
 
     changed = False
 
@@ -191,13 +218,26 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
         if (_norm(m.group(1)).lower() == target.lower()
                 and m.group(2) is not None and _norm(m.group(2)) == display):
             changed = True
-            return fixed
+            return f"[[{target}]]"
         return m.group(0)
 
     new_content = WIKILINK_FULL_RE.sub(repl, row["content_md"])
     if not changed or new_content == row["content_md"]:
         return False
     notes_svc.upsert_note(conn, row["title"], new_content, note_id=note_id,
-                          source="link-audit", version_note="link label fix", fire_events=False)
+                          source="link-audit", version_note="link label tidy", fire_events=False)
     return True
+
+
+def normalize_all_link_labels(conn, limit: int = 5000) -> dict:
+    """Drop redundant/mismatched aliases across the whole wiki (deterministic, no LLM).
+    Used by the nightly sweep and the post-write KB maintenance/build passes."""
+    mism = verb = 0
+    for f in scan_link_labels(conn)[: int(limit)]:
+        if fix_note_link(conn, f["source_id"], f["target"], f["display"]):
+            if f["kind"] == "mismatch":
+                mism += 1
+            else:
+                verb += 1
+    return {"fixed": mism + verb, "mismatches": mism, "verbose": verb}
 

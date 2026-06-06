@@ -1,12 +1,15 @@
-# Declarative action: WIKI-LINK LABEL AUDIT.
+# Declarative action: WIKI-LINK LABEL AUDIT + TIDY.
 #
-# Finds [[Target|Display]] links whose shortened label names a DIFFERENT article than the
-# target — most often minted when a note is renamed/merged and the inbound-link rewrite
-# keeps the old |Display verbatim (e.g. [[kb/People/Summer E. Hopkins|Jeff Hopkins]]).
-# High-confidence only: the label resolves to a different article in the same folder, or is
-# a former title of the target. With fix on (default), it corrects the label to the
-# target's bare name (versioned, undoable) and logs each fix in the article's talk; a
-# Review card summarises what changed. No LLM — a clean run is a true no-op.
+# Drops [[Target|Display]] aliases so links render the article's clean short name. Two cases:
+#   • mismatch — the label names a DIFFERENT article than the target (most often a stale
+#     alias kept verbatim across a rename/merge, e.g. [[kb/People/Summer E. Hopkins|Jeff
+#     Hopkins]]); high-confidence (resolves to a different same-folder article, or is a
+#     former title of the target).
+#   • verbose — the label just repeats the article's path/name (e.g. |People/Jeff or |Jeff
+#     Hopkins), clutter we tidy. A genuine, different shortening/nickname (|Dad, |Jeff for
+#     "Jeff Hopkins") is left alone.
+# With fix on (default) it drops the alias (versioned, undoable) and logs each in the
+# article's talk; a Review card summarises what changed. No LLM — a clean run is a no-op.
 #
 # config keys:
 #   limit  — max links to fix per run (default 500)

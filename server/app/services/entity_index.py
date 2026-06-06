@@ -86,18 +86,62 @@ def _collect(conn, limit: int) -> dict:
     return clusters
 
 
-def _merge_map(clusters: dict) -> dict:
+def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None = None) -> dict:
     """type -> {norm -> canonical_norm}, unioning subset-name variants that share a
-    distinctive token. Blocked by token so we don't compare every pair."""
+    distinctive token. Blocked by token so we don't compare every pair.
+
+    Durable user rulings override the heuristic (pure — they're passed in, never read here):
+    - `splits`: a set of frozenset({norm_a, norm_b}) pairs that must NEVER end up in one
+      group. Enforced as a HARD invariant: a union (heuristic, acronym, OR forced merge) is
+      refused if ANY member of the two components forms a split pair — so a bridge variant
+      can't transitively co-group two split-apart names, regardless of processing order, and
+      a forced merge can't silently override a split (split wins; a directly-contradicting
+      same-pair merge is instead resolved last-writer-wins in entity_decisions.add).
+    - `merges`: {member_norm -> canonical_norm}, pre-resolved to the TERMINAL canonical (see
+      entity_decisions.load_merges). Forced unions fire even with no shared token. A member
+      with no matching cluster this pass is DORMANT — it seeds union-find so an EXISTING side
+      still binds, but a merge whose sides are ALL absent materializes no entity. A group's
+      forced canonical (a merges value) wins as the group's canonical over the most-tokens
+      rule."""
+    merges = merges or {}
+    splits = splits or set()
     out: dict = defaultdict(dict)
+    forced_canon = set(merges.values())          # norms that win canonical when present
+    # norm -> set of norms it must never be co-grouped with (both directions).
+    split_adj: dict = defaultdict(set)
+    for pair in splits:
+        if len(pair) == 2:
+            x, y = tuple(pair)
+            split_adj[x].add(y)
+            split_adj[y].add(x)
     for typ, norms in clusters.items():
-        parent = {n: n for n in norms}
+        # Seed union-find with cluster norms PLUS any merge norm referenced, so a forced
+        # union can bind even when one side is named only in a decision. A node with no
+        # cluster is dormant: it gets no entity unless it shares a group with a real cluster.
+        nodes = set(norms)
+        for m, c in merges.items():
+            nodes.add(m); nodes.add(c)
+        parent = {n: n for n in nodes}
+        comp = {n: {n} for n in nodes}           # root -> set of member norms (split checking)
 
         def find(x):
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
+
+        def _split_blocked(a, b):
+            # Refuse if joining the two components would put any user-split pair together.
+            ca, cb = comp[find(a)], comp[find(b)]
+            return any(not split_adj[x].isdisjoint(cb) for x in ca if x in split_adj)
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            parent[rb] = ra
+            comp[ra] |= comp[rb]
+            del comp[rb]
 
         by_token: dict = defaultdict(list)
         for n in norms:
@@ -108,11 +152,11 @@ def _merge_map(clusters: dict) -> dict:
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
                     a, b = group[i], group[j]
+                    if _split_blocked(a, b):           # user forbade co-grouping these
+                        continue
                     ta, tb = clusters[typ][a]["tokens"], clusters[typ][b]["tokens"]
                     if ta <= tb or tb <= ta:          # one name subsumes the other
-                        ra, rb = find(a), find(b)
-                        if ra != rb:
-                            parent[rb] = ra
+                        union(a, b)
         # Acronym union: "ttp" ↔ "thrombotic thrombocytopenic purpura" (initials match).
         def _rep(n):
             raws = clusters[typ][n]["raws"]
@@ -122,18 +166,24 @@ def _merge_map(clusters: dict) -> dict:
             if not _acronymish(ac):
                 continue
             for ex in expansions:
+                if _split_blocked(ac, ex):
+                    continue
                 if _initials(_rep(ex)) == ac:
-                    ra, rb = find(ac), find(ex)
-                    if ra != rb:
-                        parent[rb] = ra
+                    union(ac, ex)
                     break
-        members: dict = defaultdict(list)
-        for n in norms:
-            members[find(n)].append(n)
-        for grp in members.values():
-            # Canonical = the most descriptive name (most tokens), then most-mentioned.
-            canon = max(grp, key=lambda m: (len(clusters[typ][m]["tokens"]), clusters[typ][m]["count"]))
-            for m in grp:
+        # Forced user merges: union member -> canonical even with no shared token — but a
+        # split still wins (we never co-group a split pair, even on an explicit merge).
+        for member, c in merges.items():
+            if not _split_blocked(member, c):
+                union(member, c)
+        for grp in comp.values():
+            present = [m for m in grp if m in norms]   # drop dormant merge-only nodes
+            if not present:
+                continue
+            forced = [m for m in present if m in forced_canon]
+            pool = forced or present                   # a forced canonical wins the group
+            canon = max(pool, key=lambda m: (len(clusters[typ][m]["tokens"]), clusters[typ][m]["count"]))
+            for m in present:
                 out[typ][m] = canon
     return out
 
@@ -165,8 +215,15 @@ def rebuild(conn, limit: int = 20000) -> int:
     """(Re)aggregate the entity index from note_analysis. Upserts by (type, key) so ids
     are stable, replaces each entity's mentions, prunes entities that vanished, and links
     each to its kb article (if one exists). Returns the entity count."""
+    from . import entity_decisions
     clusters = _collect(conn, limit)
-    mapping = _merge_map(clusters)
+    # Durable user rulings (type='person' — the only type with an identity UI). merges/splits
+    # are member-norm/pair scoped, so passing the person set to _merge_map is safe: those norms
+    # never collide with another type's clusters, and dormant merge norms materialize nothing.
+    merges = entity_decisions.load_merges(conn, type="person")
+    splits = entity_decisions.load_splits(conn, type="person")
+    decided_aliases = entity_decisions.load_aliases(conn, type="person")
+    mapping = _merge_map(clusters, merges=merges, splits=splits)
     _fold_owner(conn, clusters, mapping)
 
     canon: dict = defaultdict(lambda: {"notes": set(), "raws": Counter(), "aliases": {}, "display": None})
@@ -181,6 +238,17 @@ def rebuild(conn, limit: int = 20000) -> int:
                 agg["display"] = top
             else:                                   # a merged variant → an alias
                 agg["aliases"][norm] = top
+
+    # Fold explicit user 'alias' decisions onto their canonical entity (person type). The
+    # canonical must already exist as an entity this pass (an alias for a vanished entity is
+    # inert) — mirrors merges: decisions never materialize an entity on their own.
+    for canon_norm, pairs in decided_aliases.items():
+        agg = canon.get(("person", canon_norm))
+        if agg is None:
+            continue
+        for alias_norm, alias_display in pairs:
+            if alias_norm and alias_norm != canon_norm:
+                agg["aliases"].setdefault(alias_norm, alias_display)
 
     seen_keys = set()
     for (typ, cn), agg in canon.items():

@@ -385,6 +385,43 @@ def test_migration_v44_to_v46_upgrade(monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM entity_decisions").fetchone()["c"] == 1
 
 
+def test_migration_v47_article_talk_columns(monkeypatch):
+    """A v46 DB that already HAS article_talk gets the v47 columns + index added IN PLACE —
+    the table-exists guard must not skip a real upgrade (the complement to the v44 fixture,
+    which lacks the table and relies on schema.sql to create it complete)."""
+    import os, sqlite3, tempfile
+    dbp = os.path.join(tempfile.mkdtemp(), "up47.db")
+    os.environ.update(DB_PATH=dbp, JBRAIN_ACCESS_KEY="k" * 20, BRAIN_NAME="T", JBRAIN_DOMAIN="localhost")
+    c = sqlite3.connect(dbp)
+    c.executescript(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT UNIQUE, slug TEXT UNIQUE,"
+        " content_md TEXT DEFAULT '', kind TEXT DEFAULT 'entry', created_at TEXT, updated_at TEXT, deleted_at TEXT);"
+        # Pre-v47 article_talk: has the older columns, but NOT is_correction / source_note_id.
+        "CREATE TABLE article_talk(id INTEGER PRIMARY KEY AUTOINCREMENT, article_title TEXT NOT NULL,"
+        " kind TEXT NOT NULL, body TEXT NOT NULL, author TEXT NOT NULL DEFAULT 'ai',"
+        " created_at TEXT, resolved_at TEXT, resolution TEXT);"
+        "INSERT INTO meta(key,value) VALUES('schema_version','46');"
+    )
+    c.commit(); c.close()
+
+    from app.config import get_settings
+    get_settings.cache_clear()
+    import app.db as db
+    db._initialized = False
+    db._local.__dict__.clear()
+    db.init_db()
+    conn = db.get_conn()
+
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(article_talk)")}
+    assert {"is_correction", "source_note_id"} <= cols      # v47 ALTERs ran on the existing table
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='idx_article_talk_source_note'").fetchone()
+    # The migrated table is writable with the new columns.
+    conn.execute("INSERT INTO article_talk(article_title,kind,body,is_correction) VALUES('kb/x','note','b',1)")
+    assert conn.execute("SELECT is_correction FROM article_talk").fetchone()["is_correction"] == 1
+
+
 def test_merge_endpoint_round_trip(client):
     """The HTTP merge endpoint records the decision, rebuilds, and returns the survivor —
     and the merge then survives a further rebuild."""

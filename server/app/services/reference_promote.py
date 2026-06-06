@@ -20,6 +20,29 @@ from . import reference_candidates as rc
 
 _CATEGORIES = {"Conditions", "Medications", "Procedures", "Concepts", "Events"}
 
+# The cited source is written as a marked block so the nightly staleness pass (reference_refresh) can
+# re-seat ONLY the citation (URL + fetch date) without touching anything the owner enriched:
+#   <!-- refsrc --> **Source:** [...](url) — fetched DATE. …
+#   <!-- refseed src="medlineplus|rxnorm" url="…" fetched="DATE" -->   (machine-readable provenance)
+_SRC_MARK = "<!-- refsrc -->"
+
+
+def _source_of(cand) -> str:
+    """The provenance source key for re-fetch: 'rxnorm' (drug → MedlinePlus Connect) or 'medlineplus'."""
+    try:
+        src = cand["source"]
+    except (KeyError, IndexError):
+        src = None
+    return (src or "").strip() or ("rxnorm" if _is_medication(cand) else "medlineplus")
+
+
+def _source_block(source: str, url: str, fetched: str, leaf: str) -> str:
+    """The cited-source block (visible line + machine-readable provenance marker). Shared with
+    reference_refresh so a re-seated citation keeps the exact same shape."""
+    return (f"{_SRC_MARK} **Source:** [MedlinePlus — {leaf}]({url}) — fetched {fetched}. "
+            "U.S. National Library of Medicine, public domain.\n"
+            f'<!-- refseed src="{source}" url="{url}" fetched="{fetched}" -->\n')
+
 
 def _category(cand) -> str:
     c = (cand["category"] or "").strip().title() if cand["category"] else ""
@@ -49,8 +72,7 @@ def _stub(cand, url: str, snippet: str, fetched: str) -> str:
              "Not medical advice; not endorsed by NLM. Enrich it from your own notes over time._\n\n")
     if snippet:
         body += snippet.strip() + "\n\n"
-    body += (f"**Source:** [MedlinePlus — {leaf}]({url}) — fetched {fetched}. "
-             "U.S. National Library of Medicine, public domain.\n")
+    body += _source_block(_source_of(cand), url, fetched, leaf)
     return body
 
 

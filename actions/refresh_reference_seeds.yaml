@@ -1,0 +1,9 @@
+# Declarative action: re-verify kb/Reference seeds whose cited public source has gone stale (older
+# than a TTL). Re-fetches the MedlinePlus source and STAGES an UPDATE that re-seats ONLY the cited
+# Source line + fetch date — the owner's own additions to the article are preserved untouched. Built
+# deterministically from the public source (no LLM, no owner data) and STAGED, never written live.
+# Cheap no-op when nothing is stale.
+type: refresh_reference_seeds
+category: Knowledge base
+steps:
+  - do: refresh_reference_seeds

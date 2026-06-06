@@ -1,6 +1,7 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { researchStart, researchTurn } from "../api";
+import { linkifyAddresses, mapLinkRenderer } from "../util";
 import ShareChart from "./ShareChart";
 import { Icon } from "./Icon";
 
@@ -97,7 +98,7 @@ export default function ResearchChat({ token, brainName, intro, hasLabs }: {
         )}
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role === "me" ? "user" : "assistant"}`}>
-            {m.role === "ai" ? <div className="md msg-md"><ReactMarkdown>{m.text}</ReactMarkdown></div> : m.text}
+            {m.role === "ai" ? <div className="md msg-md"><ReactMarkdown components={{ a: mapLinkRenderer }}>{linkifyAddresses(m.text)}</ReactMarkdown></div> : m.text}
             {m.charts?.map((c, j) => (
               <ShareChart key={j} token={token} analyte={c.analyte} from={c.from} to={c.to}
                           title={c.title} variant="research" />

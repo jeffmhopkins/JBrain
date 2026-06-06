@@ -1,6 +1,7 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { guidedStart, guidedSubmit, guidedTurn } from "../api";
+import { linkifyAddresses, mapLinkRenderer } from "../util";
 import { Icon } from "./Icon";
 
 type Phase = "consent" | "asking" | "review" | "sent" | "closed" | "error";
@@ -133,7 +134,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role === "me" ? "user" : "assistant"}`}>
             {m.role === "ai"
-              ? <div className="md msg-md"><ReactMarkdown>{m.text}</ReactMarkdown></div>
+              ? <div className="md msg-md"><ReactMarkdown components={{ a: mapLinkRenderer }}>{linkifyAddresses(m.text)}</ReactMarkdown></div>
               : m.text}
           </div>
         ))}
@@ -147,7 +148,7 @@ export default function GuidedChat({ token, brainName, intro, consent, goal }: {
           </div>
         )}
         {phase === "review" && (
-          <div className="msg assistant guided-doc-bubble"><div className="md msg-md"><ReactMarkdown>{doc}</ReactMarkdown></div></div>
+          <div className="msg assistant guided-doc-bubble"><div className="md msg-md"><ReactMarkdown components={{ a: mapLinkRenderer }}>{linkifyAddresses(doc)}</ReactMarkdown></div></div>
         )}
         {phase === "sent" && (
           <div className="msg assistant"><strong>Thank you, {name}!</strong><br />Your answers were sent to {brainName} for review.</div>

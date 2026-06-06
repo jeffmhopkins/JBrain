@@ -6,7 +6,7 @@ import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
 import { fmtTs, expandTimeTokensMarked } from "../time";
-import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
+import { linkifyAddresses, makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Attachments from "../components/Attachments";
 import AiAnalysisPanel from "../components/AiAnalysisPanel";
 import LabImportPanel from "../components/LabImportPanel";
@@ -381,7 +381,7 @@ export default function NotePage() {
               }
               return <li className={cls || undefined} {...props}>{children}</li>;
             },
-          }}>{renderWikiLinks(expandTimeTokensMarked(stripSummarySentinels(note.content_md), appTz))}</ReactMarkdown>
+          }}>{renderWikiLinks(linkifyAddresses(expandTimeTokensMarked(stripSummarySentinels(note.content_md), appTz)))}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

@@ -3,7 +3,8 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { claimShare, getShare, proposeShareEdit, shareAttachmentUrl } from "../api";
-import { renderWikiLinks, stripSummarySentinels } from "../util";
+import { linkifyAddresses, mapsUrl, renderWikiLinks, stripSummarySentinels } from "../util";
+import { Icon } from "../components/Icon";
 import { fmtTs, expandTimeTokens } from "../time";
 import GuidedChat from "../components/GuidedChat";
 import ResearchChat from "../components/ResearchChat";
@@ -20,6 +21,11 @@ interface ShareView {
 }
 
 function flatLink({ href, children }: any) {
+  if (href?.startsWith("#map:")) {
+    const q = (() => { try { return decodeURIComponent(href.slice(5)); } catch { return ""; } })();
+    return <a className="map-link" href={mapsUrl(q)} target="_blank" rel="noreferrer"
+              title={`Open in Google Maps: ${q}`} aria-label="Open in Google Maps"><Icon name="pin" size={14} /></a>;
+  }
   if (href?.startsWith("/note/")) return <span className="wikilink-flat">{children}</span>;
   return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
 }
@@ -170,7 +176,7 @@ export default function SharePage() {
           <>
             <div className="md">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: flatLink }}>
-                {renderWikiLinks(expandTimeTokens(stripSummarySentinels(stripTitleHeading(n.content_md, n.title)), data.app_tz))}
+                {renderWikiLinks(linkifyAddresses(expandTimeTokens(stripSummarySentinels(stripTitleHeading(n.content_md, n.title)), data.app_tz)))}
               </ReactMarkdown>
             </div>
             {n.attachments.length > 0 && (

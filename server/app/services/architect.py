@@ -1084,6 +1084,7 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20, person=No
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
+    raw = _is_owner_person(conn, pid, explicit)   # the owner may anchor a place to their own spots
     try:
         mm = float(min_minutes or 20)
     except (TypeError, ValueError):
@@ -1096,9 +1097,13 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20, person=No
     for s in stays:
         if s["label"]:
             where = s["label"]
-        else:                                   # number unknown spots so they're distinguishable (still no coords)
+        else:                                   # number unknown spots so they're distinguishable
             unlabeled += 1
-            where = f"an unlabeled spot (#{unlabeled})"
+            # Show the coordinate to the owner (only) so they can save the spot as a place via
+            # ADD_PLACE — same precise-data-in-your-own-brain rule as location_fixes. Never for
+            # a named third party.
+            coord = f", at {s['lat']:.6f},{s['lon']:.6f}" if raw else ""
+            where = f"an unlabeled spot (#{unlabeled}{coord})"
         lines.append(f"- {where}: {s['minutes']:.0f} min ({s['arrived']} → {s['left']} UTC)")
     return _untrusted("stays", "\n".join(lines))
 
@@ -1117,6 +1122,7 @@ def _tool_trail_summary(conn, since=None, until=None, person=None) -> str:
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
+    raw = _is_owner_person(conn, pid, explicit)   # owner-only coords, so they can save a spot as a place
     pts = geotrail.fixes(conn, _utc_bound(since), _utc_bound(until), pid)   # load once, reuse for both
     if not pts:
         return f"No location data for {who} in that window." if explicit else "No location data in that window."
@@ -1133,7 +1139,8 @@ def _tool_trail_summary(conn, since=None, until=None, person=None) -> str:
                 where = s["label"]
             else:
                 unlabeled += 1
-                where = f"an unlabeled spot (#{unlabeled})"
+                coord = f", at {s['lat']:.6f},{s['lon']:.6f}" if raw else ""
+                where = f"an unlabeled spot (#{unlabeled}{coord})"
             lines.append(f"- {where}: {s['minutes']:.0f} min")
     return _untrusted("trail", "\n".join(lines))
 

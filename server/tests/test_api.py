@@ -3586,6 +3586,69 @@ def test_location_tools(client):
     assert "fixes" in msg and "Gym" in msg
 
 
+def test_unlabeled_stay_exposes_owner_coord_for_saving(client):
+    """The owner's own unlabeled stays carry their coordinate in places_visited /
+    trail_summary (so the model can anchor an ADD_PLACE), but a named third party's
+    stays stay label-only. Then: save that spot as a place end-to-end + undo."""
+    from app.db import get_conn
+    from app.services import architect
+    conn = get_conn()
+    # An owner stay far from any saved place/note → unlabeled.
+    for ts, lat, lon in [
+        ("2026-06-03 17:30:00", 41.010, -75.0),
+        ("2026-06-03 18:00:00", 41.000, -75.0),
+        ("2026-06-03 18:40:00", 41.000, -75.0),
+        ("2026-06-03 19:10:00", 41.010, -75.0),
+    ]:
+        conn.execute("INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?,?,?,'test')", (lat, lon, ts))
+    conn.commit()
+
+    pv, _ = architect._run_tool(conn, None, "places_visited", {"min_minutes": 20})
+    assert "an unlabeled spot" in pv and "41.000" in pv          # coord shown to the owner
+    ts_, _ = architect._run_tool(conn, None, "trail_summary", {})
+    assert "an unlabeled spot" in ts_ and "41.000" in ts_
+
+    # A named third party's identical stay degrades to label-only — no raw coords.
+    # A fix is attributed to a person when its `source` matches their name/alias.
+    client.post("/api/people", json={"name": "Allan"})
+    for ts, lat, lon in [
+        ("2026-06-03 17:30:00", 42.010, -76.0),
+        ("2026-06-03 18:00:00", 42.000, -76.0),
+        ("2026-06-03 18:40:00", 42.000, -76.0),
+        ("2026-06-03 19:10:00", 42.010, -76.0),
+    ]:
+        conn.execute("INSERT INTO locations (lat, lon, recorded_at, source) VALUES (?,?,?,'Allan')",
+                     (lat, lon, ts))
+    conn.commit()
+    pv_other, _ = architect._run_tool(conn, None, "places_visited", {"min_minutes": 20, "person": "Allan"})
+    assert "an unlabeled spot" in pv_other and "42.000" not in pv_other
+
+    # End-to-end: save the owner's spot as a place (ADD_PLACE) with a 50 m geofence, then undo.
+    architect._run_tool(conn, None, "propose_actions", {"actions": [
+        {"type": "ADD_PLACE", "name": "Family Dollar", "lat": 41.0, "lon": -75.0,
+         "radius_m": 50, "summary": "Save Family Dollar"}]}, mode="assisted")
+    conn.commit()
+    add = next(p for p in client.get("/api/staging").json() if p["type"] == "ADD_PLACE")
+    assert client.post(f"/api/staging/{add['id']}/apply").json()["ok"] is True
+    saved = next(p for p in client.get("/api/places").json() if p["name"] == "Family Dollar")
+    assert saved["radius_m"] == 50
+    assert conn.execute("SELECT 1 FROM notes WHERE title='loc/Family Dollar' AND deleted_at IS NULL").fetchone()
+
+    # Idempotent: re-applying the same name is a no-op, no duplicate row.
+    architect._run_tool(conn, None, "propose_actions", {"actions": [
+        {"type": "ADD_PLACE", "name": "Family Dollar", "lat": 41.0, "lon": -75.0,
+         "radius_m": 50, "summary": "Save Family Dollar again"}]}, mode="assisted")
+    conn.commit()
+    add2 = client.get("/api/staging").json()[-1]
+    client.post(f"/api/staging/{add2['id']}/apply")
+    assert sum(1 for p in client.get("/api/places").json() if p["name"] == "Family Dollar") == 1
+
+    # Undo the original create → place + its loc/ note are gone.
+    client.post(f"/api/staging/{add['id']}/undo")
+    assert not any(p["name"] == "Family Dollar" for p in client.get("/api/places").json())
+    assert conn.execute("SELECT 1 FROM notes WHERE title='loc/Family Dollar' AND deleted_at IS NULL").fetchone() is None
+
+
 def test_location_dwell_trigger_fires_once(client, monkeypatch):
     """A location:dwell workflow fires when the geofence dwell threshold is crossed,
     pushes once, and dedups on re-evaluation (location_fired)."""
@@ -4004,7 +4067,8 @@ def test_fixes_tolerates_swapped_bounds(client):
 
 
 def test_unlabeled_stays_numbered(client):
-    """Distinct unlabeled stays are numbered so they're distinguishable (no coords)."""
+    """Distinct unlabeled stays are numbered so they're distinguishable, and the owner's
+    own unlabeled spots carry their coordinate so they can be saved as a place."""
     from app.db import get_conn
     from app.services import architect
     conn = get_conn()
@@ -4013,7 +4077,8 @@ def test_unlabeled_stays_numbered(client):
         conn.execute("INSERT INTO locations (lat,lon,recorded_at,source) VALUES (?,-74,?,'t')", (lat, ts))
     conn.commit()
     msg, _ = architect._run_tool(conn, None, "places_visited", {"min_minutes": 20})
-    assert "an unlabeled spot (#1)" in msg and "an unlabeled spot (#2)" in msg
+    assert "an unlabeled spot (#1, at 40.000000,-74.000000)" in msg
+    assert "an unlabeled spot (#2, at 41.000000,-74.000000)" in msg
 
 
 def test_where_was_i_far_gap_refuses(client):

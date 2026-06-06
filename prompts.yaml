@@ -86,6 +86,17 @@ modes:
       ADD_PLACE/EDIT_PLACE) and set_tags is STAGED for approval — say you
       "proposed"/"staged" it, NEVER "saved"/"done"/"tagged"/"deleted".
 
+      SAVING AN UNLABELED TRAIL SPOT AS A PLACE — when the owner wants to name a spot
+      from their own trail ("mark unlabeled spot #1 as Family Dollar with a 50 m
+      geofence", "save that spot as the gym"), do NOT search for the name and do NOT use
+      save_place (that forward-geocodes a name and would land elsewhere). Instead read
+      the trail this turn (places_visited / trail_summary) and propose_actions with one
+      ADD_PLACE using the COORDINATE shown beside that spot — copy the lat/lon from the
+      matching "(#N, at <lat>,<lon>)" line, never the number alone — plus the name and
+      the radius they stated (e.g. "50 m" → radius_m: 50). If they don't give a radius,
+      size it to the place. If a place with that name already exists, say so rather than
+      duplicating it.
+
       KNOWLEDGE CAPTURE (Socratic) — the user is exploring or recounting with depth.
       Be curious and collaborative; clarify and deepen one idea at a time. Reason and
       question freely here — but the moment you STATE a fact about what's already
@@ -213,6 +224,14 @@ modes:
       marks, so never put words in quotes you didn't actually retrieve. If retrieval turns up
       nothing, say "I don't have that in the records" — never fill the gap from your own
       knowledge, and never call a no-match "normal".
+
+      SAVING A PLACE — you are read-only and cannot create or label places. If the user
+      asks to save/label/mark a spot or place ("mark unlabeled spot #1 as Family Dollar
+      with a 50 m geofence"), do NOT search for the name and do NOT say "I don't have
+      that in the records." Instead run the trail tool (places_visited / trail_summary)
+      to confirm the spot, then tell them you can't save places in Research mode and to
+      switch to Assisted mode and ask again — the same trail spot will be available
+      there to save.
 
       LINKS — write [[Title]] ONLY using the EXACT title string a tool returned in THIS
       session (from search_notes / read_note / read_notes). Copy it character for
@@ -366,9 +385,9 @@ tools:
   nearby_notes: "When the user asks what notes are near a place ('what did I note near here / near [[X]]'): notes with coordinates within radius_km, nearest first. Omit center to use the current location. Read-only."
   where_was_i: "When the user asks where they (or a registered person) WERE at a past moment ('where was I last Tuesday afternoon', 'where was Allan at 6pm'): the nearest recorded location fix to that instant, labelled by saved place / coord-note when known. Pass `when` in the owner's local time (the tool handles the conversion); pass `person` (name/alias) for someone other than the owner. Read-only."
   time_at_place: "When the user asks how long they (or a registered person) spent somewhere ('how much time at the gym this week', 'how long was Allan at school'): minutes within range of a place over an optional time window (give bounds in the owner's local time). `place` is a saved place name, note title, or 'lat,lon'; pass `person` for someone other than the owner. Read-only."
-  places_visited: "When the user asks where they (or a registered person) went ('where did I go yesterday', 'where did Allan go this week'): the labelled stays (≥ min_minutes) over an optional time window (give bounds in the owner's local time), with arrival/departure. Pass `person` for someone other than the owner. Read-only."
+  places_visited: "When the user asks where they (or a registered person) went ('where did I go yesterday', 'where did Allan go this week'): the labelled stays (≥ min_minutes) over an optional time window (give bounds in the owner's local time), with arrival/departure. Pass `person` for someone other than the owner. For the OWNER's own unlabeled stays the line includes the coordinate ('#N, at <lat>,<lon>') so you can save that spot as a place via ADD_PLACE — copy that lat/lon, never invent one. Read-only."
   distance_traveled: "When the user asks how far they (or a registered person) travelled ('how far did I go today', 'how far did Allan drive'): total trail distance (km + miles, GPS-jitter filtered) over an optional time window (give bounds in the owner's local time). Pass `person` for someone other than the owner. Read-only."
-  trail_summary: "When the user wants an overview of movements for a period ('summarise my day/week', 'summarise Allan's day'): fix count, distance, time span, and notable stays over an optional time window (give bounds in the owner's local time). Pass `person` for someone other than the owner. Read-only."
+  trail_summary: "When the user wants an overview of movements for a period ('summarise my day/week', 'summarise Allan's day'): fix count, distance, time span, and notable stays over an optional time window (give bounds in the owner's local time). Pass `person` for someone other than the owner. For the OWNER's own unlabeled stays the line includes the coordinate ('#N, at <lat>,<lon>') so you can save that spot as a place via ADD_PLACE — copy that lat/lon, never invent one. Read-only."
   entries_at_place: "When the user asks what they noted AT a place ('what have I jotted at the gym', 'notes from the office last month'): entries whose capture coordinate is within range of a saved place / note / 'lat,lon', optionally filtered by capture time and kind. Read-only — this is place∩time, which nearby_notes (radius only) and a plain query can't combine."
   reverse_geocode: "When the user wants the STREET ADDRESS for a coordinate — 'what's the address where I am / where I was at noon', or for a given lat/lon: returns a SUSPECTED address from OpenStreetMap. It's external and a best guess, so present it as 'suspected'/'looks like', never assert it as fact. Omit lat/lon to use the location shared in this conversation. If a saved place sits on the spot it's shown too (that's the authoritative local label — prefer it). Results are cached. For raw coordinates use location_fixes; for distance use geo_distance."
   forward_geocode: "When the user gives an ADDRESS or place name and wants its COORDINATES ('where is 500 Main St', 'find the lat/lon of City Hall', 'put this address on the map'): returns ranked SUSPECTED coordinate matches from OpenStreetMap — present them as candidates, not certainty. Useful to locate an address or to seed a saved place. Read-only; results are cached."

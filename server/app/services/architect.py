@@ -814,24 +814,26 @@ def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
     the v_upcoming projection; RECURRING series are expanded to their NEXT occurrence
     within the window (a recurring row's stored starts_at is its first, past, occurrence,
     so it wouldn't otherwise surface). Read-only; reports only what's derived from notes."""
-    from datetime import date, timedelta
+    from datetime import timedelta
+    from . import clock
     limit = max(1, min(int(limit or 20), 100))
     within = int(within_days) if within_days else 90
-    today = date.today().isoformat()
-    horizon = (date.today() + timedelta(days=within)).isoformat()
+    # Owner-local "today"/"horizon" for BOTH branches (v_upcoming's own lower bound is
+    # UTC date('now'); we at least keep the tool's horizon consistent with the recurring
+    # expansion, which also uses this same owner-tz date — no UTC-vs-process-local split).
+    today = clock.today_iso()
+    horizon = (clock.today_local() + timedelta(days=within)).isoformat()
 
-    items: list[tuple] = []   # (when, title, kind, cite)
+    items: list[tuple] = []   # (sortkey, when, title, kind, note_title, recurring)
 
-    # 1) One-off (non-recurring) future events, windowed.
+    # 1) One-off (non-recurring) future events, windowed to the owner-local horizon.
     params: list = ["recurring"]
     where = " AND kind != ?"
     if kind and kind != "recurring":
         where += " AND kind = ?"
         params.append(str(kind))
-    where += (" AND (starts_at IS NULL OR "
-              "(all_day = 1 AND date(starts_at) <= date('now', ?)) OR "
-              "(all_day = 0 AND starts_at <= datetime('now', ?)))")
-    params += [f"+{within} days", f"+{within} days"]
+    where += " AND (starts_at IS NULL OR date(starts_at) <= ?)"
+    params.append(horizon)
     for r in conn.execute(
         f"SELECT title, kind, starts_at, note_title FROM v_upcoming WHERE 1=1{where} LIMIT 200",
         params,
@@ -880,10 +882,12 @@ def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
     params: list = []
     where = ""
     if since:
-        where += " AND (starts_at IS NULL OR date(starts_at) >= date(?))"
+        # A bound excludes undated rows (date(NULL) is NULL ⇒ comparison drops it),
+        # so "history since 2010" can't return an undated 2024 event.
+        where += " AND date(starts_at) >= date(?)"
         params.append(str(since))
     if until:
-        where += " AND (starts_at IS NULL OR date(starts_at) <= date(?))"
+        where += " AND date(starts_at) <= date(?)"
         params.append(str(until))
     rows = conn.execute(
         f"SELECT title, kind, starts_at, status, note_title FROM v_event_history "

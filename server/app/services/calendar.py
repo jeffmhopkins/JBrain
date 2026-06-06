@@ -608,13 +608,15 @@ def infer_rrule(dates: list[str]) -> str | None:
     WEEKLY (all gaps 6–8 days; BYDAY = the dominant weekday), DAILY (all gaps 1),
     MONTHLY (all gaps 27–31). Needs >= 3 distinct days. Returns None when irregular."""
     from datetime import date as _date
-    days = sorted({(str(d) or "")[:10] for d in (dates or []) if str(d).strip()})
-    days = [d for d in days if len(d) == 10]
-    if len(days) < 3:
-        return None
+    days = sorted({(str(d) or "").strip()[:10] for d in (dates or []) if str(d).strip()})
+    # Strict: every non-empty input must be a real ISO date. A malformed token would
+    # otherwise be dropped silently, computing the cadence from only a SUBSET of the
+    # cluster — refuse rather than promote a misleading rrule.
     try:
         ds = [_date.fromisoformat(d) for d in days]
     except ValueError:
+        return None
+    if len(days) < 3:
         return None
     gaps = [(ds[i + 1] - ds[i]).days for i in range(len(ds) - 1)]
     if not gaps:
@@ -635,23 +637,41 @@ def infer_rrule(dates: list[str]) -> str | None:
 
 
 def emit_recurrence(conn, cluster: dict) -> dict:
-    """Promote ONE recurring chatter cluster into a kind='recurring' calendar row.
-    Anchored to the EARLIEST member note (stable provenance ⇒ idempotent across a
-    growing cluster). No-op unless a regular cadence is inferable. Does not sweep
-    (other workflow rows on the anchor note must survive)."""
-    entries = [e for e in (cluster or {}).get("entries", []) if e.get("id") is not None]
+    """Promote ONE recurring chatter cluster into a kind='recurring' calendar row. No-op
+    unless a regular cadence is inferable. Does not sweep (other workflow rows on the
+    anchor note must survive).
+
+    Idempotency across re-runs is the tricky part: a chatter cluster can gain an EARLIER
+    member on a later run, which would move a naive "earliest member" anchor to a new
+    note and (with sweep off) leave a duplicate. So we first look for an EXISTING workflow
+    recurring row of the same normalized title ON ANY of the cluster's member notes and
+    update THAT in place; only if none exists do we anchor on the earliest dated member."""
+    entries = [e for e in (cluster or {}).get("entries", [])
+               if e.get("id") is not None and _norm_dt(e.get("created_at"))]
     if not entries:
         return {"emitted": 0}
-    entries = sorted(entries, key=lambda e: (e.get("created_at") or ""))
+    entries = sorted(entries, key=lambda e: e.get("created_at") or "")
     earliest = entries[0]
-    days = [(e.get("created_at") or "")[:10] for e in entries]
-    rrule = infer_rrule(days)
+    rrule = infer_rrule([(e.get("created_at") or "")[:10] for e in entries])
     if not rrule:
         return {"emitted": 0, "reason": "irregular cadence"}
     first_day = (earliest.get("created_at") or "")[:10]
     title = (earliest.get("title") or "Recurring pattern")[:200]
-    upsert_events(conn, int(earliest["id"]), [{
+    norm = normalize_title(title)
+
+    member_ids = [int(e["id"]) for e in entries]
+    ph = ",".join("?" * len(member_ids))
+    anchor = int(earliest["id"])
+    for r in conn.execute(
+        f"SELECT note_id, title FROM calendar_events "
+        f"WHERE kind='recurring' AND source='workflow' AND note_id IN ({ph})", member_ids,
+    ).fetchall():
+        if normalize_title(r["title"]) == norm:
+            anchor = r["note_id"]   # update the existing series in place — stable across growth
+            break
+
+    upsert_events(conn, anchor, [{
         "title": title, "kind": "recurring", "starts_at": first_day,
         "all_day": True, "rrule": rrule,
     }], source="workflow", sweep=False)
-    return {"emitted": 1, "rrule": rrule, "title": title, "anchor_note_id": earliest["id"]}
+    return {"emitted": 1, "rrule": rrule, "title": title, "anchor_note_id": anchor}

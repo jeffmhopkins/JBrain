@@ -519,6 +519,50 @@ def test_infer_rrule_cadences():
     assert cal.infer_rrule(["2099-01-01", "2099-01-05", "2099-01-20"]) is None   # irregular
     assert cal.infer_rrule(["2099-01-01", "2099-01-08"]) is None                 # < 3 days
     assert cal.infer_rrule([]) is None
+    # Fortnightly (gap 14) and mixed gaps are NOT promoted.
+    assert cal.infer_rrule(["2099-01-01", "2099-01-15", "2099-01-29"]) is None
+    assert cal.infer_rrule(["2099-01-01", "2099-01-08", "2099-02-07"]) is None   # gaps [7,30]
+    # A malformed token refuses (won't compute a cadence from a subset).
+    assert cal.infer_rrule(["notadate", "2099-01-01", "2099-01-08", "2099-01-15"]) is None
+
+
+def test_emit_recurrence_stable_anchor_across_earlier_member(conn):
+    """#1 BLOCKER regression: a cluster that later gains an EARLIER member must update
+    the existing recurring row in place, not spawn a duplicate on the new anchor."""
+    from app.services import calendar as cal
+    days = {"A": "2099-01-01", "B": "2099-01-08", "C": "2099-01-15", "D": "2099-01-22"}
+    ids = {}
+    for k, d in days.items():
+        nid = _mknote(conn, f"Gym note {k}")
+        conn.execute("UPDATE notes SET created_at=? WHERE id=?", (f"{d} 07:00:00", nid))
+        ids[k] = nid
+
+    def ent(k):
+        return {"id": ids[k], "title": "Morning gym", "created_at": f"{days[k]} 07:00:00"}
+
+    cal.emit_recurrence(conn, {"entries": [ent("B"), ent("C"), ent("D")]})
+    # Re-run after an EARLIER member (A) joined the cluster.
+    cal.emit_recurrence(conn, {"entries": [ent("A"), ent("B"), ent("C"), ent("D")]})
+    rows = conn.execute("SELECT note_id, starts_at FROM calendar_events WHERE kind='recurring'").fetchall()
+    assert len(rows) == 1                       # no duplicate
+    assert rows[0]["note_id"] == ids["B"]       # updated the original anchor in place
+    assert rows[0]["starts_at"] == "2099-01-01"  # first occurrence moved earlier
+
+
+def test_emit_recurrence_tolerates_one_dateless_member(conn):
+    """#4: a member with no created_at must not become a broken anchor or suppress a
+    genuine pattern."""
+    from app.services import calendar as cal
+    ids = []
+    for d in ["2099-01-01", "2099-01-08", "2099-01-15"]:
+        nid = _mknote(conn, f"g{d}")
+        ids.append({"id": nid, "title": "Yoga", "created_at": f"{d} 06:00:00"})
+    bad = _mknote(conn, "gnone")
+    ids.append({"id": bad, "title": "Yoga", "created_at": None})
+    out = cal.emit_recurrence(conn, {"entries": ids})
+    assert out["emitted"] == 1 and out["rrule"].startswith("FREQ=WEEKLY")
+    row = conn.execute("SELECT starts_at FROM calendar_events WHERE kind='recurring'").fetchone()
+    assert row["starts_at"] == "2099-01-01"
 
 
 def test_emit_recurrence_creates_row_idempotent(conn):
@@ -622,9 +666,55 @@ def test_tool_list_upcoming_kind_filter_and_empty(conn):
 
 def test_run_tool_mode_boundary_blocks_calendar_in_unknown_mode(conn):
     from app.services import architect
-    # Research mode advertises it -> dispatches.
+    # Research mode advertises it -> dispatches (empty DB -> the no-events message).
     out, _ = architect._run_tool(conn, None, "list_upcoming", {}, mode="research")
-    assert "calendar" in out.lower() or "No upcoming" in out
+    assert "No upcoming calendar events" in out
     # A mode that doesn't advertise it is refused (fail-closed boundary).
     blocked, _ = architect._run_tool(conn, None, "list_upcoming", {}, mode="entry")
     assert "not available" in blocked.lower()
+
+
+def test_list_upcoming_within_days_boundary(conn):
+    """#missing: an event exactly at the horizon is included; one day past is excluded."""
+    from datetime import timedelta
+    from app.services import calendar as cal
+    from app.services import architect, clock
+    nid = _mknote(conn, "Horizon")
+    at = (clock.today_local() + timedelta(days=10)).isoformat()
+    past_h = (clock.today_local() + timedelta(days=11)).isoformat()
+    cal.upsert_events(conn, nid, [
+        {"title": "AtHorizon", "starts_at": at},
+        {"title": "PastHorizon", "starts_at": past_h},
+    ])
+    out = architect._tool_list_upcoming(conn, within_days=10)
+    assert "AtHorizon" in out and "PastHorizon" not in out
+
+
+def test_list_upcoming_excludes_superseded_recurring(conn):
+    from app.services import calendar as cal
+    from app.services import architect
+    nid = _mknote(conn, "Standup series")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2020-01-06", "all_day": True,
+                                   "rrule": "FREQ=WEEKLY;BYDAY=MO"}], source="workflow", sweep=False)
+    ik = conn.execute("SELECT identity_key FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["identity_key"]
+    n2 = _mknote(conn, "End it")
+    cal.record_supersession(conn, ik, None, n2, "structured")
+    out = architect._tool_list_upcoming(conn, within_days=30)
+    assert "Standup" not in out
+
+
+def test_event_history_bound_excludes_undated(conn):
+    """#6: an explicit since/until window drops undated terminal rows."""
+    from app.services import calendar as cal
+    from app.services import architect
+    nid = _mknote(conn, "Histnote")
+    cal.upsert_events(conn, nid, [
+        {"title": "DatedOld", "starts_at": "2010-05-05", "status": "done"},
+        {"title": "Undated", "starts_at": None, "status": "done"},
+    ])
+    bounded = architect._tool_event_history(conn, since="2009-01-01", until="2011-01-01")
+    assert "DatedOld" in bounded and "Undated" not in bounded
+    # With no bounds, the undated terminal event is still visible.
+    allh = architect._tool_event_history(conn)
+    assert "Undated" in allh

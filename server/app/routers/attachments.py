@@ -38,24 +38,31 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     result = att_svc.add_attachment(conn, note_id, file.filename, mime, raw)
     conn.commit()
 
-    # Auto-analyze images by default (server-side, so it runs even if the client
-    # navigates away). Callers opt out with analyze=false — e.g. the chat
+    # The "auto-analyze new notes" toggle is the master switch for ALL on-upload
+    # enrichment: when it's OFF, nothing auto-runs (no image vision, no audio/video
+    # transcription, no note re-analysis) — the owner can still trigger any of it by hand
+    # via the per-attachment Analyze/Transcribe buttons. When ON, attachments enrich
+    # server-side (so it runs even if the client navigates away) and fold into the note's
+    # AI analysis as their text becomes ready.
+    from ..services import note_analysis as na
+    if not na.auto_enabled(conn):
+        return result
+    # Auto-analyze images. Callers opt out with analyze=false — e.g. the chat
     # assisted-attachment path, whose carrier note has no real content to inform it.
     if analyze and mime.startswith("image/") and llm.has_credentials():
         result["analysis"] = image_analysis.start_analysis(conn, result["id"])
-    # Audio & video auto-transcribe regardless of the analyze flag: it's local (no API key,
-    # no cost) and doesn't depend on the note body for context, so there's nothing to opt out
-    # of. Video is transcribed via its audio track. The transcript lands on the attachment.
+    # Audio & video auto-transcribe regardless of the analyze flag: it doesn't depend on the
+    # note body for context, so there's nothing to opt out of. Video is transcribed via its
+    # audio track (local faster-whisper). The transcript lands on the attachment.
     elif audio_transcription.is_transcribable(mime, file.filename):
         result["analysis"] = audio_transcription.start_transcription(conn, result["id"])
     # Documents (PDF / text / office) extract their text synchronously in add_attachment —
     # there's no async completion to fold them into the note's AI analysis later (unlike
-    # images/audio/video). So, when "auto-analyze new notes" is on, refresh the note's
-    # analysis now that this attachment's text is indexed, so a doc uploaded right after a
-    # note still flows into its gist/facts. Best-effort, hash-guarded, no-ops without a key.
+    # images/audio/video). So refresh the note's analysis now that this attachment's text is
+    # indexed, so a doc uploaded right after a note still flows into its gist/facts.
+    # Best-effort, hash-guarded, no-ops without an LLM key.
     elif analyze and note_id is not None and result.get("has_text"):
-        from ..services import note_analysis as na
-        if na.auto_enabled(conn) and na.analyze(conn, note_id):
+        if na.analyze(conn, note_id):
             conn.commit()
     return result
 

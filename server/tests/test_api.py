@@ -54,6 +54,12 @@ def client(monkeypatch):
     return TestClient(app, headers={"Authorization": f"Bearer {TEST_KEY}"})
 
 
+def _enable_auto_analyze(client):
+    """Turn ON the 'auto-analyze new notes' master switch (off by default), which gates all
+    on-upload attachment enrichment (image vision, audio/video transcription) + note analysis."""
+    assert client.put("/api/system/settings/auto-analyze", json={"enabled": True}).json()["enabled"] is True
+
+
 def run_and_wait(client, wf_id, timeout=8.0):
     """Start a manual trigger run and poll its status until it finishes."""
     import time
@@ -4843,6 +4849,7 @@ def test_image_upload_auto_analyzes_by_default(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "Auto desc.\n\n**Salient facts**\n- y")
     _inline_threads(monkeypatch, ia)
+    _enable_auto_analyze(client)
 
     client.post("/api/notes", json={"title": "Auto host", "content_md": "Base.\n"})
     up = client.post("/api/notes/auto-host/attachments",
@@ -4859,6 +4866,7 @@ def test_image_upload_opt_out_skips_analysis(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k: "should not run")
     _inline_threads(monkeypatch, ia)
+    _enable_auto_analyze(client)   # so analyze=false (not the master switch) is what skips
     client.post("/api/notes", json={"title": "Carrier", "content_md": "Attached file: x.png"})
     up = client.post("/api/notes/carrier/attachments",
                      data={"analyze": "false"},
@@ -4870,6 +4878,7 @@ def test_image_upload_opt_out_skips_analysis(client, monkeypatch):
 def test_image_upload_no_llm_key_does_not_analyze(client, monkeypatch):
     from app.services import llm
     monkeypatch.setattr(llm, "has_credentials", lambda: False)
+    _enable_auto_analyze(client)   # so the missing key (not the master switch) is what skips
     client.post("/api/notes", json={"title": "Nokey", "content_md": "x"})
     up = client.post("/api/notes/nokey/attachments",
                      files={"file": ("a.png", _png_bytes(), "image/png")}).json()
@@ -4886,6 +4895,7 @@ def test_image_analysis_feeds_note_context_without_prior_summary(client, monkeyp
         return "Desc.\n\n**Salient facts**\n- z"
     monkeypatch.setattr(llm, "complete", fake_complete)
     _inline_threads(monkeypatch, ia)
+    _enable_auto_analyze(client)
 
     body = ("My trip to Rome with Jeff.\n\n"
             "<!-- jbrain:image-summary att=999 -->\n**AI image summary** (old.png)\n\nPRIOR\n"
@@ -4907,6 +4917,7 @@ def test_image_analysis_empty_note_sends_no_context(client, monkeypatch):
         return "Desc.\n\n**Salient facts**\n- z"
     monkeypatch.setattr(llm, "complete", fake_complete)
     _inline_threads(monkeypatch, ia)
+    _enable_auto_analyze(client)
     client.post("/api/notes", json={"title": "Blank", "content_md": ""})
     client.post("/api/notes/blank/attachments", files={"file": ("p.png", _png_bytes(), "image/png")})
     assert captured["n_text"] == 1   # instruction only; no empty context block
@@ -4924,6 +4935,7 @@ def test_image_analysis_feeds_capture_location_as_hint(client, monkeypatch):
         return "Desc.\n\n**Salient facts**\n- z"
     monkeypatch.setattr(llm, "complete", fake_complete)
     _inline_threads(monkeypatch, ia)
+    _enable_auto_analyze(client)
 
     client.post("/api/notes", json={"title": "Catch", "content_md": ""})
     get_conn().execute(
@@ -6714,6 +6726,7 @@ def test_audio_upload_auto_starts_transcription(client, monkeypatch):
     started = []
     monkeypatch.setattr(at, "start_transcription",
                         lambda conn, aid, **k: (started.append(aid) or {"status": "pending"}))
+    _enable_auto_analyze(client)
     note = client.post("/api/notes/entry", json={"text": "memo"}).json()
     r = client.post(f"/api/notes/{note['slug']}/attachments",
                     files={"file": ("memo.m4a", b"\x00fakeaudio", "audio/mp4")})
@@ -6790,6 +6803,7 @@ def test_video_is_transcribable_and_auto_starts(client, monkeypatch):
     started = []
     monkeypatch.setattr(at, "start_transcription",
                         lambda conn, aid, **k: (started.append(aid) or {"status": "pending"}))
+    _enable_auto_analyze(client)
     note = client.post("/api/notes/entry", json={"text": "clip"}).json()
     r = client.post(f"/api/notes/{note['slug']}/attachments",
                     files={"file": ("clip.mp4", b"\x00\x00\x00\x18ftyp", "video/mp4")})
@@ -6876,6 +6890,7 @@ def test_transcription_completion_refreshes_note_analysis(client, monkeypatch):
     from app.db import get_conn
     from app.services import audio_transcription as at, note_analysis as na, llm
     conn = get_conn()
+    _enable_auto_analyze(client)   # the transcript→note-analysis fold-in is gated by the master switch
     note = client.post("/api/notes/entry", json={"text": "memo", "title": "Memo"}).json()
     nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]
     aid = conn.execute("INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "

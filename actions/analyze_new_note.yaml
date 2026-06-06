@@ -9,11 +9,13 @@
 # note and folds every attachment's extracted text / image vision summary / transcript
 # into the note's gist/facts/entities (see note_analysis + attachments.context_block_for_note).
 # Attachments are uploaded just AFTER the note is created (so they aren't on the note
-# yet when this fires) — but each one re-runs this same analysis once its text is ready,
-# folding its content in: audio/video on transcript completion (always), images on vision
-# summary completion (when this feature is on), and documents/PDFs right on upload (when on,
-# since their text extracts synchronously). Net effect across the async timeline:
-# attachments get analyzed, then the note's analysis reflects them.
+# yet when this fires) — but when this feature is on, each attachment auto-enriches and
+# re-runs this same analysis once its text is ready, folding its content in: audio/video
+# on transcript completion, images on vision-summary completion, and documents/PDFs right
+# on upload (their text extracts synchronously). The whole pipeline — enrichment AND this
+# note analysis — is gated by the one toggle, so when it's off nothing auto-processes. Net
+# effect across the async timeline: attachments get analyzed, then the note's analysis
+# reflects them.
 #
 # This NEVER writes the note body (analysis is a sidecar in note_analysis), so it
 # can't re-fire entry_created — keep it that way (no write_note here).

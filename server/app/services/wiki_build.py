@@ -453,6 +453,77 @@ def link_owner(conn) -> dict:
     return {"linked": target["title"], "person": o["name"]}
 
 
+_AKA_LINE_RE = re.compile(r"^\*Also known as:.*\*$")
+_MD_ESCAPE_RE = re.compile(r"([\\*_`\[\]])")
+
+
+def _md_escape(s: str) -> str:
+    """Escape the markdown emphasis/link chars in an alias display so a name like 'Bob *x*'
+    can't break the AKA line's own emphasis."""
+    return _MD_ESCAPE_RE.sub(r"\\\1", s or "")
+
+
+def _apply_aka_line(body: str, aliases: list[str]) -> str:
+    """Idempotently set (or, with no aliases, remove) the '*Also known as: ...*' line directly
+    under the article's H1. Deterministic — rebuilds the H1/AKA/blank layout each call, so
+    repeated runs don't accumulate blanks. Robust to leading frontmatter (finds the first H1
+    by scanning, not line 0) and to code fences (never strips an AKA-looking line inside a
+    ``` block). If there's no H1 at all, the body is left unchanged (we never synthesize a
+    top-of-file AKA above frontmatter). The single source of truth for AKA display."""
+    body = body or ""
+    lines = body.split("\n")
+    h1 = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith("# ")), None)
+    if h1 is None:
+        return body
+    head, rest = lines[: h1 + 1], lines[h1 + 1:]
+    # Drop our prior AKA line(s) from the body, but never one inside a fenced code block.
+    cleaned, in_fence = [], False
+    for ln in rest:
+        s = ln.strip()
+        if s.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and _AKA_LINE_RE.match(s):
+            continue
+        cleaned.append(ln)
+    while cleaned and not cleaned[0].strip():          # normalize blanks right under the H1
+        cleaned.pop(0)
+    aka = None
+    if aliases:
+        aka = "*Also known as: " + ", ".join(_md_escape(a) for a in aliases) + ".*"
+    parts = head + [""] + ([aka, ""] if aka else []) + cleaned
+    return "\n".join(parts)
+
+
+def surface_aliases(conn) -> dict:
+    """Ensure each person/animal article whose entity has aliases shows an '*Also known as:
+    ...*' line under its H1 (deterministic, no LLM — the AKA source of truth). Idempotent:
+    updates the line to the current alias set and removes it when there are none. Aliases
+    that equal the article's own leaf name are skipped. Returns {updated}."""
+    from . import notes as notes_svc, entity_index
+    updated = 0
+    for e in conn.execute(
+        "SELECT id, canonical_name, article_title FROM entities "
+        "WHERE type IN ('person','animal') AND article_title IS NOT NULL"
+    ).fetchall():
+        note = conn.execute(
+            "SELECT id, content_md FROM notes WHERE title=? AND kind='kb' AND deleted_at IS NULL "
+            "AND redirect_to IS NULL", (e["article_title"],)).fetchone()
+        if not note:
+            continue
+        leaf_norm = entity_index.normalize(e["article_title"].split("/")[-1])
+        aliases = [a["alias_display"] for a in conn.execute(
+            "SELECT alias_display, alias_norm FROM entity_aliases WHERE entity_id=? "
+            "AND alias_display IS NOT NULL ORDER BY alias_display", (e["id"],)).fetchall()
+            if entity_index.normalize(a["alias_display"]) != leaf_norm]
+        new_body = _apply_aka_line(note["content_md"] or "", aliases)
+        if new_body != (note["content_md"] or ""):
+            notes_svc.upsert_note(conn, e["article_title"], new_body, kind="kb",
+                                  source="aka", version_note="updated also-known-as")
+            updated += 1
+    conn.commit()
+    return {"updated": updated}
+
+
 _MAINTAIN_RE = re.compile(r"\n?```maintain\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
 _ARTICLE_RE = re.compile(r"```article\s*\n(.*?)\n```", re.DOTALL)
 _H1_RE = re.compile(r"(?m)^#\s")

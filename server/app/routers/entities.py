@@ -112,6 +112,26 @@ def list_decisions(entity_id: int):
     return entity_decisions.list_for(conn, type=e["type"])
 
 
+@router.get("/resolve")
+def resolve_entity(name: str):
+    """Resolve a name OR alias to its CANONICAL entity (so a nickname search collapses to one
+    person card that links to the canonical article). Returns the entity + its notes, or
+    {"resolved": None}. Defined before /{entity_id} so the literal path wins."""
+    conn = get_conn()
+    norm = entity_index.normalize(name or "")
+    if not norm:
+        return {"resolved": None}
+    row = conn.execute(
+        "SELECT id FROM entities WHERE normalized_key=? ORDER BY note_count DESC LIMIT 1", (norm,)
+    ).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT entity_id AS id FROM entity_aliases WHERE alias_norm=? LIMIT 1", (norm,)).fetchone()
+    if not row:
+        return {"resolved": None}
+    return entity_index.notes_for(conn, row["id"])
+
+
 @router.get("/{entity_id}")
 def get_entity(entity_id: int):
     """One entity plus the notes that mention it (and its kb article, if any)."""

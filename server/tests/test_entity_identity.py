@@ -570,3 +570,129 @@ def test_generational_suffix_blocks_even_exact_name(client):
     conn.commit()
     ei.rebuild(conn)
     assert len([r for r in conn.execute("SELECT id FROM entities WHERE type='person'")]) == 2
+
+
+def test_surface_aliases_adds_updates_and_removes_aka_line(client):
+    """surface_aliases keeps a deterministic '*Also known as: ...*' line under the H1 in sync
+    with the entity's aliases — adds it, is idempotent, and removes it when aliases are gone."""
+    from app.db import get_conn
+    from app.services import entity_index as ei, entity_decisions as ed, wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    _mk(conn, "n1", [{"type": "person", "name": "Jeffrey Hopkins"}])
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins", "# Jeffrey Hopkins\n\nA person.", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)                                            # links the article to the entity
+    eid = conn.execute("SELECT id FROM entities WHERE normalized_key='jeffrey hopkins'").fetchone()["id"]
+    assert conn.execute("SELECT article_title FROM entities WHERE id=?", (eid,)).fetchone()["article_title"] \
+        == "kb/People/Jeffrey Hopkins"
+
+    ed.add(conn, "alias", norm_a="Jeff", norm_b="jeffrey hopkins", display_a="Jeff")
+    conn.commit()
+    ei.rebuild(conn)
+    assert wiki_build.surface_aliases(conn)["updated"] == 1
+    body = conn.execute(
+        "SELECT content_md FROM notes WHERE title='kb/People/Jeffrey Hopkins'").fetchone()["content_md"]
+    assert "*Also known as: Jeff.*" in body
+    assert body.splitlines()[0] == "# Jeffrey Hopkins"          # H1 still first
+
+    # Idempotent: a second pass changes nothing (no blank-line accumulation).
+    assert wiki_build.surface_aliases(conn)["updated"] == 0
+
+    # Remove the alias → the line is removed.
+    conn.execute("DELETE FROM entity_decisions WHERE kind='alias'")
+    conn.commit()
+    ei.rebuild(conn)
+    assert wiki_build.surface_aliases(conn)["updated"] == 1
+    body2 = conn.execute(
+        "SELECT content_md FROM notes WHERE title='kb/People/Jeffrey Hopkins'").fetchone()["content_md"]
+    assert "Also known as" not in body2
+
+
+def test_surface_aliases_lists_only_real_aliases_not_the_canonical(client):
+    """The AKA line lists aliases only — never the article's own canonical/leaf name."""
+    from app.db import get_conn
+    from app.services import entity_index as ei, entity_decisions as ed, wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    _mk(conn, "n1", [{"type": "person", "name": "Margaret Hale"}])
+    ns.upsert_note(conn, "kb/People/Margaret Hale", "# Margaret Hale\n\nA person.", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+    ed.add(conn, "alias", norm_a="Maggie", norm_b="margaret hale", display_a="Maggie")
+    conn.commit()
+    ei.rebuild(conn)
+    wiki_build.surface_aliases(conn)
+    body = conn.execute(
+        "SELECT content_md FROM notes WHERE title='kb/People/Margaret Hale'").fetchone()["content_md"]
+    assert "*Also known as: Maggie.*" in body                   # the real alias, and not the leaf
+    assert "Margaret Hale" not in body.split("Also known as")[1].split("*")[0]
+
+
+def test_resolve_endpoint_collapses_alias_to_canonical(client):
+    """GET /api/entities/resolve?name=<alias> returns the CANONICAL entity (one person card)."""
+    from app.db import get_conn
+    from app.services import entity_index as ei, entity_decisions as ed
+    conn = get_conn()
+    nid = _mk(conn, "n1", [{"type": "person", "name": "Jeffrey Hopkins"}])
+    conn.commit()
+    ei.rebuild(conn)
+    ed.add(conn, "alias", norm_a="Jeff", norm_b="jeffrey hopkins", display_a="Jeff")
+    conn.commit()
+    ei.rebuild(conn)
+    r = client.get("/api/entities/resolve", params={"name": "Jeff"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["canonical_name"] == "Jeffrey Hopkins"
+    assert nid in [n["id"] for n in body["notes"]]
+    # A genuinely unknown name resolves to nothing.
+    assert client.get("/api/entities/resolve", params={"name": "Nobody Here"}).json() == {"resolved": None}
+
+
+def test_surface_aliases_is_a_registered_pipeline_verb():
+    """The recipe step must map to a primitive present in BOTH the handler and meta maps."""
+    from app.services import pipeline
+    assert "surface_aliases" in pipeline._PRIMITIVES
+    assert "surface_aliases" in pipeline._PRIMITIVE_META
+
+
+def test_apply_aka_line_robustness():
+    """_apply_aka_line: frontmatter-safe (no H1-on-line-0 assumption), no-H1 is left alone,
+    code-fence AKA-looking lines are preserved, alias display is markdown-escaped, idempotent."""
+    from app.services import wiki_build as wb
+    # Frontmatter before the H1: AKA goes under the H1, frontmatter stays on top.
+    fm = "---\ntitle: X\n---\n# Real Person\n\nThe lead.\n"
+    out = wb._apply_aka_line(fm, ["Nick"])
+    assert out.startswith("---\ntitle: X\n---\n# Real Person\n")
+    assert "*Also known as: Nick.*" in out
+    assert wb._apply_aka_line(out, ["Nick"]) == out                      # idempotent
+    # No H1 → unchanged (never synthesize AKA above arbitrary content).
+    assert wb._apply_aka_line("no heading here\n", ["Nick"]) == "no heading here\n"
+    # An AKA-looking line INSIDE a code fence must survive.
+    fenced = "# P\n\nLead.\n\n```\n*Also known as: fake.*\n```\n"
+    out2 = wb._apply_aka_line(fenced, ["Real"])
+    assert "*Also known as: fake.*" in out2 and "*Also known as: Real.*" in out2
+    # Markdown special chars in an alias are escaped.
+    esc = wb._apply_aka_line("# P\n\nLead.\n", ["Bob *star*"])
+    assert r"Bob \*star\*" in esc
+
+
+def test_aka_line_does_not_pollute_entity_lead(client):
+    """M1 regression: after surface_aliases inserts an AKA line, the entity's embed lead is the
+    REAL lead sentence, not the AKA line."""
+    from app.db import get_conn
+    from app.services import entity_index as ei, entity_decisions as ed, wiki_build
+    from app.services import notes as ns
+    conn = get_conn()
+    _mk(conn, "n1", [{"type": "person", "name": "Jeffrey Hopkins"}])
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins",
+                   "# Jeffrey Hopkins\n\nJeffrey is my neighbor and a carpenter.", kind="kb")
+    conn.commit()
+    ei.rebuild(conn)
+    ed.add(conn, "alias", norm_a="Jeff", norm_b="jeffrey hopkins", display_a="Jeff")
+    conn.commit()
+    ei.rebuild(conn)
+    wiki_build.surface_aliases(conn)
+    leads = ei._article_leads(conn)
+    assert leads["kb/People/Jeffrey Hopkins"].startswith("Jeffrey is my neighbor")
+    assert "Also known as" not in leads["kb/People/Jeffrey Hopkins"]

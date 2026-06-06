@@ -314,18 +314,24 @@ def _entity_embed_text(name: str, typ: str, aliases: list[str], lead: str) -> st
     return " — ".join(parts)[:500]
 
 
+_AKA_LEAD_RE = re.compile(r"^\*Also known as:.*\*$")
+
+
 def _article_leads(conn) -> dict:
-    """{kb article title -> its lead sentence} (first non-heading line), for embed context."""
+    """{kb article title -> its lead sentence} (first non-heading line), for embed context.
+    Skips an '*Also known as: ...*' line so the real lead — not the alias line surface_aliases
+    inserts under the H1 — is what feeds the entity's embedding."""
     out: dict = {}
     for a in conn.execute(
         "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
         "AND redirect_to IS NULL"
     ).fetchall():
         for line in (a["content_md"] or "").splitlines():
-            s = line.strip().lstrip("#").strip()
-            if s:
-                out[a["title"]] = s[:200]
-                break
+            st = line.strip()
+            if not st or st.startswith("#") or _AKA_LEAD_RE.match(st):
+                continue                              # skip blanks, headings, and the AKA line
+            out[a["title"]] = st[:200]
+            break
     return out
 
 

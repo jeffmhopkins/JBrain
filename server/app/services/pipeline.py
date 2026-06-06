@@ -252,6 +252,12 @@ def _p_link_owner(ctx):
     return wiki_build.link_owner(ctx.conn)
 
 
+def _p_surface_aliases(ctx):
+    """Add/update the '*Also known as: ...*' line on each person article with aliases."""
+    from . import wiki_build
+    return wiki_build.surface_aliases(ctx.conn)
+
+
 def _p_wiki_maintain(ctx, limit=20):
     """Component 3: address open talk items on existing articles against their sources."""
     from . import wiki_build
@@ -1207,6 +1213,7 @@ _PRIMITIVES = {
     "research_article": _p_research_article,
     "split_article": _p_split_article,
     "link_owner": _p_link_owner,
+    "surface_aliases": _p_surface_aliases,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
@@ -1337,6 +1344,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                                    {"name": "child_sources", "type": "list"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
+    "surface_aliases": {"summary": "Add/update the 'Also known as' line on person articles with aliases.",
+                        "inputs": [], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",

@@ -344,7 +344,9 @@ export async function restoreBackup<T = any>(file: File): Promise<T> {
 }
 
 export interface ChatEvent {
-  type: "token" | "tool" | "staging" | "applied" | "chart" | "done" | "error";
+  // "replace_text" carries the server-verified final reply (dead [[links]] / unsourced URLs removed) —
+  // the client swaps the streamed text for it so a fabricated link is never left on screen.
+  type: "token" | "tool" | "staging" | "applied" | "chart" | "replace_text" | "done" | "error";
   chart?: { analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string };
   text?: string;
   tool?: string;
@@ -480,9 +482,11 @@ export async function streamChat(
   onEvent: (e: ChatEvent) => void,
   location?: { lat: number; lon: number } | null,
   mode: "assisted" | "research" = "assisted",
+  freshContext = false,
 ): Promise<void> {
   if (isDemo()) { await demoStream(text, onEvent, mode); return; }
   const body: any = { text, mode };
+  if (freshContext) body.fresh_context = true;   // user left/returned/changed topic → re-ground fresh
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const ctrl = new AbortController();
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {

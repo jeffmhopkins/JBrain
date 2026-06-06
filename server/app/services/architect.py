@@ -49,7 +49,7 @@ _DEFAULT_MODE_TOOLS = {
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
-                 "kb_taxonomy_health", "kb_needed_links", "kb_research_links",
+                 "kb_taxonomy_health", "kb_titles", "kb_needed_links", "kb_research_links",
                  "kb_read_talk", "kb_add_directive", "propose_actions"],
     "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
@@ -284,6 +284,8 @@ _TOOL_SCHEMAS = {
     "kb_audit": {"type": "object", "properties": {
         "limit": {"type": "integer", "default": 1000, "description": "Max KB articles to scan."}}},
     "kb_taxonomy_health": {"type": "object", "properties": {}},
+    "kb_titles": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The kb/ article you're about to author/edit — anchors the relevant neighbourhood. Optional; omit for a broad list."}}},
     "kb_needed_links": {"type": "object", "properties": {
         "title": {"type": "string", "description": "The KB article (exact kb/… title) to check for missing cross-links."}},
         "required": ["title"]},
@@ -1213,10 +1215,16 @@ def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]
         conn.rollback()   # don't leave half-staged rows for a later commit to flush
         raise
     conn.commit()
-    return (
-        f"Staged {len(staged)} proposed action(s) for the user to confirm.",
-        {"type": "staging", "actions": staged},
-    )
+    # Warn the model (and let it self-correct before the user approves) about staged content that
+    # links to non-existent notes (those links are stripped on save) or breaks kb/ citation integrity.
+    from . import staged_verify
+    warns = [w for a in staged for w in staged_verify.warnings(conn, a.get("type"), a)]
+    msg = f"Staged {len(staged)} proposed action(s) for the user to confirm."
+    if warns:
+        msg += (" ⚠ Heads up before they approve — " + " ".join(f"({w})" for w in warns[:8])
+                + " Fix these and re-propose: call kb_titles for valid kb/ cross-link titles, or create"
+                " the missing note first; an unverified [[link]] is dropped to plain text on save.")
+    return msg, {"type": "staging", "actions": staged}
 
 
 def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=False):
@@ -1311,6 +1319,19 @@ def _tool_kb_taxonomy_health(conn, conversation_id):
     if rep.get("flat_reference_titles"):
         out.append("Un-foldered Reference: " + _untrusted("titles", ", ".join(rep["flat_reference_titles"][:8])))
     return "\n".join(out), None
+
+
+def _tool_kb_titles(conn, conversation_id, title=""):
+    """The canonical kb/ article titles the model may cross-link to — the interactive analog of the
+    nightly {known_titles} allow-list, scoped to the neighbourhood of `title`. Read-only."""
+    from . import wiki_build
+    allt = wiki_build._known_titles(conn)
+    if not allt:
+        return "No knowledge-base (kb/) articles exist yet — don't cross-link to any kb/ title.", None
+    titles = wiki_build.scoped_known_titles(conn, (title or "").strip(), allt)
+    head = (f"{len(titles)} existing kb/ article title(s) you may cross-link to. Copy a title EXACTLY; "
+            "never write a [[kb/…]] link to a title not in this list:\n")
+    return head + "\n".join(f"- {t}" for t in titles), None
 
 
 def _tool_kb_needed_links(conn, conversation_id, title):
@@ -1909,6 +1930,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
     if name == "kb_audit":
         return _tool_kb_audit(conn, conversation_id, args.get("limit", 1000))
+    if name == "kb_titles":
+        return _tool_kb_titles(conn, conversation_id, args.get("title", ""))
     if name == "kb_taxonomy_health":
         return _tool_kb_taxonomy_health(conn, conversation_id)
     if name == "kb_needed_links":
@@ -1922,11 +1945,111 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
     return f"Unknown tool: {name}", None
 
 
+# --- Freshness window + reply verification ----------------------------------
+
+# A break longer than this clears prior conversation context: the user is effectively
+# returning fresh, so the model re-grounds from tools instead of trusting stale earlier answers.
+_RESUME_GAP_MINUTES = 30
+
+_URL_RE = re.compile(r"https?://[^\s<>)\]\"']+")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+
+def _norm_url(u: str) -> str:
+    return u.rstrip(".,;:)\"'")
+
+
+def _extract_urls(text: str) -> set[str]:
+    return {_norm_url(u) for u in _URL_RE.findall(text or "")}
+
+
+def _minutes_since_utc(ts: str | None) -> float | None:
+    """Minutes since a stored UTC timestamp ('YYYY-MM-DD HH:MM:SS'), or None if unparseable."""
+    if not ts:
+        return None
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(ts.replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[dict]:
+    """Load the conversational turns for the model, FRESHNESS-WINDOWED. Returns [] (a clean slate)
+    when the client signals a fresh context (left the app / navigated away and back) OR the gap
+    since the last turn exceeds _RESUME_GAP_MINUTES — so a returning user can't get a stale value
+    re-asserted from an old answer. Within a recent, continuous conversation, prior ASSISTANT turns
+    are tagged as possibly-stale so the model re-queries values rather than trusting its own prose.
+    (Prior turns stay in the DB for display; this only shapes what the model sees.)"""
+    rows = conn.execute(
+        # Only conversational turns go to the model; 'event' rows (applied-action records shown in
+        # the UI) are excluded from the LLM history.
+        "SELECT role, content, created_at FROM messages WHERE conversation_id = ? "
+        "AND role IN ('user', 'assistant') ORDER BY id",
+        (conversation_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    if not fresh_context:
+        gap = _minutes_since_utc(rows[-1]["created_at"])
+        fresh_context = gap is not None and gap > _RESUME_GAP_MINUTES
+    if fresh_context:
+        return []
+    out = []
+    for r in rows:
+        content = r["content"]
+        if r["role"] == "assistant":
+            content = ("[earlier turn — any specific values below were fetched then and may be "
+                       "stale; re-query the tools for current values]\n" + content)
+        out.append({"role": r["role"], "content": content})
+    return out
+
+
+def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
+    """Make the reply trustworthy before it's persisted/clicked: neutralize every [[Title]] that
+    resolves to no live note (reusing the KB dead-link sweep), and strip any URL no tool returned.
+    Returns (verified_text, changed)."""
+    from . import wikilinks, wiki_build
+    bad_titles = {
+        t for t in wikilinks.extract_links(text)
+        if conn.execute("SELECT 1 FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                        (t,)).fetchone() is None
+    }
+    out = wiki_build._neutralize_links(text, bad_titles) if bad_titles else text
+
+    dropped_url = False
+
+    def _md(m):
+        nonlocal dropped_url
+        label, url = m.group(1), m.group(2)
+        if _norm_url(url) in allowed_urls:
+            return m.group(0)
+        dropped_url = True
+        return label                                   # keep the link text, drop the fabricated URL
+
+    def _bare(m):
+        nonlocal dropped_url
+        if _norm_url(m.group(0)) in allowed_urls:
+            return m.group(0)
+        dropped_url = True
+        return ""
+
+    out = _MD_LINK_RE.sub(_md, out)
+    out = _URL_RE.sub(_bare, out)
+    out = out.strip()
+    return out, bool(bad_titles) or dropped_url
+
+
 # --- Agent loop -------------------------------------------------------------
 
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
-              mode: str = "assisted") -> AsyncGenerator[dict, None]:
-    """Stream the architect's reply. `mode` = 'assisted' | 'research'."""
+              mode: str = "assisted", fresh_context: bool = False) -> AsyncGenerator[dict, None]:
+    """Stream the architect's reply. `mode` = 'assisted' | 'research'. `fresh_context` (set by the
+    client when the user left the app / navigated away and back / is resuming after a break) clears
+    prior conversation context so the model re-grounds instead of reusing stale earlier answers."""
     settings = get_settings()
     # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
     # claude* → Anthropic; blank → the LLM_PROVIDER default).
@@ -1938,15 +2061,8 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     conn = get_conn()
 
-    # Build message history from the DB, then append the new user turn.
-    history = conn.execute(
-        # Only conversational turns go to the model; 'event' rows (applied-action
-        # records shown in the UI) are excluded from the LLM history.
-        "SELECT role, content FROM messages WHERE conversation_id = ? "
-        "AND role IN ('user', 'assistant') ORDER BY id",
-        (conversation_id,),
-    ).fetchall()
-    messages = [{"role": r["role"], "content": r["content"]} for r in history]
+    # Build message history from the DB (freshness-windowed), then append the new user turn.
+    messages = _assemble_history(conn, conversation_id, fresh_context)
     messages.append({"role": "user", "content": user_text})
     loc = location or {}
     conn.execute(
@@ -1966,6 +2082,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     total_tokens = 0
     stopped_early = False
     need_sep = False   # insert a break when text resumes after a tool call
+    tool_urls: set[str] = set()   # URLs that tools actually returned (the only ones allowed in the reply)
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -2011,8 +2128,13 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 # exception text — it may embed note-derived (untrusted) data.
                 result_text, event = (
                     f"Tool '{call.name}' failed: {_untrusted('tool-error', str(exc))}", None)
+            tool_urls.update(_extract_urls(result_text))   # whitelist URLs the tool genuinely returned
             if event is not None:
                 yield event  # {"type": "staging"|"applied", ...}
+            else:
+                # Stamp READ results with the fetch time so the model knows they're fresh THIS turn
+                # (and that anything it's carrying from before is not). Action results keep their text.
+                result_text = f"[fetched {clock.now_prompt()}]\n{result_text}"
             results.append(llm.ToolResult(tool_call_id=call.id, content=result_text))
         provider.append_tool_results(messages, results)
         need_sep = True   # the next text block (post-tool) should be separated
@@ -2031,7 +2153,14 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
         yield {"type": "token", "text": notice}
 
     final_text = "".join(assistant_text_parts).strip()
+    # TRUTH GUARANTEE: neutralize any [[Title]] that resolves to no real note, and strip any URL no
+    # tool returned — so a fabricated link/citation can never be persisted or clicked. If anything
+    # changed, tell the client to swap the streamed text for the verified version.
     if final_text:
+        verified, dropped = _verify_reply(conn, final_text, tool_urls)
+        if dropped:
+            final_text = verified
+            yield {"type": "replace_text", "text": final_text}
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
             (conversation_id, final_text),

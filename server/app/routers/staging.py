@@ -13,6 +13,7 @@ from ..db import get_conn
 from ..services import notes as notes_svc
 from ..services import places as places_svc
 from ..services import quicktasks
+from ..services import staged_verify
 
 router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[CurrentUser])
 
@@ -146,6 +147,9 @@ def list_pending():
         # Back-compat field the old UI read; new UI uses `preview`.
         if r["type"] in ("CREATE", "UPDATE") and prev:
             item["current_content"] = prev.get("before")
+        warns = staged_verify.warnings(conn, r["type"], payload)   # dead links / missing LINK target / citation issues
+        if warns:
+            item["warnings"] = warns
         out.append(item)
     return out
 
@@ -163,6 +167,9 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="CREATE/UPDATE action is missing a title")
+        # Hard backstop (matches the nightly KB save): neutralize any [[Title]] that resolves to no
+        # live note BEFORE it's written, so a fabricated/dead link can never reach a saved article.
+        content, _ = staged_verify.verify_content(conn, payload.get("content") or "")
         basis = payload.get("_basis") or {}
         if action_type == "UPDATE" and basis.get("note_id"):
             # Optimistic concurrency: refuse a stale edit whose basis note has
@@ -179,7 +186,7 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
                 if live_hash != basis["content_hash"]:
                     raise HTTPException(status_code=409, detail="The note changed since this edit was proposed — re-open it and re-propose.")
             # Update the EXISTING note by id (keeps its title; no notes/ re-root).
-            notes_svc.upsert_note(conn, title, payload.get("content") or "", note_id=basis["note_id"],
+            notes_svc.upsert_note(conn, title, content, note_id=basis["note_id"],
                                   kind=payload.get("kind"), **kw)
         else:
             # CREATE, or an UPDATE whose title didn't exist at propose time, makes a
@@ -195,7 +202,7 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
             # create_only never clobbers: a colliding title is disambiguated to a new
             # note (a deliberate, tested design — a stale CREATE/UPDATE must not
             # overwrite an intervening note). See test_staged_create_does_not_clobber.
-            notes_svc.upsert_note(conn, title, payload.get("content") or "", create_only=True,
+            notes_svc.upsert_note(conn, title, content, create_only=True,
                                   kind=payload.get("kind"), **kw)
     elif action_type == "LINK":
         source_title = (payload.get("source_title") or "").strip()
@@ -206,6 +213,10 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
         if source_note is None:
             # Don't silently mark a no-op as 'applied' — the link was never created.
             raise HTTPException(status_code=404, detail=f"No note titled '{source_title}' to link from")
+        # Refuse a link to a NON-existent target (a fabrication vector): unlike CREATE/UPDATE we can't
+        # neutralize — a LINK whose target doesn't exist would just be a lying no-op, so refuse it.
+        if notes_svc.get_by_title(conn, target_title) is None:
+            raise HTTPException(status_code=404, detail=f"Can't link to '{target_title}' — no such note exists.")
         if f"[[{target_title}]]" not in source_note["content_md"]:
             new_content = source_note["content_md"].rstrip() + f"\n\n[[{target_title}]]\n"
             notes_svc.upsert_note(conn, source_note["title"], new_content, **kw)

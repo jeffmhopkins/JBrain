@@ -560,6 +560,12 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md pre { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; }
 .md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .wikilink { color: var(--accent); border-bottom: 1px dashed var(--accent); }
+/* Google Maps pin appended after a detected address / coordinate pair. Sits inline
+   with the text, nudged up a hair, and brightens to the accent on hover. */
+.map-link { display: inline-flex; align-items: center; vertical-align: -2px; margin-left: 3px;
+  color: var(--text-dim); border-bottom: none; text-decoration: none; }
+.map-link:hover { color: var(--accent); }
+.map-link .icon { display: block; }
 /* Dynamic (live) time values — @t[...] tokens rendered against today. Dotted
    underline + help cursor signal "this updates over time"; the tooltip names the anchor. */
 .dyn-date { border-bottom: 1px dotted var(--text-dim); cursor: help; }

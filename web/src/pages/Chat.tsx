@@ -6,7 +6,7 @@ import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
-import { renderWikiLinks } from "../util";
+import { linkifyAddresses, renderWikiLinks } from "../util";
 import { makeChatLinkRenderer } from "../components/CitationLink";
 import { toolLabel } from "../toolLabels";
 import ToolHistory from "../components/ToolHistory";
@@ -663,7 +663,7 @@ export default function Chat() {
               {isAsst ? (
                 <>
                   <div className="md msg-md">
-                    <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                    <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(linkifyAddresses(m.content))}</ReactMarkdown>
                   </div>
                   {hasHistory && (
                     <ToolHistory messageId={m.dbId!} count={m.stepCount!} open={openSteps.has(m.dbId!)}

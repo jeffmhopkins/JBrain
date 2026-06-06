@@ -783,6 +783,126 @@ def test_diff_and_restore(client):
     assert after[0]["source"] == "restore"
 
 
+def test_link_label_audit_flags_and_fixes_mismatch(client):
+    # Two same-folder people, plus a note that links to Summer but LABELS it "Jeff Hopkins".
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/66070 Chapman Street",
+        "content_md": "Primary residence of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].\n"
+                      "Legit short form: [[kb/People/Jeff Hopkins|Jeff]].",
+    })
+
+    audit = client.get("/api/notes/links/audit").json()["findings"]
+    # Exactly one mismatch — the legit shortening ("Jeff") must NOT be flagged.
+    assert len(audit) == 1
+    f = audit[0]
+    assert f["display"] == "Jeff Hopkins"
+    assert f["target_title"] == "kb/People/Summer E. Hopkins"
+    assert f["resolved_title"] == "kb/People/Jeff Hopkins"
+    assert f["fixed"] == "[[kb/People/Summer E. Hopkins]]"   # drop alias → renders short name
+
+    # Fix it; the alias is gone (renders the target's name), and re-audit is clean.
+    assert client.post("/api/notes/links/audit/fix",
+                       json={"note_id": f["source_id"], "target": f["target"],
+                             "display": f["display"]}).json()["fixed"] is True
+    note = client.get(f"/api/notes/{f['source_slug']}").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]
+    assert "|Jeff]]" in note["content_md"]   # the legit short link is untouched
+    assert client.get("/api/notes/links/audit").json()["findings"] == []
+
+
+def test_verbose_alias_tidy_drops_path_echoes(client):
+    # Maintenance sweep: aliases that just echo the article's path/name are tidied to bare
+    # links (render the clean short name); a genuine shortening is left alone.
+    from app.db import get_conn
+    from app.services import wikilinks
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Den",
+        "content_md": ("A [[kb/People/Jeff Hopkins|People/Jeff Hopkins]], "
+                       "B [[kb/People/Jeff Hopkins|Jeff Hopkins]], "
+                       "C [[kb/People/Jeff Hopkins|Jeff]], "
+                       "D [[kb/People/Jeff Hopkins]]."),
+    })
+    conn = get_conn()
+    verbose = [f for f in wikilinks.scan_link_labels(conn) if f["kind"] == "verbose"]
+    assert len(verbose) == 2          # A (path echo) + B (name echo); C (short) + D (bare) untouched
+    assert wikilinks.normalize_all_link_labels(conn)["verbose"] == 2
+    conn.commit()
+    den = client.get("/api/notes/kb-places-den").json()["content_md"]
+    assert den.count("[[kb/People/Jeff Hopkins]]") == 3   # A, B, D now bare
+    assert "|People/Jeff Hopkins]]" not in den and "|Jeff Hopkins]]" not in den
+    assert "|Jeff]]" in den                                # genuine shortening kept
+
+
+def test_audit_link_labels_workflow_action(client):
+    # The nightly action end-to-end: detect → fix → Review summary.
+    from app.db import get_conn
+    from app.services import pipeline
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Cabin",
+        "content_md": "Owned by [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn = get_conn()
+    recipe = pipeline.get_action_def("audit_link_labels")
+    assert recipe is not None, "audit_link_labels action recipe should be registered"
+    pipeline.run_pipeline(conn, recipe, {"limit": 500, "fix": True, "review": True}, None, None)
+    conn.commit()
+
+    note = client.get("/api/notes/kb-places-cabin").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]   # alias dropped
+    rc = conn.execute("SELECT title, message FROM review_items ORDER BY id DESC LIMIT 1").fetchone()
+    assert "wiki-link label" in rc["title"] and "Jeff Hopkins" in rc["message"]
+
+
+def test_wiki_viewed_event_hook_runs_subscribers_and_debounces(client):
+    # The generic on-view hook: firing wiki_viewed runs subscribed event-workflows.
+    # Here a flag-only (fix:false) audit subscriber runs but must NOT mutate notes.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Loft",
+        "content_md": "Home of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn.execute(
+        "INSERT INTO workflows (key, name, trigger_type, trigger_config, action_type, action_config, enabled, source) "
+        "VALUES ('t-onview', 'on view', 'event', ?, ?, ?, 1, 'user')",
+        (_json.dumps({"event": "wiki_viewed"}), "audit_link_labels",
+         _json.dumps({"fix": False, "review": False})),
+    )
+    conn.commit()
+
+    assert client.post("/api/events/wiki_unknown").json()["fired"] is False   # allow-listed only
+    assert client.post("/api/events/wiki_viewed").json()["fired"] is True
+    # Subscriber ran (flag-only → note untouched), and an immediate re-fire is debounced.
+    assert client.get("/api/notes/kb-places-loft").json()["content_md"].count("|Jeff Hopkins]]") == 1
+    assert conn.execute("SELECT last_status FROM workflows WHERE key='t-onview'").fetchone()["last_status"] == "ok"
+    assert client.post("/api/events/wiki_viewed").json().get("debounced") is True
+
+
+def test_rename_refreshes_stale_echo_alias(client):
+    # A note links to Jeff with the label echoing his name; renaming Jeff must not leave
+    # the stale "Jeff Hopkins" label pointing at the renamed (different) article.
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/House",
+        "content_md": "Resident: [[kb/People/Jeff Hopkins|Jeff Hopkins]].",
+    })
+    # Rename the person note (PUT with a new title renames in place).
+    jeff = client.get("/api/notes/kb-people-jeff-hopkins").json()
+    client.put(f"/api/notes/{jeff['slug']}",
+               json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    house = client.get("/api/notes/kb-places-house").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in house["content_md"]   # echo alias dropped
+    assert "Jeff Hopkins" not in house["content_md"]
+
+
 def test_architect_edits_attributed(client):
     import json as _json
     from app.db import get_conn
@@ -1891,7 +2011,9 @@ def test_medref_medications(client, monkeypatch):
             return {"approximateGroup": {"candidate": [{"rxcui": "6809", "score": "90", "name": "metformin"}]}}
         if "connect.medlineplus.gov" in url:
             return {"feed": {"entry": [{"title": {"_value": "Metformin"},
-                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html"}]}]}}
+                    "summary": {"_value": "Metformin is used to treat type 2 diabetes. It works by helping "
+                                          "to restore your body's proper response to insulin."},
+                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html?utm_source=mplusconnect"}]}]}}
         return {}
     monkeypatch.setattr(medref, "_http_get", fake_get)
 
@@ -1925,9 +2047,17 @@ def test_medref_medications(client, monkeypatch):
     todos = article_talk.open_for(conn, "kb/Reference/Medicine/Medications/Metformine XR")
     assert any("approximately matches" in t["body"] for t in todos)
 
-    # Read-only assistant tool (research mode).
-    txt, _ = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
-    assert "medlineplus.gov" in txt and "rxcui 6809" in txt
+    # Read-only assistant tool (research mode) — now GATED: the first call only PROPOSES (sends nothing),
+    # and the page comes back only after the owner approves the exact name.
+    from app.services import external_lookups
+    txt, ev = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev and ev["type"] == "external_proposal" and ev["tool"] == "drug_reference"
+    assert "PROPOSED" in txt and "medlineplus.gov" not in txt
+    external_lookups.decide(conn, ev["id"], approve=True)
+    txt2, ev2 = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev2 is None and "medlineplus.gov" in txt2 and "rxcui 6809" in txt2
+    assert "type 2 diabetes" in txt2 and "restore your body" in txt2   # the public-domain summary, not just a link
+    assert "?utm_source" not in txt2                                   # tracking params stripped from the cited URL
 
 
 def test_talk_dedup_cap_and_demote(client):
@@ -2331,8 +2461,9 @@ def test_recategorize_article_moves_and_rewrites_inbound_links(client):
 
 
 def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
-    """Merge unions sources into one article, soft-deletes the others, and rewrites inbound
-    [[source]]→[[into]] links (never unwraps them)."""
+    """Merge unions sources into one article, CONVERTS each source to a redirect (live row,
+    redirect_to set — not soft-deleted, so old [[source]] links / external URLs still
+    resolve), and rewrites inbound [[source]]→[[into]] links (never unwraps them)."""
     from app.db import get_conn
     from app.services import wiki_build, llm
     from app.services import notes as ns
@@ -2348,7 +2479,13 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
         "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
     res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
     assert res["ok"], res
-    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/Things/GroverCat' AND deleted_at IS NULL").fetchone()
+    # Source is now a REDIRECT: still live (keeps its title slot), redirect_to → the merged
+    # article, body replaced with the one-line marker.
+    src = conn.execute(
+        "SELECT deleted_at, redirect_to, content_md FROM notes WHERE title='kb/Things/GroverCat'"
+    ).fetchone()
+    assert src["deleted_at"] is None and src["redirect_to"] == "kb/Things/Grover"
+    assert src["content_md"] == "Redirects to [[kb/Things/Grover]]."
     owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 
@@ -3022,6 +3159,34 @@ def test_health_split_migration(client):
     assert routed == {"kb/Health/Jeff Hopkins"}
     # A non-medical note is never rerouted.
     assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
+
+
+def test_health_split_ignores_redirects(client):
+    """A merged-away (redirect) page is never treated as a real person/health page: the People
+    scan skips a People redirect even if it still carries a ## Health body, and health_page_for
+    never returns a Health redirect (which would route medical captures into a dead page and
+    resurrect it on write)."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_build
+    conn = get_conn()
+    # A People redirect that (artificially) still has a health body must NOT be scanned/extracted.
+    ns.upsert_note(conn, "kb/People/Ghost",
+                   "# Ghost\nLead.[^s1]\n\n## Health\nTakes prednisone 40 mg daily.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/medical/v]] — 2026-06-01\n", kind="kb")
+    conn.execute("UPDATE notes SET redirect_to='kb/People/Jeffrey Hopkins' WHERE title='kb/People/Ghost'")
+    conn.commit()
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert not any(p["person"] == "kb/People/Ghost" for p in rep["people"])      # redirect skipped despite health body
+
+    # A Health page merged away becomes a redirect — health_page_for must not return it.
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins", "# Jeffrey Hopkins\n\nOwner.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Old", "# Old\n\nrecord.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Jeffrey Hopkins",
+                   "# Jeffrey Hopkins\n\nPersonal health record for [[kb/People/Jeffrey Hopkins]].", kind="kb")
+    conn.commit()
+    wiki_build.create_redirect(conn, "kb/Health/Jeffrey Hopkins", "kb/Health/Old")
+    conn.commit()
+    assert health_split.health_page_for(conn, "kb/People/Jeffrey Hopkins") != "kb/Health/Jeffrey Hopkins"
 
 
 def test_geo_distance_resolves_place_geofence(client):
@@ -3903,6 +4068,34 @@ def test_search_note_hit_reports_attachments(client):
     rows = client.get("/api/search", params={"q": "kayak", "mode": "keyword"}).json()
     note = next(r for r in rows if r["kind"] == "note" and r["slug"] == "notes-kayak")
     assert note["attachments"] == 1            # surfaced via the note hit, not an attachment-text hit
+
+
+def test_search_notes_surfaces_image_analysis_sidecar(client):
+    """A fact that lives ONLY in a photo's AI vision summary (attachments.analysis_md,
+    indexed into attachments_fts) must surface via search_notes — not just the separate
+    search_attachments tool. This is the 'thrift store address read off a Messenger image'
+    case: the note body has none of the query terms; the answer is in the sidecar.
+
+    Semantic search is stubbed to [] by the fixture, so this proves the KEYWORD fold-in:
+    the attachment-FTS hit credits its parent note in hybrid_notes."""
+    from app.db import get_conn
+    from app.services import architect, attachments as att_svc
+    client.post("/api/notes", json={"title": "notes/messenger-image", "content_md": "saved from Messenger"})
+    conn = get_conn()
+    note_id = conn.execute("SELECT id FROM notes WHERE slug = 'notes-messenger-image'").fetchone()["id"]
+    # Image attachment whose sidecar carries the storefront address (mirrors image_analysis.analyze).
+    sidecar = "Storefront photo. **Salient facts**\n- MY ISLAND THRIFT STORE, 234 E Merritt Island Cswy"
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, sha256, byte_size, analysis_md, analysis_status) "
+        "VALUES (?, 'store.jpg', 'image/jpeg', 'sha', 1, ?, 'done')",
+        (note_id, sidecar),
+    ).lastrowid
+    att_svc._sync_attachment_fts(conn, aid, note_id, "store.jpg", sidecar)
+    conn.commit()
+
+    msg, _ = architect._run_tool(conn, None, "search_notes", {"query": "thrift store"})
+    assert "notes/messenger-image" in msg          # parent note surfaced via the sidecar
+    assert "THRIFT STORE" in msg.upper()           # and the snippet centres on the sidecar match
 
 
 def test_model_tier_resolution(client, monkeypatch):
@@ -7039,3 +7232,198 @@ def test_analyze_mode_accepted_and_grounding_guard_fires(client, monkeypatch):
     events = _drive_run(cid, "do my labs fit TTP", "analyze", fake, monkeypatch)
     assert {"type": "replace_text", "text": ""} in events    # guard fired in analyze mode too
     assert fake.turn >= 3
+
+
+def test_external_lookup_approval_endpoint(client, monkeypatch):
+    # The gate's HTTP side: approve runs the (owner-authorized) external fetch; deny records it;
+    # a missing id 404s.
+    from app.db import get_conn
+    from app.services import architect, medref
+    conn = get_conn()
+    _, ev = architect._tool_medical_reference(conn, None, "atrial fibrillation")   # propose (nothing sent)
+    monkeypatch.setattr(medref, "health_topic", lambda c, q: {"url": "https://medlineplus.gov/afib.html",
+                                                              "title": "Atrial Fibrillation", "snippet": "s"})
+    r = client.post(f"/api/external-lookups/{ev['id']}/approve").json()
+    assert r["ok"] and r["found"] is True
+    assert conn.execute("SELECT status FROM external_lookups WHERE id=?", (ev["id"],)).fetchone()["status"] == "approved"
+    _, ev2 = architect._tool_medical_reference(conn, None, "hemolytic anemia")
+    assert client.post(f"/api/external-lookups/{ev2['id']}/deny").json()["ok"]
+    assert client.post("/api/external-lookups/999999/approve").status_code == 404
+
+
+# --- Tool-call history: persisted per assistant reply, served lazily, wiped on /clear ---
+
+class _OneToolProvider:
+    """Turn 1 calls one tool, turn 2 finalizes — used to prove a single step is persisted."""
+    def __init__(self, tool, args):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._call = ToolCall(id="1", name=tool, args=args)
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, ToolCallEvent, TurnEnd
+        self.turn += 1
+        if self.turn == 1:
+            yield ToolCallEvent(self._call); yield TurnEnd([self._call], usage=None)
+        else:
+            yield TextDelta("Done."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+class _NoToolProvider:
+    """Answers in one turn with no tool calls — the reply must carry an empty history."""
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, TurnEnd
+        yield TextDelta("Tell me more about what you'd like to capture.")
+        yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_persisted_and_served(client, monkeypatch):
+    # A turn that runs a retrieval tool persists exactly one step; the messages list exposes the
+    # reply's id + step_count, and the steps endpoint returns the raw call (args + result).
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1 and asst["id"]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1
+    assert steps[0]["tool_name"] == "search_notes"
+    assert steps[0]["is_error"] == 0
+    assert "(no relevant records)" in steps[0]["result_text"]      # the (stubbed) tool output, raw
+    assert _json.loads(steps[0]["args_json"]) == {"query": "x"}    # the raw tool input
+
+
+def test_reply_without_tools_has_empty_history(client, monkeypatch):
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "hello", "assisted", _NoToolProvider(), monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 0
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+def test_tool_history_records_event_and_is_error(client, monkeypatch):
+    # The step log captures the staging/applied EVENT a tool emits, and flags a failed tool call.
+    import asyncio, json as _json
+    from app.db import get_conn
+    from app.services import architect, llm
+
+    # (a) an applied-event tool call
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("log_entry", {"text": "ran 5k"}))
+    ev = {"type": "applied", "action": {"id": 7, "summary": "Logged: ran 5k"}}
+    monkeypatch.setattr(architect, "_run_tool", lambda *a, **k: ("Logged.", ev))
+    async def go():
+        async for _ in architect.run(cid, "log a 5k run", None, "assisted"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1 and steps[0]["tool_name"] == "log_entry"
+    assert _json.loads(steps[0]["args_json"]) == {"text": "ran 5k"}
+    assert _json.loads(steps[0]["event_json"])["type"] == "applied"
+
+    # (b) a tool that raises is logged with is_error=1 and a fenced error result (turn survives)
+    cid2 = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("read_note", {"title": "x"}))
+    def _boom(*a, **k): raise RuntimeError("kaboom")
+    monkeypatch.setattr(architect, "_run_tool", _boom)
+    async def go2():
+        async for _ in architect.run(cid2, "read a note", None, "assisted"):
+            pass
+    asyncio.run(go2())
+    asst2 = [m for m in client.get(f"/api/chat/conversations/{cid2}/messages").json() if m["role"] == "assistant"][-1]
+    steps2 = client.get(f"/api/chat/messages/{asst2['id']}/steps").json()
+    assert len(steps2) == 1 and steps2[0]["is_error"] == 1
+    assert "failed" in steps2[0]["result_text"]
+
+
+def test_clear_conversation_steps_wipes_history(client, monkeypatch):
+    # /clear's server side: the conversation's stored tool logs are deleted; the reply rows remain
+    # but report step_count 0, and the steps endpoint is empty.
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1
+    assert client.delete(f"/api/chat/conversations/{cid}/steps").status_code == 200
+    msgs2 = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst2 = [m for m in msgs2 if m["role"] == "assistant"][-1]
+    assert asst2["step_count"] == 0                                # reply kept, history gone
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+class _MultiToolProvider:
+    """Turn 1 calls two tools (in order), turn 2 finalizes — proves ordering + count."""
+    def __init__(self):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._calls = [ToolCall(id="1", name="search_notes", args={"query": "a"}),
+                       ToolCall(id="2", name="read_note", args={"title": "b"})]
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import ToolCallEvent, TurnEnd, TextDelta
+        self.turn += 1
+        if self.turn == 1:
+            for c in self._calls:
+                yield ToolCallEvent(c)
+            yield TurnEnd(self._calls, usage=None)
+        else:
+            yield TextDelta("Synthesized from both notes."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_orders_multiple_steps(client, monkeypatch):
+    import asyncio
+    from app.db import get_conn
+    from app.services import architect, llm
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _MultiToolProvider())
+    monkeypatch.setattr(architect, "_run_tool",
+                        lambda conn_, cid_, name, args, mode: (f"result for {name}", None))
+    async def go():
+        async for _ in architect.run(cid, "compare two notes", None, "research"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 2
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert [s["step_index"] for s in steps] == [0, 1]                 # persisted in call order
+    assert [s["tool_name"] for s in steps] == ["search_notes", "read_note"]
+
+
+def test_steps_attach_to_their_own_reply(client, monkeypatch):
+    # Two turns in one conversation: each reply owns exactly its own step (no cross-attribution).
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "q1", "research",
+               _ScriptedProvider(draft="A fabricated memory answer of decent length about cholesterol levels.",
+                                 grounded="Nothing on file."), monkeypatch)
+    _drive_run(cid, "q2", "research",
+               _ScriptedProvider(draft="Another fabricated memory answer of decent length about blood pressure.",
+                                 grounded="Also nothing on file."), monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 2 and all(m["step_count"] == 1 for m in asst)
+    assert len(client.get(f"/api/chat/messages/{asst[0]['id']}/steps").json()) == 1
+    assert len(client.get(f"/api/chat/messages/{asst[1]['id']}/steps").json()) == 1

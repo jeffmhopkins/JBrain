@@ -1,13 +1,15 @@
 import { createElement, useRef, useState } from "react";
 import type { NavigateFunction } from "react-router-dom";
 import { getNotePreview, NotePreview } from "../api";
+import { mapsUrl } from "../util";
+import { Icon } from "./Icon";
 
 // A chat [[citation]] link that REVEALS its source on hover — so you can verify the cite without
 // leaving the conversation. (Dead links are already stripped server-side, so a citation that renders
 // here resolves to a real note.) Clicking still opens the note. Fetched once, then cached per slug.
 const _cache = new Map<string, NotePreview>();
 
-function CitationLink({ href, navigate, children }: { href: string; navigate: NavigateFunction; children: any }) {
+export function CitationLink({ href, navigate, children }: { href: string; navigate: NavigateFunction; children: any }) {
   const slug = decodeURIComponent(href.replace(/^\/note\//, ""));
   const [preview, setPreview] = useState<NotePreview | null>(_cache.get(slug) || null);
   const [open, setOpen] = useState(false);
@@ -48,6 +50,15 @@ function CitationLink({ href, navigate, children }: { href: string; navigate: Na
 // else behaves like the shared renderer (router nav for /note/, new tab for external).
 export function makeChatLinkRenderer(navigate: NavigateFunction) {
   return ({ href, children }: any) => {
+    if (href?.startsWith("#map:")) {
+      const q = (() => { try { return decodeURIComponent(href.slice(5)); } catch { return ""; } })();
+      return createElement(
+        "a",
+        { className: "map-link", href: mapsUrl(q), target: "_blank", rel: "noreferrer",
+          title: `Open in Google Maps: ${q}`, "aria-label": "Open in Google Maps" },
+        createElement(Icon, { name: "pin", size: 14 }),
+      );
+    }
     if (href?.startsWith("/note/")) {
       return createElement(CitationLink, { href, navigate, children });
     }

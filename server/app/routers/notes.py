@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, require_capture_writer
 from ..db import get_conn
-from ..services import clock, diffing
+from ..services import clock, diffing, wikilinks
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[CurrentUser])
@@ -59,7 +59,9 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
                include_hidden: bool = False):
     conn = get_conn()
-    clauses = ["deleted_at IS NULL"]
+    # Redirects are decluttered from browse: a merged-away page keeps its UNIQUE title slot
+    # live so old [[links]] resolve, but it must not show up in the notes list.
+    clauses = ["deleted_at IS NULL", "redirect_to IS NULL"]
     params: list = []
     if q:
         clauses.append("title LIKE ?")
@@ -108,6 +110,17 @@ def get_note(slug: str):
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")
     note = dict(row)
+    # Redirect resolution: when this row is a redirect, resolve the (chained) FINAL target
+    # to its slug so a client can forward there. redirect_to is already on the row (SELECT *).
+    note["redirect_to_slug"] = None
+    if row["redirect_to"]:
+        from ..services import wiki_build
+        final = wiki_build._resolve_redirect_chain(conn, row["redirect_to"])
+        tgt = conn.execute(
+            "SELECT slug FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL", (final,)
+        ).fetchone()
+        if tgt:
+            note["redirect_to_slug"] = tgt["slug"]
     note["backlinks"] = notes_svc.backlinks(conn, row["id"])
     note["tags"] = [
         t["name"]
@@ -207,12 +220,22 @@ def get_talk(slug: str):
 def add_talk(slug: str, body: TalkIn):
     """Add an owner note/directive/question to an article's talk. (There is intentionally
     no user 'resolve' — open items are addressed through the Review flow / maintenance pass
-    when the underlying issue is actually handled, not by ticking a box.)"""
+    when the underlying issue is actually handled, not by ticking a box.)
+
+    A 'correction' is a source-of-truth fix: it's promoted to a dated entry note (the truth
+    layer) and the talk item links to it, so the next maintenance pass rewrites the article
+    from it. Source entries are never modified."""
     conn = get_conn()
-    from ..services import article_talk
-    tid = article_talk.add(conn, _note_title(conn, slug), body.kind, body.body, author="user")
+    from ..services import article_talk, corrections
+    article_title = _note_title(conn, slug)
+    tid = article_talk.add(conn, article_title, body.kind, body.body, author="user")
+    promoted = None
+    if tid is not None and body.kind == "correction":
+        promoted = corrections.maybe_promote(conn, tid, article_title, body.body)
     conn.commit()
-    return {"id": tid}
+    if promoted:
+        notes_svc.flush_entry_events(conn)  # fire analysis/auto-tag AFTER commit
+    return {"id": tid, "promoted": promoted}
 
 
 @router.get("/kb/dead-links")
@@ -401,6 +424,40 @@ def diff_versions(slug: str, from_id: int, to_id: int):
         "after": b["content_md"],
         "hunks": diffing.line_diff(a["content_md"], b["content_md"]),
     }
+
+
+@router.get("/links/audit")
+def links_audit():
+    """List [[Target|Display]] links whose shortened label names a different article than
+    the target (high-confidence only) — the interactive Wiki link-label audit."""
+    return {"findings": wikilinks.audit_display_mismatches(get_conn())}
+
+
+class LinkFixIn(BaseModel):
+    note_id: int
+    target: str
+    display: str
+
+
+@router.post("/links/audit/fix")
+def links_audit_fix(body: LinkFixIn):
+    """Correct one flagged link (re-derives the right label from the live target)."""
+    conn = get_conn()
+    changed = wikilinks.fix_note_link(conn, body.note_id, body.target, body.display)
+    conn.commit()
+    return {"fixed": bool(changed)}
+
+
+@router.post("/links/audit/fix-all")
+def links_audit_fix_all():
+    """Correct every currently-flagged link. Returns how many were changed."""
+    conn = get_conn()
+    fixed = 0
+    for f in wikilinks.audit_display_mismatches(conn):
+        if wikilinks.fix_note_link(conn, f["source_id"], f["target"], f["display"]):
+            fixed += 1
+    conn.commit()
+    return {"fixed": fixed}
 
 
 @router.post("/{slug}/restore")

@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS notes (
   location_label TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  deleted_at TEXT
+  deleted_at TEXT,
+  redirect_to TEXT                                 -- survivor title when this note was merged away
 );
 
 -- Full history. One row per authored state (created/updated/restored). The
@@ -84,6 +85,25 @@ CREATE TABLE IF NOT EXISTS staging_actions (
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_staging_status ON staging_actions(status);
+
+-- Per-assistant-turn tool-call log: the "how I answered this" history surfaced by
+-- swiping/expanding an AI reply. Full raw — the tool input (args_json) and its returned
+-- text (result_text) are stored verbatim. Rows cascade-delete with their conversation
+-- (and with their message), and are wiped for a conversation when the user runs /clear.
+CREATE TABLE IF NOT EXISTS message_steps (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  step_index      INTEGER NOT NULL,
+  tool_name       TEXT NOT NULL,
+  args_json       TEXT NOT NULL DEFAULT '{}',
+  result_text     TEXT NOT NULL DEFAULT '',
+  is_error        INTEGER NOT NULL DEFAULT 0,
+  event_json      TEXT,                     -- the staging/applied/chart event this call emitted, if any
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
 
 -- Standalone full-text index (kept in sync manually on note save).
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -156,6 +176,24 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
 
+-- Durable person-identity decisions: an append-only ledger of user merge/split/alias
+-- rulings. entity_index derives entities from note_analysis each rebuild, so a purely
+-- heuristic merge would be lost; these rows make the user's choices STICK across rebuilds.
+-- 'merge'  : union norm_a into the canonical (canonical = the surviving normalized key).
+-- 'split'  : forbid the heuristic auto-union of the unordered pair {norm_a, norm_b}.
+-- 'alias'  : attach an extra alias to a canonical entity (norm_b = canonical norm,
+--            norm_a = the alias's normalized key, display_a = the alias label).
+CREATE TABLE IF NOT EXISTS entity_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('merge','split','alias')),
+  type TEXT NOT NULL DEFAULT 'person',
+  norm_a TEXT NOT NULL, norm_b TEXT,
+  display_a TEXT, display_b TEXT, canonical TEXT,
+  author TEXT NOT NULL DEFAULT 'user', source TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, norm_a);
+
 -- Per-article "talk" — the Wikipedia-Talk-style memory that makes KB maintenance
 -- stateful: decisions, source conflicts, open questions/TODOs, and user directives.
 -- Lives beside the article (keyed by title, stable across rebuilds), NOT in its body.
@@ -164,14 +202,34 @@ CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm)
 CREATE TABLE IF NOT EXISTS article_talk (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   article_title TEXT NOT NULL,
-  kind          TEXT NOT NULL,        -- decision | conflict | question | todo | directive | note
+  kind          TEXT NOT NULL,        -- decision | conflict | question | todo | directive | note | correction
   body          TEXT NOT NULL,
   author        TEXT NOT NULL DEFAULT 'ai',   -- ai | user
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   resolved_at   TEXT,
-  resolution    TEXT                  -- how it was addressed (set by the maintenance pass)
+  resolution    TEXT,                 -- how it was addressed (set by the maintenance pass)
+  -- Source-of-truth correction: an owner 'correction' talk item is promoted to a real
+  -- dated entry note (the truth layer); source_note_id links here. The note — not this
+  -- row — carries the durable fact; recency-supersede then heals the article on the next
+  -- maintenance pass. Raw source entries are never modified.
+  is_correction  INTEGER NOT NULL DEFAULT 0,
+  source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title);
+CREATE INDEX IF NOT EXISTS idx_article_talk_source_note
+  ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL;
+
+-- Owner source-of-truth name overrides for the (derived) entity index. Keyed by the kb
+-- article the entity backs — a STABLE key that survives the normalize() fork (diacritics /
+-- spellings produce different normalized_keys, so a frequency-derived display name can't be
+-- corrected durably any other way). entity_index.rebuild() re-applies these every pass; an
+-- override whose source correction note was deleted is skipped, so the name auto-reverts.
+CREATE TABLE IF NOT EXISTS entity_overrides (
+  article_title  TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 
 
@@ -268,6 +326,8 @@ CREATE TABLE IF NOT EXISTS review_items (
   message      TEXT,
   link_slug    TEXT,                                -- note slug to open, if any
   status       TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'dismissed'
+  kind         TEXT,                                -- optional typed card (e.g. identity review)
+  payload_json TEXT,                                -- optional structured payload for the card
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   dismissed_at TEXT
 );
@@ -571,12 +631,50 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 -- Cached medical-reference lookups (NLM, public domain): RxNorm name->RxCUI and MedlinePlus
 -- Connect RxCUI->drug page, so a drug name/code is fetched at most once.
 CREATE TABLE IF NOT EXISTS medref_cache (
-  kind         TEXT NOT NULL,            -- 'rxcui' | 'approx' | 'mplus'
+  kind         TEXT NOT NULL,            -- 'rxcui' | 'approx' | 'mplus' | 'mplus_topic'
   key          TEXT NOT NULL,            -- normalized name (rxcui/approx) or rxcui (mplus)
   payload_json TEXT NOT NULL,
   fetched_at   TEXT NOT NULL,
   PRIMARY KEY (kind, key)
 );
+
+-- Reference candidates: health TOPICS an external reference tool (medical_reference) surfaced
+-- that the owner does NOT yet have under kb/Reference. A TOPIC-ONLY usage signal — it stores the
+-- public topic name + the server-returned source URL/snippet, and NEVER any owner data (no query
+-- text, no lab values/dates, no conversation id) so a "general" reference page can't inherit PHI.
+-- Analyze is read-only over NOTES, so recording a candidate never writes a note; the nightly
+-- promote pass turns repeated candidates (hits >= threshold) into STAGED kb/Reference articles the
+-- owner approves. status walks new -> staged -> published | dismissed; norm_key dedups.
+CREATE TABLE IF NOT EXISTS reference_candidates (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic       TEXT NOT NULL,                  -- canonical (public) topic title
+  norm_key    TEXT NOT NULL UNIQUE,           -- normalized topic for dedup/upsert
+  source      TEXT NOT NULL DEFAULT 'medlineplus',
+  url         TEXT NOT NULL,                  -- the server-returned source URL (host-pinned)
+  snippet     TEXT,                           -- short public-domain summary (no owner data)
+  category    TEXT,                           -- 'Conditions' | 'Medications' | 'Procedures' (best-effort)
+  hits        INTEGER NOT NULL DEFAULT 1,
+  first_seen  TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen   TEXT NOT NULL DEFAULT (datetime('now')),
+  status      TEXT NOT NULL DEFAULT 'new'     -- new | staged | published | dismissed
+);
+CREATE INDEX IF NOT EXISTS idx_refcand_status ON reference_candidates(status, hits);
+
+-- External-lookup approvals: a HARD gate so the medical_reference tool never sends a term to an
+-- external service (MedlinePlus/NLM) until the owner has seen the EXACT term and approved it — so
+-- the owner can be sure no PII leaves the system in a search query. A decision is remembered per
+-- term (approve once, not every time). status: pending (proposed, nothing sent) -> approved | denied.
+CREATE TABLE IF NOT EXISTS external_lookups (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool        TEXT NOT NULL,                  -- 'medical_reference'
+  term        TEXT NOT NULL,                  -- the EXACT term that would be sent externally
+  norm_key    TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at  TEXT,
+  UNIQUE(tool, norm_key)
+);
+
 
 -- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
 -- scheduler (never the ingest path) reads this to fire location triggers.

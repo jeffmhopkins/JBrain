@@ -560,6 +560,12 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .md pre { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; }
 .md code { background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .wikilink { color: var(--accent); border-bottom: 1px dashed var(--accent); }
+/* Google Maps pin appended after a detected address / coordinate pair. Sits inline
+   with the text, nudged up a hair, and brightens to the accent on hover. */
+.map-link { display: inline-flex; align-items: center; vertical-align: -2px; margin-left: 3px;
+  color: var(--text-dim); border-bottom: none; text-decoration: none; }
+.map-link:hover { color: var(--accent); }
+.map-link .icon { display: block; }
 /* Dynamic (live) time values — @t[...] tokens rendered against today. Dotted
    underline + help cursor signal "this updates over time"; the tooltip names the anchor. */
 .dyn-date { border-bottom: 1px dotted var(--text-dim); cursor: help; }
@@ -875,6 +881,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   .modal-foot { padding-bottom: 12px; }
   .wf-textarea-lg { min-height: 220px; }
 }
+/* In-wiki link-label audit panel. */
+.link-audit { margin-bottom: 12px; }
+.link-audit .chev { display: inline-flex; color: var(--text-dim); transition: transform .12s ease; }
+.link-audit .chev.open { transform: rotate(90deg); }
+.link-audit-item { padding: 8px 0; border-top: 1px solid var(--border); }
+.link-audit-item code { font-size: 12px; }
+
 pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
 .diff-insert { color: var(--ok); }
 .diff-delete { color: var(--danger); text-decoration: line-through; }
@@ -990,3 +1003,55 @@ table.sql-result th { background: var(--bg-elev-2); }
 .cite-pop-head { color: var(--ok, #7fb37f); }
 .cite-pop-head strong { color: var(--text); }
 .cite-pop-body { color: var(--text-dim); }
+
+/* External-lookup proposal (the medical_reference gate): the assistant can only ASK to send a
+   term to MedlinePlus; nothing leaves until the owner approves the exact term here. */
+.ext-proposal {
+  margin: 8px 0; padding: 10px 12px; border: 1px solid var(--accent, #6aa9c9);
+  border-radius: 10px; background: rgba(106,169,201,0.10); font-size: 13px;
+}
+.ext-proposal-text { color: var(--text); }
+.ext-proposal strong { color: var(--text); }
+.ext-proposal-input {
+  width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 13px;
+  border: 1px solid var(--border, #444); border-radius: 6px;
+  background: var(--bg, #12161a); color: var(--text);
+}
+
+/* ---- Per-reply tool-call history ("how I answered this") ---- */
+.tool-history { margin-top: 6px; }
+.th-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border);
+}
+.th-pill:hover { border-color: var(--accent); color: var(--text); }
+.th-pill .icon { color: var(--text-dim); }
+.th-caret { transition: transform 0.15s ease; }
+.th-caret-open { transform: rotate(90deg); }
+.th-panel { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); overflow: hidden; }
+.th-msg { padding: 10px 12px; font-size: 13px; }
+.th-steps { list-style: none; margin: 0; padding: 0; }
+.th-step { border-top: 1px solid var(--border); padding: 8px 12px; }
+.th-step:first-child { border-top: none; }
+.th-step-err { background: rgba(180, 90, 90, 0.06); }
+.th-step-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; padding: 0; text-align: left; color: var(--text); font-size: 13px;
+}
+.th-step-head:hover { border: none; }
+.th-step-label { font-weight: 600; }
+.th-tool { font-size: 11px; color: var(--text-dim); background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.th-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: auto; }
+.th-badge-err { background: rgba(180,90,90,0.18); color: #d99; border: 1px solid rgba(180,90,90,0.4); }
+.th-event { font-size: 12px; color: var(--text-dim); margin: 4px 0 0 22px; }
+.th-refs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 22px; }
+.th-chip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--border); }
+.th-chip .wikilink { color: var(--text); }
+.th-raw { margin: 8px 0 2px 22px; }
+.th-raw-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin: 6px 0 2px; }
+.th-pre {
+  margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto;
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--text);
+}

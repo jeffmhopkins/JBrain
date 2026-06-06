@@ -2,8 +2,15 @@
 
 Used by the architect's search_notes tool so the agent gets keyword AND meaning in a
 single call (exact terms the embedding might rank low still surface, and vice-versa)
-— no second query_sql round-trip. The public Search router has its own (broader)
-fusion that also spans attachments; this is the notes-only core.
+— no second query_sql round-trip.
+
+Results are NOTES, but the corpus spans each note's ATTACHMENTS too: a hit on an
+attachment (most importantly the AI image-analysis sidecar in attachments.analysis_md,
+which is indexed into attachments_fts and embedded into vec_chunks) credits its parent
+note. So a fact that lives only in a photo's vision summary — e.g. a storefront address
+read off a Messenger image — surfaces here, not just via the separate search_attachments
+tool. The public Search router has its own fusion that returns attachments as their own
+hits; this one collapses them onto the owning note.
 """
 from __future__ import annotations
 
@@ -17,9 +24,10 @@ def _fts_query(q: str) -> str:
 
 
 def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
-    """Notes matching `q` by keyword AND meaning, reciprocal-rank fused, deduped,
-    best-first. Returns [{id, title, slug}]. Degrades to whichever half works if the
-    other errors (e.g. embeddings unavailable)."""
+    """Notes matching `q` by keyword AND meaning — across both the note body and its
+    attachments (image-analysis sidecars, PDFs, transcripts) — reciprocal-rank fused,
+    deduped, best-first. Returns [{id, title, slug}]. Degrades to whichever sources work
+    if others error (e.g. embeddings unavailable)."""
     q = (q or "").strip()
     if not q:
         return []
@@ -30,11 +38,13 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
     scores: dict[int, float] = {}
     meta: dict[int, dict] = {}
 
-    def bump(nid: int, title: str, slug: str, rank: int) -> None:
+    def bump(nid, title: str, slug: str, rank: int) -> None:
+        if nid is None:          # unattached attachment (no owning note) → nothing to surface
+            return
         scores[nid] = scores.get(nid, 0.0) + 1.0 / (rank + 1)
         meta.setdefault(nid, {"id": nid, "title": title, "slug": slug})
 
-    try:  # keyword (FTS / bm25 order)
+    try:  # keyword over note bodies (FTS / bm25 order)
         rows = conn.execute(
             "SELECT f.note_id, n.title, n.slug FROM notes_fts f JOIN notes n ON n.id = f.note_id "
             "WHERE notes_fts MATCH ? AND n.deleted_at IS NULL ORDER BY rank LIMIT ?",
@@ -45,9 +55,26 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
 
-    try:  # semantic (vector similarity order)
+    try:  # semantic over note bodies (vector similarity order)
         for i, r in enumerate(embeddings.semantic_search(conn, q, pool)):
             bump(r["id"], r["title"], r["slug"], i)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:  # keyword over ATTACHMENTS (incl. AI image-analysis sidecars) → credit the parent note
+        rows = conn.execute(
+            "SELECT af.note_id, n.title, n.slug FROM attachments_fts af JOIN notes n ON n.id = af.note_id "
+            "WHERE attachments_fts MATCH ? AND n.deleted_at IS NULL ORDER BY rank LIMIT ?",
+            (_fts_query(q), pool),
+        ).fetchall()
+        for i, r in enumerate(rows):
+            bump(r["note_id"], r["title"], r["slug"], i)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:  # semantic over attachment chunks (image analysis / PDF / transcript) → parent note
+        for i, r in enumerate(embeddings.semantic_search_attachments(conn, q, pool)):
+            bump(r["note_id"], r["title"], r["slug"], i)
     except Exception:  # noqa: BLE001
         pass
 

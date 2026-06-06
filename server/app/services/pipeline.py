@@ -260,6 +260,18 @@ def _p_link_owner(ctx):
     return wiki_build.link_owner(ctx.conn)
 
 
+def _p_surface_aliases(ctx):
+    """Add/update the '*Also known as: ...*' line on each person article with aliases."""
+    from . import wiki_build
+    return wiki_build.surface_aliases(ctx.conn)
+
+
+def _p_propose_person_merges(ctx, limit=40, min_confidence=0.7):
+    """Post 'same person?' review cards for likely-duplicate people (propose-only)."""
+    from . import entity_index
+    return entity_index.propose_person_merges(ctx.conn, limit=limit, min_confidence=min_confidence)
+
+
 def _p_wiki_maintain(ctx, limit=20):
     """Component 3: address open talk items on existing articles against their sources."""
     from . import wiki_build
@@ -309,6 +321,54 @@ def _p_suggest_unsaved_places(ctx):
     from . import places
     titles = places.unsaved_places(ctx.conn)
     return {"titles": titles, "names": [t.split("/")[-1] for t in titles], "count": len(titles)}
+
+
+def _p_audit_link_labels(ctx, limit=500, fix=True):
+    """Tidy [[Target|Display]] link labels across the wiki by dropping the alias so each
+    link renders the article's clean short name. Covers BOTH a label that names a different
+    article (mismatch — e.g. a stale alias after a rename) and one that merely repeats the
+    article's path/name (verbose). When `fix`, applies it (deterministic + undoable) and
+    logs each in the source article's talk. Returns the changes for the recipe's Review."""
+    from . import wikilinks, article_talk
+
+    do_fix = fix not in (False, 0, "0", "false", "False", "", None)
+    findings = wikilinks.scan_link_labels(ctx.conn)
+    acted = []
+    for f in findings[: int(limit)]:
+        if do_fix and wikilinks.fix_note_link(ctx.conn, f["source_id"], f["target"], f["display"]):
+            acted.append(f)
+            if f["kind"] == "mismatch":
+                msg = (f"Link label corrected: shown “{f['display']}” but linked to "
+                       f"{f['target_title']}; dropped the alias so it shows “{f['desired_display']}”.")
+            else:
+                msg = (f"Link label tidied: dropped the verbose alias “{f['display']}” on "
+                       f"{f['target_title']}; it now shows “{f['desired_display']}”.")
+            article_talk.add(ctx.conn, f["source_title"], "note", msg, author="ai")
+    if do_fix:
+        ctx.conn.commit()
+    shown = acted if do_fix else findings
+    changes = [{
+        "source_leaf": wikilinks.wiki_label(x["source_title"]), "source_slug": x["source_slug"],
+        "display": x["display"], "desired": x["desired_display"], "kind": x["kind"],
+        "target_leaf": wikilinks.wiki_label(x["target_title"]),
+    } for x in shown[:50]]
+    # NB: key is "changes", not "items" — Jinja resolves `audit.items` to dict.items().
+    return {"mismatches": sum(1 for x in shown if x["kind"] == "mismatch"),
+            "verbose": sum(1 for x in shown if x["kind"] == "verbose"),
+            "fixed": len(acted), "verb": "Corrected" if do_fix else "Found",
+            "count": len(shown), "changes": changes}
+
+
+def _p_normalize_link_labels(ctx, limit=5000):
+    """Drop redundant/mismatched [[Target|Display]] aliases KB-wide so links render the
+    article's clean short name (deterministic, no LLM). A post-write hygiene pass for the
+    KB maintenance/build recipes — keeps freshly-written links from carrying 'People/…'
+    clutter without re-running the article writer."""
+    from . import wikilinks
+    res = wikilinks.normalize_all_link_labels(ctx.conn, int(limit))
+    if res["fixed"]:
+        ctx.conn.commit()
+    return res
 
 
 def _p_tidy_talk(ctx):
@@ -696,7 +756,7 @@ def _p_kb_audit(ctx, limit=1000):
     Returns {flagged: [{id,title,slug,issues:[...]}], bad, ok, scanned}."""
     rows = ctx.conn.execute(
         "SELECT id, title, slug, content_md FROM notes "
-        "WHERE kind='kb' AND deleted_at IS NULL ORDER BY title"
+        "WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL ORDER BY title"
     ).fetchall()
     capped = rows[: max(1, min(int(limit), 5000))]
     flagged = []
@@ -1193,6 +1253,21 @@ def _p_research_nudges(ctx):
     return {"nudged": research.post_candidate_nudges(ctx.conn)}
 
 
+def _p_promote_reference_candidates(ctx, min_hits=2, limit=5):
+    """Stage kb/Reference stubs for health topics the owner looked up repeatedly (read-only capture →
+    nightly promote → owner approves). Source-only, deterministic, never auto-live."""
+    from . import reference_promote
+    return reference_promote.run(ctx.conn, min_hits=int(min_hits), limit=int(limit))
+
+
+def _p_refresh_reference_seeds(ctx, ttl_days=180, limit=5):
+    """Stage a citation refresh for kb/Reference seeds whose cited source is older than `ttl_days` —
+    re-fetch the public source and re-seat ONLY the Source line + fetch date (owner prose untouched).
+    Source-only, deterministic, never auto-live."""
+    from . import reference_refresh
+    return reference_refresh.run(ctx.conn, ttl_days=int(ttl_days), limit=int(limit))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1215,9 +1290,13 @@ _PRIMITIVES = {
     "research_article": _p_research_article,
     "split_article": _p_split_article,
     "link_owner": _p_link_owner,
+    "surface_aliases": _p_surface_aliases,
+    "propose_person_merges": _p_propose_person_merges,
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
+    "audit_link_labels": _p_audit_link_labels,
+    "normalize_link_labels": _p_normalize_link_labels,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
     "link_places": _p_link_places,
@@ -1259,6 +1338,8 @@ _PRIMITIVES = {
     "plan_moves": _p_plan_moves,
     "stage_moves": _p_stage_moves,
     "research_nudges": _p_research_nudges,
+    "promote_reference_candidates": _p_promote_reference_candidates,
+    "refresh_reference_seeds": _p_refresh_reference_seeds,
     "notify": _p_notify,
     "suggest_places": _p_suggest_places,
     "stage_places": _p_stage_places,
@@ -1299,6 +1380,12 @@ _PRIMITIVE_META: dict[str, dict] = {
                     "inputs": [{"name": "moves", "type": "list", "required": True}], "output": "object"},
     "research_nudges": {"summary": "Nudge the owner about new candidate notes for active research links.",
                         "inputs": [], "output": "object"},
+    "promote_reference_candidates": {
+        "summary": "Stage kb/Reference stubs from repeatedly-looked-up external health topics for owner review.",
+        "inputs": [{"name": "min_hits", "type": "int"}, {"name": "limit", "type": "int"}], "output": "object"},
+    "refresh_reference_seeds": {
+        "summary": "Stage a citation refresh (link + fetch date only) for kb/Reference seeds whose source is past a TTL.",
+        "inputs": [{"name": "ttl_days", "type": "int"}, {"name": "limit", "type": "int"}], "output": "object"},
     "notify": {"summary": "Send a Web Push to all devices (custom title/body/deep-link).",
                "inputs": [{"name": "title", "type": "str", "required": True}, {"name": "body", "type": "str"},
                           {"name": "url", "type": "str"}], "output": "object"},
@@ -1346,12 +1433,21 @@ _PRIMITIVE_META: dict[str, dict] = {
                                    {"name": "child_sources", "type": "list"}], "output": "dict"},
     "link_owner": {"summary": "Link the default person to their People article.",
                    "inputs": [], "output": "dict"},
+    "surface_aliases": {"summary": "Add/update the 'Also known as' line on person articles with aliases.",
+                        "inputs": [], "output": "dict"},
+    "propose_person_merges": {"summary": "Post 'same person?' review cards for likely-duplicate people (propose-only).",
+                              "inputs": [{"name": "limit", "type": "int"},
+                                         {"name": "min_confidence", "type": "float"}], "output": "dict"},
     "review_open_talk": {"summary": "Post a Review card per article with unresolved talk items.",
                          "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_maintain": {"summary": "Address open talk items on existing articles against their sources.",
                       "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_update": {"summary": "Flow notes changed since the watermark into existing articles (incremental).",
                     "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "audit_link_labels": {"summary": "Tidy [[Target|Display]] link labels — drop aliases that name a different article (mismatch) or repeat the path/name (verbose) so links render the clean short name.",
+                          "inputs": [{"name": "limit", "type": "int"}, {"name": "fix", "type": "bool"}], "output": "dict"},
+    "normalize_link_labels": {"summary": "Drop redundant/mismatched wiki-link aliases KB-wide so links render the article's clean short name (deterministic, no LLM).",
+                              "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",

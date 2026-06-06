@@ -58,7 +58,7 @@ _DEFAULT_MODE_TOOLS = {
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
                  "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
     # "Analyze" = research's read set + reference_lookup (the owner's own kb/Reference library).
-    "analyze": ["reference_lookup", "find", "search_notes", "read_note", "read_notes", "related_notes",
+    "analyze": ["reference_lookup", "medical_reference", "find", "search_notes", "read_note", "read_notes", "related_notes",
                 "list_tags", "notes_with_tag", "list_recent_notes", "search_attachments",
                 "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes",
                 "geo_distance", "nearby_notes", "where_was_i", "time_at_place", "places_visited",
@@ -180,6 +180,9 @@ _TOOL_SCHEMAS = {
     "drug_reference": {"type": "object", "properties": {
         "name": {"type": "string", "description": "A medication name (brand or generic), e.g. 'metformin' or 'Tylenol'."}},
         "required": ["name"]},
+    "medical_reference": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "A health condition/topic/test, e.g. 'thrombotic thrombocytopenic purpura' or 'atrial fibrillation'."}},
+        "required": ["query"]},
     "save_place": {"type": "object", "properties": {
         "name": {"type": "string", "description": "The place to save as a geofence, e.g. 'Portland VA Hospital' or 'the gym'."}},
         "required": ["name"]},
@@ -449,6 +452,21 @@ def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
     return ("…" if start > 0 else "") + seg + ("…" if start + len(seg) < len(text) else "")
 
 
+def _searchable_text(conn, note_id: int) -> str:
+    """The note body PLUS its AI image-analysis sidecars, as one string for snippet/passage
+    extraction — so a hit that lives ONLY in a photo's vision summary (e.g. an address read
+    off a storefront image) still yields a relevant excerpt instead of a blind head slice.
+    @t[...] tokens are expanded so the excerpt reads like the rendered note."""
+    from . import image_analysis
+    c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
+    body = clock.expand_tokens(c["content_md"] if c else "")
+    img = image_analysis.block_for_note(conn, note_id, cap=1500)
+    if img:
+        img = clock.expand_tokens(img)
+        body = (body + "\n\n" + img) if body else img
+    return body
+
+
 def _tool_find(conn, query: str, limit: int = 6) -> str:
     """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
     + its [[Title]] — so the model can answer with a real citation in a single call (no separate
@@ -459,8 +477,7 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
         return "No matching notes."
     out = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        passage = _quotable_passage(_searchable_text(conn, r["id"]), query)
         out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
     return _untrusted("find-results",
                       "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
@@ -501,8 +518,7 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
         return "No matching notes."
     lines = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        snip = _snippet(c["content_md"] if c else "", query)
+        snip = _snippet(_searchable_text(conn, r["id"]), query)
         lines.append(f"- {r['title']}" + (f"\n    {snip}" if snip else ""))
     # Titles + snippets are user-controlled too -> fence them as untrusted data.
     return _untrusted("search-results", "\n".join(lines))
@@ -1087,17 +1103,98 @@ def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
     return _untrusted("address", f"Suspected matches for “{query.strip()}” (OpenStreetMap):\n" + "\n".join(lines))
 
 
-def _tool_drug_reference(conn, name: str) -> str:
-    """The MedlinePlus consumer drug page for a medication name, resolved via RxNorm (NLM,
-    public domain). Read-only; a link to an authoritative source, not medical advice."""
-    from . import medref
-    res = medref.resolve(conn, name)
+def _drug_topic_name(title: str, fallback: str) -> str:
+    """The clean medication topic to capture/curate from a MedlinePlus drug page title — strip a
+    trailing ': MedlinePlus …' suffix (e.g. 'Metformin: MedlinePlus Drug Information' -> 'Metformin').
+    Falls back to the approved lookup name if the title is empty."""
+    leaf = (title or "").split(":")[0].strip()
+    return leaf or (fallback or "").strip()
+
+
+def _tool_drug_reference(conn, conversation_id, name: str):
+    """EXTERNAL medication reference: the MedlinePlus consumer drug page for a name, resolved via RxNorm
+    (NLM, public domain). GATED — it sends NOTHING externally (no RxNav / MedlinePlus Connect call) until
+    the owner approves the EXACT name, so no PII leaks in a drug query. An un-approved name is PROPOSED
+    (surfaced as a confirm chip); once approved the lookup runs and an EXACT match records a Medications
+    TOPIC-ONLY usage signal for the kb/Reference loop. Returns (result_text, event_or_None)."""
+    from . import medref, reference_candidates, external_lookups
+    term = (name or "").strip()
+    if not term:
+        return _untrusted("drug-ref", "No medication name given for a reference lookup."), None
+    state = external_lookups.check_or_propose(conn, "drug_reference", term)
+    if state["status"] == "denied":
+        return _untrusted("drug-ref", f"The owner declined an external MedlinePlus drug lookup for “{term}”. "
+                          "Answer from their own reference library and notes only; do not propose it again."), None
+    if state["status"] == "pending":
+        # Nothing has been sent. Surface the EXACT name to the owner as a confirm chip; tell the model to stop.
+        event = {"type": "external_proposal", "id": state["id"], "tool": "drug_reference", "term": term}
+        return (_untrusted("drug-ref",
+                f"EXTERNAL LOOKUP PROPOSED: “{term}” → MedlinePlus drug info (via RxNorm). NOTHING has been sent "
+                "externally. Tell the owner you'd like their approval to look up this exact medication, then STOP "
+                "— do not call more external tools this turn. Their own reference library and notes are still available."),
+                event)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED name (what the owner
+    # approved — possibly edited from the model's phrasing), not the raw argument.
+    lookup_name = state.get("term") or term
+    res = medref.drug_topic(conn, lookup_name)
     if not res:
-        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{(name or '').strip()}”.")
+        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{lookup_name}”."), None
     tail = "" if res["match"] == "exact" else f" (approximate match to “{res.get('candidate')}”, score {res.get('score')})"
-    return _untrusted("drug-ref",
-                      f"MedlinePlus drug information for {name.strip()}{tail}: {res['title']} — {res['url']} "
-                      f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
+    if res["match"] == "exact":
+        # Capture ONLY the resolved public drug topic + its public-domain summary + source — never the
+        # owner's phrasing/data. An approximate match is too uncertain to curate, so it isn't captured.
+        try:
+            reference_candidates.record(conn, topic=_drug_topic_name(res.get("title", ""), lookup_name),
+                                        source="rxnorm", url=res["url"], snippet=res.get("summary", ""),
+                                        category="Medications")
+        except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+            pass
+    summary = f" {res['summary']}" if res.get("summary") else ""
+    return (_untrusted("drug-ref",
+                       f"MedlinePlus drug information for {lookup_name}{tail}: {res['title']} — {res['url']}.{summary} "
+                       "[RxNorm rxcui {rxcui}, NLM/MedlinePlus — informational, not medical advice; for specific dosing "
+                       "or personal guidance see the linked page or a clinician.]".format(rxcui=res['rxcui'])),
+            None)
+
+
+def _tool_medical_reference(conn, conversation_id, query: str):
+    """EXTERNAL, second-line reference: a MedlinePlus consumer health-topic page (NLM, public domain).
+    GATED — it sends NOTHING externally until the owner approves the EXACT term (so no PII leaks in a
+    search query). An un-approved term is PROPOSED (surfaced to the owner as a confirm chip); once
+    approved the lookup runs and records a TOPIC-ONLY usage signal for the kb/Reference loop. Returns
+    (result_text, event_or_None)."""
+    from . import medref, reference_candidates, external_lookups
+    term = (query or "").strip()
+    if not term:
+        return _untrusted("medical-ref", "No topic given for a reference lookup."), None
+    state = external_lookups.check_or_propose(conn, "medical_reference", term)
+    if state["status"] == "denied":
+        return _untrusted("medical-ref", f"The owner declined an external MedlinePlus lookup for “{term}”. "
+                          "Answer from their own reference library and notes only; do not propose it again."), None
+    if state["status"] == "pending":
+        # Nothing has been sent. Surface the EXACT term to the owner as a confirm chip; tell the model to stop.
+        event = {"type": "external_proposal", "id": state["id"], "tool": "medical_reference", "term": term}
+        return (_untrusted("medical-ref",
+                f"EXTERNAL LOOKUP PROPOSED: “{term}” → MedlinePlus. NOTHING has been sent externally. Tell the "
+                "owner you'd like their approval to search MedlinePlus for this exact term, then STOP — do not "
+                "call more external tools this turn. Their own reference library and notes are still available."),
+                event)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED term (what the owner
+    # approved — possibly edited from the model's original phrasing), not the raw query.
+    lookup_term = state.get("term") or term
+    res = medref.health_topic(conn, lookup_term)
+    if not res:
+        return _untrusted("medical-ref", f"No MedlinePlus health topic found for “{lookup_term}”."), None
+    try:
+        reference_candidates.record(conn, topic=res["title"], source="medlineplus",
+                                    url=res["url"], snippet=res.get("snippet", ""))
+    except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+        pass
+    summary = f" {res['snippet']}" if res.get("snippet") else ""
+    return (_untrusted("medical-ref",
+                       f"MedlinePlus health topic for {lookup_term}: {res['title']} — {res['url']}.{summary} "
+                       "[NLM/MedlinePlus, public domain — reference information, not medical advice, not NLM-endorsed]."),
+            None)
 
 
 def _tool_save_place(conn, name: str) -> str:
@@ -1962,8 +2059,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_reverse_geocode(conn, conversation_id, args.get("lat"), args.get("lon")), None
     if name == "forward_geocode":
         return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
+    if name == "medical_reference":
+        return _tool_medical_reference(conn, conversation_id, args["query"])
     if name == "drug_reference":
-        return _tool_drug_reference(conn, args["name"]), None
+        return _tool_drug_reference(conn, conversation_id, args["name"])
     if name == "save_place":
         return _tool_save_place(conn, args["name"]), None
     if name == "list_recent_notes":
@@ -2207,7 +2306,7 @@ _RETRIEVAL_TOOLS = frozenset({
     "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
     "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
     "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
-    "show_lab_chart", "drug_reference", "reverse_geocode", "forward_geocode",
+    "show_lab_chart", "drug_reference", "medical_reference", "reverse_geocode", "forward_geocode",
 })
 _RESEARCH_NUDGE = (
     "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "
@@ -2267,6 +2366,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     token_budget = prompts.get_int(f"modes.{mode}.max_total_tokens",
                                    prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS))
     assistant_text_parts: list[str] = []
+    steps: list[dict] = []        # tool-call history for this turn (persisted with the reply)
     total_tokens = 0
     stopped_early = False
     need_sep = False   # insert a break when text resumes after a tool call
@@ -2326,14 +2426,19 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             if call.name in _RETRIEVAL_TOOLS:
                 did_retrieve = True
             yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
+            is_err = False
             try:
                 result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)
             except Exception as exc:  # noqa: BLE001 — a bad tool call must not kill the stream
                 # Feed the error back as a tool result so the model can recover,
                 # rather than aborting the whole turn (and losing its text). Fence the
                 # exception text — it may embed note-derived (untrusted) data.
+                is_err = True
                 result_text, event = (
                     f"Tool '{call.name}' failed: {_untrusted('tool-error', str(exc))}", None)
+            # Record the raw call+result for the reply's tool-call history (persisted at turn end).
+            steps.append({"tool": call.name, "args": call.args, "result": result_text,
+                          "is_error": is_err, "event": event})
             tool_urls.update(_extract_urls(result_text))   # whitelist URLs the tool genuinely returned
             turn_corpus.append(result_text)                 # a quoted span must appear in what a tool returned
             if event is not None:
@@ -2375,9 +2480,22 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             final_text, v_changed = _verify_values(final_text, corpus)
         if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
             (conversation_id, final_text),
         )
+        message_id = cur.lastrowid
+        # Persist the tool-call history alongside the reply (full raw), so swiping/expanding
+        # this bubble later can show exactly how it was answered — which notes were read, what
+        # SQL ran, what was staged/applied. Wiped per-conversation on /clear.
+        for i, st in enumerate(steps):
+            conn.execute(
+                "INSERT INTO message_steps (conversation_id, message_id, step_index, tool_name, "
+                "args_json, result_text, is_error, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (conversation_id, message_id, i, st["tool"],
+                 json.dumps(st["args"], default=str), st["result"],
+                 1 if st["is_error"] else 0,
+                 json.dumps(st["event"], default=str) if st["event"] is not None else None),
+            )
         conn.commit()
     yield {"type": "done"}

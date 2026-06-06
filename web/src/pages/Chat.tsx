@@ -1,19 +1,26 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, TouchEvent as ReactTouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
+import { approveExternalLookup, createEntry, denyExternalLookup, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
-import { renderWikiLinks } from "../util";
+import { linkifyAddresses, renderWikiLinks } from "../util";
 import { makeChatLinkRenderer } from "../components/CitationLink";
+import { toolLabel } from "../toolLabels";
+import ToolHistory from "../components/ToolHistory";
+import { clearConversationSteps } from "../api";
+import { shouldOpenHistoryOnSwipe } from "../swipeGesture";
 
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
 // but excluded from the LLM history server-side. `id` (when present) tags an
 // optimistic turn's user/assistant rows so the stream can target them by identity
 // instead of by position — robust to anything else mutating the list mid-send.
-interface Msg { role: "user" | "assistant" | "event"; content: string; id?: number; }
+// `id` (when present) tags an optimistic turn so the stream can target it by identity.
+// `dbId` is the persisted message row id (used to fetch its tool-call history); `stepCount`
+// is how many tools that reply ran (drives the history pill). Both arrive from loadMessages.
+interface Msg { role: "user" | "assistant" | "event"; content: string; id?: number; dbId?: number; stepCount?: number; }
 type Mode = "entry" | "medical" | "assisted" | "research" | "analyze";
 
 // Render an applied-action summary with any URL made clickable (so a freshly-minted
@@ -55,72 +62,8 @@ const PLACEHOLDER: Record<Mode, string> = {
   research: "Ask your brain… (read-only)",
   analyze: "Ask an in-depth question… (read-only)",
 };
-// Friendly status shown at the bottom of the conversation while a tool runs. Keep in
-// sync with the tool schemas in server/app/services/architect.py; an unlisted tool
-// falls back to "Working…".
-const TOOL_LABELS: Record<string, string> = {
-  // Reading notes
-  find: "Finding & quoting…",
-  reference_lookup: "Checking your reference library…",
-  search_notes: "Searching your notes…",
-  read_note: "Reading a note…",
-  read_notes: "Reading notes…",
-  related_notes: "Finding related notes…",
-  list_recent_notes: "Looking at recent notes…",
-  list_tags: "Listing tags…",
-  notes_with_tag: "Finding tagged notes…",
-  search_attachments: "Searching attachments…",
-  read_attachment: "Reading an attachment…",
-  query_sql: "Querying the database…",
-  // Location & people
-  current_location: "Checking your location…",
-  locate_person: "Locating a person…",
-  location_fixes: "Reading location history…",
-  list_trips: "Listing trips…",
-  trip_detail: "Reading a trip…",
-  geo_distance: "Measuring distance…",
-  nearby_notes: "Finding nearby notes…",
-  where_was_i: "Looking up where you were…",
-  time_at_place: "Calculating time at a place…",
-  places_visited: "Finding places you visited…",
-  distance_traveled: "Adding up distance traveled…",
-  trail_summary: "Summarizing your trail…",
-  entries_at_place: "Finding notes from a place…",
-  reverse_geocode: "Looking up an address…",
-  forward_geocode: "Looking up coordinates…",
-  drug_reference: "Looking up a medication…",
-  list_abnormal_labs: "Finding out-of-range labs…",
-  show_lab_chart: "Charting lab results…",
-  lab_stat: "Checking lab values…",
-  lab_value_at: "Checking lab values…",
-  // Lists & tags
-  read_list: "Reading a list…",
-  add_list_item: "Updating a list…",
-  set_item_checked: "Updating a list…",
-  set_item_priority: "Updating a list…",
-  add_sublist: "Updating a list…",
-  set_tags: "Tagging the note…",
-  // Sharing
-  create_share_link: "Creating a share link…",
-  create_guided_share: "Setting up a guided share…",
-  create_research_share: "Setting up a research share…",
-  list_share_links: "Listing share links…",
-  revoke_share_link: "Revoking a share link…",
-  // Writes
-  log_entry: "Logging an entry…",
-  propose_actions: "Drafting proposed changes…",
-  // Knowledge base
-  kb_coverage_check: "Checking knowledge-base coverage…",
-  kb_citation_cleanup: "Cleaning up citations…",
-  kb_promote_recurrences: "Finding recurring patterns…",
-  kb_audit: "Auditing the knowledge base…",
-  kb_taxonomy_health: "Checking taxonomy health…",
-  kb_needed_links: "Finding missing links…",
-  kb_research_links: "Researching references…",
-  kb_read_talk: "Reading article notes…",
-  kb_add_directive: "Noting a directive…",
-};
-const toolLabel = (name?: string) => (name && TOOL_LABELS[name]) || "Working…";
+// Friendly tool labels (the "Searching your notes…" status, and the per-reply tool-call
+// history) live in ../toolLabels so the streaming status and the history view never drift.
 
 // How long a send will wait for a location stamp before posting without one. A cached
 // fix (getCoords' maximumAge: 60s) returns in single-digit ms; a cold fix that needs
@@ -149,6 +92,24 @@ export default function Chat() {
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
+  // Which assistant replies have their tool-call history panel open (keyed by persisted
+  // message id). Opened by tapping the reply's "n steps" pill OR a guarded left-swipe on it.
+  const [openSteps, setOpenSteps] = useState<Set<number>>(new Set());
+  const toggleSteps = (id: number) =>
+    setOpenSteps((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  function bubbleTouchStart(e: ReactTouchEvent<HTMLDivElement>) {
+    const t = e.touches[0];
+    swipeRef.current = { x: t.clientX, y: t.clientY };
+  }
+  function bubbleTouchEnd(e: ReactTouchEvent<HTMLDivElement>, dbId?: number) {
+    const s = swipeRef.current; swipeRef.current = null;
+    if (!s || dbId == null) return;
+    const t = e.changedTouches[0];
+    const selLen = window.getSelection?.()?.toString().length ?? 0;
+    if (!shouldOpenHistoryOnSwipe(s, { x: t.clientX, y: t.clientY }, window.innerWidth, selLen)) return;
+    setOpenSteps((set) => (set.has(dbId) ? set : new Set(set).add(dbId)));   // open (don't toggle shut)
+  }
   // `pending` entries are the optimistic user bubble shown the instant Send is hit (entry/
   // medical have no streamed reply, so this is their only immediate feedback). The save
   // resolves the matching `id` in place (fills title/slug → "Saved:" chip) or drops it on
@@ -169,6 +130,9 @@ export default function Chat() {
   const [applied, setApplied] = useState<{ id: number; summary: string }[]>([]);
   // Charts streamed during the current turn (transient; persisted as event rows on reload).
   const [charts, setCharts] = useState<{ analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string }[]>([]);
+  // Pending external-lookup proposals (the medical_reference gate): the assistant wants to send a
+  // term to MedlinePlus; nothing is sent until the owner approves the exact term via an inline chip.
+  const [proposals, setProposals] = useState<{ id: number; term: string }[]>([]);
   const [undone, setUndone] = useState<Set<number>>(new Set());
 
   const endRef = useRef<HTMLDivElement>(null);
@@ -342,12 +306,12 @@ export default function Chat() {
 
   async function loadMessages(id: number) {
     try {
-      const rows = await get<{ role: Msg["role"]; content: string }[]>(`/api/chat/conversations/${id}/messages`);
+      const rows = await get<{ id: number; role: Msg["role"]; content: string; step_count?: number }[]>(`/api/chat/conversations/${id}/messages`);
       // A turn may have started streaming while this fetch was in flight (e.g. the user
       // sent before the initial restore-load resolved). Don't clobber the optimistic /
       // actively-streaming view with stale server rows — the post-stream re-sync handles it.
       if (streamActiveRef.current) return;
-      setMessages(rows.map((r) => ({ role: r.role, content: r.content })));
+      setMessages(rows.map((r) => ({ role: r.role, content: r.content, dbId: r.id, stepCount: r.step_count })));
     } catch { /* keep what we have */ }
   }
 
@@ -434,16 +398,24 @@ export default function Chat() {
     return errors;
   }
 
-  async function send(e?: FormEvent) {
+  async function send(e?: FormEvent, override?: string) {
     e?.preventDefault();
-    const text = input.trim();
+    const text = (override ?? input).trim();
     // streaming/busy gate the UI but are async React state; sendingRef is the synchronous
     // latch that blocks a second tap during this send's async pre-flight (GPS, conv-create,
     // upload) before that state has flushed.
     if ((!text && pendingFiles.length === 0) || streaming || busy || sendingRef.current || !online) return;
-    if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
+    if (text === "/clear") {
+      // Also wipe the cleared thread's stored tool-call history (full-raw logs shouldn't
+      // pile up across throwaway chats). Fire-and-forget against the OLD conversation id.
+      const old = convIdRef.current;
+      setInput(""); setEntries([]); newConversation();
+      if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
+      return;
+    }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
+    setProposals([]);   // a new turn supersedes any pending external-lookup chips
     // Both chat modes stream a spoken-able prose reply; entry/medical don't.
     const speakable = mode === "assisted" || mode === "research" || mode === "analyze";
     // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
@@ -569,6 +541,8 @@ export default function Chat() {
           setStagingTick((t) => t + 1);
         } else if (ev.type === "applied" && ev.action) {
           setApplied((a) => [...a, ev.action!]);
+        } else if (ev.type === "external_proposal" && ev.id && ev.term) {
+          setProposals((p) => p.some((x) => x.id === ev.id) ? p : [...p, { id: ev.id!, term: ev.term! }]);
         } else if (ev.type === "chart" && ev.chart) {
           setCharts((c) => [...c, ev.chart!]);
         } else if (ev.type === "replace_text") {
@@ -625,6 +599,21 @@ export default function Chat() {
     }
   }
 
+  // The medical_reference gate: approve sends the EXACT term to MedlinePlus (the only outbound
+  // moment) then auto-continues; skip declines and the assistant uses internal references only.
+  async function approveProposal(p: { id: number; term: string }) {
+    const term = p.term.trim();
+    if (!term) return;
+    setProposals((ps) => ps.filter((x) => x.id !== p.id));
+    try { await approveExternalLookup(p.id, term); } catch { /* the continuation will report a miss */ }
+    send(undefined, `I approved the external lookup for "${term}". Please continue.`);
+  }
+  async function skipProposal(p: { id: number; term: string }) {
+    setProposals((ps) => ps.filter((x) => x.id !== p.id));
+    try { await denyExternalLookup(p.id); } catch { /* ignore */ }
+    send(undefined, `Don't look up "${p.term}" externally — use my own references and notes instead.`);
+  }
+
   const cur = MODES.find((m) => m.key === mode)!;
 
   return (
@@ -665,12 +654,22 @@ export default function Chat() {
           // Empty assistant placeholder (waiting on the first token) → render
           // nothing; the status bar at the bottom shows "Thinking…" instead.
           if (m.role === "assistant" && !m.content) return null;
+          const isAsst = m.role === "assistant";
+          const hasHistory = isAsst && m.dbId != null && (m.stepCount ?? 0) > 0;
           return (
-            <div key={i} className={`msg ${m.role}`}>
-              {m.role === "assistant" ? (
-                <div className="md msg-md">
-                  <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
-                </div>
+            <div key={i} className={`msg ${m.role}`}
+                 onTouchStart={isAsst ? bubbleTouchStart : undefined}
+                 onTouchEnd={isAsst ? (e) => bubbleTouchEnd(e, m.dbId) : undefined}>
+              {isAsst ? (
+                <>
+                  <div className="md msg-md">
+                    <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(linkifyAddresses(m.content))}</ReactMarkdown>
+                  </div>
+                  {hasHistory && (
+                    <ToolHistory messageId={m.dbId!} count={m.stepCount!} open={openSteps.has(m.dbId!)}
+                                 onToggle={() => toggleSteps(m.dbId!)} navigate={navigate} />
+                  )}
+                </>
               ) : (
                 m.content
               )}
@@ -692,6 +691,20 @@ export default function Chat() {
           );
         })}
         {charts.map((c, i) => <LabChartCard key={`ch${i}`} spec={c} />)}
+        {proposals.map((p) => (
+          <div key={`xp${p.id}`} className="ext-proposal">
+            <div className="ext-proposal-text">
+              🔍 Search MedlinePlus (external)? <strong>Edit the term</strong> if you like — nothing is sent until you approve.
+            </div>
+            <input className="ext-proposal-input" value={p.term} aria-label="External search term"
+                   onChange={(e) => setProposals((ps) => ps.map((x) => x.id === p.id ? { ...x, term: e.target.value } : x))}
+                   onKeyDown={(e) => { if (e.key === "Enter") approveProposal(p); }} />
+            <div className="row" style={{ gap: 8, marginTop: 6 }}>
+              <button className="primary" disabled={streaming || busy || !p.term.trim()} onClick={() => approveProposal(p)}>Approve &amp; search</button>
+              <button className="ghost" disabled={streaming || busy} onClick={() => skipProposal(p)}>Skip</button>
+            </div>
+          </div>
+        ))}
         {applied.map((a) => (
           <div key={`a${a.id}`} className="applied-chip">
             <span>✓ {renderSummary(a.summary)}</span>

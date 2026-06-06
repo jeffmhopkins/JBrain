@@ -104,22 +104,31 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 48
 
 
 def init_db() -> None:
     """Create/upgrade schema + vec tables and seed meta. Idempotent.
 
-    schema.sql is the full latest schema (all CREATE ... IF NOT EXISTS), so a
-    fresh DB lands at the latest version directly. Existing DBs are upgraded by
-    the migration runner, which applies guarded ALTERs for column additions that
-    IF NOT EXISTS can't handle.
+    Existing DBs are upgraded by the migration runner FIRST, then schema.sql (the
+    full latest schema, all CREATE ... IF NOT EXISTS) is applied. Order matters:
+    schema.sql carries indexes on columns the migrations add to pre-existing tables,
+    which would fail if the schema ran before those columns existed. On a brand-new
+    DB the runner no-ops and schema.sql lands everything at the latest version.
     """
     global _initialized
     with _init_lock:
         if _initialized:
             return
         conn = get_conn()
+        # Upgrade an EXISTING DB before applying the full schema. schema.sql carries
+        # indexes on columns the migration runner adds to PRE-EXISTING tables (e.g.
+        # article_talk.source_note_id) — and `CREATE INDEX ... ON tbl(col)` fails with
+        # "no such column" if schema.sql runs first, because `CREATE TABLE IF NOT EXISTS`
+        # is a no-op on the already-existing table and so never adds the column. The
+        # runner no-ops on a brand-new DB (no meta table yet); schema.sql below then
+        # creates everything at the latest version directly.
+        _run_migrations(conn)
         conn.executescript(SCHEMA_PATH.read_text())
 
         dim = _embedding_dim()
@@ -140,7 +149,6 @@ def init_db() -> None:
             f"entity_id INTEGER PRIMARY KEY, embedding float[{dim}])"
         )
 
-        _run_migrations(conn)
         ensure_default_person(conn)
 
         settings = get_settings()
@@ -164,9 +172,13 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Upgrade an existing DB to SCHEMA_VERSION. Fresh DBs skip (already latest)."""
-    raw = get_meta("schema_version")
+    try:
+        raw = get_meta("schema_version", conn=conn)
+    except sqlite3.OperationalError:
+        return  # brand-new DB: the meta table doesn't exist yet (this runs BEFORE
+                # schema.sql) — nothing to upgrade; schema.sql creates everything next.
     if raw is None:
-        return  # brand-new DB: schema.sql already created everything at latest
+        return  # meta exists but unversioned: also effectively fresh
     current = int(raw)
 
     if current < 3:
@@ -638,6 +650,76 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # the startup warm task (run_pending_rechunk) — re-embedding the whole corpus must
         # not block boot. No DDL: chunk tables are unchanged, only their contents.
         set_meta(conn, "rechunk:pending", "1")
+
+    if current < 45:
+        # Per-assistant-turn tool-call history (swipe/expand an AI reply to see how it was
+        # answered). Full raw tool input + returned text. schema.sql carries the identical
+        # table for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS message_steps (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+              step_index      INTEGER NOT NULL,
+              tool_name       TEXT NOT NULL,
+              args_json       TEXT NOT NULL DEFAULT '{}',
+              result_text     TEXT NOT NULL DEFAULT '',
+              is_error        INTEGER NOT NULL DEFAULT 0,
+              event_json      TEXT,
+              created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
+            CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
+        """)
+
+    if current < 46:
+        # Durable person-identity decisions: an APPEND-only ledger of user merge/split/alias
+        # rulings that survive every entity_index.rebuild() (which re-derives entities from
+        # note_analysis each pass, so heuristic-only merges were lost). entity_index folds
+        # these in as forced unions/blocked splits/extra aliases. Self-contained table, so
+        # the index is safe inline here. schema.sql carries the identical block for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_decisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL CHECK (kind IN ('merge','split','alias')),
+              type TEXT NOT NULL DEFAULT 'person',
+              norm_a TEXT NOT NULL, norm_b TEXT,
+              display_a TEXT, display_b TEXT, canonical TEXT,
+              author TEXT NOT NULL DEFAULT 'user', source TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, norm_a);
+        """)
+        # A redirected (merged-away) note can point at its survivor; review_items gains a
+        # typed payload so identity-review cards carry structured context.
+        _add_column(conn, "notes", "redirect_to", "TEXT")
+        _add_column(conn, "review_items", "kind", "TEXT")
+        _add_column(conn, "review_items", "payload_json", "TEXT")
+
+    if current < 47:
+        # Source-of-truth corrections: an owner 'correction' talk item is promoted to a
+        # real dated entry note (the truth layer). is_correction marks the talk row;
+        # source_note_id links it to the promoted note (SET NULL on note delete so the
+        # talk record survives). schema.sql carries the identical columns + index.
+        _add_column(conn, "article_talk", "is_correction", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "article_talk", "source_note_id",
+                    "INTEGER REFERENCES notes(id) ON DELETE SET NULL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
+            "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
+
+    if current < 48:
+        # Durable entity-name healing: owner source-of-truth overrides for the derived entity
+        # index, keyed by the kb article the entity backs (stable across the normalize() fork).
+        # entity_index.rebuild() re-applies them; schema.sql carries the identical table.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_overrides (
+              article_title  TEXT PRIMARY KEY,
+              canonical_name TEXT NOT NULL,
+              source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+              created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

@@ -26,6 +26,7 @@ from .routers import (
     action_defs,
     attachments,
     auth_router,
+    events,
     push,
     lists,
     locations,
@@ -36,6 +37,7 @@ from .routers import (
     share,
     share_admin,
     chat,
+    external,
     entities,
     graph,
     notes,
@@ -160,6 +162,11 @@ async def lifespan(app: FastAPI):
             n = await asyncio.to_thread(lambda: embeddings.reindex_missing_note_chunks(get_conn()))
             if n:
                 print(f"[embeddings] backfilled chunk vectors for {n} note(s)", flush=True)
+            # Same for AI image-analysis sidecars analyzed before they were embedded, so
+            # search_notes' semantic half reaches them too (keyword already did via FTS).
+            a = await asyncio.to_thread(lambda: embeddings.reindex_missing_attachment_analysis(get_conn()))
+            if a:
+                print(f"[embeddings] backfilled chunk vectors for {a} attachment sidecar(s)", flush=True)
             # Seed/update the read-only KB guide pages (off the event loop, after the
             # model is warm so the seed writes don't block startup on the first embed).
             g = await asyncio.to_thread(lambda: wiki_guides.seed_guides(get_conn()))
@@ -209,7 +216,7 @@ app.add_middleware(
     expose_headers=["X-Locations-Truncated", "X-Locations-Count"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical):
+for r in (auth_router, notes, chat, external, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, events):
     app.include_router(r.router)
 # The dictation-capture route (POST /api/notes/entry) accepts a per-person location key
 # in addition to the full key, so it lives on a separate, less-restricted router.

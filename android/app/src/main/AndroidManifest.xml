@@ -20,6 +20,12 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
 
+    <!-- The capture widgets shoot via the system camera and dictate via the system
+         speech recognizer, so this app needs neither CAMERA nor RECORD_AUDIO — those
+         apps own the grants. Declared optional so a camera-less device can still install
+         (and still use the dictation widget). -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -67,6 +73,52 @@
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/jbrain/note" />
             </intent-filter>
         </service>
+
+        <!-- Invisible one-tap bridge behind both home-screen widgets: fires the system
+             camera / speech recognizer, hands the result to UploadWorker, and finishes.
+             Translucent so nothing flashes; not exported (only our widgets launch it). -->
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Hands the camera app a content:// URI to write the captured JPEG to. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- One-tap photo widget: tap → camera → photo uploaded (auto-described). -->
+        <receiver
+            android:name=".PhotoWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_photo_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_photo_info" />
+        </receiver>
+
+        <!-- One-tap dictation widget: tap → speak → transcript saved as a note. -->
+        <receiver
+            android:name=".DictateWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_dictate_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_dictate_info" />
+        </receiver>
 
     </application>
 </manifest>

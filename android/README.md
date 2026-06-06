@@ -4,7 +4,9 @@ One Gradle project, two modules, **one install**:
 
 - **`:app`** — the phone/tablet app. Logs this device's **location trail** to your
   JBrain in the background. Its whole UI is **Name**, **Server URL**, **Access key**
-  (set by pasting a setup code), and an **on/off switch**.
+  (set by pasting a setup code), and an **on/off switch**. It also ships two
+  **home-screen widgets** — one-tap **Photo** and **Dictate** — that capture straight to
+  your brain (see below).
 - **`:wear`** — a tiny **Wear OS** app: tap the mic (or its watch-face tile), dictate,
   and the note is saved into JBrain.
 
@@ -44,6 +46,32 @@ running continuous GPS only while you're **moving** and sleeping it when **still
 buffered and flushed in batches to `POST /api/locations/bulk` (Bearer auth). The
 **server** decides which fixes to keep (≥100 m moved OR ≥60 min elapsed), so offline
 bursts dedupe correctly and nothing is lost with no signal.
+
+## Home-screen capture widgets (one tap → into your brain)
+
+The phone app provides two widgets you can drop on the home screen:
+
+- **Photo** — tap → the system camera opens → take the shot → it uploads to JBrain and
+  the server **auto-describes it** with the LLM. No app UI in between.
+- **Dictate** — tap → the system speech recognizer opens → speak → the transcript is
+  saved as a dated note (exactly like a watch dictation, but `source=user`).
+
+A tap launches a tiny invisible `CaptureActivity` that fires the system camera /
+recognizer, hands the result to a WorkManager job, and finishes. The upload runs in the
+background and is **durable**: it only runs once there's a network, retries with backoff
+if the server is unreachable, and survives the app closing, process death, and reboots —
+so a capture taken with no signal (or before you've pasted a setup code) lands later
+rather than being lost. You get a quiet notification with the result.
+
+```
+POST /api/notes/entry                       → { slug }          (the carrier note)
+POST /api/notes/<slug>/attachments  (photo) → image + analyze=true
+```
+
+Because capture goes through the **system** camera/recognizer, the app needs **neither
+`CAMERA` nor `RECORD_AUDIO`** — those apps own the grants. (Notifications use the
+existing `POST_NOTIFICATIONS`.) The widgets use the same configured server URL + key as
+the tracker, so pasting a setup code once is all the setup they need.
 
 ## Build & install
 
@@ -87,7 +115,12 @@ android/
       NoteClient.kt                   # POST a relayed note to /api/notes/entry
       NoteQueue.kt                    # offline buffer for relayed notes
       NoteRelayService.kt             # WearableListenerService — receives from the watch
+      CaptureWidgets.kt               # Photo + Dictate home-screen AppWidgetProviders
+      CaptureActivity.kt              # invisible trampoline: fires camera / recognizer
+      CaptureClient.kt                # POST note + multipart attachment upload
+      UploadWorker.kt                 # durable WorkManager upload (retries offline)
     src/main/res/values/wear.xml      # advertises the jbrain_note_relay capability
+    src/main/res/xml/                 # appwidget-provider infos + FileProvider paths
   wear/                               # Wear OS watch app (namespace com.jbrain.watch)
     src/main/java/com/jbrain/watch/
       MainActivity.kt                 # Compose UI + speech-recognizer launcher

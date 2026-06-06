@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">JBrain Tracker</string>
+
+    <!-- Home-screen capture widgets -->
+    <string name="widget_photo_label">Photo</string>
+    <string name="widget_dictate_label">Dictate</string>
+    <string name="capture_speak_prompt">Speak your note</string>
+    <string name="capture_no_camera">No camera app available.</string>
+    <string name="capture_no_speech">Speech recognition isn\'t available on this device.</string>
 </resources>

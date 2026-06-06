@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The camera app writes captured JPEGs here (filesDir/captures); FileProvider hands it
+     a content:// URI so we never expose a raw file path. -->
+<paths>
+    <files-path name="captures" path="captures/" />
+</paths>

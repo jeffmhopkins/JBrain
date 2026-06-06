@@ -53,7 +53,7 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     # images/audio/video). So, when "auto-analyze new notes" is on, refresh the note's
     # analysis now that this attachment's text is indexed, so a doc uploaded right after a
     # note still flows into its gist/facts. Best-effort, hash-guarded, no-ops without a key.
-    elif analyze and result.get("has_text"):
+    elif analyze and note_id is not None and result.get("has_text"):
         from ..services import note_analysis as na
         if na.auto_enabled(conn) and na.analyze(conn, note_id):
             conn.commit()

@@ -381,12 +381,14 @@ def set_auto_analyze(body: AutoAnalyzeIn):
     if row is None:
         wf_svc.ingest_repo_workflows(conn)
         row = conn.execute("SELECT id FROM workflows WHERE key = ?", (na.AUTO_ANALYZE_WORKFLOW_KEY,)).fetchone()
-    if row is not None:
-        conn.execute(
-            "UPDATE workflows SET enabled = ?, locked = 1, updated_at = datetime('now') WHERE id = ?",
-            (1 if body.enabled else 0, row["id"]),
-        )
-        conn.commit()
+    if row is None:
+        # The repo workflow couldn't be seeded — don't return a success-shaped no-op.
+        raise HTTPException(status_code=500, detail="Could not find the analyze-new-note workflow to toggle.")
+    conn.execute(
+        "UPDATE workflows SET enabled = ?, locked = 1, updated_at = datetime('now') WHERE id = ?",
+        (1 if body.enabled else 0, row["id"]),
+    )
+    conn.commit()
     return {"enabled": na.auto_enabled(conn)}
 
 

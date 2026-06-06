@@ -834,6 +834,34 @@ def test_audit_link_labels_workflow_action(client):
     assert "wiki-link label" in rc["title"] and "Jeff Hopkins" in rc["message"]
 
 
+def test_wiki_viewed_event_hook_runs_subscribers_and_debounces(client):
+    # The generic on-view hook: firing wiki_viewed runs subscribed event-workflows.
+    # Here a flag-only (fix:false) audit subscriber runs but must NOT mutate notes.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Loft",
+        "content_md": "Home of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn.execute(
+        "INSERT INTO workflows (key, name, trigger_type, trigger_config, action_type, action_config, enabled, source) "
+        "VALUES ('t-onview', 'on view', 'event', ?, ?, ?, 1, 'user')",
+        (_json.dumps({"event": "wiki_viewed"}), "audit_link_labels",
+         _json.dumps({"fix": False, "review": False})),
+    )
+    conn.commit()
+
+    assert client.post("/api/events/wiki_unknown").json()["fired"] is False   # allow-listed only
+    assert client.post("/api/events/wiki_viewed").json()["fired"] is True
+    # Subscriber ran (flag-only → note untouched), and an immediate re-fire is debounced.
+    assert client.get("/api/notes/kb-places-loft").json()["content_md"].count("|Jeff Hopkins]]") == 1
+    assert conn.execute("SELECT last_status FROM workflows WHERE key='t-onview'").fetchone()["last_status"] == "ok"
+    assert client.post("/api/events/wiki_viewed").json().get("debounced") is True
+
+
 def test_rename_refreshes_stale_echo_alias(client):
     # A note links to Jeff with the label echoing his name; renaming Jeff must not leave
     # the stale "Jeff Hopkins" label pointing at the renamed (different) article.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { get } from "../api";
+import { fireEvent, get } from "../api";
 import { Icon } from "../components/Icon";
 import LinkAuditPanel from "../components/LinkAuditPanel";
 
@@ -51,6 +51,10 @@ export default function Wiki() {
     const qs = params.toString();
     get<NoteRow[]>(`/api/notes${qs ? `?${qs}` : ""}`).then(setNotes).catch(() => {});
   }, [q, kind]);
+
+  // Signal a "wiki viewed" event so subscribed event-workflows can run (server-debounced).
+  // The generic hook for on-view automations; the link-label flag itself is read-only above.
+  useEffect(() => { fireEvent("wiki_viewed").catch(() => {}); }, []);
 
   const tree = useMemo(() => buildTree(notes), [notes]);
 

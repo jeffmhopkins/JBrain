@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { auditLinks, fixAllLinkLabels, fixLinkLabel, LinkAuditFinding } from "../api";
 import { leaf } from "../util";
@@ -16,10 +16,17 @@ export default function LinkAuditPanel() {
 
   async function scan() {
     setState("scanning");
-    try { setFindings((await auditLinks()).findings); }
-    catch { setFindings([]); }
+    try {
+      const r = await auditLinks();
+      setFindings(r.findings);
+      if (r.findings.length) setOpen(true);   // surface issues without a click
+    } catch { setFindings([]); }
     finally { setState("done"); }
   }
+  // Flag on every wiki view: scan (read-only) when the page opens. The nightly
+  // audit-link-labels workflow is what actually fixes; viewing only reports.
+  useEffect(() => { scan(); }, []);
+
   function toggle() {
     const next = !open;
     setOpen(next);
@@ -48,6 +55,9 @@ export default function LinkAuditPanel() {
         <strong style={{ marginLeft: 6 }}>Link label audit</strong>
         {state === "done" && findings.length > 0 &&
           <span className="badge tag-delete" style={{ marginLeft: 8 }}>{findings.length}</span>}
+        {state === "done" && findings.length === 0 &&
+          <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>✓ clean</span>}
+        {state === "scanning" && <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>scanning…</span>}
         <span className="spacer" />
         {open && (
           <button className="ghost" style={{ fontSize: 12 }}

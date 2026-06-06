@@ -77,6 +77,9 @@ export interface LinkAuditFinding {
   resolved_title: string | null; resolved_slug: string | null; reason: string;
 }
 export const auditLinks = () => get<{ findings: LinkAuditFinding[] }>("/api/notes/links/audit");
+// Fire an allow-listed UI event (e.g. "wiki_viewed") so subscribed event-workflows run.
+// Server-debounced; fire-and-forget from the client.
+export const fireEvent = (name: string) => post<{ fired: boolean }>(`/api/events/${name}`);
 export const fixLinkLabel = (note_id: number, target: string, display: string) =>
   post<{ fixed: boolean }>("/api/notes/links/audit/fix", { note_id, target, display });
 export const fixAllLinkLabels = () => post<{ fixed: number }>("/api/notes/links/audit/fix-all");

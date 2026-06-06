@@ -1,7 +1,5 @@
 // Thin API client. Every request carries the access key (the "cert") as a
 // Bearer token; it is stored on-device and pasted in once on first run.
-import { demoResponse, demoStream, isDemo } from "./demo";
-
 const KEY_STORAGE = "jbrain_access_key";
 const SERVER_STORAGE = "jbrain_server";
 let accessKey: string | null = localStorage.getItem(KEY_STORAGE);
@@ -40,7 +38,6 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  if (isDemo()) return demoResponse(path, (opts.method as string) || "GET", opts.body) as T;
   const res = await fetch(u(path), {
     ...opts,
     headers: authHeaders(opts.headers),
@@ -170,7 +167,6 @@ export function uploadAttachment<T = any>(
   slug: string, file: File, onProgress?: (pct: number) => void, analyze = true,
 ): Promise<T> {
   if (file.size > MAX_ATTACHMENT_BYTES) return Promise.reject(new ApiError("File too large (100 MB max).", 413));
-  if (isDemo()) { onProgress?.(100); return Promise.resolve({ id: 1, filename: file.name } as T); }
   return new Promise<T>((resolve, reject) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -194,20 +190,16 @@ export function uploadAttachment<T = any>(
   });
 }
 
-// AI image analysis: kick off (or re-run) and poll status. Demo-guarded so the
-// PWA's offline demo never hits a real server.
+// AI image analysis: kick off (or re-run) and poll status.
 export interface AnalysisStatus { status: "none" | "pending" | "done" | "error"; detail?: string | null; analyzed_at?: string | null; }
 export const analyzeAttachment = (id: number, force = false) =>
-  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
-           : post<AnalysisStatus>(`/api/attachments/${id}/analyze`, { force });
+  post<AnalysisStatus>(`/api/attachments/${id}/analyze`, { force });
 // Local speech-to-text for audio attachments (no API key). Shares the analysis_* status
 // columns, so getAnalysisStatus polls it the same way images are polled.
 export const transcribeAttachment = (id: number, force = false) =>
-  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
-           : post<AnalysisStatus>(`/api/attachments/${id}/transcribe`, { force });
+  post<AnalysisStatus>(`/api/attachments/${id}/transcribe`, { force });
 export const getAnalysisStatus = (id: number) =>
-  isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
-           : get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);
+  get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);
 
 // Force-recompute one note's AI analysis sidecar (ignores the content-hash cache).
 export const refreshNoteAnalysis = (slug: string) =>
@@ -231,7 +223,6 @@ export async function attachmentObjectUrl(id: number): Promise<string> {
 // no blob:, no Authorization header, so no `media-src blob:` CSP dependency and real
 // range-streaming/seeking. Authed mint, then the element streams it on its own.
 export async function attachmentMediaUrl(id: number): Promise<string> {
-  if (isDemo()) return "";
   const r = await get<{ url: string }>(`/api/attachments/${id}/media-url`);
   return u(r.url);
 }
@@ -281,7 +272,6 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 }
 
 export async function downloadAttachment(id: number, filename: string): Promise<void> {
-  if (isDemo()) return;
   const url = URL.createObjectURL(await attachmentBlob(id));
   const a = document.createElement("a");
   a.href = url; a.download = filename || "file";
@@ -291,7 +281,6 @@ export async function downloadAttachment(id: number, filename: string): Promise<
 
 // Download a full DB backup (auth header can't ride on a plain <a>, so fetch+blob).
 export async function downloadBackup(): Promise<void> {
-  if (isDemo()) { alert("Demo mode — backup is disabled."); return; }
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
   const res = await fetch(u("/api/system/backup"), { headers });
@@ -311,7 +300,6 @@ export async function downloadBackup(): Promise<void> {
 // Download just the original user-uploaded note content (first user-authored version of
 // each note), as a JSON file — same auth+blob dance as the DB backup.
 export async function downloadOriginalNotes(): Promise<void> {
-  if (isDemo()) { alert("Demo mode — export is disabled."); return; }
   const headers: Record<string, string> = {};
   if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
   const res = await fetch(u("/api/system/export/original-notes"), { headers });
@@ -329,7 +317,6 @@ export async function downloadOriginalNotes(): Promise<void> {
 }
 
 export async function restoreBackup<T = any>(file: File): Promise<T> {
-  if (isDemo()) return { ok: true } as T;
   const fd = new FormData();
   fd.append("file", file);
   const headers: Record<string, string> = {};
@@ -481,7 +468,6 @@ export async function streamChat(
   location?: { lat: number; lon: number } | null,
   mode: "assisted" | "research" = "assisted",
 ): Promise<void> {
-  if (isDemo()) { await demoStream(text, onEvent, mode); return; }
   const body: any = { text, mode };
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const ctrl = new AbortController();

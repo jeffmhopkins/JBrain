@@ -1240,6 +1240,14 @@ def _p_promote_reference_candidates(ctx, min_hits=2, limit=5):
     return reference_promote.run(ctx.conn, min_hits=int(min_hits), limit=int(limit))
 
 
+def _p_refresh_reference_seeds(ctx, ttl_days=180, limit=5):
+    """Stage a citation refresh for kb/Reference seeds whose cited source is older than `ttl_days` —
+    re-fetch the public source and re-seat ONLY the Source line + fetch date (owner prose untouched).
+    Source-only, deterministic, never auto-live."""
+    from . import reference_refresh
+    return reference_refresh.run(ctx.conn, ttl_days=int(ttl_days), limit=int(limit))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1308,6 +1316,7 @@ _PRIMITIVES = {
     "stage_moves": _p_stage_moves,
     "research_nudges": _p_research_nudges,
     "promote_reference_candidates": _p_promote_reference_candidates,
+    "refresh_reference_seeds": _p_refresh_reference_seeds,
     "notify": _p_notify,
     "suggest_places": _p_suggest_places,
     "stage_places": _p_stage_places,
@@ -1351,6 +1360,9 @@ _PRIMITIVE_META: dict[str, dict] = {
     "promote_reference_candidates": {
         "summary": "Stage kb/Reference stubs from repeatedly-looked-up external health topics for owner review.",
         "inputs": [{"name": "min_hits", "type": "int"}, {"name": "limit", "type": "int"}], "output": "object"},
+    "refresh_reference_seeds": {
+        "summary": "Stage a citation refresh (link + fetch date only) for kb/Reference seeds whose source is past a TTL.",
+        "inputs": [{"name": "ttl_days", "type": "int"}, {"name": "limit", "type": "int"}], "output": "object"},
     "notify": {"summary": "Send a Web Push to all devices (custom title/body/deep-link).",
                "inputs": [{"name": "title", "type": "str", "required": True}, {"name": "body", "type": "str"},
                           {"name": "url", "type": "str"}], "output": "object"},

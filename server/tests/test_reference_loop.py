@@ -260,3 +260,93 @@ def test_promote_medication_candidate_refetches_via_rxnorm(conn, monkeypatch):
     payload = json.loads(act["payload_json"])
     assert payload["title"] == "kb/Reference/Medicine/Medications/Metformin"
     assert "medlineplus.gov/druginfo" in payload["content"] and "medication you looked up" in payload["content"]
+
+
+# --- staleness refresh: re-verify a seed's cited source past a TTL, owner prose preserved ----------
+
+def _seed_note(conn, leaf, *, src, url, fetched, category="Conditions", extra=""):
+    """Write a kb/Reference seed note (with provenance marker) and return its title."""
+    from app.services import reference_promote as rp
+    title = f"kb/Reference/Medicine/{category}/{leaf}"
+    body = (f"# {leaf}\n\n_Reference seed — general background._\n\nA short public summary.\n\n"
+            f"{extra}" + rp._source_block(src, url, fetched, leaf))
+    conn.execute("INSERT INTO notes (slug,title,content_md,kind) VALUES (?,?,?,'kb')",
+                 (leaf.lower().replace(" ", "-"), title, body))
+    conn.commit()
+    return title, body
+
+
+def test_promote_stub_carries_parseable_provenance(conn):
+    from app.services import reference_promote as rp, reference_refresh
+    cand = {"topic": "TTP", "category": "Conditions", "source": "medlineplus"}
+    body = rp._stub(cand, "https://medlineplus.gov/ttp.html", "summary", "2026-06-06")
+    prov = reference_refresh._provenance(body)
+    assert prov == {"src": "medlineplus", "url": "https://medlineplus.gov/ttp.html", "fetched": "2026-06-06"}
+
+
+def test_refresh_stages_citation_update_preserving_owner_prose(conn, monkeypatch):
+    from app.services import reference_refresh
+    title, _ = _seed_note(conn, "Atrial Fibrillation", src="medlineplus",
+                          url="https://medlineplus.gov/afib-OLD.html", fetched="2020-01-01",
+                          extra="## My own notes\n\nMy cardiologist said X on 2026-01-01.\n\n")
+    monkeypatch.setattr(medref, "health_topic",
+                        lambda c, q: {"url": "https://medlineplus.gov/afib-NEW.html", "title": "Atrial Fibrillation",
+                                      "snippet": "s"})
+    out = reference_refresh.run(conn, ttl_days=180)
+    assert out["refreshed"] == 1
+    act = conn.execute("SELECT type, payload_json FROM staging_actions WHERE status='pending'").fetchone()
+    payload = json.loads(act["payload_json"])
+    assert act["type"] == "UPDATE" and payload["title"] == title and payload["kind"] == "kb"
+    assert payload["_basis"]["note_id"] and payload["_basis"]["content_hash"]     # optimistic-concurrency basis
+    new = payload["content"]
+    assert "afib-NEW.html" in new and "afib-OLD.html" not in new                  # citation re-seated
+    assert 'fetched="2020-01-01"' not in new and reference_refresh._today() in new  # fetch date bumped
+    assert "My cardiologist said X on 2026-01-01." in new                         # owner enrichment preserved
+    # STAGED, never live — the note itself is untouched until the owner approves
+    assert "afib-NEW" not in conn.execute("SELECT content_md FROM notes WHERE title=?", (title,)).fetchone()["content_md"]
+    assert conn.execute("SELECT COUNT(*) c FROM review_items WHERE status='pending'").fetchone()["c"] == 1
+
+
+def test_refresh_skips_fresh_seed(conn, monkeypatch):
+    from app.services import reference_refresh
+    monkeypatch.setattr(medref, "health_topic", _boom)         # fresh → must not even re-fetch
+    _seed_note(conn, "Hemolytic Anemia", src="medlineplus", url="https://medlineplus.gov/x.html",
+               fetched=reference_refresh._today())
+    assert reference_refresh.run(conn, ttl_days=180)["refreshed"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM staging_actions").fetchone()["c"] == 0
+
+
+def test_refresh_skips_when_source_unreachable(conn, monkeypatch):
+    from app.services import reference_refresh
+    title, body = _seed_note(conn, "Rare Thing", src="medlineplus", url="https://medlineplus.gov/x.html",
+                             fetched="2019-01-01")
+    monkeypatch.setattr(medref, "health_topic", lambda c, q: None)   # source gone
+    assert reference_refresh.run(conn, ttl_days=180)["refreshed"] == 0
+    assert conn.execute("SELECT content_md FROM notes WHERE title=?", (title,)).fetchone()["content_md"] == body  # not mangled
+    assert conn.execute("SELECT COUNT(*) c FROM staging_actions").fetchone()["c"] == 0
+
+
+def test_refresh_drug_seed_refetches_via_rxnorm(conn, monkeypatch):
+    from app.services import reference_refresh
+    monkeypatch.setattr(medref, "health_topic", _boom)         # a drug seed must NOT use the topics search
+    monkeypatch.setattr(medref, "resolve",
+                        lambda c, n: {"match": "exact", "rxcui": "6809", "title": "Metformin",
+                                      "url": "https://medlineplus.gov/druginfo/meds/NEW.html"})
+    _seed_note(conn, "Metformin", src="rxnorm", url="https://medlineplus.gov/druginfo/meds/OLD.html",
+               fetched="2019-01-01", category="Medications")
+    out = reference_refresh.run(conn, ttl_days=180)
+    assert out["refreshed"] == 1
+    payload = json.loads(conn.execute("SELECT payload_json FROM staging_actions WHERE status='pending'"
+                                      ).fetchone()["payload_json"])
+    assert "druginfo/meds/NEW.html" in payload["content"] and "druginfo/meds/OLD.html" not in payload["content"]
+
+
+def test_refresh_does_not_double_stage(conn, monkeypatch):
+    from app.services import reference_refresh
+    _seed_note(conn, "Atrial Fibrillation", src="medlineplus", url="https://medlineplus.gov/afib.html",
+               fetched="2019-01-01")
+    monkeypatch.setattr(medref, "health_topic",
+                        lambda c, q: {"url": "https://medlineplus.gov/afib2.html", "title": "x", "snippet": "s"})
+    assert reference_refresh.run(conn, ttl_days=180)["refreshed"] == 1
+    assert reference_refresh.run(conn, ttl_days=180)["refreshed"] == 0   # already pending → not re-staged
+    assert conn.execute("SELECT COUNT(*) c FROM staging_actions WHERE status='pending'").fetchone()["c"] == 1

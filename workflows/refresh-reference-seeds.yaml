@@ -1,0 +1,14 @@
+# Weekly: re-verify the cited source on kb/Reference seeds whose fetched date is over the TTL (180d
+# default). Re-fetches MedlinePlus and STAGES a citation refresh (updated link + fetch date only —
+# owner prose untouched) for the owner to approve. Runs after the nightly promote so a freshly-staged
+# seed isn't immediately re-examined. Cheap (cached, no LLM) — a no-op most weeks.
+key: refresh-reference-seeds
+name: Refresh reference seeds
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 5 * * 0"   # 05:00 Sundays (server TZ), after the nightly KB/promote passes
+
+action:
+  type: refresh_reference_seeds

@@ -20,6 +20,7 @@ import WorkflowsPage from "./pages/WorkflowsPage";
 import ReviewPage from "./pages/ReviewPage";
 import MedicalPage from "./pages/MedicalPage";
 import LabsPage from "./pages/LabsPage";
+import CalendarPage from "./pages/CalendarPage";
 import NotificationHistoryPage from "./pages/NotificationHistoryPage";
 import AdvancedHome from "./pages/AdvancedHome";
 import ActionsPage from "./pages/ActionsPage";
@@ -141,6 +142,7 @@ export default function App() {
                 <Route path="/entities" element={<EntitiesPage />} />
                 <Route path="/medical" element={<MedicalPage />} />
                 <Route path="/labs" element={<LabsPage />} />
+                <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/prompts" element={<PromptsPanel />} />
                 <Route path="/actions" element={<ActionsPage />} />

@@ -84,6 +84,30 @@ export const fixLinkLabel = (note_id: number, target: string, display: string) =
   post<{ fixed: boolean }>("/api/notes/links/audit/fix", { note_id, target, display });
 export const fixAllLinkLabels = () => post<{ fixed: number }>("/api/notes/links/audit/fix-all");
 
+// Calendar (temporal projection) — read + the note-writing edit paths.
+export interface CalEvent {
+  id: number;
+  title: string;
+  kind: string;
+  starts_at: string | null;
+  ends_at?: string | null;
+  all_day: number;
+  status?: string;
+  location_label?: string | null;
+  note_id?: number;
+  note_title?: string;
+  note_slug?: string | null;
+  recurring?: boolean;
+}
+export const calUpcoming = (withinDays = 90) =>
+  get<CalEvent[]>(`/api/calendar/upcoming?within_days=${withinDays}`);
+export const calHistory = () => get<CalEvent[]>("/api/calendar/history");
+export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string }) =>
+  post<{ note_id: number; note_title: string; event: CalEvent | null }>("/api/calendar/quick-add", b);
+export const calReschedule = (id: number, to_date: string, to_time?: string) =>
+  post(`/api/calendar/events/${id}/reschedule`, { to_date, to_time });
+export const calCancel = (id: number) => post(`/api/calendar/events/${id}/cancel`, {});
+
 // Public, UNAUTHENTICATED share endpoints — no bearer key (a recipient has none).
 // Uses default same-origin credentials so the bind cookie rides along (recipients
 // always open the canonical JBRAIN_DOMAIN share URL = same origin as the API). Do

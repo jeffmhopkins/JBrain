@@ -979,9 +979,11 @@ def recategorize_article(conn, title: str, new_title: str) -> dict:
     try:
         notes_svc.upsert_note(conn, new_title, note["content_md"], note_id=note["id"], kind="kb",
                               source="recategorize", version_note=f"recategorized from {title}")
-        # article_talk is keyed by title (not a FK), so carry its talk — including
-        # source-of-truth corrections — to the new title or it would be orphaned.
+        # article_talk and entity_overrides are keyed by title (not a FK), so carry them —
+        # including source-of-truth corrections — to the new title or they'd be orphaned.
         conn.execute("UPDATE article_talk SET article_title=? WHERE article_title=?", (new_title, title))
+        conn.execute("UPDATE OR IGNORE entity_overrides SET article_title=? WHERE article_title=?",
+                     (new_title, title))
         entity_index.rebuild(conn)
         flag_dead_links(conn)
         refresh_index(conn)
@@ -1038,9 +1040,12 @@ def merge_articles(conn, sources: list[str], into: str) -> dict:
                 continue
             notes_svc.soft_delete(conn, sn["id"])
             notes_svc._rename_inbound_links(conn, s, into, into_id)   # [[old]]→[[into]], never unwrap
-            # Carry the source article's talk (incl. source-of-truth corrections) into the
-            # merge target — article_talk is title-keyed, so it'd otherwise be orphaned.
+            # Carry the source article's talk + entity override (incl. source-of-truth
+            # corrections) into the merge target — both are title-keyed, so they'd otherwise
+            # be orphaned. OR IGNORE: keep the target's own override if it already has one.
             conn.execute("UPDATE article_talk SET article_title=? WHERE article_title=?", (into, s))
+            conn.execute("UPDATE OR IGNORE entity_overrides SET article_title=? WHERE article_title=?",
+                         (into, s))
         if out.get("talk"):
             article_talk.record(conn, into, out["talk"])
         _structure_log(conn, "merge", "|".join(sorted(sources)))

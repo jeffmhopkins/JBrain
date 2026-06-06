@@ -19,11 +19,38 @@ Promotion is deterministic and fast — no LLM on the talk endpoint.
 from __future__ import annotations
 
 import logging
+import re
 
 from . import clock, notes as notes_svc
 from .article_talk import _norm
 
 log = logging.getLogger("jbrain")
+
+# High-precision (name/spelling-gated) extraction of the corrected value from a correction
+# body. Gated on an explicit name/spelling keyword so a non-name fix ("the year is 1990, not
+# 1989") never matches and mis-sets an entity name. A miss degrades gracefully: no entity
+# override is recorded, but the article still heals via the promoted note (Phase 1).
+_NAME_CORR = re.compile(
+    r"\b(?:spelled|spelling\s+is|spelling\s+should\s+be|name\s+is|named|called|known\s+as)\s+"
+    r"([^,.;\n]+?)(?:\s*,?\s+not\b|[,.;\n]|$)",
+    re.IGNORECASE,
+)
+
+
+def extract_corrected_name(body: str) -> str | None:
+    """The corrected name asserted by a name/spelling correction, or None. Conservative:
+    requires a name keyword and a plausible (≤6-word, has-a-letter) value."""
+    m = _NAME_CORR.search(body or "")
+    if not m:
+        return None
+    name = m.group(1).strip().strip("\"'")
+    # "name is spelled X" matches the "name is" branch and captures "spelled X" — drop a
+    # leading filler word so we keep just the value.
+    name = re.sub(r"^(?:spelled|spelt|spelling|actually|really|correctly|now)\s+", "",
+                  name, flags=re.IGNORECASE).strip()
+    if not name or len(name.split()) > 6 or not re.search(r"[^\W\d_]", name):
+        return None
+    return name
 
 
 def maybe_promote(conn, talk_id: int, article_title: str, body: str) -> dict | None:
@@ -69,6 +96,15 @@ def maybe_promote(conn, talk_id: int, article_title: str, body: str) -> dict | N
         "UPDATE article_talk SET is_correction=1, source_note_id=? WHERE id=?",
         (note_id, talk_id),
     )
+
+    # Durable entity healing (Phase 2): if this is a name/spelling fix, record an owner
+    # override so the entity index displays the corrected name and resolves both spellings —
+    # and survives the nightly rebuild that would otherwise pick the frequency-derived name.
+    name = extract_corrected_name(body)
+    if name:
+        from . import entity_index
+        entity_index.set_canonical_override(conn, article_title, name, source_note_id=note_id)
+
     log.info("corrections: promoted talk %s -> note %s (%s) for %s",
              talk_id, note_id, title, article_title)
     row = conn.execute("SELECT slug, title FROM notes WHERE id=?", (note_id,)).fetchone()

@@ -181,6 +181,18 @@ CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title)
 CREATE INDEX IF NOT EXISTS idx_article_talk_source_note
   ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL;
 
+-- Owner source-of-truth name overrides for the (derived) entity index. Keyed by the kb
+-- article the entity backs — a STABLE key that survives the normalize() fork (diacritics /
+-- spellings produce different normalized_keys, so a frequency-derived display name can't be
+-- corrected durably any other way). entity_index.rebuild() re-applies these every pass; an
+-- override whose source correction note was deleted is skipped, so the name auto-reverts.
+CREATE TABLE IF NOT EXISTS entity_overrides (
+  article_title  TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 
 
 -- File attachments (text/markdown in v1). Content is stored as TEXT so it lives

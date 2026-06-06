@@ -1,17 +1,24 @@
 # Source-of-Truth Corrections (Talk → Truth Layer) — Plan
 
-**Status:** Phase 1 implemented on `claude/tokbox-source-truth-analysis-ZjoNq` (Phase 2 pending)
+**Status:** Phases 1 & 2 implemented on `claude/tokbox-source-truth-analysis-ZjoNq`
 **Author:** Knowledge Architect (AI), best-of-N synthesis + adversarial review
 **Example article:** `kb/.../TokBox` (the feature is general; TokBox is the motivating case)
-**Schema version:** 44 → 45
+**Schema version:** 44 → 46
 
-> **Implementation status (Phase 1 — shipped on this branch):** the deterministic
-> **"Correction" kind**, promotion to a dated truth note, the `is_correction`/`source_note_id`
-> columns (migration 45), `maintain_batch` routing via `source_note_id`, the `wiki_maintain`
-> "authoritative correction" prompt rules, rename/merge talk rekey, TalkPanel badge + kind, and
-> tests (`server/tests/test_corrections.py`, 5 passing). Open items C/D/E took their recommended
-> defaults: **C** entity healing → Phase 2; **D** full-rebuild routing → eventually-consistent;
-> **E** → dedup identical open corrections. **Phase 2 (durable entity healing) is not yet built.**
+> **Implementation status (shipped on this branch):**
+> - **Phase 1:** deterministic **"Correction" kind**, promotion to a dated truth note, the
+>   `is_correction`/`source_note_id` columns (migration 45), `maintain_batch` routing via
+>   `source_note_id`, the `wiki_maintain` "authoritative correction" prompt rules, rename/merge
+>   talk rekey, TalkPanel badge + kind.
+> - **Phase 2 (durable entity healing):** an `entity_overrides` table (migration 46) keyed by
+>   **article_title** — a stable key that sidesteps the `normalize()` diacritic/spelling fork.
+>   `entity_index.rebuild()` re-applies overrides (so the owner's name wins over frequency) and
+>   registers both spellings as aliases; a name/spelling-gated regex records the override at
+>   promotion (no LLM); deleting the correction note auto-reverts the name. Rename/merge rekey
+>   the override too.
+> - **Tests:** `server/tests/test_corrections.py` — **9 passing**.
+> - Open items C/D/E took their recommended defaults: **C** entity healing → done (Phase 2);
+>   **D** full-rebuild routing → eventually-consistent; **E** → dedup identical open corrections.
 
 ---
 
@@ -291,12 +298,14 @@ Migration (2 cols + index); `corrections.py` (promote + dedup guard); `add_talk`
 `open_for`/item rendering; `list_for` JOIN; TalkPanel badge + "Correction" kind; rename/merge
 talk rekey; tests.
 
-**Phase 2 — durable entity healing (≈3–5 days):** `entities` override column (or
-`entity_overrides`); `rebuild()` honors it at display time; alias registration of the wrong
-form; revert path; tests for diacritic/spelling forks.
+**Phase 2 — durable entity healing (DONE):** `entity_overrides` table keyed by `article_title`;
+`rebuild()` honors it at display time (`_apply_overrides`) and registers both spellings as
+aliases; name/spelling-gated extraction records the override at promotion; deleting the
+correction note auto-reverts; rename/merge rekey. Implemented; 9 tests pass.
 
-**Phase 3 — optional polish:** instant promotion feedback in the panel; competing-correction
-surfacing; explicit full-rebuild association.
+**Phase 3 — optional polish (not built):** instant promotion feedback in the panel;
+competing-correction surfacing; explicit full-rebuild association; broader correction
+extraction (beyond names) via the nightly LLM pass.
 
 ---
 

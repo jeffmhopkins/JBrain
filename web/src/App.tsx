@@ -10,6 +10,7 @@ import Chat from "./pages/Chat";
 import Wiki from "./pages/Wiki";
 import ListsPage from "./pages/ListsPage";
 import NotePage from "./pages/NotePage";
+import NoteHistoryPage from "./pages/NoteHistoryPage";
 import GraphPage from "./pages/GraphPage";
 import MapPage from "./pages/MapPage";
 import SearchPage from "./pages/SearchPage";
@@ -146,6 +147,7 @@ export default function App() {
                 <Route path="/lists" element={<ListsPage />} />
                 <Route path="/shares" element={<SharesPage />} />
                 <Route path="/note/:slug" element={<NotePage />} />
+                <Route path="/note/:slug/history" element={<NoteHistoryPage />} />
                 <Route path="/graph" element={<GraphPage />} />
                 <Route path="/map" element={<MapPage />} />
                 <Route path="/people" element={<PeoplePage />} />

@@ -153,7 +153,7 @@ const TOOL_TITLES: Record<string, string> = {
 };
 
 function toolTitle(pathname: string): string {
-  if (pathname.startsWith("/note")) return "Note";
+  if (pathname.startsWith("/note")) return pathname.endsWith("/history") ? "History" : "Note";
   return TOOL_TITLES[pathname] || "Advanced";
 }
 

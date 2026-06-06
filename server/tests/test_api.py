@@ -7001,3 +7001,181 @@ def test_external_lookup_approval_endpoint(client, monkeypatch):
     _, ev2 = architect._tool_medical_reference(conn, None, "hemolytic anemia")
     assert client.post(f"/api/external-lookups/{ev2['id']}/deny").json()["ok"]
     assert client.post("/api/external-lookups/999999/approve").status_code == 404
+
+
+# --- Tool-call history: persisted per assistant reply, served lazily, wiped on /clear ---
+
+class _OneToolProvider:
+    """Turn 1 calls one tool, turn 2 finalizes — used to prove a single step is persisted."""
+    def __init__(self, tool, args):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._call = ToolCall(id="1", name=tool, args=args)
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, ToolCallEvent, TurnEnd
+        self.turn += 1
+        if self.turn == 1:
+            yield ToolCallEvent(self._call); yield TurnEnd([self._call], usage=None)
+        else:
+            yield TextDelta("Done."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+class _NoToolProvider:
+    """Answers in one turn with no tool calls — the reply must carry an empty history."""
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, TurnEnd
+        yield TextDelta("Tell me more about what you'd like to capture.")
+        yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_persisted_and_served(client, monkeypatch):
+    # A turn that runs a retrieval tool persists exactly one step; the messages list exposes the
+    # reply's id + step_count, and the steps endpoint returns the raw call (args + result).
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1 and asst["id"]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1
+    assert steps[0]["tool_name"] == "search_notes"
+    assert steps[0]["is_error"] == 0
+    assert "(no relevant records)" in steps[0]["result_text"]      # the (stubbed) tool output, raw
+    assert _json.loads(steps[0]["args_json"]) == {"query": "x"}    # the raw tool input
+
+
+def test_reply_without_tools_has_empty_history(client, monkeypatch):
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "hello", "assisted", _NoToolProvider(), monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 0
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+def test_tool_history_records_event_and_is_error(client, monkeypatch):
+    # The step log captures the staging/applied EVENT a tool emits, and flags a failed tool call.
+    import asyncio, json as _json
+    from app.db import get_conn
+    from app.services import architect, llm
+
+    # (a) an applied-event tool call
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("log_entry", {"text": "ran 5k"}))
+    ev = {"type": "applied", "action": {"id": 7, "summary": "Logged: ran 5k"}}
+    monkeypatch.setattr(architect, "_run_tool", lambda *a, **k: ("Logged.", ev))
+    async def go():
+        async for _ in architect.run(cid, "log a 5k run", None, "assisted"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1 and steps[0]["tool_name"] == "log_entry"
+    assert _json.loads(steps[0]["args_json"]) == {"text": "ran 5k"}
+    assert _json.loads(steps[0]["event_json"])["type"] == "applied"
+
+    # (b) a tool that raises is logged with is_error=1 and a fenced error result (turn survives)
+    cid2 = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("read_note", {"title": "x"}))
+    def _boom(*a, **k): raise RuntimeError("kaboom")
+    monkeypatch.setattr(architect, "_run_tool", _boom)
+    async def go2():
+        async for _ in architect.run(cid2, "read a note", None, "assisted"):
+            pass
+    asyncio.run(go2())
+    asst2 = [m for m in client.get(f"/api/chat/conversations/{cid2}/messages").json() if m["role"] == "assistant"][-1]
+    steps2 = client.get(f"/api/chat/messages/{asst2['id']}/steps").json()
+    assert len(steps2) == 1 and steps2[0]["is_error"] == 1
+    assert "failed" in steps2[0]["result_text"]
+
+
+def test_clear_conversation_steps_wipes_history(client, monkeypatch):
+    # /clear's server side: the conversation's stored tool logs are deleted; the reply rows remain
+    # but report step_count 0, and the steps endpoint is empty.
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1
+    assert client.delete(f"/api/chat/conversations/{cid}/steps").status_code == 200
+    msgs2 = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst2 = [m for m in msgs2 if m["role"] == "assistant"][-1]
+    assert asst2["step_count"] == 0                                # reply kept, history gone
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+class _MultiToolProvider:
+    """Turn 1 calls two tools (in order), turn 2 finalizes — proves ordering + count."""
+    def __init__(self):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._calls = [ToolCall(id="1", name="search_notes", args={"query": "a"}),
+                       ToolCall(id="2", name="read_note", args={"title": "b"})]
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import ToolCallEvent, TurnEnd, TextDelta
+        self.turn += 1
+        if self.turn == 1:
+            for c in self._calls:
+                yield ToolCallEvent(c)
+            yield TurnEnd(self._calls, usage=None)
+        else:
+            yield TextDelta("Synthesized from both notes."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_orders_multiple_steps(client, monkeypatch):
+    import asyncio
+    from app.db import get_conn
+    from app.services import architect, llm
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _MultiToolProvider())
+    monkeypatch.setattr(architect, "_run_tool",
+                        lambda conn_, cid_, name, args, mode: (f"result for {name}", None))
+    async def go():
+        async for _ in architect.run(cid, "compare two notes", None, "research"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 2
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert [s["step_index"] for s in steps] == [0, 1]                 # persisted in call order
+    assert [s["tool_name"] for s in steps] == ["search_notes", "read_note"]
+
+
+def test_steps_attach_to_their_own_reply(client, monkeypatch):
+    # Two turns in one conversation: each reply owns exactly its own step (no cross-attribution).
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "q1", "research",
+               _ScriptedProvider(draft="A fabricated memory answer of decent length about cholesterol levels.",
+                                 grounded="Nothing on file."), monkeypatch)
+    _drive_run(cid, "q2", "research",
+               _ScriptedProvider(draft="Another fabricated memory answer of decent length about blood pressure.",
+                                 grounded="Also nothing on file."), monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 2 and all(m["step_count"] == 1 for m in asst)
+    assert len(client.get(f"/api/chat/messages/{asst[0]['id']}/steps").json()) == 1
+    assert len(client.get(f"/api/chat/messages/{asst[1]['id']}/steps").json()) == 1

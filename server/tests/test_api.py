@@ -6826,3 +6826,31 @@ def test_note_preview_for_citation_hover(client):
     pv = client.get(f"/api/notes/{slug}/preview").json()
     assert pv["found"] is True and pv["title"].endswith("Marathon") and "3:42:15" in pv["excerpt"]
     assert client.get("/api/notes/no-such-slug/preview").json() == {"found": False}
+
+
+def test_reference_lookup_scopes_to_kb_reference(client):
+    # The Analyze mode's first-line reference tool returns ONLY the owner's curated kb/Reference
+    # articles — not arbitrary notes that happen to match.
+    from app.db import get_conn
+    from app.services import notes as notes_svc, architect
+    conn = get_conn()
+    notes_svc.upsert_note(conn, "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura",
+                          "TTP is a thrombotic microangiopathy with very low platelets and schistocytes.", kind="kb")
+    notes_svc.upsert_note(conn, "notes/Journal/Tuesday", "Felt a bit thrombotic and tired today, who knows.")
+    conn.commit()
+    out = architect._tool_reference_lookup(conn, "thrombotic platelets", 6)
+    assert "kb/Reference/Medicine/Conditions/Thrombotic Thrombocytopenic Purpura" in out
+    assert "notes/Journal/Tuesday" not in out               # non-reference match excluded
+
+
+def test_analyze_mode_accepted_and_grounding_guard_fires(client, monkeypatch):
+    # Analyze mode is accepted (not downgraded) AND inherits the research grounding guard: a
+    # zero-retrieval factual/analytical answer is wiped and re-grounded.
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your platelet trend is consistent with TTP — this is a fabricated analysis of decent length.",
+        grounded="From your records: I don't have platelet data on file.")
+    events = _drive_run(cid, "do my labs fit TTP", "analyze", fake, monkeypatch)
+    assert {"type": "replace_text", "text": ""} in events    # guard fired in analyze mode too
+    assert fake.turn >= 3

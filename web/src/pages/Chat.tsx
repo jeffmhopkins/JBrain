@@ -14,7 +14,7 @@ import { makeChatLinkRenderer } from "../components/CitationLink";
 // optimistic turn's user/assistant rows so the stream can target them by identity
 // instead of by position — robust to anything else mutating the list mid-send.
 interface Msg { role: "user" | "assistant" | "event"; content: string; id?: number; }
-type Mode = "entry" | "medical" | "assisted" | "research";
+type Mode = "entry" | "medical" | "assisted" | "research" | "analyze";
 
 // Render an applied-action summary with any URL made clickable (so a freshly-minted
 // share link is tappable right on the card).
@@ -46,18 +46,22 @@ const MODES: { key: Mode; label: string; icon: string; hint: string }[] = [
   { key: "medical", label: "Medical", icon: "medical", hint: "Labs, notes & procedures" },
   { key: "assisted", label: "Assisted", icon: "robot", hint: "Talk it out — AI proposes notes" },
   { key: "research", label: "Research", icon: "search", hint: "Read-only · ask your brain" },
+  { key: "analyze", label: "Analyze", icon: "robot", hint: "Read-only · reason over your brain" },
 ];
 const PLACEHOLDER: Record<Mode, string> = {
   entry: "Write an entry…",
   medical: "Log a lab, note, procedure…",
   assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
+  analyze: "Ask an in-depth question… (read-only)",
 };
 // Friendly status shown at the bottom of the conversation while a tool runs. Keep in
 // sync with the tool schemas in server/app/services/architect.py; an unlisted tool
 // falls back to "Working…".
 const TOOL_LABELS: Record<string, string> = {
   // Reading notes
+  find: "Finding & quoting…",
+  reference_lookup: "Checking your reference library…",
   search_notes: "Searching your notes…",
   read_note: "Reading a note…",
   read_notes: "Reading notes…",
@@ -441,7 +445,7 @@ export default function Chat() {
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
     // Both chat modes stream a spoken-able prose reply; entry/medical don't.
-    const speakable = mode === "assisted" || mode === "research";
+    const speakable = mode === "assisted" || mode === "research" || mode === "analyze";
     // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
     // later (from an async callback) isn't blocked by mobile autoplay policies.
     if (speakable && ttsOn.enabled) tts.prime();
@@ -581,7 +585,7 @@ export default function Chat() {
           bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
-      }, coords, mode === "research" ? "research" : "assisted", freshCtx);
+      }, coords, mode === "assisted" ? "assisted" : mode, freshCtx);
       // Read the finished reply aloud when the top-bar toggle is on (Assisted + Research).
       if (speakable && !errored && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
@@ -762,7 +766,7 @@ export default function Chat() {
             )}
           </span>
           <span className="spacer" />
-          {mode !== "research" && (
+          {mode !== "research" && mode !== "analyze" && (
             <>
               <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                      onChange={(e) => {

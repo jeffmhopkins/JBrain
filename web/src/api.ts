@@ -473,7 +473,7 @@ export async function streamChat(
   text: string,
   onEvent: (e: ChatEvent) => void,
   location?: { lat: number; lon: number } | null,
-  mode: "assisted" | "research" = "assisted",
+  mode: "assisted" | "research" | "analyze" = "assisted",
   freshContext = false,
 ): Promise<void> {
   const body: any = { text, mode };

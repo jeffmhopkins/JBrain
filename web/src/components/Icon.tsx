@@ -30,10 +30,10 @@ const PATHS: Record<string, string> = {
   speakerOff: "M11 5 6 9H2v6h4l5 4z M22 9l-6 6 M16 9l6 6",
 };
 
-export function Icon({ name, size = 19 }: { name: keyof typeof PATHS | string; size?: number }) {
+export function Icon({ name, size = 19, className }: { name: keyof typeof PATHS | string; size?: number; className?: string }) {
   const d = PATHS[name] || "";
   return (
-    <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none"
+    <svg className={className ? `icon ${className}` : "icon"} width={size} height={size} viewBox="0 0 24 24" fill="none"
          stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"
          aria-hidden="true">
       {d.split(" M").map((seg, i) => <path key={i} d={(i ? "M" : "") + seg} />)}

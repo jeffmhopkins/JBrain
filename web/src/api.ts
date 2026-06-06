@@ -404,6 +404,29 @@ export interface ChatEvent {
   message?: string;
 }
 
+// A persisted chat message as returned by GET /chat/conversations/{id}/messages.
+// `step_count` (0 for non-AI / no-tool replies) drives the reply's tool-call history pill;
+// `id` lets the client lazily fetch that reply's full step log.
+export interface ChatMessage { id: number; role: "user" | "assistant" | "event"; content: string; step_count?: number; }
+
+// One tool call + its raw result from an assistant reply's history. `event_json` is the
+// staging/applied/chart event the call emitted (if any); `result_text` is the verbatim,
+// untrusted tool output — render it as PLAIN text, never as markdown/HTML.
+export interface MessageStep {
+  step_index: number;
+  tool_name: string;
+  args_json: string;
+  result_text: string;
+  is_error: number;
+  event_json?: string | null;
+  created_at?: string;
+}
+export const getMessageSteps = (messageId: number) =>
+  get<MessageStep[]>(`/api/chat/messages/${messageId}/steps`);
+// Wipe a conversation's stored tool-call history (invoked by /clear).
+export const clearConversationSteps = (conversationId: number) =>
+  del<{ ok: boolean }>(`/api/chat/conversations/${conversationId}/steps`);
+
 // External-lookup approval (the medical_reference gate): nothing is sent externally until approved.
 // `term` lets the owner EDIT what's sent (e.g. trim a PHI-laden question down to a clean topic).
 export const approveExternalLookup = (id: number, term?: string) =>

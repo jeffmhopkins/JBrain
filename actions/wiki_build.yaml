@@ -80,6 +80,9 @@ steps:
   - do: rebuild_entity_index
   # 6b2. Link the default person ("me") to their People article so the owner page isn't orphaned.
   - do: link_owner
+  # 6b2a. Surface each person's aliases as an "Also known as" line on their article, so a
+  #       nickname/maiden-name search lands on the canonical page (deterministic, no LLM).
+  - do: surface_aliases
   # 6b3. Add MedlinePlus drug references to medication articles (RxNorm-resolved; exact → auto-link,
   #      approximate → talk todo for confirmation). Public-domain NLM sources; link-only; cached.
   - do: link_medications

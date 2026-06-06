@@ -74,12 +74,13 @@ def test_schema_objects_exist_and_version(conn):
     )}
     assert names == {"calendar_events", "calendar_supersedes", "calendar_fired",
                      "v_upcoming", "v_event_history"}
-    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 46
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 50
 
 
-def test_migration_recreates_calendar_from_v44(conn):
-    """Dropping the calendar objects and re-running migrations from v44 restores them —
-    proves the `if current < 45` block + _CALENDAR_SCHEMA_SQL upgrade path."""
+def test_migration_recreates_calendar_from_prior_version(conn):
+    """Dropping the calendar objects and re-running migrations from just before the
+    calendar migrations restores them — proves the `if current < 49/50` blocks +
+    _CALENDAR_SCHEMA_SQL upgrade path."""
     from app.db import _run_migrations, set_meta
 
     def _cols():  # column set of calendar_events as currently defined
@@ -90,7 +91,7 @@ def test_migration_recreates_calendar_from_v44(conn):
         "DROP VIEW v_upcoming; DROP VIEW v_event_history; "
         "DROP TABLE calendar_supersedes; DROP TABLE calendar_fired; DROP TABLE calendar_events;"
     )
-    set_meta(conn, "schema_version", "44")
+    set_meta(conn, "schema_version", "48")   # right before the calendar migrations
     _run_migrations(conn)   # rebuilds from _CALENDAR_SCHEMA_SQL
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name LIKE 'calendar%' OR name IN ('v_upcoming','v_event_history')"

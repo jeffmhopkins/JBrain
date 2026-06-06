@@ -136,6 +136,10 @@ async def lifespan(app: FastAPI):
     # declared scoped tools and nothing forbidden — makes the RECIPIENT_TOOLS contract non-vacuous.
     from .services import research_labs_ai
     research_labs_ai.assert_dispatch_safe()
+    # Release-blocker: a private-domain (kb/Health/* or kb/Finance/*) note share must always be
+    # browser-bound and finite-TTL — never a permanent bearer link — no matter which caller mints it.
+    from .services import share as share_svc
+    share_svc.assert_private_share_policy()
 
     from .services import pipeline
     for w in pipeline.validate_action_defs():
@@ -159,6 +163,11 @@ async def lifespan(app: FastAPI):
             n = await asyncio.to_thread(lambda: embeddings.reindex_missing_note_chunks(get_conn()))
             if n:
                 print(f"[embeddings] backfilled chunk vectors for {n} note(s)", flush=True)
+            # Same for AI image-analysis sidecars analyzed before they were embedded, so
+            # search_notes' semantic half reaches them too (keyword already did via FTS).
+            a = await asyncio.to_thread(lambda: embeddings.reindex_missing_attachment_analysis(get_conn()))
+            if a:
+                print(f"[embeddings] backfilled chunk vectors for {a} attachment sidecar(s)", flush=True)
             # Seed/update the read-only KB guide pages (off the event loop, after the
             # model is warm so the seed writes don't block startup on the first embed).
             g = await asyncio.to_thread(lambda: wiki_guides.seed_guides(get_conn()))

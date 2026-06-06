@@ -95,7 +95,8 @@ def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for notes that have none yet (e.g. after the migration
     that introduced them). Returns how many notes were indexed. Commits if it did
     work. `batch` caps the pass; None does all remaining."""
-    sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL "
+    # Redirect rows carry only a one-line marker and must stay out of semantic search.
+    sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL "
            "AND id NOT IN (SELECT DISTINCT note_id FROM note_chunks)")
     if batch:
         sql += f" LIMIT {int(batch)}"
@@ -104,6 +105,27 @@ def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     for r in rows:
         full = f"{r['title']}\n\n{r['content_md']}".strip()
         upsert_note_chunk_embeddings(conn, r["id"], full)
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
+def reindex_missing_attachment_analysis(conn, batch: int | None = None) -> int:
+    """Backfill chunk vectors for analyzed attachments whose sidecar was never embedded
+    (e.g. images analyzed before image analysis started embedding its summary). Their text
+    is already in attachments_fts, so keyword search worked all along — this adds the
+    SEMANTIC half. Returns how many attachments were indexed; commits if it did work."""
+    from .attachments import chunk_text  # lazy: attachments imports this module
+    sql = ("SELECT id, note_id, analysis_md FROM attachments "
+           "WHERE analysis_md IS NOT NULL AND analysis_md != '' "
+           "AND id NOT IN (SELECT DISTINCT attachment_id FROM attachment_chunks)")
+    if batch:
+        sql += f" LIMIT {int(batch)}"
+    rows = conn.execute(sql).fetchall()
+    n = 0
+    for r in rows:
+        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(r["analysis_md"]))
         n += 1
     if n:
         conn.commit()
@@ -120,7 +142,7 @@ def reindex_all_chunks(conn) -> int:
     from .attachments import chunk_text  # lazy: attachments imports this module
     n = 0
     for r in conn.execute(
-        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL"
+        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL"
     ).fetchall():
         full = f"{r['title']}\n\n{r['content_md']}".strip()
         upsert_note_chunk_embeddings(conn, r["id"], full)
@@ -128,9 +150,14 @@ def reindex_all_chunks(conn) -> int:
         if n % 50 == 0:
             conn.commit()
     for r in conn.execute(
-        "SELECT id, note_id, content_text FROM attachments WHERE content_text != ''"
+        "SELECT id, note_id, content_text, analysis_md FROM attachments "
+        "WHERE content_text != '' OR (analysis_md IS NOT NULL AND analysis_md != '')"
     ).fetchall():
-        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(r["content_text"]))
+        # Prefer the enrichment sidecar (image vision summary / transcript) over extracted
+        # text, mirroring the read paths — so an analyzed image embeds its analysis, not its
+        # (usually empty) OCR.
+        body = (r["analysis_md"] or "").strip() or (r["content_text"] or "")
+        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(body))
         n += 1
         if n % 50 == 0:
             conn.commit()

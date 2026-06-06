@@ -16,7 +16,7 @@ import json
 import re
 from collections import Counter, defaultdict
 
-from . import embeddings, people
+from . import embeddings, nickname_lexicon, people
 
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
@@ -86,12 +86,43 @@ def _collect(conn, limit: int) -> dict:
     return clusters
 
 
-def _merge_map(clusters: dict) -> dict:
+def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None = None) -> dict:
     """type -> {norm -> canonical_norm}, unioning subset-name variants that share a
-    distinctive token. Blocked by token so we don't compare every pair."""
+    distinctive token. Blocked by token so we don't compare every pair.
+
+    Durable user rulings override the heuristic (pure — they're passed in, never read here):
+    - `splits`: a set of frozenset({norm_a, norm_b}) pairs that must NEVER end up in one
+      group. Enforced as a HARD invariant: a union (heuristic, acronym, OR forced merge) is
+      refused if ANY member of the two components forms a split pair — so a bridge variant
+      can't transitively co-group two split-apart names, regardless of processing order, and
+      a forced merge can't silently override a split (split wins; a directly-contradicting
+      same-pair merge is instead resolved last-writer-wins in entity_decisions.add).
+    - `merges`: {member_norm -> canonical_norm}, pre-resolved to the TERMINAL canonical (see
+      entity_decisions.load_merges). Forced unions fire even with no shared token. A member
+      with no matching cluster this pass is DORMANT — it seeds union-find so an EXISTING side
+      still binds, but a merge whose sides are ALL absent materializes no entity. A group's
+      forced canonical (a merges value) wins as the group's canonical over the most-tokens
+      rule."""
+    merges = merges or {}
+    splits = splits or set()
     out: dict = defaultdict(dict)
+    forced_canon = set(merges.values())          # norms that win canonical when present
+    # norm -> set of norms it must never be co-grouped with (both directions).
+    split_adj: dict = defaultdict(set)
+    for pair in splits:
+        if len(pair) == 2:
+            x, y = tuple(pair)
+            split_adj[x].add(y)
+            split_adj[y].add(x)
     for typ, norms in clusters.items():
-        parent = {n: n for n in norms}
+        # Seed union-find with cluster norms PLUS any merge norm referenced, so a forced
+        # union can bind even when one side is named only in a decision. A node with no
+        # cluster is dormant: it gets no entity unless it shares a group with a real cluster.
+        nodes = set(norms)
+        for m, c in merges.items():
+            nodes.add(m); nodes.add(c)
+        parent = {n: n for n in nodes}
+        comp = {n: {n} for n in nodes}           # root -> set of member norms (split checking)
 
         def find(x):
             while parent[x] != x:
@@ -99,6 +130,20 @@ def _merge_map(clusters: dict) -> dict:
                 x = parent[x]
             return x
 
+        def _split_blocked(a, b):
+            # Refuse if joining the two components would put any user-split pair together.
+            ca, cb = comp[find(a)], comp[find(b)]
+            return any(not split_adj[x].isdisjoint(cb) for x in ca if x in split_adj)
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            parent[rb] = ra
+            comp[ra] |= comp[rb]
+            del comp[rb]
+
+        person_like = typ in {"person", "animal"}
         by_token: dict = defaultdict(list)
         for n in norms:
             for t in clusters[typ][n]["tokens"]:
@@ -108,11 +153,26 @@ def _merge_map(clusters: dict) -> dict:
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
                     a, b = group[i], group[j]
+                    if _split_blocked(a, b):           # user forbade co-grouping these
+                        continue
                     ta, tb = clusters[typ][a]["tokens"], clusters[typ][b]["tokens"]
+                    # A conflicting generational suffix (Jr vs Sr, or one carrying a suffix
+                    # and the other not) is a strong "different person" signal for people —
+                    # block the union on BOTH the raw-subset and nickname paths, so a
+                    # father/son who differ only by suffix never auto-merge.
+                    if person_like and nickname_lexicon.suffixes(ta) != nickname_lexicon.suffixes(tb):
+                        continue
                     if ta <= tb or tb <= ta:          # one name subsumes the other
-                        ra, rb = find(a), find(b)
-                        if ra != rb:
-                            parent[rb] = ra
+                        union(a, b)
+                    elif person_like:
+                        # Nickname-aware fallback (person/animal only): map given-name tokens
+                        # to a canonical form (jeff→jeffrey, bob→robert) and retry the subset
+                        # test. The shared distinctive token that put a,b in this bucket is a
+                        # real surname (raw, unmapped), so this only fires for same-surname
+                        # variants.
+                        ma, mb = nickname_lexicon.map_tokens(ta), nickname_lexicon.map_tokens(tb)
+                        if ma <= mb or mb <= ma:
+                            union(a, b)
         # Acronym union: "ttp" ↔ "thrombotic thrombocytopenic purpura" (initials match).
         def _rep(n):
             raws = clusters[typ][n]["raws"]
@@ -122,18 +182,24 @@ def _merge_map(clusters: dict) -> dict:
             if not _acronymish(ac):
                 continue
             for ex in expansions:
+                if _split_blocked(ac, ex):
+                    continue
                 if _initials(_rep(ex)) == ac:
-                    ra, rb = find(ac), find(ex)
-                    if ra != rb:
-                        parent[rb] = ra
+                    union(ac, ex)
                     break
-        members: dict = defaultdict(list)
-        for n in norms:
-            members[find(n)].append(n)
-        for grp in members.values():
-            # Canonical = the most descriptive name (most tokens), then most-mentioned.
-            canon = max(grp, key=lambda m: (len(clusters[typ][m]["tokens"]), clusters[typ][m]["count"]))
-            for m in grp:
+        # Forced user merges: union member -> canonical even with no shared token — but a
+        # split still wins (we never co-group a split pair, even on an explicit merge).
+        for member, c in merges.items():
+            if not _split_blocked(member, c):
+                union(member, c)
+        for grp in comp.values():
+            present = [m for m in grp if m in norms]   # drop dormant merge-only nodes
+            if not present:
+                continue
+            forced = [m for m in present if m in forced_canon]
+            pool = forced or present                   # a forced canonical wins the group
+            canon = max(pool, key=lambda m: (len(clusters[typ][m]["tokens"]), clusters[typ][m]["count"]))
+            for m in present:
                 out[typ][m] = canon
     return out
 
@@ -165,8 +231,15 @@ def rebuild(conn, limit: int = 20000) -> int:
     """(Re)aggregate the entity index from note_analysis. Upserts by (type, key) so ids
     are stable, replaces each entity's mentions, prunes entities that vanished, and links
     each to its kb article (if one exists). Returns the entity count."""
+    from . import entity_decisions
     clusters = _collect(conn, limit)
-    mapping = _merge_map(clusters)
+    # Durable user rulings (type='person' — the only type with an identity UI). merges/splits
+    # are member-norm/pair scoped, so passing the person set to _merge_map is safe: those norms
+    # never collide with another type's clusters, and dormant merge norms materialize nothing.
+    merges = entity_decisions.load_merges(conn, type="person")
+    splits = entity_decisions.load_splits(conn, type="person")
+    decided_aliases = entity_decisions.load_aliases(conn, type="person")
+    mapping = _merge_map(clusters, merges=merges, splits=splits)
     _fold_owner(conn, clusters, mapping)
 
     canon: dict = defaultdict(lambda: {"notes": set(), "raws": Counter(), "aliases": {}, "display": None})
@@ -181,6 +254,17 @@ def rebuild(conn, limit: int = 20000) -> int:
                 agg["display"] = top
             else:                                   # a merged variant → an alias
                 agg["aliases"][norm] = top
+
+    # Fold explicit user 'alias' decisions onto their canonical entity (person type). The
+    # canonical must already exist as an entity this pass (an alias for a vanished entity is
+    # inert) — mirrors merges: decisions never materialize an entity on their own.
+    for canon_norm, pairs in decided_aliases.items():
+        agg = canon.get(("person", canon_norm))
+        if agg is None:
+            continue
+        for alias_norm, alias_display in pairs:
+            if alias_norm and alias_norm != canon_norm:
+                agg["aliases"].setdefault(alias_norm, alias_display)
 
     seen_keys = set()
     for (typ, cn), agg in canon.items():
@@ -208,9 +292,58 @@ def rebuild(conn, limit: int = 20000) -> int:
             conn.execute("DELETE FROM entities WHERE id=?", (r["id"],))   # mentions cascade
 
     _link_articles(conn)
-    _sync_embeddings(conn)
+    _apply_overrides(conn)            # owner source-of-truth names win over frequency
+    _sync_embeddings(conn)            # embed AFTER overrides so vectors use the corrected name
     conn.commit()
     return len(seen_keys)
+
+
+def set_canonical_override(conn, article_title: str, canonical_name: str,
+                           source_note_id: int | None = None) -> None:
+    """Record an owner source-of-truth override for an entity's display name, keyed by the kb
+    article it backs (a stable key that survives the normalize() diacritic/spelling fork).
+    Durable — rebuild() re-applies it via _apply_overrides — and patches the live entity now
+    (if one is linked) for immediate effect. No LLM/embeddings; safe on the request path."""
+    article_title = (article_title or "").strip()
+    canonical_name = (canonical_name or "").strip()
+    if not article_title or not canonical_name:
+        return
+    conn.execute(
+        "INSERT INTO entity_overrides (article_title, canonical_name, source_note_id) "
+        "VALUES (?,?,?) ON CONFLICT(article_title) DO UPDATE SET "
+        "canonical_name=excluded.canonical_name, source_note_id=excluded.source_note_id, "
+        "created_at=datetime('now')",
+        (article_title, canonical_name, source_note_id))
+    _apply_one_override(conn, article_title, canonical_name)
+
+
+def _apply_one_override(conn, article_title: str, canonical_name: str) -> None:
+    """Set the linked entity's display name to the override, keeping the prior name AND the
+    corrected name as aliases so both spellings still resolve in search/routing. Idempotent."""
+    ent = conn.execute("SELECT id, canonical_name FROM entities WHERE article_title=?",
+                       (article_title,)).fetchone()
+    if not ent:
+        return                        # no entity linked yet; rebuild will apply it later
+    old = ent["canonical_name"]
+    if old and normalize(old) != normalize(canonical_name):
+        conn.execute("INSERT OR IGNORE INTO entity_aliases (entity_id, alias_norm, alias_display) "
+                     "VALUES (?,?,?)", (ent["id"], normalize(old), old))
+    conn.execute("UPDATE entities SET canonical_name=?, updated_at=datetime('now') WHERE id=?",
+                 (canonical_name, ent["id"]))
+    conn.execute("INSERT OR IGNORE INTO entity_aliases (entity_id, alias_norm, alias_display) "
+                 "VALUES (?,?,?)", (ent["id"], normalize(canonical_name), canonical_name))
+
+
+def _apply_overrides(conn) -> None:
+    """Re-apply owner name overrides after rebuild recomputed display names from raw frequency.
+    An override whose source correction note was (soft-)deleted is skipped, so the entity name
+    auto-reverts to the frequency-derived one — the revert path for an undone correction."""
+    rows = conn.execute(
+        "SELECT o.article_title, o.canonical_name FROM entity_overrides o "
+        "LEFT JOIN notes n ON n.id = o.source_note_id "
+        "WHERE o.source_note_id IS NULL OR n.deleted_at IS NULL").fetchall()
+    for ov in rows:
+        _apply_one_override(conn, ov["article_title"], ov["canonical_name"])
 
 
 _LABEL = dict(_TYPE_LABELS)
@@ -230,17 +363,24 @@ def _entity_embed_text(name: str, typ: str, aliases: list[str], lead: str) -> st
     return " — ".join(parts)[:500]
 
 
+_AKA_LEAD_RE = re.compile(r"^\*Also known as:.*\*$")
+
+
 def _article_leads(conn) -> dict:
-    """{kb article title -> its lead sentence} (first non-heading line), for embed context."""
+    """{kb article title -> its lead sentence} (first non-heading line), for embed context.
+    Skips an '*Also known as: ...*' line so the real lead — not the alias line surface_aliases
+    inserts under the H1 — is what feeds the entity's embedding."""
     out: dict = {}
     for a in conn.execute(
-        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL"
+        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "AND redirect_to IS NULL"
     ).fetchall():
         for line in (a["content_md"] or "").splitlines():
-            s = line.strip().lstrip("#").strip()
-            if s:
-                out[a["title"]] = s[:200]
-                break
+            st = line.strip()
+            if not st or st.startswith("#") or _AKA_LEAD_RE.match(st):
+                continue                              # skip blanks, headings, and the AKA line
+            out[a["title"]] = st[:200]
+            break
     return out
 
 
@@ -278,9 +418,21 @@ def _link_articles(conn) -> None:
     A leaf-exact match missed common variants (entity 'Thrombotic Thrombocytopenic Purpura'
     vs article leaf 'TTP', or aliased/merged names), silently leaving article_title NULL and
     breaking incremental routing, disambiguation, and the browse link."""
+    from . import wiki_guides
     conn.execute("UPDATE entities SET article_title = NULL")
     leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
-    for k in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall():
+    # Exclude redirects: an entity must point at the CANONICAL article, never a merged-away
+    # redirect row (which would route browse/disambiguation to a one-line redirect marker).
+    for k in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL"
+    ).fetchall():
+        # A private-domain page (kb/Health/<Person>, kb/Finance/People/<Person>) can share its leaf
+        # with the person's kb/People/<Person> page. It is a PII satellite, NEVER an entity's
+        # canonical article — excluding it keeps the person entity bound to their People page (the
+        # SELECT has no ORDER BY, so a collision would otherwise be nondeterministic and silently
+        # mis-route facts into the private page).
+        if wiki_guides.is_private_title(k["title"]):
+            continue
         leaf_map.setdefault(normalize(k["title"].split("/")[-1]), k["title"])
     aliases: dict = {}       # entity_id -> [alias_norm, ...]
     for a in conn.execute("SELECT entity_id, alias_norm FROM entity_aliases").fetchall():
@@ -425,3 +577,129 @@ def write_disambiguation_pages(conn) -> int:
         n += 1
     conn.commit()
     return n
+
+
+# ---- Phase 5: LLM "same person?" proposals (propose-only; never auto-merge) ---------------
+
+def _open_proposed_pairs(conn) -> set:
+    """Unordered {norm_a, norm_b} pairs that already have a PENDING entity_merge review card —
+    so the proposer never re-nags about a pair awaiting the owner's decision."""
+    out: set = set()
+    for r in conn.execute(
+        "SELECT payload_json FROM review_items WHERE kind='entity_merge' AND status='pending'"
+    ).fetchall():
+        try:
+            p = json.loads(r["payload_json"] or "{}")
+            a = (p.get("source") or {}).get("norm")
+            b = (p.get("into") or {}).get("norm")
+            if a and b:
+                out.add(frozenset({a, b}))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _adjudicate_same_person(conn, a: dict, b: dict) -> dict:
+    """Ask the model whether two same-surname person entities are the SAME individual (vs
+    relatives/namesakes), given their aliases + frequent co-occurring partners. Returns
+    {same: bool, confidence: float, why: str}; defensive on parse failure."""
+    from . import llm, prompts
+    aka_a = [x["alias_display"] for x in conn.execute(
+        "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (a["id"],)).fetchall()]
+    aka_b = [x["alias_display"] for x in conn.execute(
+        "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (b["id"],)).fetchall()]
+    prompt = (prompts.get("actions.entity_same_person", "")
+              .replace("{name_a}", a["canonical_name"])
+              .replace("{aka_a}", ", ".join(aka_a) or "(none)")
+              .replace("{partners_a}", ", ".join(_partners(conn, a["id"], 6)) or "(none)")
+              .replace("{name_b}", b["canonical_name"])
+              .replace("{aka_b}", ", ".join(aka_b) or "(none)")
+              .replace("{partners_b}", ", ".join(_partners(conn, b["id"], 6)) or "(none)"))
+    try:
+        raw = llm.complete([{"role": "user", "content": prompt}], max_tokens=300)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+        return {"same": bool(data.get("same")),
+                "confidence": float(data.get("confidence") or 0),
+                "why": str(data.get("why") or "")[:300]}
+    except Exception:  # noqa: BLE001
+        return {"same": False, "confidence": 0.0, "why": ""}
+
+
+def propose_person_merges(conn, limit: int = 40, min_confidence: float = 0.7) -> dict:
+    """Surface likely-duplicate PEOPLE for the owner to confirm — never auto-merging. Candidates
+    are pairs of distinct person entities that SHARE A SURNAME (their last distinctive token) and
+    aren't already merged, split, or awaiting review; the model then adjudicates same-person vs
+    relative/namesake, and only high-confidence 'same' verdicts post an 'entity_merge' Review card
+    (approve -> a durable merge decision; reject -> a durable split). Returns counts."""
+    from . import entity_decisions, llm, reviews
+    if not llm.has_credentials():
+        return {"candidates": 0, "proposed": 0, "reason": "no LLM credentials"}
+    merges = entity_decisions.load_merges(conn, "person")
+    splits = entity_decisions.load_splits(conn, "person")
+    open_pairs = _open_proposed_pairs(conn)
+
+    ents = []
+    for e in conn.execute(
+        "SELECT id, canonical_name, normalized_key, note_count, article_title "
+        "FROM entities WHERE type='person'").fetchall():
+        toks = _tokens(e["canonical_name"])
+        surnames = [t for t in toks if _distinctive(t)]
+        if surnames:
+            ents.append({**dict(e), "tokens": toks, "surname": surnames[-1]})
+
+    by_surname: dict = defaultdict(list)
+    for e in ents:
+        by_surname[e["surname"]].append(e)
+
+    def canon_of(n):
+        return merges.get(n, n)
+
+    # Bound generation, not just adjudication: skip pathologically large same-surname buckets
+    # (a 200-person "Smith" family is O(N^2) noise the model can't usefully disambiguate) and
+    # stop once we have a healthy multiple of `limit` candidate pairs in hand.
+    cap = max(int(limit) * 5, 50)
+    candidates, seen = [], set()
+    for group in by_surname.values():
+        if len(candidates) >= cap:
+            break
+        if len(group) > 40:                                    # too large to be a real "is this the same person?"
+            continue
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                a, b = group[i], group[j]
+                na, nb = a["normalized_key"], b["normalized_key"]
+                if na == nb or canon_of(na) == canon_of(nb):
+                    continue                                   # already the same/merged entity
+                pair = frozenset({na, nb})
+                if pair in splits or pair in open_pairs or pair in seen:
+                    continue
+                seen.add(pair)
+                candidates.append((a, b))
+
+    proposed = 0
+    for a, b in candidates[:limit]:
+        v = _adjudicate_same_person(conn, a, b)
+        if not (v["same"] and v["confidence"] >= min_confidence):
+            continue
+        # Canonical = the more descriptive (more tokens), then more-mentioned, name.
+        into, src = ((a, b) if (len(a["tokens"]), a["note_count"]) >= (len(b["tokens"]), b["note_count"])
+                     else (b, a))
+        payload = {"type": "person",
+                   "source": {"id": src["id"], "norm": src["normalized_key"],
+                              "display": src["canonical_name"], "article_title": src["article_title"]},
+                   "into": {"id": into["id"], "norm": into["normalized_key"],
+                            "display": into["canonical_name"], "article_title": into["article_title"]},
+                   "why": v["why"]}
+        link_slug = None
+        if into["article_title"]:
+            r = conn.execute("SELECT slug FROM notes WHERE title=? AND deleted_at IS NULL",
+                             (into["article_title"],)).fetchone()
+            link_slug = r["slug"] if r else None
+        reviews.create_review_item(
+            conn, None, "Same person?",
+            f"Merge “{src['canonical_name']}” into “{into['canonical_name']}”? {v['why']}",
+            link_slug, kind="entity_merge", payload_json=json.dumps(payload))
+        proposed += 1
+    conn.commit()
+    return {"candidates": len(candidates), "proposed": proposed}

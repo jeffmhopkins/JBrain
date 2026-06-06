@@ -462,6 +462,21 @@ def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
     return ("…" if start > 0 else "") + seg + ("…" if start + len(seg) < len(text) else "")
 
 
+def _searchable_text(conn, note_id: int) -> str:
+    """The note body PLUS its AI image-analysis sidecars, as one string for snippet/passage
+    extraction — so a hit that lives ONLY in a photo's vision summary (e.g. an address read
+    off a storefront image) still yields a relevant excerpt instead of a blind head slice.
+    @t[...] tokens are expanded so the excerpt reads like the rendered note."""
+    from . import image_analysis
+    c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
+    body = clock.expand_tokens(c["content_md"] if c else "")
+    img = image_analysis.block_for_note(conn, note_id, cap=1500)
+    if img:
+        img = clock.expand_tokens(img)
+        body = (body + "\n\n" + img) if body else img
+    return body
+
+
 def _tool_find(conn, query: str, limit: int = 6) -> str:
     """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
     + its [[Title]] — so the model can answer with a real citation in a single call (no separate
@@ -472,8 +487,7 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
         return "No matching notes."
     out = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        passage = _quotable_passage(_searchable_text(conn, r["id"]), query)
         out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
     return _untrusted("find-results",
                       "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
@@ -514,8 +528,7 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
         return "No matching notes."
     lines = []
     for r in rows:
-        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
-        snip = _snippet(c["content_md"] if c else "", query)
+        snip = _snippet(_searchable_text(conn, r["id"]), query)
         lines.append(f"- {r['title']}" + (f"\n    {snip}" if snip else ""))
     # Titles + snippets are user-controlled too -> fence them as untrusted data.
     return _untrusted("search-results", "\n".join(lines))
@@ -2468,6 +2481,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     token_budget = prompts.get_int(f"modes.{mode}.max_total_tokens",
                                    prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS))
     assistant_text_parts: list[str] = []
+    steps: list[dict] = []        # tool-call history for this turn (persisted with the reply)
     total_tokens = 0
     stopped_early = False
     need_sep = False   # insert a break when text resumes after a tool call
@@ -2527,14 +2541,19 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             if call.name in _RETRIEVAL_TOOLS:
                 did_retrieve = True
             yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
+            is_err = False
             try:
                 result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)
             except Exception as exc:  # noqa: BLE001 — a bad tool call must not kill the stream
                 # Feed the error back as a tool result so the model can recover,
                 # rather than aborting the whole turn (and losing its text). Fence the
                 # exception text — it may embed note-derived (untrusted) data.
+                is_err = True
                 result_text, event = (
                     f"Tool '{call.name}' failed: {_untrusted('tool-error', str(exc))}", None)
+            # Record the raw call+result for the reply's tool-call history (persisted at turn end).
+            steps.append({"tool": call.name, "args": call.args, "result": result_text,
+                          "is_error": is_err, "event": event})
             tool_urls.update(_extract_urls(result_text))   # whitelist URLs the tool genuinely returned
             turn_corpus.append(result_text)                 # a quoted span must appear in what a tool returned
             if event is not None:
@@ -2576,9 +2595,22 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             final_text, v_changed = _verify_values(final_text, corpus)
         if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
             (conversation_id, final_text),
         )
+        message_id = cur.lastrowid
+        # Persist the tool-call history alongside the reply (full raw), so swiping/expanding
+        # this bubble later can show exactly how it was answered — which notes were read, what
+        # SQL ran, what was staged/applied. Wiped per-conversation on /clear.
+        for i, st in enumerate(steps):
+            conn.execute(
+                "INSERT INTO message_steps (conversation_id, message_id, step_index, tool_name, "
+                "args_json, result_text, is_error, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (conversation_id, message_id, i, st["tool"],
+                 json.dumps(st["args"], default=str), st["result"],
+                 1 if st["is_error"] else 0,
+                 json.dumps(st["event"], default=str) if st["event"] is not None else None),
+            )
         conn.commit()
     yield {"type": "done"}

@@ -285,9 +285,12 @@ def analyze(att_id: int) -> None:
             conn.rollback()  # attachment was deleted mid-analysis; nothing to record
             return
         conn.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
-        # Keep transcribed in-image text searchable now that it's no longer in the note body.
-        from . import attachments as att_svc
+        # Keep the vision summary (incl. transcribed in-image text) searchable now that
+        # it's not in the note body: keyword via attachments_fts AND semantic via the
+        # attachment chunk vectors, so search_notes' hybrid fusion finds it either way.
+        from . import attachments as att_svc, embeddings
         att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], body)
+        embeddings.upsert_attachment_embeddings(conn, att_id, att["note_id"], att_svc.chunk_text(body))
         _set_status(conn, att_id, "done")
         conn.commit()
     except Exception as exc:  # never let the worker thread die silently

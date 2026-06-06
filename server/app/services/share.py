@@ -65,8 +65,40 @@ def touch(conn, link_id: int) -> None:
 
 # --- Owner: minting / listing / revoking -----------------------------------
 
+def _phi_clamp(ttl_days: int | None, bind: bool) -> tuple[int, bool]:
+    """The hardening for any private-domain (PII) share: browser-bind ON and a finite TTL
+    (the caller's, if positive, else 14 days). A medical/financial record is never a permanent,
+    copyable bearer credential — the same discipline create_labshare_link enforces for lab trends."""
+    days = int(ttl_days) if (ttl_days and int(ttl_days) > 0) else 14
+    return days, True
+
+
+def _phi_harden(conn, note_id: int, ttl_days: int | None, bind: bool) -> tuple[int | None, bool]:
+    """Force hardening when note_id is a private-domain page (kb/Health/… or kb/Finance/…); pass
+    through otherwise."""
+    from . import wiki_guides
+    row = conn.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row and wiki_guides.is_private_title(row["title"]):
+        return _phi_clamp(ttl_days, bind)
+    return ttl_days, bind
+
+
+def assert_private_share_policy() -> None:
+    """Release-blocker (call at boot): the PII clamp must yield a bound, finite-TTL share even
+    when the caller asks for an unbound, never-expiring one — so no mint path can leak a permanent
+    health/finance-record link (this is THE chokepoint every note-share caller flows through)."""
+    days, bind = _phi_clamp(None, False)
+    if not bind or not days or int(days) <= 0:
+        raise RuntimeError("share PII policy broken: kb/Health/* and kb/Finance/* shares must be bound + finite-TTL")
+
+
 def create_link(conn, note_id: int, scope: str, label: str | None = None,
                 ttl_days: int | None = None, bind: bool = False) -> str:
+    # PII firewall: a private-domain note (kb/Health/… medical, kb/Finance/… financial) is a
+    # sensitive record. Harden its share here — the single chokepoint every note-share caller
+    # (the /api/shares mint route AND the architect's create_share_link tool) passes through — so
+    # none can mint a permanent, unbound bearer link to it, regardless of the ttl_days/bind asked.
+    ttl_days, bind = _phi_harden(conn, note_id, ttl_days, bind)
     token = mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     conn.execute(

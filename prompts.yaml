@@ -502,23 +502,31 @@ actions:
         kb/Reference/Medicine/Medications/<Name>, or kb/Reference/Medicine/Procedures/<Name>.
       - PERSONAL medical history — a specific person's (usually the owner's) diagnoses,
         prescriptions, lab results, procedures, vitals and hospital encounters/admissions —
-        is PII. It belongs in THAT person's People article under a "## Health" section,
-        NEVER here. An encounter/admission is a personal event, not a Reference subject.
+        is PII. It belongs in THAT person's own kb/Health/<Name> page, NEVER here and NEVER in
+        their People article. An encounter/admission is a personal event, not a Reference subject.
       - Raw medical uploads are captured by the owner under notes/medical/… (Medical mode);
         they synthesise into exactly these two homes — general → Reference/Medicine,
-        personal → People/<Name> ## Health — and never blur the line between them.
+        personal → kb/Health/<Name> — and never blur the line between them.
+
+      FINANCIAL CONTENT — keep the same split:
+      - GENERAL financial knowledge (what a Roth IRA / mortgage / index fund IS, in the abstract)
+        lives HERE, foldered under kb/Reference/Finance/<Name>.
+      - PERSONAL finances — a specific person's, household's or business's account balances and
+        numbers, statements, income, budgets, holdings, debts, taxes and net worth — are PII. They
+        belong in the firewalled kb/Finance/<Subcategory>/<Name> vault, NEVER here and NEVER in a
+        People/Groups/Things article. Never name a person's accounts or figures in Reference.
 
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
-        Treatment, Prognosis. (A person's own diagnosis history stays in their People article.)
+        Treatment, Prognosis. (A person's own diagnosis history stays in their kb/Health/<Name> page.)
       - MEDICATION: lead = what it is and what it treats; sections Uses, Dosage forms,
-        Side effects, Notes. Keep it general — a specific prescription belongs in People.
+        Side effects, Notes. Keep it general — a specific prescription belongs in kb/Health/<Name>.
       - PROCEDURE / how-to: lead = what it accomplishes; numbered Steps; sections
         Frequency, Tips, What to expect.
       - CONCEPT / topic: lead defines it; thematic sections by aspect.
 
       ```spec
-      forbid_link_prefixes: [kb/People, kb/Groups]
+      forbid_link_prefixes: [kb/People, kb/Groups, kb/Health, kb/Finance]
       recommended_sections: [Overview]
       ```
     people: |
@@ -530,20 +538,25 @@ actions:
       - LEAD: who they are and your relationship, in the first sentence.
       - "## Key facts": relationship, age/birthday, contact, where they live/work, key
         affiliations (link the org as [[kb/Groups/...]]).
-      - Sections as the person warrants: Background, Health, Preferences, Important dates,
+      - Sections as the person warrants: Background, Preferences, Important dates,
         History/interactions.
-      - "## Health" is the HOME for this person's personal medical history — diagnoses,
-        prescriptions, lab results, procedures, vitals, and hospital encounters/admissions
-        (the PII that must NEVER appear in Reference). Link the GENERAL article for each
-        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>) for background,
-        but keep the person-specific facts (their values, doses, dates, stays) here. Cite
-        the source notes (these come from the owner's notes/medical/… captures).
+      - This person's personal medical history — diagnoses, prescriptions, lab results,
+        procedures, vitals, and hospital encounters/admissions — does NOT live here. It lives
+        in their own kb/Health/<Name> page (a separate, share-firewalled domain). Do NOT add a
+        "## Health" section or any medical facts to this article, and never link kb/Health from
+        here (the owner reaches the record via backlinks/graph). General medical background
+        stays in kb/Reference/Medicine. (Existing ## Health content is relocated by the one-time
+        "Split personal health" maintenance action — don't delete it by hand.)
+      - This person's personal FINANCES — account balances and numbers, statements, income,
+        loans/debts, net worth — also do NOT live here. They live in the firewalled kb/Finance
+        vault. Don't put financial figures in this article and never link kb/Finance from here.
       - Cross-link the groups they belong to, things they own, places tied to them.
       - Cite every fact to the note it came from.
 
       ```spec
       require_lead: true
       recommended_sections: [Key facts, Background]
+      forbid_link_prefixes: [kb/Health, kb/Finance]
       ```
     groups: |
       # Group & organization articles (kb/Groups)
@@ -552,13 +565,17 @@ actions:
       clubs.
 
       - LEAD: what it is and your relationship to it.
-      - "## Key facts": type, your role/account, key people (link [[kb/People/...]]).
-      - Sections: Purpose / Services, People, History, Account / Practical details.
+      - "## Key facts": type, your role / membership, key people (link [[kb/People/...]]).
+      - Sections: Purpose / Services, People, History, Membership / Practical details.
       - Cross-link the individual members to their People articles.
+      - A group's FINANCES — a business's revenue, a household's budget, shared accounts —
+        live in the firewalled kb/Finance vault, not here. Don't put financial figures in this
+        article or link kb/Finance.
       - Cite sources.
 
       ```spec
       recommended_sections: [Key facts, People]
+      forbid_link_prefixes: [kb/Finance]
       ```
     places: |
       # Place articles (kb/Places)
@@ -579,16 +596,21 @@ actions:
     things: |
       # Thing & asset articles (kb/Things)
 
-      Specific objects you track: home, vehicles, devices, accounts, valuables.
+      Specific PHYSICAL objects you track: home, vehicles, devices, valuables.
 
       - LEAD: what it is and your relationship (owned, used, leased).
-      - "## Key facts": make/model, identifiers (serial/VIN/account), acquired date,
-        value, the account or org that pays for it ([[kb/Groups/...]]).
+      - "## Key facts": make/model, non-financial identifiers (serial/VIN), acquired date.
+      - FINANCE FIREWALL: a thing's MONEY — its value, balances, account/loan/mortgage numbers,
+        statements, what it cost — does NOT live here. That belongs in the firewalled kb/Finance
+        vault (e.g. the auto loan in kb/Finance/Debts/<Name>, the bank account in
+        kb/Finance/Accounts/<Bank>), which links BACK to this Thing. Never put a balance, account
+        number, or value here, and never link kb/Finance from here.
       - Sections: Maintenance, History, Documents / Warranty.
       - Cite sources.
 
       ```spec
       recommended_sections: [Key facts]
+      forbid_link_prefixes: [kb/Finance]
       ```
     activities: |
       # Activity & project articles (kb/Activities)
@@ -604,6 +626,74 @@ actions:
       ```spec
       recommended_sections: [Key facts]
       ```
+    health: |
+      # Personal health records (kb/Health — one page per person)
+
+      The HOME for an individual's personal medical history — the PHI that must never appear
+      in their People article OR in Reference. One page per person, titled
+      kb/Health/<their People leaf name> (the same final name as their kb/People page), so a
+      person can be shared without leaking their medical data.
+
+      Put here, for this one person: diagnoses, prescriptions/medications they take, lab
+      results and vitals, procedures and surgeries, hospital encounters/admissions, and care
+      notes. These come from the owner's notes/medical/… captures. Structured lab numbers stay
+      in the lab tables; this page is the narrative record.
+
+      - LEAD: one line — "Personal health record for [[kb/People/<Name>]]." ALWAYS link back to
+        the person's People page in the lead.
+      - Link the GENERAL article for each condition/medication/procedure
+        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>, …/Procedures/<Name>)
+        for background — but keep the person-specific values, doses, dates and stays HERE.
+      - Sections as the record warrants: Conditions, Medications, Labs & vitals, Procedures,
+        Encounters, Care notes.
+      - Cite every fact to the source note it came from.
+      - Do NOT restate general medical facts — those live in kb/Reference/Medicine.
+      - This page is firewalled: nothing outside Health links to it, and it is never included
+        in a shared People article or a research share. It is the owner's private record.
+
+      ```spec
+      require_lead: true
+      recommended_sections: [Conditions, Medications]
+      recommend_link_prefixes: [kb/People, kb/Reference/Medicine]
+      ```
+    finance: |
+      # Personal finance records (kb/Finance — the firewalled financial vault)
+
+      The HOME for personal, household, and business financial detail — the PII that must never
+      appear in a People, Groups, or Things article OR in Reference. Like Health, it is
+      share-firewalled: it LINKS OUT to the people, groups, things, and places its money concerns,
+      but nothing outside Finance links back in (the owner reaches it via backlinks/graph).
+
+      ALWAYS FOLDERED — every Finance article sits in a subcategory, never flat under kb/Finance.
+      The expected subtrees:
+      - kb/Finance/Accounts/<Bank or Account> — balances, account numbers, statements
+      - kb/Finance/Income — salary, sources, pay history
+      - kb/Finance/Budget — household/business budget
+      - kb/Finance/Investments/<Broker or Holding> — holdings, positions, returns
+      - kb/Finance/Debts/<Name> — loans, mortgages, credit lines (link the Thing they finance)
+      - kb/Finance/Taxes/<Year> — filings, liabilities, refunds
+      - kb/Finance/People/<Person> — a per-person financial summary (net worth, obligations)
+
+      What goes here: account balances and numbers, statements, income, budgets, investments and
+      holdings, debts/loans/mortgage terms, taxes, and net worth — for a specific person,
+      household, or business.
+
+      - LEAD: one line naming what the record covers and whose it is, linking the subject — e.g.
+        "Auto loan on the [[kb/Things/Vehicles/F-150]] held by [[kb/People/Jeff]]."
+      - LINK OUT to the people, groups, things, and places the money concerns
+        ([[kb/People/...]], [[kb/Groups/...]], [[kb/Things/...]]) and to general background under
+        [[kb/Reference/Finance/...]] — but keep the actual figures, balances and terms HERE.
+      - Sections as the record warrants: Balances, Activity, Terms, Holdings, History.
+      - Use live @t[...] tokens for drifting values; cite every figure to its source note.
+      - Do NOT restate general financial facts — those live in kb/Reference/Finance.
+      - This vault is firewalled: nothing outside Finance links to it, and it is never included in
+        a shared article or a research share. It is the owner's private record.
+
+      ```spec
+      require_lead: true
+      recommended_sections: [Balances, Activity]
+      recommend_link_prefixes: [kb/People, kb/Groups, kb/Things, kb/Reference/Finance]
+      ```
   wiki_outline: |
     You are organising a personal knowledge base into an encyclopedia. Below is a survey
     of the owner's notes (id, domain guess, one-line gist, key entities). Design the set
@@ -617,9 +707,11 @@ actions:
     Every article title is "kb/<Domain>/<Name>", using these domains:
     - Reference — general, de-identified knowledge (concepts, how-things-work, conditions, medications, procedures); never about a specific person
     - People — one article per individual (pets/animals count too — a pet is a household member, never a Thing)
+    - Health — one PHI page per person for their PERSONAL medical history (diagnoses, meds, lab results, vitals, procedures, hospital encounters); title kb/Health/<the person's exact People name>. NEVER put medical facts in the People article. General medical science still goes under Reference/Medicine.
+    - Finance — firewalled PERSONAL/household/business financial detail (account balances & numbers, statements, income, budgets, investments, debts/loans/mortgages, taxes, net worth); title kb/Finance/<Subcategory>/<Name>, ALWAYS foldered. NEVER put financial figures in a People/Groups/Things article. General financial knowledge ("what a Roth IRA is") stays in Reference/Finance.
     - Groups — organisations, household, teams, clubs
     - Places — durable knowledge about a location
-    - Things — tracked assets/possessions (home, vehicles, devices, accounts)
+    - Things — tracked PHYSICAL assets/possessions (home, vehicles, devices, valuables); a thing's financial detail (value, balances, account/loan numbers) goes in Finance, not here
     - Activities — {owner}'s OWN ongoing hobbies/projects (NOT general how-to or recipes)
 
     Recipes, how-to guides and instructions are general knowledge → Reference (e.g.
@@ -628,6 +720,20 @@ actions:
 
     The entity roster's medications, conditions, procedures, events and concepts are
     Reference content — give each recurring one its own Reference article.
+
+    PERSONAL MEDICAL → HEALTH: a specific person's own medical history (their diagnoses,
+    prescriptions, lab results, vitals, procedures and hospital encounters — usually from
+    notes/medical/… captures) goes in kb/Health/<that person's exact People name>, one page per
+    person, NEVER in their People article and NEVER in Reference. For every person who has any
+    medical note, emit BOTH a kb/People/<Name> and a kb/Health/<Name> article, assigning the
+    medical source ids to the Health one and everything else to People.
+
+    PERSONAL FINANCE → FINANCE: a person's, household's, or business's financial detail (account
+    balances & numbers, statements, income, budgets, investments, debts/loans/mortgages, taxes, net
+    worth) goes in kb/Finance/<Subcategory>/<Name>, ALWAYS foldered (Accounts/, Income, Budget,
+    Investments/, Debts/, Taxes/<Year>, People/<Person>), NEVER in their People/Groups/Things article
+    and NEVER in Reference. The Finance page links its subject and the Thing it finances; the subject
+    never links Finance. General financial knowledge → kb/Reference/Finance.
 
     The roster's animals are PETS / household members → give each its own kb/People/<Name>
     profile (linking its vet visits, medications and care notes), and include it as a member
@@ -665,7 +771,7 @@ actions:
     kb/<Domain>/<Subcategory>/<Name>, and nest further when it still helps. Examples:
     - 3+ facilities in one health system → kb/Places/Health First/<Facility>
     - 3+ doctors at one practice → kb/People/<Practice>/<Doctor>
-    - 3+ vehicles → kb/Things/Vehicles/<Vehicle>; 3+ accounts → kb/Things/Accounts/<Name>
+    - 3+ vehicles → kb/Things/Vehicles/<Vehicle>; financial accounts → kb/Finance/Accounts/<Name> (foldered, firewalled — see Finance)
     - Reference always: kb/Reference/Medicine/Conditions/..., .../Medications/..., kb/
       Reference/Finance/..., kb/Reference/Technology/...
     Below the 3-article threshold a flat kb/<Domain>/<Name> is fine (except Reference,
@@ -689,6 +795,8 @@ actions:
 
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
+    {"title": "kb/Health/Allan", "domain": "Health", "scope": "Allan's personal medical history", "sources": [<his medical note ids>]}
+    {"title": "kb/Finance/Accounts/Chase", "domain": "Finance", "scope": "owner's checking/savings at Chase — balances, account numbers", "sources": [<account/statement note ids>]}
     {instructions}
     ENTITY ROSTER (recurring entities across the notes, with co-occurrence):
     {roster}
@@ -800,6 +908,9 @@ actions:
 
     Work each OPEN ITEM:
     - directive — a standing instruction from the owner; APPLY it (it stays OPEN until applied).
+    - correction — an owner SOURCE-OF-TRUTH fact fix (its note is in NEW/CHANGED SOURCES);
+      APPLY it as AUTHORITATIVE, overriding any conflicting claim, then resolve "applied"
+      (see CORRECTION NOTES below).
     - conflict  — sources disagree; reconcile only if the sources now allow, else leave it open.
     - question  — answer it in the article if the sources support an answer, else leave it open.
     - todo      — do it if the sources support it, else leave it open.
@@ -823,6 +934,13 @@ actions:
       with the current one and cite the newer source — never leave the stale value and the
       new one both standing as if current. Prefer the most recent source on conflict; keep
       a superseded value only if the article is explicitly a timeline/history.
+    - CORRECTION NOTES (source of truth): a source note whose first line begins
+      "CORRECTION (source of truth):" — and any OPEN ITEM tagged "SOURCE OF TRUTH,
+      authoritative" — is an owner-verified fact. Treat it as AUTHORITATIVE: apply it and
+      let it OVERRIDE any conflicting claim in the article or in other sources, even older
+      ones. Replace every instance of the wrong value with the corrected one (never leave
+      both), and cite the correction note where the corrected fact appears. Resolve the
+      matching open item with outcome "applied".
     - If a new source finally supplies the anchor for a value the article froze as a number
       (e.g. an age, now that a birthdate is known), convert it to the live @t[...] token.
 
@@ -916,6 +1034,27 @@ actions:
 
     CANDIDATE REFERENCE ARTICLES (title: lead):
     {candidates}
+  entity_same_person: |
+    You are de-duplicating a personal knowledge base. Decide whether two name records refer
+    to the SAME real individual, or to DIFFERENT people (e.g. relatives, a parent and child,
+    spouses, or unrelated namesakes) who merely share a surname.
+
+    Treat as the SAME person when one name is plausibly a nickname, initial, maiden/married
+    name, misspelling, or fuller/shorter form of the other AND their context (who they appear
+    alongside) is consistent. Treat as DIFFERENT when the given names are distinct real names
+    with no nickname relationship, or the contexts clearly indicate two individuals. When the
+    evidence is weak or ambiguous, prefer DIFFERENT (a wrong merge is worse than a missed one).
+
+    Person A: {name_a}
+    A also known as: {aka_a}
+    A often appears with: {partners_a}
+
+    Person B: {name_b}
+    B also known as: {aka_b}
+    B often appears with: {partners_b}
+
+    Output ONLY a single JSON object and nothing else:
+    {"same": true|false, "confidence": 0.0-1.0, "why": "one short clause"}
   note_analysis: |
     Extract structured signals from ONE personal-knowledge note. Be faithful: use ONLY
     what the note states — invent nothing, infer no unstated facts — and treat any text in

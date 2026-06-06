@@ -8,6 +8,11 @@
   --text-dim: #828a8e;
   --accent: #7f9aa6;            /* single subdued accent */
   --accent-soft: rgba(127,154,166,0.14);
+  /* Per-mode accents for the composer mode selector — desaturated to fit the flat theme. */
+  --m-entry: #8fb89c;           /* green  — save/capture */
+  --m-medical: #cf8d8d;         /* clinical red */
+  --m-assisted: #8aacba;        /* the house accent */
+  --m-research: #c4ad6e;        /* muted gold — read-only */
   --danger: #c08585;
   --ok: #84a591;
   --radius: 8px;
@@ -203,16 +208,43 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   display: inline-flex; align-items: center; gap: 6px; background: transparent; border: none;
   color: var(--text); padding: 5px 6px; cursor: pointer; font-size: 14px;
 }
-.mode-chip .icon { color: var(--text-dim); }
+.mode-chip .icon { color: var(--mc, var(--text-dim)); }
+/* Per-mode accent (--mc) — used by the chip icon and the menu rows below. */
+.m-entry { --mc: var(--m-entry); }
+.m-medical { --mc: var(--m-medical); }
+.m-assisted { --mc: var(--m-assisted); }
+.m-research { --mc: var(--m-research); }
 .mode-menu {
-  position: absolute; bottom: 100%; left: 0; margin-bottom: 6px; min-width: 150px;
-  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 10px; padding: 4px; z-index: 60;
+  position: absolute; bottom: 100%; left: 0; margin-bottom: 8px; width: 360px; max-width: calc(100vw - 32px);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 14px;
+  padding: 6px; z-index: 60; box-shadow: 0 12px 30px rgba(0,0,0,.45);
 }
-.mode-menu button {
-  display: flex; align-items: center; gap: 8px; width: 100%; background: transparent; border: none;
-  color: var(--text); padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 14px;
+.mode-menu .mode-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: transparent; border: none; border-left: 3px solid transparent;
+  color: var(--text); padding: 11px 14px; border-radius: 11px; cursor: pointer; min-height: 56px;
 }
-.mode-menu button:hover { background: var(--bg-elev); }
+.mode-menu .mode-row:hover { background: var(--bg-elev); }
+.mode-menu .mode-tile {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--mc) 14%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--mc) 35%, var(--border));
+}
+.mode-menu .mode-tile .icon { color: var(--mc); }
+.mode-menu .mode-label { font-size: 16px; font-weight: 600; flex: none; }
+.mode-menu .mode-hint {
+  margin-left: auto; min-width: 0; text-align: right; font-size: 12.5px; color: var(--text-dim);
+  line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mode-menu .mode-row.sel {
+  background: color-mix(in srgb, var(--mc) 12%, transparent);
+  border-left-color: var(--mc);
+}
+.mode-menu .mode-row.sel .mode-tile {
+  background: color-mix(in srgb, var(--mc) 18%, var(--bg-elev));
+  border-color: var(--mc);
+}
 .icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
 .icon-btn:hover { color: var(--text); }
 .icon-btn.active { color: var(--accent); }

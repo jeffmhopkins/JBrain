@@ -6576,3 +6576,47 @@ def test_research_activate_refuses_empty_notes_and_labs(client):
     r = client.post("/api/shares/research/mint", json={"prefixes": ["notes/medical"]}).json()
     resp = client.post(f"/api/shares/research/{r['link_id']}/activate")
     assert resp.status_code == 400                                    # nothing approved → refused
+
+
+# --- Interactive staged-write hygiene (matches the nightly KB link guards) ---
+
+def _stage(conn, atype, payload):
+    import json as _json
+    conn.execute("INSERT INTO staging_actions (conversation_id, type, payload_json) VALUES (NULL, ?, ?)",
+                 (atype, _json.dumps(payload)))
+    conn.commit()
+    return conn.execute("SELECT id FROM staging_actions ORDER BY id DESC LIMIT 1").fetchone()["id"]
+
+
+def test_staged_create_strips_dead_links_on_apply(client):
+    # A user-driven CREATE whose body links a non-existent note: the dead link is neutralized before
+    # save (the real one survives) — the same guarantee the nightly synthesis enforces.
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO notes (slug, title, content_md) VALUES ('real', 'notes/Real', 'x')")
+    conn.commit()
+    aid = _stage(conn, "CREATE", {"title": "notes/New Page", "content": "See [[notes/Real]] and [[notes/Ghost]]."})
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 200
+    row = conn.execute("SELECT content_md FROM notes WHERE title = 'notes/New Page'").fetchone()
+    assert "[[notes/Real]]" in row["content_md"]          # real cross-link kept
+    assert "[[notes/Ghost]]" not in row["content_md"]     # fabricated link stripped to text
+
+
+def test_staged_link_action_refuses_missing_target(client):
+    # A LINK to a non-existent target is a fabrication vector — apply refuses it (404), not a silent no-op.
+    from app.db import get_conn
+    conn = get_conn()
+    conn.execute("INSERT INTO notes (slug, title, content_md) VALUES ('s', 'notes/Src', 'x')")
+    conn.commit()
+    aid = _stage(conn, "LINK", {"source_title": "notes/Src", "target_title": "notes/Nope"})
+    assert client.post(f"/api/staging/{aid}/apply").status_code == 404
+    # row stays pending (the claim was rolled back), so nothing was written
+    assert conn.execute("SELECT status FROM staging_actions WHERE id=?", (aid,)).fetchone()["status"] == "pending"
+
+
+def test_staging_list_surfaces_dead_link_warning(client):
+    from app.db import get_conn
+    conn = get_conn()
+    aid = _stage(conn, "CREATE", {"title": "notes/Y", "content": "ref [[notes/DoesNotExist]]"})
+    item = next(x for x in client.get("/api/staging").json() if x["id"] == aid)
+    assert item.get("warnings") and any("don't exist" in w for w in item["warnings"])

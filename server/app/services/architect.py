@@ -49,7 +49,7 @@ _DEFAULT_MODE_TOOLS = {
                  "create_research_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
-                 "kb_taxonomy_health", "kb_needed_links", "kb_research_links",
+                 "kb_taxonomy_health", "kb_titles", "kb_needed_links", "kb_research_links",
                  "kb_read_talk", "kb_add_directive", "propose_actions"],
     "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
@@ -284,6 +284,8 @@ _TOOL_SCHEMAS = {
     "kb_audit": {"type": "object", "properties": {
         "limit": {"type": "integer", "default": 1000, "description": "Max KB articles to scan."}}},
     "kb_taxonomy_health": {"type": "object", "properties": {}},
+    "kb_titles": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The kb/ article you're about to author/edit — anchors the relevant neighbourhood. Optional; omit for a broad list."}}},
     "kb_needed_links": {"type": "object", "properties": {
         "title": {"type": "string", "description": "The KB article (exact kb/… title) to check for missing cross-links."}},
         "required": ["title"]},
@@ -1213,10 +1215,16 @@ def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]
         conn.rollback()   # don't leave half-staged rows for a later commit to flush
         raise
     conn.commit()
-    return (
-        f"Staged {len(staged)} proposed action(s) for the user to confirm.",
-        {"type": "staging", "actions": staged},
-    )
+    # Warn the model (and let it self-correct before the user approves) about staged content that
+    # links to non-existent notes (those links are stripped on save) or breaks kb/ citation integrity.
+    from . import staged_verify
+    warns = [w for a in staged for w in staged_verify.warnings(conn, a.get("type"), a)]
+    msg = f"Staged {len(staged)} proposed action(s) for the user to confirm."
+    if warns:
+        msg += (" ⚠ Heads up before they approve — " + " ".join(f"({w})" for w in warns[:8])
+                + " Fix these and re-propose: call kb_titles for valid kb/ cross-link titles, or create"
+                " the missing note first; an unverified [[link]] is dropped to plain text on save.")
+    return msg, {"type": "staging", "actions": staged}
 
 
 def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=False):
@@ -1311,6 +1319,19 @@ def _tool_kb_taxonomy_health(conn, conversation_id):
     if rep.get("flat_reference_titles"):
         out.append("Un-foldered Reference: " + _untrusted("titles", ", ".join(rep["flat_reference_titles"][:8])))
     return "\n".join(out), None
+
+
+def _tool_kb_titles(conn, conversation_id, title=""):
+    """The canonical kb/ article titles the model may cross-link to — the interactive analog of the
+    nightly {known_titles} allow-list, scoped to the neighbourhood of `title`. Read-only."""
+    from . import wiki_build
+    allt = wiki_build._known_titles(conn)
+    if not allt:
+        return "No knowledge-base (kb/) articles exist yet — don't cross-link to any kb/ title.", None
+    titles = wiki_build.scoped_known_titles(conn, (title or "").strip(), allt)
+    head = (f"{len(titles)} existing kb/ article title(s) you may cross-link to. Copy a title EXACTLY; "
+            "never write a [[kb/…]] link to a title not in this list:\n")
+    return head + "\n".join(f"- {t}" for t in titles), None
 
 
 def _tool_kb_needed_links(conn, conversation_id, title):
@@ -1909,6 +1930,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_kb_promote_recurrences(conn, conversation_id, args.get("min_days", 3), args.get("auto_apply", False))
     if name == "kb_audit":
         return _tool_kb_audit(conn, conversation_id, args.get("limit", 1000))
+    if name == "kb_titles":
+        return _tool_kb_titles(conn, conversation_id, args.get("title", ""))
     if name == "kb_taxonomy_health":
         return _tool_kb_taxonomy_health(conn, conversation_id)
     if name == "kb_needed_links":

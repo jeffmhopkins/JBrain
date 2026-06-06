@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import ApprovalView, { Preview, previewStat } from "./ApprovalView";
 
-interface Action { id: number; type: string; payload: any; preview?: Preview | null; }
+interface Action { id: number; type: string; payload: any; preview?: Preview | null; warnings?: string[]; }
 
 const TAG_CLASS: Record<string, string> = {
   CREATE: "tag-create", UPDATE: "tag-update", LINK: "tag-link", RENAME: "tag-update",
@@ -62,6 +62,11 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
               {stat && <span className="muted" style={{ fontSize: 12 }}>{stat}</span>}
             </div>
             {a.payload.summary && <div className="muted" style={{ fontSize: 13, margin: "2px 0" }}>{a.payload.summary}</div>}
+            {a.warnings?.length ? (
+              <div className="share-banner" style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}>
+                ⚠ {a.warnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            ) : null}
             {pv && (
               <button className="ghost" style={{ fontSize: 12, marginTop: 4 }}
                       onClick={() => setOpen(open === a.id ? null : a.id)}>
@@ -90,6 +95,11 @@ export default function StagingPanel({ tick, onChange }: { tick: number; onChang
               <button className="icon-btn" onClick={() => setModal(null)} aria-label="Close">✕</button>
             </div>
             <div className="modal-body">
+              {modal.warnings?.length ? (
+                <div className="share-banner" style={{ marginBottom: 8, fontSize: 12, color: "var(--danger)" }}>
+                  ⚠ {modal.warnings.map((w, i) => <div key={i}>{w}</div>)}
+                </div>
+              ) : null}
               {modal.preview ? <ApprovalView preview={modal.preview} full /> : <span className="muted">No preview.</span>}
             </div>
             <div className="modal-foot">

@@ -2801,18 +2801,18 @@ def test_wiki_guides(client):
     assert g.domain_for_title("kb/People/Allan") == "People"
     assert g.domain_for_title("kb/Reference/Medicine/TTP") == "Reference"
     assert g.domain_for_title("kb/Health/Jeff Hopkins") == "Health"
+    assert g.domain_for_title("kb/Finance/Accounts/Chase") == "Finance"
     assert g.domain_for_title("kb/Nope/x") is None
     assert g.is_health_title("kb/Health/Jeff Hopkins") and g.is_health_title("KB/HEALTH/X")
     assert not g.is_health_title("kb/People/Jeff Hopkins")
-    # The generic private-domain predicate covers both sensitive domains (Health is live; Finance
-    # is registered in the firewall even before it joins DOMAINS).
+    # The generic private-domain predicate covers both sensitive domains.
     assert g.is_private_title("kb/Health/Jeff Hopkins") and g.is_private_title("kb/Finance/Accounts/Chase")
     assert not g.is_private_title("kb/People/Jeff Hopkins") and not g.is_private_title("kb/Reference/Finance/IRA")
-    assert "Finance" in g.PRIVATE_DOMAINS
-    # private_domain_for returns a domain only once it's also in DOMAINS (fully wired): Health is,
-    # Finance is not yet (its firewall leads its taxonomy entry) — lock that documented asymmetry.
+    assert "Finance" in g.PRIVATE_DOMAINS and "Finance" in g.DOMAINS
+    # Both private domains are fully wired (in DOMAINS with a guide), so private_domain_for resolves
+    # each; a non-private domain returns None.
     assert g.private_domain_for("kb/Health/Allan") == "Health"
-    assert g.private_domain_for("kb/Finance/Accounts/Chase") is None
+    assert g.private_domain_for("kb/Finance/Accounts/Chase") == "Finance"
     assert g.private_domain_for("kb/People/Allan") is None
 
     good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
@@ -2840,6 +2840,28 @@ def test_wiki_guides(client):
     r = g.validate_structure("kb/Health/Allan", health)
     assert r["ok"] and not r["errors"]
 
+    # PII firewall (Finance): a People/Groups/Things/Reference article that links a kb/Finance/<…>
+    # page is rejected, so financial detail can never be referenced from shareable content.
+    for owner_title, body in [
+        ("kb/People/Allan", "# Allan\nMy brother.\n\n## Background\nSee [[kb/Finance/People/Allan]].\n"),
+        ("kb/Groups/Acme", "# Acme\nA business.\n\n## History\nSee [[kb/Finance/Accounts/Acme]].\n"),
+        ("kb/Things/Vehicles/F-150", "# F-150\nMy truck.\n\n## History\nLoan: [[kb/Finance/Debts/F-150 Loan]].\n"),
+        ("kb/Reference/Finance/IRA", "# IRA\nA retirement account.\n\n## Overview\nSee [[kb/Finance/Accounts/Jeff IRA]].\n"),
+    ]:
+        rr = g.validate_structure(owner_title, body)
+        assert not rr["ok"] and any("PII firewall" in e for e in rr["errors"]), owner_title
+    # A Finance page MAY link out to its People/Things/Reference subjects (it has no forbid list).
+    fin = ("# Chase\nChecking account for [[kb/People/Jeff Hopkins]], pays the "
+           "[[kb/Things/Vehicles/F-150]]; background [[kb/Reference/Finance/Checking]].[^s1]\n\n"
+           "## Balances\nTracked here.[^s1]\n\n## References\n[^s1]: [[notes/statement]] — 2026-06-03\n")
+    r = g.validate_structure("kb/Finance/Accounts/Chase", fin)
+    assert r["ok"] and not r["errors"]
+    # Finance must be foldered: a flat kb/Finance/<Name> warns; kb/Finance/<Sub>/<Name> is clean.
+    assert any("subcategory" in w for w in g.validate_structure("kb/Finance/Chase",
+        "# Chase\nAn account.\n\n## Balances\nx.\n")["warnings"])
+    assert not any("subcategory" in w for w in g.validate_structure("kb/Finance/Accounts/Chase",
+        "# Chase\nAn account.\n\n## Balances\nx.\n")["warnings"])
+
     r = g.validate_structure("kb/Things/Car", "# Car\n## History\nIt happened.[^s1]\n")
     assert not r["ok"]
     assert any("lead" in e for e in r["errors"]) and any("no definition" in e for e in r["errors"])
@@ -2862,10 +2884,10 @@ def test_wiki_guides(client):
     assert not any("looks frozen" in w for w in dynamic["warnings"])
 
     conn = get_conn()
-    assert g.seed_guides(conn) == 8      # general + 7 domains (incl. Health)
+    assert g.seed_guides(conn) == 9      # general + 8 domains (incl. Health + Finance)
     assert g.seed_guides(conn) == 0      # idempotent — no churn on re-seed
     titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
-    assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles
+    assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles and "kb/Finance/_Guide" in titles
     assert all(g.is_protected(t) for t in titles)
 
 
@@ -2910,9 +2932,8 @@ def test_health_domain_firewall(client):
     # scoped_search never returns a Health body even if its id is force-injected into the allowlist.
     assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
 
-    # --- The same firewall generalizes to kb/Finance/* via the shared private-domain predicate
-    # (Finance is registered in PRIVATE_DOMAINS before it joins DOMAINS): a Finance note's share is
-    # force-hardened and the page is excluded from research candidates + retrieval, prefix-only.
+    # --- The same firewall covers kb/Finance/* via the shared private-domain predicate: a Finance
+    # note's share is force-hardened and the page is excluded from research candidates + retrieval.
     fid = ns.upsert_note(conn, "kb/Finance/Accounts/Chase",
                          "# Chase\nChecking account for [[kb/People/Jeff Hopkins]]; balance $4,200.", kind="kb")
     conn.commit()

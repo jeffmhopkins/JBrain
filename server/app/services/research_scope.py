@@ -62,6 +62,11 @@ def filter_match_ids(conn, scope: dict) -> set[int]:
         clauses.append("n.title = ?")
         params.append(t)
     sql = "SELECT n.id FROM notes n WHERE n.deleted_at IS NULL AND (" + " OR ".join(clauses) + ")"
+    # PHI firewall: personal-health pages (kb/Health/<Person>) are never surfaced as research
+    # candidates, even if the owner's prefix would match — so they can't be approved into the
+    # allowlist and reach a recipient. Default-deny at the surfacing layer (defence-in-depth on
+    # top of the approved-id gate). scoped_search applies the same drop on retrieval.
+    sql += " AND lower(n.title) NOT LIKE 'kb/health/%'"
     if kinds:
         sql += " AND n.kind IN (%s)" % ",".join("?" * len(kinds))
         params += kinds
@@ -165,8 +170,10 @@ def scoped_search(conn, allowed: set[int], query: str, k: int = 6) -> list[dict]
     out: list[dict] = []
     for nid in ordered[:k]:
         r = conn.execute(
-            "SELECT id, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (nid,)
+            "SELECT id, title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (nid,)
         ).fetchone()
-        if r and r["id"] in allowed:                # final re-verification
+        # Final re-verification AND a PHI drop: never return a kb/Health/<Person> body to a
+        # recipient, even if one were somehow approved into the allowlist (crown-jewel guard).
+        if r and r["id"] in allowed and not (r["title"] or "").lower().startswith("kb/health/"):
             out.append({"id": r["id"], "content": r["content_md"] or ""})
     return out

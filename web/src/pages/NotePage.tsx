@@ -1,5 +1,5 @@
 import { Children, isValidElement, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
@@ -23,6 +23,9 @@ interface Note {
   lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
+  // When this note is a merged-away redirect, the canonical target (title + slug to forward to).
+  redirect_to?: string | null;
+  redirect_to_slug?: string | null;
 }
 
 // Render a "/"-path title as a clickable directory breadcrumb: each ancestor
@@ -47,6 +50,9 @@ function titleCrumbs(title: string) {
 export default function NotePage() {
   const { slug } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set when we land here after following a redirect, so we can show "Redirected from".
+  const redirectedFrom = (location.state as { redirectedFrom?: string } | null)?.redirectedFrom;
   const isDesktop = useIsDesktop();
   const { appTz } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
@@ -65,6 +71,18 @@ export default function NotePage() {
   const [minted, setMinted] = useState<{ url: string; scope: string } | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const [place, setPlace] = useState<Place | null>(null);   // geofence backing a loc/ note
+
+  // A kb/Health/<Person> page is a personal medical record (PHI). The server force-hardens any
+  // share of it (browser-bound + finite TTL, view-only); reflect that in the dialog so the owner
+  // isn't surprised: default bind on + a finite expiry, hide the "Can edit" option.
+  const isHealth = (note?.title || "").toLowerCase().startsWith("kb/health/");
+  useEffect(() => {
+    if (sharing && isHealth) {
+      setShareBind(true);
+      setShareEditable(false);
+      setShareTtl((t) => (t > 0 ? t : 30));
+    }
+  }, [sharing, isHealth]);
 
   async function remove() {
     if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
@@ -135,6 +153,16 @@ export default function NotePage() {
     reload();
   }, [slug]);
 
+  // A merged-away page is a redirect: forward to the canonical article, carrying the old
+  // title so the target can show a "Redirected from" note. (Replace history so Back skips it.)
+  useEffect(() => {
+    if (note?.redirect_to && note.redirect_to_slug && note.redirect_to_slug !== slug) {
+      navigate(`/note/${note.redirect_to_slug}`, {
+        replace: true, state: { redirectedFrom: note.title },
+      });
+    }
+  }, [note, slug, navigate]);
+
   // For a loc/ place note, pull the geofence it backs (matched by note_slug, else by
   // name) so the page can show the API specifics above the note's content.
   useEffect(() => {
@@ -182,6 +210,11 @@ export default function NotePage() {
 
   const article = (
     <div className="content">
+      {redirectedFrom && (
+        <div className="muted" style={{ marginBottom: 8, fontSize: "0.9em" }}>
+          Redirected from <em>{redirectedFrom}</em>
+        </div>
+      )}
       <h1 className="note-title">
         {titleCrumbs(note.title)}
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
@@ -227,28 +260,38 @@ export default function NotePage() {
             <div className="share-stack">
               <strong className="share-stack-head">Create a public link</strong>
 
-              <div className="share-row">
-                <div className="share-row-label">Who can use it</div>
-                <div className="share-control">
-                  <div className="share-seg" role="group" aria-label="Link access">
-                    <button className={!shareEditable ? "primary" : "ghost"} aria-pressed={!shareEditable}
-                            onClick={() => setShareEditable(false)}>View only</button>
-                    <button className={shareEditable ? "primary" : "ghost"} aria-pressed={shareEditable}
-                            onClick={() => setShareEditable(true)}>Can edit</button>
-                  </div>
-                  <div className="share-help">
-                    {shareEditable
-                      ? "Recipients can submit edits — they come back as proposals for you to approve, never applied live."
-                      : "Recipients can read the note but not change it."}
+              {isHealth && (
+                <div className="share-help" style={{ background: "var(--warn-bg, #fff6e5)", padding: "8px 10px", borderRadius: 8 }}>
+                  🔒 This is a private <strong>health record</strong>. Shared links are always
+                  view-only, lock to the first device that opens them, and expire — they can't be
+                  made permanent or editable.
+                </div>
+              )}
+
+              {!isHealth && (
+                <div className="share-row">
+                  <div className="share-row-label">Who can use it</div>
+                  <div className="share-control">
+                    <div className="share-seg" role="group" aria-label="Link access">
+                      <button className={!shareEditable ? "primary" : "ghost"} aria-pressed={!shareEditable}
+                              onClick={() => setShareEditable(false)}>View only</button>
+                      <button className={shareEditable ? "primary" : "ghost"} aria-pressed={shareEditable}
+                              onClick={() => setShareEditable(true)}>Can edit</button>
+                    </div>
+                    <div className="share-help">
+                      {shareEditable
+                        ? "Recipients can submit edits — they come back as proposals for you to approve, never applied live."
+                        : "Recipients can read the note but not change it."}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div className="share-row" style={{ display: "block" }}>
                 <ShareOptions value={{ bind: shareBind, single_use: false, ttl_days: shareTtl }}
-                              show={{ singleUse: false }}
-                              onChange={(p) => { if (p.ttl_days !== undefined) setShareTtl(p.ttl_days);
-                                                 if (p.bind !== undefined) setShareBind(p.bind); }} />
+                              show={{ singleUse: false, ttlMin: isHealth ? 1 : 0 }}
+                              onChange={(p) => { if (p.ttl_days !== undefined) setShareTtl(Math.max(isHealth ? 1 : 0, p.ttl_days));
+                                                 if (p.bind !== undefined) setShareBind(isHealth ? true : p.bind); }} />
                 <div className="share-help" style={{ marginTop: 4 }}>
                   Lock ties the link to the first browser that opens it; others get a resettable lock page. Friction against re-sharing, not strong security.
                 </div>

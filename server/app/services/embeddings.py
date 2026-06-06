@@ -95,7 +95,8 @@ def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for notes that have none yet (e.g. after the migration
     that introduced them). Returns how many notes were indexed. Commits if it did
     work. `batch` caps the pass; None does all remaining."""
-    sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL "
+    # Redirect rows carry only a one-line marker and must stay out of semantic search.
+    sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL "
            "AND id NOT IN (SELECT DISTINCT note_id FROM note_chunks)")
     if batch:
         sql += f" LIMIT {int(batch)}"
@@ -120,7 +121,7 @@ def reindex_all_chunks(conn) -> int:
     from .attachments import chunk_text  # lazy: attachments imports this module
     n = 0
     for r in conn.execute(
-        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL"
+        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL"
     ).fetchall():
         full = f"{r['title']}\n\n{r['content_md']}".strip()
         upsert_note_chunk_embeddings(conn, r["id"], full)

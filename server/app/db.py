@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 48
 
 
 def init_db() -> None:
@@ -640,6 +640,51 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         set_meta(conn, "rechunk:pending", "1")
 
     if current < 45:
+        # Per-assistant-turn tool-call history (swipe/expand an AI reply to see how it was
+        # answered). Full raw tool input + returned text. schema.sql carries the identical
+        # table for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS message_steps (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+              step_index      INTEGER NOT NULL,
+              tool_name       TEXT NOT NULL,
+              args_json       TEXT NOT NULL DEFAULT '{}',
+              result_text     TEXT NOT NULL DEFAULT '',
+              is_error        INTEGER NOT NULL DEFAULT 0,
+              event_json      TEXT,
+              created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
+            CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
+        """)
+
+    if current < 46:
+        # Durable person-identity decisions: an APPEND-only ledger of user merge/split/alias
+        # rulings that survive every entity_index.rebuild() (which re-derives entities from
+        # note_analysis each pass, so heuristic-only merges were lost). entity_index folds
+        # these in as forced unions/blocked splits/extra aliases. Self-contained table, so
+        # the index is safe inline here. schema.sql carries the identical block for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_decisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL CHECK (kind IN ('merge','split','alias')),
+              type TEXT NOT NULL DEFAULT 'person',
+              norm_a TEXT NOT NULL, norm_b TEXT,
+              display_a TEXT, display_b TEXT, canonical TEXT,
+              author TEXT NOT NULL DEFAULT 'user', source TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, norm_a);
+        """)
+        # A redirected (merged-away) note can point at its survivor; review_items gains a
+        # typed payload so identity-review cards carry structured context.
+        _add_column(conn, "notes", "redirect_to", "TEXT")
+        _add_column(conn, "review_items", "kind", "TEXT")
+        _add_column(conn, "review_items", "payload_json", "TEXT")
+
+    if current < 47:
         # Source-of-truth corrections: an owner 'correction' talk item is promoted to a
         # real dated entry note (the truth layer). is_correction marks the talk row;
         # source_note_id links it to the promoted note (SET NULL on note delete so the
@@ -651,7 +696,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
             "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
 
-    if current < 46:
+    if current < 48:
         # Durable entity-name healing: owner source-of-truth overrides for the derived entity
         # index, keyed by the kb article the entity backs (stable across the normalize() fork).
         # entity_index.rebuild() re-applies them; schema.sql carries the identical table.

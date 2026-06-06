@@ -18,8 +18,10 @@ import yaml
 
 from . import prompts
 
-# Taxonomy roots (the seeded domains). Order is display order.
-DOMAINS = ["Reference", "People", "Groups", "Places", "Things", "Activities"]
+# Taxonomy roots (the seeded domains). Order is display order. "Health" sits next to
+# People: it is the per-person PHI satellite (kb/Health/<Person>) split out of the People
+# article so a person can be shared without leaking their medical history.
+DOMAINS = ["Reference", "People", "Health", "Groups", "Places", "Things", "Activities"]
 
 # Spec defaults — overlaid by the general guide's spec, then the domain guide's spec.
 _DEFAULTS = {
@@ -71,6 +73,18 @@ def domain_for_title(title: str) -> str | None:
             if parts[1].lower() == d.lower():
                 return d
     return None
+
+
+# The PHI firewall predicate — THE single place that recognises a personal-health page.
+# Reused by the structure lint (via the People/Reference forbid lists), the share layer
+# (PHI-hardened minting), and research scope (default-deny). A kb/Health/<Person> page is a
+# per-person medical record; nothing outside Health may link it, and recipients never reach it.
+HEALTH_PREFIX = "kb/health/"
+
+
+def is_health_title(title: str) -> bool:
+    """True for a personal-health page (kb/Health/<Person>) — case-insensitive prefix match."""
+    return (title or "").lower().startswith(HEALTH_PREFIX)
 
 
 def parse_spec(text: str) -> dict:

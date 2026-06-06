@@ -22,6 +22,7 @@ data/
 
 # Multi-agent review scratch (transient analysis artifacts)
 .review/
+.claude/worktrees/
 
 # Editor / OS
 .DS_Store

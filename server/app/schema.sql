@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS notes (
   location_label TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  deleted_at TEXT
+  deleted_at TEXT,
+  redirect_to TEXT                                 -- survivor title when this note was merged away
 );
 
 -- Full history. One row per authored state (created/updated/restored). The
@@ -84,6 +85,25 @@ CREATE TABLE IF NOT EXISTS staging_actions (
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_staging_status ON staging_actions(status);
+
+-- Per-assistant-turn tool-call log: the "how I answered this" history surfaced by
+-- swiping/expanding an AI reply. Full raw — the tool input (args_json) and its returned
+-- text (result_text) are stored verbatim. Rows cascade-delete with their conversation
+-- (and with their message), and are wiped for a conversation when the user runs /clear.
+CREATE TABLE IF NOT EXISTS message_steps (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  step_index      INTEGER NOT NULL,
+  tool_name       TEXT NOT NULL,
+  args_json       TEXT NOT NULL DEFAULT '{}',
+  result_text     TEXT NOT NULL DEFAULT '',
+  is_error        INTEGER NOT NULL DEFAULT 0,
+  event_json      TEXT,                     -- the staging/applied/chart event this call emitted, if any
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_message_steps_msg ON message_steps(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_steps_conv ON message_steps(conversation_id);
 
 -- Standalone full-text index (kept in sync manually on note save).
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -155,6 +175,24 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
   PRIMARY KEY (entity_id, alias_norm)
 );
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
+
+-- Durable person-identity decisions: an append-only ledger of user merge/split/alias
+-- rulings. entity_index derives entities from note_analysis each rebuild, so a purely
+-- heuristic merge would be lost; these rows make the user's choices STICK across rebuilds.
+-- 'merge'  : union norm_a into the canonical (canonical = the surviving normalized key).
+-- 'split'  : forbid the heuristic auto-union of the unordered pair {norm_a, norm_b}.
+-- 'alias'  : attach an extra alias to a canonical entity (norm_b = canonical norm,
+--            norm_a = the alias's normalized key, display_a = the alias label).
+CREATE TABLE IF NOT EXISTS entity_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('merge','split','alias')),
+  type TEXT NOT NULL DEFAULT 'person',
+  norm_a TEXT NOT NULL, norm_b TEXT,
+  display_a TEXT, display_b TEXT, canonical TEXT,
+  author TEXT NOT NULL DEFAULT 'user', source TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_entity_decisions_type ON entity_decisions(type, norm_a);
 
 -- Per-article "talk" — the Wikipedia-Talk-style memory that makes KB maintenance
 -- stateful: decisions, source conflicts, open questions/TODOs, and user directives.
@@ -288,6 +326,8 @@ CREATE TABLE IF NOT EXISTS review_items (
   message      TEXT,
   link_slug    TEXT,                                -- note slug to open, if any
   status       TEXT NOT NULL DEFAULT 'pending',     -- 'pending' | 'dismissed'
+  kind         TEXT,                                -- optional typed card (e.g. identity review)
+  payload_json TEXT,                                -- optional structured payload for the card
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   dismissed_at TEXT
 );

@@ -2461,8 +2461,9 @@ def test_recategorize_article_moves_and_rewrites_inbound_links(client):
 
 
 def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
-    """Merge unions sources into one article, soft-deletes the others, and rewrites inbound
-    [[source]]→[[into]] links (never unwraps them)."""
+    """Merge unions sources into one article, CONVERTS each source to a redirect (live row,
+    redirect_to set — not soft-deleted, so old [[source]] links / external URLs still
+    resolve), and rewrites inbound [[source]]→[[into]] links (never unwraps them)."""
     from app.db import get_conn
     from app.services import wiki_build, llm
     from app.services import notes as ns
@@ -2478,7 +2479,13 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
         "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
     res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
     assert res["ok"], res
-    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/Things/GroverCat' AND deleted_at IS NULL").fetchone()
+    # Source is now a REDIRECT: still live (keeps its title slot), redirect_to → the merged
+    # article, body replaced with the one-line marker.
+    src = conn.execute(
+        "SELECT deleted_at, redirect_to, content_md FROM notes WHERE title='kb/Things/GroverCat'"
+    ).fetchone()
+    assert src["deleted_at"] is None and src["redirect_to"] == "kb/Things/Grover"
+    assert src["content_md"] == "Redirects to [[kb/Things/Grover]]."
     owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 
@@ -2930,7 +2937,10 @@ def test_wiki_guides(client):
     assert not g.is_protected("kb/People/Allan")
     assert g.domain_for_title("kb/People/Allan") == "People"
     assert g.domain_for_title("kb/Reference/Medicine/TTP") == "Reference"
+    assert g.domain_for_title("kb/Health/Jeff Hopkins") == "Health"
     assert g.domain_for_title("kb/Nope/x") is None
+    assert g.is_health_title("kb/Health/Jeff Hopkins") and g.is_health_title("KB/HEALTH/X")
+    assert not g.is_health_title("kb/People/Jeff Hopkins")
 
     good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
             "## Key facts\n- Relationship: brother\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
@@ -2940,6 +2950,22 @@ def test_wiki_guides(client):
     pii = "# TTP\nA blood disorder my brother [[kb/People/Allan]] has.\n\n## Overview\nLow platelets.\n"
     r = g.validate_structure("kb/Reference/Medicine/TTP", pii)
     assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # PHI firewall: a People (or Reference) article that links a kb/Health/<Person> page is
+    # rejected, so a person's medical record can never be referenced from shareable content.
+    people_health = "# Allan\nMy brother.\n\n## Background\nSee [[kb/Health/Allan]] for his record.\n"
+    r = g.validate_structure("kb/People/Allan", people_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+    ref_health = "# TTP\nA disorder.\n\n## Overview\nSee [[kb/Health/Allan]].\n"
+    r = g.validate_structure("kb/Reference/Medicine/TTP", ref_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # A Health page MAY link back to its person and to general Reference/Medicine background.
+    health = ("# Allan\nPersonal health record for [[kb/People/Allan]].[^s1]\n\n"
+              "## Conditions\nHas [[kb/Reference/Medicine/Conditions/TTP]].[^s1]\n\n"
+              "## References\n[^s1]: [[notes/medical/x]] — 2026-06-03\n")
+    r = g.validate_structure("kb/Health/Allan", health)
+    assert r["ok"] and not r["errors"]
 
     r = g.validate_structure("kb/Things/Car", "# Car\n## History\nIt happened.[^s1]\n")
     assert not r["ok"]
@@ -2963,10 +2989,140 @@ def test_wiki_guides(client):
     assert not any("looks frozen" in w for w in dynamic["warnings"])
 
     conn = get_conn()
-    assert g.seed_guides(conn) == 7      # general + 6 domains
+    assert g.seed_guides(conn) == 8      # general + 7 domains (incl. Health)
     assert g.seed_guides(conn) == 0      # idempotent — no churn on re-seed
     titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
-    assert "kb/People/_Guide" in titles and all(g.is_protected(t) for t in titles)
+    assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles
+    assert all(g.is_protected(t) for t in titles)
+
+
+def test_health_domain_firewall(client):
+    """The kb/Health PHI firewall: a health-note share is force-hardened (bind + finite TTL)
+    no matter what the caller asks for; the person entity never binds to the Health page despite
+    the shared leaf; and health pages are excluded from research candidates + retrieval."""
+    from app.db import get_conn
+    from app.services import notes as ns, entity_index, research_scope, wiki_guides
+    from app.services import share as share_svc
+    conn = get_conn()
+
+    # --- RT-1: create_link forces bind + finite TTL on a kb/Health note, even when the caller
+    # passes ttl_days=None, bind=False (the architect's create_share_link tool does exactly that).
+    hid = ns.upsert_note(conn, "kb/Health/Jeff Hopkins",
+                         "# Jeff Hopkins\nPersonal health record for [[kb/People/Jeff Hopkins]].", kind="kb")
+    pid = ns.upsert_note(conn, "kb/People/Jeff Hopkins", "# Jeff Hopkins\nThe owner.", kind="kb")
+    conn.commit()
+    tok = share_svc.create_link(conn, hid, "view", ttl_days=None, bind=False); conn.commit()
+    row = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok,)).fetchone()
+    assert row["bind"] == 1 and row["expires_at"]            # hardened despite the unbound request
+    # A normal note share is unchanged (no forced bind / expiry).
+    nid = ns.upsert_note(conn, "Plain Note", "hi"); conn.commit()
+    tok2 = share_svc.create_link(conn, nid, "view", ttl_days=None, bind=False); conn.commit()
+    row2 = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok2,)).fetchone()
+    assert row2["bind"] == 0 and row2["expires_at"] is None
+    share_svc.assert_health_share_policy()                  # boot invariant holds
+
+    # --- RT-2: the Jeff person entity binds to kb/People/Jeff Hopkins, NOT the Health page that
+    # shares its leaf (the SELECT in _link_articles has no ORDER BY, so this must be deterministic).
+    conn.execute("INSERT INTO entities (type, canonical_name, normalized_key, note_count) VALUES "
+                 "('person', ?, ?, 1)", ("Jeff Hopkins", entity_index.normalize("Jeff Hopkins")))
+    conn.commit()
+    entity_index._link_articles(conn); conn.commit()
+    at = conn.execute("SELECT article_title FROM entities WHERE normalized_key=?",
+                      (entity_index.normalize("Jeff Hopkins"),)).fetchone()["article_title"]
+    assert at == "kb/People/Jeff Hopkins"
+
+    # --- RT-2/D2: research candidate surfacing excludes the Health page even under a matching prefix.
+    cand = research_scope.filter_match_ids(conn, {"prefixes": ["kb"]})
+    assert pid in cand and hid not in cand
+    # scoped_search never returns a Health body even if its id is force-injected into the allowlist.
+    assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
+
+
+def test_health_split_migration(client):
+    """The one-time migration: deterministically move a person's ## Health section into a
+    kb/Health/<Name> page — moving exclusive footnote defs, copying shared ones, leaving the
+    People page firewall-clean — idempotently, and conservatively skipping ambiguous cases."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_guides
+    conn = get_conn()
+
+    jeff = ("# Jeff Hopkins\nJeff Hopkins owns this knowledge base and lives in Portland.[^s1]\n\n"
+            "## Key facts\n- Relationship: self\n\n"
+            "## Health\nDiagnosed with [[kb/Reference/Medicine/Conditions/TTP]] in 2024; takes "
+            "prednisone 40 mg daily.[^s2] Blood pressure 120/80 mmHg.[^s1]\n\n"
+            "## References\n[^s1]: [[notes/medical/visit1]] — 2026-06-03\n"
+            "[^s2]: [[notes/medical/visit2]] — 2026-06-04\n")
+    ns.upsert_note(conn, "kb/People/Jeff Hopkins", jeff, kind="kb")
+    # A medical-looking heading with NO clinical signal is NOT cut (RT-6 false-positive guard)…
+    ns.upsert_note(conn, "kb/People/Carol",
+                   "# Carol\nCarol is a colleague.\n\n## Conditions\nRemote work, flexible hours.\n", kind="kb")
+    # …and medical signal with no clean section is flagged for review, never auto-cut.
+    ns.upsert_note(conn, "kb/People/Bob",
+                   "# Bob\nBob is my brother who was recently hospitalized after surgery.\n", kind="kb")
+    conn.commit()
+
+    # Dry run writes nothing.
+    pre = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert rep["dry_run"] and rep["extracted"] == 1 and rep["borderline"] == 1
+    assert ns.get_by_title(conn, "kb/Health/Jeff Hopkins") is None
+    assert ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"] == pre
+
+    # Apply: Jeff's health record is split out; both pages stay structurally valid.
+    rep = health_split.extract_health(conn, dry_run=False)
+    assert rep["extracted"] == 1 and rep["conflicts"] == 0 and rep["errors"] == 0
+    hp = ns.get_by_title(conn, "kb/Health/Jeff Hopkins")["content_md"]
+    pp = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    assert "Personal health record for [[kb/People/Jeff Hopkins]]." in hp
+    assert "prednisone 40 mg" in hp and "[[kb/Reference/Medicine/Conditions/TTP]]" in hp
+    assert "[^s2]:" in hp and "[^s1]:" in hp                 # exclusive def MOVED, shared def COPIED
+    assert "## Health" not in pp and "prednisone" not in pp  # People page is now medical-free
+    assert "[^s2]:" not in pp and "[^s1]:" in pp             # moved def gone, shared def kept
+    assert "[[kb/Health" not in pp                           # firewall: never links the health page
+    assert wiki_guides.validate_structure("kb/People/Jeff Hopkins", pp)["ok"]
+    assert wiki_guides.validate_structure("kb/Health/Jeff Hopkins", hp)["ok"]
+    # Carol untouched (no signal); Bob flagged borderline, not cut.
+    assert "## Conditions" in ns.get_by_title(conn, "kb/People/Carol")["content_md"]
+    assert ns.get_by_title(conn, "kb/Health/Bob") is None
+
+    # Idempotent: a second apply finds nothing left to move.
+    assert health_split.extract_health(conn, dry_run=False)["extracted"] == 0
+
+    # Incremental routing: a new medical capture for Jeff now reroutes to his Health page.
+    from app.services import wiki_build
+    assert health_split.health_page_for(conn, "kb/People/Jeff Hopkins") == "kb/Health/Jeff Hopkins"
+    routed = wiki_build._route_medical_to_health(conn, "notes/medical/visit3", {"kb/People/Jeff Hopkins"})
+    assert routed == {"kb/Health/Jeff Hopkins"}
+    # A non-medical note is never rerouted.
+    assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
+
+
+def test_health_split_ignores_redirects(client):
+    """A merged-away (redirect) page is never treated as a real person/health page: the People
+    scan skips a People redirect even if it still carries a ## Health body, and health_page_for
+    never returns a Health redirect (which would route medical captures into a dead page and
+    resurrect it on write)."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_build
+    conn = get_conn()
+    # A People redirect that (artificially) still has a health body must NOT be scanned/extracted.
+    ns.upsert_note(conn, "kb/People/Ghost",
+                   "# Ghost\nLead.[^s1]\n\n## Health\nTakes prednisone 40 mg daily.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/medical/v]] — 2026-06-01\n", kind="kb")
+    conn.execute("UPDATE notes SET redirect_to='kb/People/Jeffrey Hopkins' WHERE title='kb/People/Ghost'")
+    conn.commit()
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert not any(p["person"] == "kb/People/Ghost" for p in rep["people"])      # redirect skipped despite health body
+
+    # A Health page merged away becomes a redirect — health_page_for must not return it.
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins", "# Jeffrey Hopkins\n\nOwner.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Old", "# Old\n\nrecord.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Jeffrey Hopkins",
+                   "# Jeffrey Hopkins\n\nPersonal health record for [[kb/People/Jeffrey Hopkins]].", kind="kb")
+    conn.commit()
+    wiki_build.create_redirect(conn, "kb/Health/Jeffrey Hopkins", "kb/Health/Old")
+    conn.commit()
+    assert health_split.health_page_for(conn, "kb/People/Jeffrey Hopkins") != "kb/Health/Jeffrey Hopkins"
 
 
 def test_geo_distance_resolves_place_geofence(client):
@@ -7001,3 +7157,181 @@ def test_external_lookup_approval_endpoint(client, monkeypatch):
     _, ev2 = architect._tool_medical_reference(conn, None, "hemolytic anemia")
     assert client.post(f"/api/external-lookups/{ev2['id']}/deny").json()["ok"]
     assert client.post("/api/external-lookups/999999/approve").status_code == 404
+
+
+# --- Tool-call history: persisted per assistant reply, served lazily, wiped on /clear ---
+
+class _OneToolProvider:
+    """Turn 1 calls one tool, turn 2 finalizes — used to prove a single step is persisted."""
+    def __init__(self, tool, args):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._call = ToolCall(id="1", name=tool, args=args)
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, ToolCallEvent, TurnEnd
+        self.turn += 1
+        if self.turn == 1:
+            yield ToolCallEvent(self._call); yield TurnEnd([self._call], usage=None)
+        else:
+            yield TextDelta("Done."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+class _NoToolProvider:
+    """Answers in one turn with no tool calls — the reply must carry an empty history."""
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import TextDelta, TurnEnd
+        yield TextDelta("Tell me more about what you'd like to capture.")
+        yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_persisted_and_served(client, monkeypatch):
+    # A turn that runs a retrieval tool persists exactly one step; the messages list exposes the
+    # reply's id + step_count, and the steps endpoint returns the raw call (args + result).
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1 and asst["id"]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1
+    assert steps[0]["tool_name"] == "search_notes"
+    assert steps[0]["is_error"] == 0
+    assert "(no relevant records)" in steps[0]["result_text"]      # the (stubbed) tool output, raw
+    assert _json.loads(steps[0]["args_json"]) == {"query": "x"}    # the raw tool input
+
+
+def test_reply_without_tools_has_empty_history(client, monkeypatch):
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "hello", "assisted", _NoToolProvider(), monkeypatch)
+    msgs = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst = [m for m in msgs if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 0
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+def test_tool_history_records_event_and_is_error(client, monkeypatch):
+    # The step log captures the staging/applied EVENT a tool emits, and flags a failed tool call.
+    import asyncio, json as _json
+    from app.db import get_conn
+    from app.services import architect, llm
+
+    # (a) an applied-event tool call
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("log_entry", {"text": "ran 5k"}))
+    ev = {"type": "applied", "action": {"id": 7, "summary": "Logged: ran 5k"}}
+    monkeypatch.setattr(architect, "_run_tool", lambda *a, **k: ("Logged.", ev))
+    async def go():
+        async for _ in architect.run(cid, "log a 5k run", None, "assisted"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert len(steps) == 1 and steps[0]["tool_name"] == "log_entry"
+    assert _json.loads(steps[0]["args_json"]) == {"text": "ran 5k"}
+    assert _json.loads(steps[0]["event_json"])["type"] == "applied"
+
+    # (b) a tool that raises is logged with is_error=1 and a fenced error result (turn survives)
+    cid2 = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _OneToolProvider("read_note", {"title": "x"}))
+    def _boom(*a, **k): raise RuntimeError("kaboom")
+    monkeypatch.setattr(architect, "_run_tool", _boom)
+    async def go2():
+        async for _ in architect.run(cid2, "read a note", None, "assisted"):
+            pass
+    asyncio.run(go2())
+    asst2 = [m for m in client.get(f"/api/chat/conversations/{cid2}/messages").json() if m["role"] == "assistant"][-1]
+    steps2 = client.get(f"/api/chat/messages/{asst2['id']}/steps").json()
+    assert len(steps2) == 1 and steps2[0]["is_error"] == 1
+    assert "failed" in steps2[0]["result_text"]
+
+
+def test_clear_conversation_steps_wipes_history(client, monkeypatch):
+    # /clear's server side: the conversation's stored tool logs are deleted; the reply rows remain
+    # but report step_count 0, and the steps endpoint is empty.
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    fake = _ScriptedProvider(
+        draft="Your cholesterol was 142 mg/dL — a fabricated memory answer of decent length.",
+        grounded="From the records, I don't have that on file.")
+    _drive_run(cid, "what was my cholesterol", "research", fake, monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 1
+    assert client.delete(f"/api/chat/conversations/{cid}/steps").status_code == 200
+    msgs2 = client.get(f"/api/chat/conversations/{cid}/messages").json()
+    asst2 = [m for m in msgs2 if m["role"] == "assistant"][-1]
+    assert asst2["step_count"] == 0                                # reply kept, history gone
+    assert client.get(f"/api/chat/messages/{asst['id']}/steps").json() == []
+
+
+class _MultiToolProvider:
+    """Turn 1 calls two tools (in order), turn 2 finalizes — proves ordering + count."""
+    def __init__(self):
+        from app.services.llm import ToolCall
+        self.turn = 0
+        self._calls = [ToolCall(id="1", name="search_notes", args={"query": "a"}),
+                       ToolCall(id="2", name="read_note", args={"title": "b"})]
+    def has_credentials(self): return True
+    def default_model(self): return "x"
+    def supports_tools(self): return True
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+        from app.services.llm import ToolCallEvent, TurnEnd, TextDelta
+        self.turn += 1
+        if self.turn == 1:
+            for c in self._calls:
+                yield ToolCallEvent(c)
+            yield TurnEnd(self._calls, usage=None)
+        else:
+            yield TextDelta("Synthesized from both notes."); yield TurnEnd([], usage=None)
+    def append_tool_results(self, messages, results): pass
+    def complete(self, *a, **k): return ""
+
+
+def test_tool_history_orders_multiple_steps(client, monkeypatch):
+    import asyncio
+    from app.db import get_conn
+    from app.services import architect, llm
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _MultiToolProvider())
+    monkeypatch.setattr(architect, "_run_tool",
+                        lambda conn_, cid_, name, args, mode: (f"result for {name}", None))
+    async def go():
+        async for _ in architect.run(cid, "compare two notes", None, "research"):
+            pass
+    asyncio.run(go())
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"][-1]
+    assert asst["step_count"] == 2
+    steps = client.get(f"/api/chat/messages/{asst['id']}/steps").json()
+    assert [s["step_index"] for s in steps] == [0, 1]                 # persisted in call order
+    assert [s["tool_name"] for s in steps] == ["search_notes", "read_note"]
+
+
+def test_steps_attach_to_their_own_reply(client, monkeypatch):
+    # Two turns in one conversation: each reply owns exactly its own step (no cross-attribution).
+    from app.db import get_conn
+    conn = get_conn(); cid = _new_conv(conn); conn.commit()
+    _drive_run(cid, "q1", "research",
+               _ScriptedProvider(draft="A fabricated memory answer of decent length about cholesterol levels.",
+                                 grounded="Nothing on file."), monkeypatch)
+    _drive_run(cid, "q2", "research",
+               _ScriptedProvider(draft="Another fabricated memory answer of decent length about blood pressure.",
+                                 grounded="Also nothing on file."), monkeypatch)
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 2 and all(m["step_count"] == 1 for m in asst)
+    assert len(client.get(f"/api/chat/messages/{asst[0]['id']}/steps").json()) == 1
+    assert len(client.get(f"/api/chat/messages/{asst[1]['id']}/steps").json()) == 1

@@ -135,6 +135,10 @@ async def lifespan(app: FastAPI):
     # declared scoped tools and nothing forbidden — makes the RECIPIENT_TOOLS contract non-vacuous.
     from .services import research_labs_ai
     research_labs_ai.assert_dispatch_safe()
+    # Release-blocker: a personal-health (kb/Health/*) note share must always be browser-bound
+    # and finite-TTL — never a permanent bearer link — no matter which caller mints it.
+    from .services import share as share_svc
+    share_svc.assert_health_share_policy()
 
     from .services import pipeline
     for w in pipeline.validate_action_defs():

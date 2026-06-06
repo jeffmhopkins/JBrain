@@ -7,7 +7,7 @@ import { getNotePreview, NotePreview } from "../api";
 // here resolves to a real note.) Clicking still opens the note. Fetched once, then cached per slug.
 const _cache = new Map<string, NotePreview>();
 
-function CitationLink({ href, navigate, children }: { href: string; navigate: NavigateFunction; children: any }) {
+export function CitationLink({ href, navigate, children }: { href: string; navigate: NavigateFunction; children: any }) {
   const slug = decodeURIComponent(href.replace(/^\/note\//, ""));
   const [preview, setPreview] = useState<NotePreview | null>(_cache.get(slug) || null);
   const [open, setOpen] = useState(false);

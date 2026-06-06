@@ -67,9 +67,9 @@ designed around those realities.
 
 | # | Your decision | How it's honored | Caveat surfaced |
 |---|---------------|------------------|-----------------|
-| 1 | **Always automatic** (no manual button) | Promotion is automatic on submit; no separate "promote" step | The literal "*every* reply becomes a note" is unsafe (todos/questions aren't truth). See **Decision A** in §7 — recommend a one-tap **"Correction" kind** that auto-promotes. |
+| 1 | **Always automatic** (no manual button) | Auto-promotes on submit via a dedicated **"Correction" kind** — no separate "promote" step | **Resolved (owner):** only the "Correction" kind promotes; todos/questions/notes never become truth notes. |
 | 2 | **New dated daily note** | A `kind='entry'` note under `notes/YYYY/MM/DD/NN` via `next_dated_title` + `upsert_note` | None — implemented as-is. |
-| 3 | **Also correct source entries / entities** | Entities heal durably; the new note supersedes old entries by recency | **Mutating raw entries violates the core invariant** (§2.1). See **Decision B** in §7 — recommend recency-supersede, not editing historical captures. |
+| 3 | **Also correct source entries / entities** | Entities heal durably; the new note supersedes old entries by recency | **Resolved (owner): source entries are never modified.** Propagation is recency-supersede only; raw captures stay immutable ground truth. |
 | 4 | **Keep flat** (reuse `article_talk`) | No threading; two new columns on the existing table | None. |
 
 ---
@@ -89,17 +89,14 @@ The result is the synthesis below — not any single candidate.
 
 ## 5. The design
 
-### 5.1 Trigger — deterministic "Correction" kind (recommended)
+### 5.1 Trigger — deterministic "Correction" kind (owner-confirmed)
 
 Add **"Correction"** to the Talk submit affordance (`ADD_KINDS`, `TalkPanel.tsx:9`). When you
 pick it and submit, the item is promoted **unconditionally** — no LLM on the request path, no
-false negatives that silently drop a real correction, no added latency. Tagging "this is a
-correction" is also a *more* reliable source-of-truth signal than an AI guess, which matters
+false negatives that silently drop a real correction, no added latency. **Only** the "Correction"
+kind promotes; `note` / `directive` / `question` / `todo` behave exactly as today. Tagging "this
+is a correction" is also a *more* reliable source-of-truth signal than an AI guess, which matters
 because we are writing to the truth layer and healing entities.
-
-> This is the central deviation from the literal "every reply becomes a note." It's **Decision
-> A** in §7. Two alternatives (an AI classifier on submit; AI classification deferred to the
-> nightly pass) are described there.
 
 ### 5.2 Data model — migration 44 → 45
 
@@ -185,10 +182,11 @@ two competing corrections (the later-dated one wins; a genuine standoff is recor
 
 ### 5.6 Truth-layer propagation — entities heal, raw entries are NOT mutated
 
-**Raw entries are left immutable** (honors `wiki_build.py:16`). Propagation to the article is via
-recency-supersede (§5.5). Propagation to *other* articles happens because the correction note is
-a normal entry the pipeline already routes by entity. This satisfies decision #3's intent without
-editing historical captures (**Decision B**, §7).
+**Raw entries are never modified (owner-confirmed)** — this honors `wiki_build.py:16`.
+Propagation to the article is via recency-supersede (§5.5). Propagation to *other* articles
+happens because the correction note is a normal entry the pipeline already routes by entity.
+This satisfies decision #3's intent without editing historical captures. There is no
+source-entry annotation mode, by default or behind a flag.
 
 **Entity healing is real work, not free** (§6, F3/F4/F5, verified):
 
@@ -246,8 +244,8 @@ All three naïve specs shared these; each was re-verified in source before adopt
 | F3 | "Free entity healing by frequency" is false (`entity_index.py:179`) | **blocker** | Sticky override in `rebuild()`, Phase 2 (§5.6) |
 | F4 | Diacritic/spelling fixes **fork** the entity key (`entity_index.py:22`) | **blocker** | Alias registration + override; Phase 2 (§5.6) |
 | F5 | Direct `UPDATE entities` reverted by nightly rebuild | major | Override consulted at display time (§5.6) |
-| F6 | Mutating raw entry `content_md` violates `wiki_build.py:16` | **blocker (design)** | Recency-supersede; no raw mutation (§5.6, Decision B) |
-| F7 | LLM classifier contradicts "always automatic" and can silently drop a correction | major | Deterministic "Correction" kind (§5.1, Decision A) |
+| F6 | Mutating raw entry `content_md` violates `wiki_build.py:16` | **blocker (design)** | Recency-supersede; **source entries never modified** (§5.6) |
+| F7 | LLM classifier contradicts "always automatic" and can silently drop a correction | major | Deterministic "Correction" kind (§5.1) |
 | F8 | Gating on `kind=='directive'` misses corrections filed as note/question | major | Dedicated kind, not kind-sniffing (§5.1) |
 | F9 | `add()` does **not** dedup (only `record()` does); re-submit → duplicate notes | major | Explicit dedup guard (§5.3, §5.9) |
 | F14 | `fire_events=False` with no `flush_entry_events` → analysis never fires | minor | Flush after commit (§5.3) |
@@ -257,23 +255,13 @@ All three naïve specs shared these; each was re-verified in source before adopt
 
 ## 7. Open decisions needing your sign-off
 
-These are genuinely yours; the plan recommends a default for each.
+**Decision A — Trigger mechanism. ✅ Resolved (owner): one-tap "Correction" kind only.**
+Automatic on submit, deterministic, zero request-path LLM, no silently-dropped corrections.
+Other talk kinds never promote.
 
-**Decision A — Trigger mechanism.** Your locked choice was "always automatic = every reply
-becomes a note," but promoting every todo/question into the truth layer is noise.
-- **(Recommended) One-tap "Correction" kind** — automatic on submit, deterministic, zero
-  request-path LLM, no silently-dropped corrections.
-- *Alt 1:* AI classifier on submit — fully hands-off but adds latency and can drop a real
-  correction when the model is degraded.
-- *Alt 2:* AI classification deferred to the nightly maintenance pass — hands-off, no hot-path
-  cost, but promotion isn't visible until the next morning.
-
-**Decision B — Source-entry handling.** Your locked choice "also correct source entries"
-conflicts with the read-only-ground-truth invariant.
-- **(Recommended) Recency-supersede only** — the new correction note outranks old entries; raw
-  captures stay immutable.
-- *Alt:* additive, never-destructive version annotations on conflicting entries, **off by
-  default**, behind a flag.
+**Decision B — Source-entry handling. ✅ Resolved (owner): never modify source entries.**
+Propagation is recency-supersede only; raw captures stay immutable ground truth. No annotation
+mode is built (not by default, not behind a flag).
 
 **Decision C — Entity healing scope.** Durable healing needs a `rebuild()` change (sticky
 override + alias). Ship it in **Phase 2** (recommended), or pull into MVP at higher cost.
@@ -300,7 +288,7 @@ talk rekey; tests.
 form; revert path; tests for diacritic/spelling forks.
 
 **Phase 3 — optional polish:** instant promotion feedback in the panel; competing-correction
-surfacing; explicit full-rebuild association; (if chosen) flagged source-entry annotations.
+surfacing; explicit full-rebuild association.
 
 ---
 

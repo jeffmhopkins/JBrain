@@ -2800,7 +2800,10 @@ def test_wiki_guides(client):
     assert not g.is_protected("kb/People/Allan")
     assert g.domain_for_title("kb/People/Allan") == "People"
     assert g.domain_for_title("kb/Reference/Medicine/TTP") == "Reference"
+    assert g.domain_for_title("kb/Health/Jeff Hopkins") == "Health"
     assert g.domain_for_title("kb/Nope/x") is None
+    assert g.is_health_title("kb/Health/Jeff Hopkins") and g.is_health_title("KB/HEALTH/X")
+    assert not g.is_health_title("kb/People/Jeff Hopkins")
 
     good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
             "## Key facts\n- Relationship: brother\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
@@ -2810,6 +2813,22 @@ def test_wiki_guides(client):
     pii = "# TTP\nA blood disorder my brother [[kb/People/Allan]] has.\n\n## Overview\nLow platelets.\n"
     r = g.validate_structure("kb/Reference/Medicine/TTP", pii)
     assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # PHI firewall: a People (or Reference) article that links a kb/Health/<Person> page is
+    # rejected, so a person's medical record can never be referenced from shareable content.
+    people_health = "# Allan\nMy brother.\n\n## Background\nSee [[kb/Health/Allan]] for his record.\n"
+    r = g.validate_structure("kb/People/Allan", people_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+    ref_health = "# TTP\nA disorder.\n\n## Overview\nSee [[kb/Health/Allan]].\n"
+    r = g.validate_structure("kb/Reference/Medicine/TTP", ref_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # A Health page MAY link back to its person and to general Reference/Medicine background.
+    health = ("# Allan\nPersonal health record for [[kb/People/Allan]].[^s1]\n\n"
+              "## Conditions\nHas [[kb/Reference/Medicine/Conditions/TTP]].[^s1]\n\n"
+              "## References\n[^s1]: [[notes/medical/x]] — 2026-06-03\n")
+    r = g.validate_structure("kb/Health/Allan", health)
+    assert r["ok"] and not r["errors"]
 
     r = g.validate_structure("kb/Things/Car", "# Car\n## History\nIt happened.[^s1]\n")
     assert not r["ok"]
@@ -2833,10 +2852,53 @@ def test_wiki_guides(client):
     assert not any("looks frozen" in w for w in dynamic["warnings"])
 
     conn = get_conn()
-    assert g.seed_guides(conn) == 7      # general + 6 domains
+    assert g.seed_guides(conn) == 8      # general + 7 domains (incl. Health)
     assert g.seed_guides(conn) == 0      # idempotent — no churn on re-seed
     titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
-    assert "kb/People/_Guide" in titles and all(g.is_protected(t) for t in titles)
+    assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles
+    assert all(g.is_protected(t) for t in titles)
+
+
+def test_health_domain_firewall(client):
+    """The kb/Health PHI firewall: a health-note share is force-hardened (bind + finite TTL)
+    no matter what the caller asks for; the person entity never binds to the Health page despite
+    the shared leaf; and health pages are excluded from research candidates + retrieval."""
+    from app.db import get_conn
+    from app.services import notes as ns, entity_index, research_scope, wiki_guides
+    from app.services import share as share_svc
+    conn = get_conn()
+
+    # --- RT-1: create_link forces bind + finite TTL on a kb/Health note, even when the caller
+    # passes ttl_days=None, bind=False (the architect's create_share_link tool does exactly that).
+    hid = ns.upsert_note(conn, "kb/Health/Jeff Hopkins",
+                         "# Jeff Hopkins\nPersonal health record for [[kb/People/Jeff Hopkins]].", kind="kb")
+    pid = ns.upsert_note(conn, "kb/People/Jeff Hopkins", "# Jeff Hopkins\nThe owner.", kind="kb")
+    conn.commit()
+    tok = share_svc.create_link(conn, hid, "view", ttl_days=None, bind=False); conn.commit()
+    row = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok,)).fetchone()
+    assert row["bind"] == 1 and row["expires_at"]            # hardened despite the unbound request
+    # A normal note share is unchanged (no forced bind / expiry).
+    nid = ns.upsert_note(conn, "Plain Note", "hi"); conn.commit()
+    tok2 = share_svc.create_link(conn, nid, "view", ttl_days=None, bind=False); conn.commit()
+    row2 = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok2,)).fetchone()
+    assert row2["bind"] == 0 and row2["expires_at"] is None
+    share_svc.assert_health_share_policy()                  # boot invariant holds
+
+    # --- RT-2: the Jeff person entity binds to kb/People/Jeff Hopkins, NOT the Health page that
+    # shares its leaf (the SELECT in _link_articles has no ORDER BY, so this must be deterministic).
+    conn.execute("INSERT INTO entities (type, canonical_name, normalized_key, note_count) VALUES "
+                 "('person', ?, ?, 1)", ("Jeff Hopkins", entity_index.normalize("Jeff Hopkins")))
+    conn.commit()
+    entity_index._link_articles(conn); conn.commit()
+    at = conn.execute("SELECT article_title FROM entities WHERE normalized_key=?",
+                      (entity_index.normalize("Jeff Hopkins"),)).fetchone()["article_title"]
+    assert at == "kb/People/Jeff Hopkins"
+
+    # --- RT-2/D2: research candidate surfacing excludes the Health page even under a matching prefix.
+    cand = research_scope.filter_match_ids(conn, {"prefixes": ["kb"]})
+    assert pid in cand and hid not in cand
+    # scoped_search never returns a Health body even if its id is force-injected into the allowlist.
+    assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
 
 
 def test_geo_distance_resolves_place_geofence(client):

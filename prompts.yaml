@@ -514,7 +514,7 @@ actions:
       - CONCEPT / topic: lead defines it; thematic sections by aspect.
 
       ```spec
-      forbid_link_prefixes: [kb/People, kb/Groups]
+      forbid_link_prefixes: [kb/People, kb/Groups, kb/Health]
       recommended_sections: [Overview]
       ```
     people: |
@@ -540,6 +540,7 @@ actions:
       ```spec
       require_lead: true
       recommended_sections: [Key facts, Background]
+      forbid_link_prefixes: [kb/Health]
       ```
     groups: |
       # Group & organization articles (kb/Groups)
@@ -599,6 +600,36 @@ actions:
 
       ```spec
       recommended_sections: [Key facts]
+      ```
+    health: |
+      # Personal health records (kb/Health — one page per person)
+
+      The HOME for an individual's personal medical history — the PHI that must never appear
+      in their People article OR in Reference. One page per person, titled
+      kb/Health/<their People leaf name> (the same final name as their kb/People page), so a
+      person can be shared without leaking their medical data.
+
+      Put here, for this one person: diagnoses, prescriptions/medications they take, lab
+      results and vitals, procedures and surgeries, hospital encounters/admissions, and care
+      notes. These come from the owner's notes/medical/… captures. Structured lab numbers stay
+      in the lab tables; this page is the narrative record.
+
+      - LEAD: one line — "Personal health record for [[kb/People/<Name>]]." ALWAYS link back to
+        the person's People page in the lead.
+      - Link the GENERAL article for each condition/medication/procedure
+        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>, …/Procedures/<Name>)
+        for background — but keep the person-specific values, doses, dates and stays HERE.
+      - Sections as the record warrants: Conditions, Medications, Labs & vitals, Procedures,
+        Encounters, Care notes.
+      - Cite every fact to the source note it came from.
+      - Do NOT restate general medical facts — those live in kb/Reference/Medicine.
+      - This page is firewalled: nothing outside Health links to it, and it is never included
+        in a shared People article or a research share. It is the owner's private record.
+
+      ```spec
+      require_lead: true
+      recommended_sections: [Conditions, Medications]
+      recommend_link_prefixes: [kb/People, kb/Reference/Medicine]
       ```
   wiki_outline: |
     You are organising a personal knowledge base into an encyclopedia. Below is a survey

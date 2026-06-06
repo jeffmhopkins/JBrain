@@ -824,6 +824,11 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
     titles = _known_titles(conn)
     leafmap: dict[str, list[str]] = {}
     for t in titles:
+        # Exclude kb/Health/<Person> targets: they share the person's leaf, so including them
+        # would make every person's name "ambiguous" and suppress the legitimate People link —
+        # and a People article must never auto-link a Health page anyway (PHI firewall).
+        if wiki_guides.is_health_title(t):
+            continue
         leafmap.setdefault(t.split("/")[-1].strip().lower(), []).append(t)
     ambiguous = {k for k, v in leafmap.items() if len(v) > 1}
     try:
@@ -900,6 +905,10 @@ def create_article(conn, subject: str, etype: str | None = None, min_notes: int 
     if ent and ent["article_title"]:
         return {"ok": True, "folded": True, "title": ent["article_title"], "reason": "article already exists"}
     for r in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL"):
+        # Never fold a new subject into a kb/Health/<Person> page — it shares the person's leaf
+        # but is a PHI satellite, not a canonical article (would collapse People and Health).
+        if wiki_guides.is_health_title(r["title"]):
+            continue
         if entity_index.normalize(r["title"].split("/")[-1]) == norm:
             return {"ok": True, "folded": True, "title": r["title"], "reason": "near-duplicate title exists"}
     ids = entity_index.note_ids_for_name(conn, subject)

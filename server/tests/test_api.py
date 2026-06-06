@@ -6620,3 +6620,13 @@ def test_staging_list_surfaces_dead_link_warning(client):
     aid = _stage(conn, "CREATE", {"title": "notes/Y", "content": "ref [[notes/DoesNotExist]]"})
     item = next(x for x in client.get("/api/staging").json() if x["id"] == aid)
     assert item.get("warnings") and any("don't exist" in w for w in item["warnings"])
+
+
+def test_find_tool_returns_quotable_passages(client):
+    # `find` returns the best note WITH a ready quotable passage + its [[Title]] in one call.
+    from app.db import get_conn
+    from app.services import architect
+    client.post("/api/notes/entry", json={"text": "The marathon split was 3:42:15, a personal record set in Chicago.",
+                                           "title": "Marathon PR"})
+    out = architect._tool_find(get_conn(), "marathon split", 5)
+    assert "Marathon PR" in out and "3:42:15" in out

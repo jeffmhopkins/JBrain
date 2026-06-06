@@ -38,7 +38,7 @@ _FALLBACK_SYSTEM = {
                 "read/query_sql tools; never modify anything; cite notes as [[Title]].",
 }
 _DEFAULT_MODE_TOOLS = {
-    "assisted": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+    "assisted": ["find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -51,7 +51,7 @@ _DEFAULT_MODE_TOOLS = {
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
                  "kb_taxonomy_health", "kb_titles", "kb_needed_links", "kb_research_links",
                  "kb_read_talk", "kb_add_directive", "propose_actions"],
-    "research": ["search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+    "research": ["find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -95,6 +95,8 @@ _TOOL_SCHEMAS = {
         "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["analyte", "which"]},
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
+    "find": {"type": "object", "properties": {
+        "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
     "read_notes": {"type": "object", "properties": {
         "titles": {"type": "array", "items": {"type": "string"}, "description": "Exact note titles to read in one call (max 12)."}},
@@ -405,6 +407,54 @@ def _snippet(content: str, query: str, width: int = 160) -> str:
     start = max(0, pos - width // 3)
     seg = text[start:start + width]
     return ("…" if start > 0 else "") + seg + ("…" if start + width < len(text) else "")
+
+
+_SENT_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
+    """A longer, sentence-bounded excerpt centred on the best query match — clean enough for the
+    model to QUOTE verbatim (vs `_snippet`'s tiny relevance cue). Trims to sentence boundaries so a
+    quote isn't a mangled mid-word fragment."""
+    text = " ".join((content or "").split())
+    if not text:
+        return ""
+    low = text.lower()
+    pos = -1
+    for t in (w.lower() for w in query.split() if len(w) > 1):
+        p = low.find(t)
+        if p != -1 and (pos == -1 or p < pos):
+            pos = p
+    if pos == -1:
+        pos = 0
+    start = text.rfind(". ", 0, pos)
+    start = 0 if start == -1 or pos - (start + 2) > max_chars // 2 else start + 2
+    if pos - start > max_chars // 2:
+        start = max(0, pos - max_chars // 2)
+    seg = text[start:start + max_chars]
+    ends = list(_SENT_END_RE.finditer(seg))            # trim to the last full sentence in the window
+    if ends and ends[-1].start() > max_chars // 3:
+        seg = seg[:ends[-1].start() + 1]
+    seg = seg.strip()
+    return ("…" if start > 0 else "") + seg + ("…" if start + len(seg) < len(text) else "")
+
+
+def _tool_find(conn, query: str, limit: int = 6) -> str:
+    """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
+    + its [[Title]] — so the model can answer with a real citation in a single call (no separate
+    read_note round-trip). The passages are exactly what it should quote verbatim."""
+    from . import search as search_svc
+    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)))
+    if not rows:
+        return "No matching notes."
+    out = []
+    for r in rows:
+        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
+        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
+    return _untrusted("find-results",
+                      "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
+                      "(read_note one for its full text):\n\n" + "\n\n".join(out))
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
@@ -1829,6 +1879,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_lab_value_at(conn, conversation_id, args["analyte"], args["which"], args.get("unit"),
                                   args.get("threshold"), args.get("direction", "above"),
                                   args.get("range"), args.get("from"), args.get("to"))
+    if name == "find":
+        return _tool_find(conn, args["query"], args.get("limit", 6)), None
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
@@ -2043,6 +2095,47 @@ def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
     return out, bool(bad_titles) or dropped_url
 
 
+# A verbatim quotation in a reply: straight or curly quotes, one line, bounded length.
+_QUOTE_RE = re.compile(r"[\"“”]([^\"“”\n]{1,400})[\"“”]")
+_ELLIPSIS_RE = re.compile(r"\s*(?:\.\.\.|…)\s*")
+
+
+def _norm_quote(s: str) -> str:
+    """Fold a span to compare a quote against its source robustly: lowercase, drop all punctuation
+    and quote marks, collapse whitespace — so reformatting (smart quotes, spacing) isn't a mismatch
+    while genuine fabrication still fails."""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", s or "").lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
+    """Downgrade any "verbatim quotation" in `text` that does NOT appear in `corpus` (everything a
+    tool returned this turn + the user's message) by removing its quote marks — so the model can't
+    pass off an invented or mis-remembered quote as a real one. Conservative to avoid false positives:
+    only acts on multi-word (≥6) quotes, normalizes aggressively, and treats an elided quote ("a … b")
+    as verified when EACH part appears. Returns (text, changed)."""
+    cn = _norm_quote(corpus)
+    changed = False
+
+    def repl(m):
+        nonlocal changed
+        inner = m.group(1).strip()
+        if len(inner.split()) < 6:                      # short quotes (a title, a term) — too noisy to police
+            return m.group(0)
+        parts = [p for p in _ELLIPSIS_RE.split(inner) if p.strip()]
+        if all(_norm_quote(p) and _norm_quote(p) in cn for p in parts):
+            return m.group(0)                           # every part traces to this turn's data → keep
+        changed = True
+        return inner                                    # not grounded this turn → strip the verbatim marks
+
+    out = _QUOTE_RE.sub(repl, text)
+    if changed:
+        out = out.rstrip() + ("\n\n_(One or more quotations couldn't be matched to the records I "
+                              "pulled this turn, so they're shown without quote marks.)_")
+    return out, changed
+
+
 # --- Agent loop -------------------------------------------------------------
 
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
@@ -2083,6 +2176,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     stopped_early = False
     need_sep = False   # insert a break when text resumes after a tool call
     tool_urls: set[str] = set()   # URLs that tools actually returned (the only ones allowed in the reply)
+    turn_corpus: list[str] = [user_text]   # everything the model saw THIS turn — a quote must trace to it
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -2129,6 +2223,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 result_text, event = (
                     f"Tool '{call.name}' failed: {_untrusted('tool-error', str(exc))}", None)
             tool_urls.update(_extract_urls(result_text))   # whitelist URLs the tool genuinely returned
+            turn_corpus.append(result_text)                 # a quoted span must appear in what a tool returned
             if event is not None:
                 yield event  # {"type": "staging"|"applied", ...}
             else:
@@ -2153,13 +2248,14 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
         yield {"type": "token", "text": notice}
 
     final_text = "".join(assistant_text_parts).strip()
-    # TRUTH GUARANTEE: neutralize any [[Title]] that resolves to no real note, and strip any URL no
-    # tool returned — so a fabricated link/citation can never be persisted or clicked. If anything
-    # changed, tell the client to swap the streamed text for the verified version.
+    # TRUTH GUARANTEE: neutralize any [[Title]] that resolves to no real note, strip any URL no tool
+    # returned, and DOWNGRADE any "verbatim quotation" that doesn't actually appear in what a tool
+    # returned this turn — so a fabricated link/citation/quote can never be persisted or clicked. If
+    # anything changed, tell the client to swap the streamed text for the verified version.
     if final_text:
-        verified, dropped = _verify_reply(conn, final_text, tool_urls)
-        if dropped:
-            final_text = verified
+        final_text, dropped = _verify_reply(conn, final_text, tool_urls)
+        final_text, q_changed = _verify_quotes(final_text, "\n".join(turn_corpus))
+        if dropped or q_changed:
             yield {"type": "replace_text", "text": final_text}
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",

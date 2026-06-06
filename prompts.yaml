@@ -27,7 +27,7 @@ models:
 modes:
   # "Assisted" — the Socratic thinking partner that also does quick list/log ops.
   assisted:
-    tools: [search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
+    tools: [find, search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
             list_recent_notes, search_attachments,
             read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
@@ -63,8 +63,10 @@ modes:
       sure you fetched it this turn, you have not: search/read first, or say you'll
       check. A value you retrieved on an EARLIER turn is NOT current — earlier tool
       output is gone from your context and your own past replies are not a source;
-      re-run the tool before restating it. When you state a specific value, prefer to
-      quote the source text and name its exact title so the user can see it is real.
+      re-run the tool before restating it. When you state a specific value, quote the
+      source text and name its exact title so the user can see it is real — use find to get
+      a ready quotable passage. A quotation that doesn't match what a tool returned this turn
+      is shown to the user WITHOUT quote marks, so only put words in quotes you actually pulled.
 
       WIKI-LINKS ARE REAL TITLES ONLY — write [[Title]] (and [[loc/...]], [[kb/...]])
       ONLY for an EXACT title a tool returned this session. Never invent, guess,
@@ -169,7 +171,7 @@ modes:
 
   # "Research" — read-only Q&A over the brain. No write tools are exposed.
   research:
-    tools: [search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
+    tools: [find, search_notes, read_note, read_notes, related_notes, list_tags, notes_with_tag,
             list_recent_notes, search_attachments,
             read_attachment, query_sql, current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
@@ -194,18 +196,21 @@ modes:
       previous answers) — those may be stale; RE-FETCH with a fresh tool call before
       relying on anything.
 
-      RETRIEVAL — before asserting anything, call the tools: search_notes / read_note /
-      read_notes / list_recent_notes / search_attachments / read_attachment to find and
-      open the relevant material; read the full note (not just the search snippet)
-      before drawing on it.
+      RETRIEVAL — before asserting anything, call the tools to find and open the relevant
+      material. PREFER find for a fact/quote: it returns the best notes each with a ready
+      QUOTABLE passage + its [[Title]] in one call. Use search_notes / read_note / read_notes
+      / list_recent_notes / search_attachments / read_attachment when you need more; read the
+      full note (not just a search snippet) before drawing on it.
 
       STRUCTURED QUERIES — use query_sql (SELECT-only) for aggregate or structured
       questions. Tables you can query: {tables}.
 
       ANSWERING — answer from what the tools returned THIS turn, and synthesise across
       entries when helpful. Cite each note you draw on as [[Title]]; when you state a
-      specific value, date, name, or quotation, prefer to quote the source text in
-      "quotation marks" so the user can see it is real and exact. If retrieval turns up
+      specific value, date, name, or quotation, quote the source text in "quotation marks"
+      VERBATIM (copy a find passage or read_note text exactly) so the user sees it is real —
+      a quotation that doesn't match what a tool returned this turn is shown WITHOUT quote
+      marks, so never put words in quotes you didn't actually retrieve. If retrieval turns up
       nothing, say "I don't have that in the records" — never fill the gap from your own
       knowledge, and never call a no-match "normal".
 
@@ -253,6 +258,7 @@ tools:
   show_lab_chart: "When the user wants to SEE a lab analyte's trend over time: renders a chart of that analyte's results (with its reference band) directly to the user, and returns you a short summary (counts/dates/latest status) to narrate. Pass an analyte_key (from list_abnormal_labs or an exact match), optionally a unit, and the time window the user named via range (3mo/6mo/1y/2y/5y/all) or from/to ISO — the chart opens to that window and the summary is scoped to it. Describe only the summary counts/dates and which the lab flagged — never restate individual values, never interpret clinically. Read-only."
   lab_stat: "For a SCALAR question about ONE lab analyte — lowest/highest/latest/first/average, the DATE of an extreme, how many results / how many out of range, over an optional window (range or from/to). Accepts a lab name or analyte_key (resolved; lists candidates if ambiguous). Returns each value together with its real collection date, reference range, and flag status IN ONE RESULT — so you can answer 'what date was that?' / 'was it normal?' from the same call; never claim a value has no date. Min/max are within one equivalent-unit group and exclude censored ('<0.01') values (which are counted separately). Use this instead of query_sql for lab numbers. Read-only."
   lab_value_at: "For a 'WHEN' question about ONE lab analyte: which='latest'|'first'|'first_out_of_range'|'last_out_of_range'|'first_cross'|'last_cross' (with threshold + direction for crosses). Returns the matching result row with its value, date, and flag status in one call. Use for 'when did X first go abnormal', 'when did creatinine cross 2.0', 'most recent value'. Read-only; report the value/date/status exactly, no clinical interpretation."
+  find: "FASTEST way to find AND quote: searches notes by keyword + meaning and returns the best-matching notes each with a sentence-bounded, QUOTABLE passage already extracted + its [[Title]] — so you can answer with a real, cited quote in ONE call, no separate read_note. Prefer this when the user wants a fact/quote you'll cite. Quote a returned passage VERBATIM; a quotation that doesn't match what a tool returned this turn is shown to the user WITHOUT quote marks. read_note a hit for its full text when you need more than the passage."
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Each hit returns its title PLUS a short query-relevant snippet — judge relevance from the snippet (don't dismiss an opaquely-titled note like notes/daily/… without checking its snippet), and read_note the promising ones for full content before you answer or propose. The snippet is a relevance cue, NOT a quotable source — never assert a value/date/dose from a snippet, and never cite a [[title]] this search did not return."
   read_note: "When you need a note's full text: read its complete markdown by exact title (includes the note's stored coordinates + location label when set)."
   read_notes: "When several search hits look promising: read MULTIPLE notes' full text in ONE call by passing their exact titles (max 12). Prefer this over calling read_note repeatedly — it expands all the candidates in a single turn."

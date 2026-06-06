@@ -110,16 +110,25 @@ SCHEMA_VERSION = 48
 def init_db() -> None:
     """Create/upgrade schema + vec tables and seed meta. Idempotent.
 
-    schema.sql is the full latest schema (all CREATE ... IF NOT EXISTS), so a
-    fresh DB lands at the latest version directly. Existing DBs are upgraded by
-    the migration runner, which applies guarded ALTERs for column additions that
-    IF NOT EXISTS can't handle.
+    Existing DBs are upgraded by the migration runner FIRST, then schema.sql (the
+    full latest schema, all CREATE ... IF NOT EXISTS) is applied. Order matters:
+    schema.sql carries indexes on columns the migrations add to pre-existing tables,
+    which would fail if the schema ran before those columns existed. On a brand-new
+    DB the runner no-ops and schema.sql lands everything at the latest version.
     """
     global _initialized
     with _init_lock:
         if _initialized:
             return
         conn = get_conn()
+        # Upgrade an EXISTING DB before applying the full schema. schema.sql carries
+        # indexes on columns the migration runner adds to PRE-EXISTING tables (e.g.
+        # article_talk.source_note_id) — and `CREATE INDEX ... ON tbl(col)` fails with
+        # "no such column" if schema.sql runs first, because `CREATE TABLE IF NOT EXISTS`
+        # is a no-op on the already-existing table and so never adds the column. The
+        # runner no-ops on a brand-new DB (no meta table yet); schema.sql below then
+        # creates everything at the latest version directly.
+        _run_migrations(conn)
         conn.executescript(SCHEMA_PATH.read_text())
 
         dim = _embedding_dim()
@@ -140,7 +149,6 @@ def init_db() -> None:
             f"entity_id INTEGER PRIMARY KEY, embedding float[{dim}])"
         )
 
-        _run_migrations(conn)
         ensure_default_person(conn)
 
         settings = get_settings()
@@ -164,9 +172,13 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Upgrade an existing DB to SCHEMA_VERSION. Fresh DBs skip (already latest)."""
-    raw = get_meta("schema_version")
+    try:
+        raw = get_meta("schema_version", conn=conn)
+    except sqlite3.OperationalError:
+        return  # brand-new DB: the meta table doesn't exist yet (this runs BEFORE
+                # schema.sql) — nothing to upgrade; schema.sql creates everything next.
     if raw is None:
-        return  # brand-new DB: schema.sql already created everything at latest
+        return  # meta exists but unversioned: also effectively fresh
     current = int(raw)
 
     if current < 3:

@@ -64,10 +64,28 @@ def flush_entry_events(conn) -> None:
 
 
 def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int) -> None:
-    """When a note is renamed, rewrite [[old title]] -> [[new title]] (keeping any
-    |display alias) in every OTHER note that links to it, so inline links keep
-    resolving. Backlinks (tracked by note id) already survive; this fixes the
-    link *text/href* in referencing notes."""
+    """When a note is renamed, rewrite [[old title]] -> [[new title]] in every OTHER note
+    that links to it, so inline links keep resolving. Backlinks (tracked by note id) already
+    survive; this fixes the link *text/href* in referencing notes.
+
+    A |display alias is preserved EXCEPT when it merely echoed the old name (the old title
+    or its bare leaf): that alias would otherwise become a stale label naming a now-different
+    article (e.g. renaming People/Jeff → People/Summer would leave [[…Summer…|Jeff]]). In
+    that case the alias is refreshed to the new bare name (or dropped when redundant)."""
+    old_leaf = old_title.split("/")[-1].strip()
+    new_leaf = new_title.split("/")[-1].strip()
+    # Dropping the alias only renders the bare leaf when the title has no folder depth past
+    # its root; otherwise keep an explicit |new-leaf so the label stays short.
+    from .wikilinks import _root_leaf
+    new_alias = "" if _root_leaf(new_title).lower() == new_leaf.lower() else f"|{new_leaf}"
+
+    def _rewrite(m: "re.Match") -> str:
+        alias = m.group(1) or ""           # includes leading "|", or ""
+        label = alias[1:].strip() if alias else ""
+        if label and label.lower() in (old_title.lower(), old_leaf.lower()):
+            alias = new_alias               # stale echo of the old name → refresh/drop
+        return f"[[{new_title}{alias}]]"
+
     pat = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(\|[^\]]*)?\]\]", re.IGNORECASE)
     sources = conn.execute(
         "SELECT DISTINCT source_note_id FROM links WHERE lower(target_title) = lower(?)",
@@ -82,7 +100,7 @@ def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int)
         ).fetchone()
         if not row:
             continue
-        new_content = pat.sub(lambda m: f"[[{new_title}{m.group(1) or ''}]]", row["content_md"])
+        new_content = pat.sub(_rewrite, row["content_md"])
         if new_content != row["content_md"]:
             upsert_note(conn, row["title"], new_content, note_id=sid, source="rename",
                         version_note=f"link rename: {old_title} → {new_title}", fire_events=False)

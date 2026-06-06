@@ -783,6 +783,74 @@ def test_diff_and_restore(client):
     assert after[0]["source"] == "restore"
 
 
+def test_link_label_audit_flags_and_fixes_mismatch(client):
+    # Two same-folder people, plus a note that links to Summer but LABELS it "Jeff Hopkins".
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/66070 Chapman Street",
+        "content_md": "Primary residence of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].\n"
+                      "Legit short form: [[kb/People/Jeff Hopkins|Jeff]].",
+    })
+
+    audit = client.get("/api/notes/links/audit").json()["findings"]
+    # Exactly one mismatch — the legit shortening ("Jeff") must NOT be flagged.
+    assert len(audit) == 1
+    f = audit[0]
+    assert f["display"] == "Jeff Hopkins"
+    assert f["target_title"] == "kb/People/Summer E. Hopkins"
+    assert f["resolved_title"] == "kb/People/Jeff Hopkins"
+    assert f["fixed"] == "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]"
+
+    # Fix it; the label now matches the target, and re-audit is clean.
+    assert client.post("/api/notes/links/audit/fix",
+                       json={"note_id": f["source_id"], "target": f["target"],
+                             "display": f["display"]}).json()["fixed"] is True
+    note = client.get(f"/api/notes/{f['source_slug']}").json()
+    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in note["content_md"]
+    assert "|Jeff]]" in note["content_md"]   # the legit short link is untouched
+    assert client.get("/api/notes/links/audit").json()["findings"] == []
+
+
+def test_audit_link_labels_workflow_action(client):
+    # The nightly action end-to-end: detect → fix → Review summary.
+    from app.db import get_conn
+    from app.services import pipeline
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Cabin",
+        "content_md": "Owned by [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn = get_conn()
+    recipe = pipeline.get_action_def("audit_link_labels")
+    assert recipe is not None, "audit_link_labels action recipe should be registered"
+    pipeline.run_pipeline(conn, recipe, {"limit": 500, "fix": True, "review": True}, None, None)
+    conn.commit()
+
+    note = client.get("/api/notes/kb-places-cabin").json()
+    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in note["content_md"]
+    rc = conn.execute("SELECT title, message FROM review_items ORDER BY id DESC LIMIT 1").fetchone()
+    assert "wiki-link label" in rc["title"] and "Jeff Hopkins" in rc["message"]
+
+
+def test_rename_refreshes_stale_echo_alias(client):
+    # A note links to Jeff with the label echoing his name; renaming Jeff must not leave
+    # the stale "Jeff Hopkins" label pointing at the renamed (different) article.
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/House",
+        "content_md": "Resident: [[kb/People/Jeff Hopkins|Jeff Hopkins]].",
+    })
+    # Rename the person note (PUT with a new title renames in place).
+    jeff = client.get("/api/notes/kb-people-jeff-hopkins").json()
+    client.put(f"/api/notes/{jeff['slug']}",
+               json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    house = client.get("/api/notes/kb-places-house").json()
+    assert "[[kb/People/Summer E. Hopkins|Summer E. Hopkins]]" in house["content_md"]
+    assert "Jeff Hopkins" not in house["content_md"]
+
+
 def test_architect_edits_attributed(client):
     import json as _json
     from app.db import get_conn

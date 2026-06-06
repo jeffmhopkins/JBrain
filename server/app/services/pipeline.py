@@ -303,6 +303,38 @@ def _p_suggest_unsaved_places(ctx):
     return {"titles": titles, "names": [t.split("/")[-1] for t in titles], "count": len(titles)}
 
 
+def _p_audit_link_labels(ctx, limit=500, fix=True):
+    """Find [[Target|Display]] links whose shortened label names a DIFFERENT article than
+    the target (e.g. a person linked under another person after a rename/merge). When
+    `fix`, correct the label to the target's bare name (deterministic + undoable) and log
+    it in the source article's talk. Returns the findings for the recipe's Review summary."""
+    from . import wikilinks, article_talk
+
+    do_fix = fix not in (False, 0, "0", "false", "False", "", None)
+    findings = wikilinks.audit_display_mismatches(ctx.conn)
+    acted = []
+    for f in findings[: int(limit)]:
+        if do_fix and wikilinks.fix_note_link(ctx.conn, f["source_id"], f["target"], f["display"]):
+            acted.append(f)
+            article_talk.add(
+                ctx.conn, f["source_title"], "note",
+                f"Link label corrected: shown “{f['display']}” but linked to "
+                f"{f['target_title']}; set label to “{f['desired_display']}”.",
+                author="ai",
+            )
+    if do_fix:
+        ctx.conn.commit()
+    shown = acted if do_fix else findings
+    changes = [{
+        "source_leaf": wikilinks._root_leaf(x["source_title"]), "source_slug": x["source_slug"],
+        "display": x["display"], "desired": x["desired_display"],
+        "target_leaf": wikilinks._root_leaf(x["target_title"]),
+    } for x in shown[:50]]
+    # NB: key is "changes", not "items" — Jinja resolves `audit.items` to dict.items().
+    return {"mismatches": len(findings), "fixed": len(acted),
+            "verb": "Corrected" if do_fix else "Found", "count": len(shown), "changes": changes}
+
+
 def _p_tidy_talk(ctx):
     """Demote non-actionable 'stub / needs-more-notes / revisit-later' talk todos to inert
     notes and cap clutter — stops them nagging maintenance + Review cards, and retires the
@@ -1210,6 +1242,7 @@ _PRIMITIVES = {
     "review_open_talk": _p_review_open_talk,
     "wiki_maintain": _p_wiki_maintain,
     "wiki_update": _p_wiki_update,
+    "audit_link_labels": _p_audit_link_labels,
     "flag_ungrounded_reference": _p_flag_ungrounded_reference,
     "link_medications": _p_link_medications,
     "link_places": _p_link_places,
@@ -1343,6 +1376,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                       "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
     "wiki_update": {"summary": "Flow notes changed since the watermark into existing articles (incremental).",
                     "inputs": [{"name": "limit", "type": "int"}], "output": "dict"},
+    "audit_link_labels": {"summary": "Correct [[Target|Display]] links whose label names a different article than the target (deterministic, undoable).",
+                          "inputs": [{"name": "limit", "type": "int"}, {"name": "fix", "type": "bool"}], "output": "dict"},
     "flag_ungrounded_reference": {"summary": "Flag Reference articles padded with LLM common knowledge vs the notes.",
                                   "inputs": [], "output": "dict"},
     "link_medications": {"summary": "Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only).",

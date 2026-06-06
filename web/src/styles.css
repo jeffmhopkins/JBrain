@@ -843,6 +843,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   .modal-foot { padding-bottom: 12px; }
   .wf-textarea-lg { min-height: 220px; }
 }
+/* In-wiki link-label audit panel. */
+.link-audit { margin-bottom: 12px; }
+.link-audit .chev { display: inline-flex; color: var(--text-dim); transition: transform .12s ease; }
+.link-audit .chev.open { transform: rotate(90deg); }
+.link-audit-item { padding: 8px 0; border-top: 1px solid var(--border); }
+.link-audit-item code { font-size: 12px; }
+
 pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
 .diff-insert { color: var(--ok); }
 .diff-delete { color: var(--danger); text-decoration: line-through; }

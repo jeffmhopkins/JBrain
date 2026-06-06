@@ -1,0 +1,35 @@
+# Declarative action: WIKI-LINK LABEL AUDIT.
+#
+# Finds [[Target|Display]] links whose shortened label names a DIFFERENT article than the
+# target — most often minted when a note is renamed/merged and the inbound-link rewrite
+# keeps the old |Display verbatim (e.g. [[kb/People/Summer E. Hopkins|Jeff Hopkins]]).
+# High-confidence only: the label resolves to a different article in the same folder, or is
+# a former title of the target. With fix on (default), it corrects the label to the
+# target's bare name (versioned, undoable) and logs each fix in the article's talk; a
+# Review card summarises what changed. No LLM — a clean run is a true no-op.
+#
+# config keys:
+#   limit  — max links to fix per run (default 500)
+#   fix    — auto-correct mismatches (default true; off = flag-only)
+#   review — post a review card summarising the run (default true)
+type: audit_link_labels
+category: Knowledge base
+config:
+  - { key: limit, label: Max links per run, type: number, default: 500 }
+  - { key: fix, label: Auto-fix mismatched labels, type: boolean, default: true }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  - id: audit
+    do: audit_link_labels
+    with: { limit: "{{ config.limit | default(500) }}", fix: "{{ config.fix != false }}" }
+
+  - stop_when: "{{ not audit.changes }}"
+    stop_message: "scanned the wiki — every shortened link label matches its target"
+
+  - do: create_review
+    when: "{{ config.review != false }}"
+    with:
+      title: "{{ audit.verb }} {{ audit.count }} wiki-link label(s)"
+      message: |
+        {% for x in audit.changes %}• {{ x.source_leaf }}: "{{ x.display }}" → "{{ x.desired }}" (links to {{ x.target_leaf }})
+        {% endfor %}

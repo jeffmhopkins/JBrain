@@ -172,7 +172,7 @@ def _scan(conn, *, dry_run: bool, limit: int, on_conflict: str) -> dict:
            "conflicts": 0, "borderline": 0, "errors": 0, "people": [], "flagged": []}
     rows = conn.execute(
         "SELECT id, title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
-        "AND title LIKE 'kb/People/%' ORDER BY title").fetchall()
+        "AND redirect_to IS NULL AND title LIKE 'kb/People/%' ORDER BY title").fetchall()
     for r in rows:
         if not dry_run and rep["extracted"] >= limit:
             break
@@ -227,13 +227,15 @@ def health_page_for(conn, people_title: str) -> str | None:
     if not (people_title or "").lower().startswith("kb/people/"):
         return None
     target = "kb/Health/" + people_title.split("/")[-1]
+    # redirect_to IS NULL: a merged-away health page is a redirect, never the live record —
+    # returning it would route medical captures into a redirect (and resurrect it on write).
     row = conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
-                       "AND lower(title)=lower(?)", (target,)).fetchone()
+                       "AND redirect_to IS NULL AND lower(title)=lower(?)", (target,)).fetchone()
     if row:
         return row["title"]
     # Disambiguated page (collision case): find a kb/Health/* that links back to this person.
     for r in conn.execute("SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
-                          "AND lower(title) LIKE 'kb/health/%'"):
+                          "AND redirect_to IS NULL AND lower(title) LIKE 'kb/health/%'"):
         if f"[[{people_title}]]" in (r["content_md"] or ""):
             return r["title"]
     return None

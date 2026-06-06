@@ -3097,6 +3097,34 @@ def test_health_split_migration(client):
     assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
 
 
+def test_health_split_ignores_redirects(client):
+    """A merged-away (redirect) page is never treated as a real person/health page: the People
+    scan skips a People redirect even if it still carries a ## Health body, and health_page_for
+    never returns a Health redirect (which would route medical captures into a dead page and
+    resurrect it on write)."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_build
+    conn = get_conn()
+    # A People redirect that (artificially) still has a health body must NOT be scanned/extracted.
+    ns.upsert_note(conn, "kb/People/Ghost",
+                   "# Ghost\nLead.[^s1]\n\n## Health\nTakes prednisone 40 mg daily.[^s1]\n\n"
+                   "## References\n[^s1]: [[notes/medical/v]] — 2026-06-01\n", kind="kb")
+    conn.execute("UPDATE notes SET redirect_to='kb/People/Jeffrey Hopkins' WHERE title='kb/People/Ghost'")
+    conn.commit()
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert not any(p["person"] == "kb/People/Ghost" for p in rep["people"])      # redirect skipped despite health body
+
+    # A Health page merged away becomes a redirect — health_page_for must not return it.
+    ns.upsert_note(conn, "kb/People/Jeffrey Hopkins", "# Jeffrey Hopkins\n\nOwner.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Old", "# Old\n\nrecord.", kind="kb")
+    ns.upsert_note(conn, "kb/Health/Jeffrey Hopkins",
+                   "# Jeffrey Hopkins\n\nPersonal health record for [[kb/People/Jeffrey Hopkins]].", kind="kb")
+    conn.commit()
+    wiki_build.create_redirect(conn, "kb/Health/Jeffrey Hopkins", "kb/Health/Old")
+    conn.commit()
+    assert health_split.health_page_for(conn, "kb/People/Jeffrey Hopkins") != "kb/Health/Jeffrey Hopkins"
+
+
 def test_geo_distance_resolves_place_geofence(client):
     """A saved place keeps its coords in the geofence table, not on its loc/ note, so
     geo_distance must resolve it by place name AND by the loc/ note title — otherwise a

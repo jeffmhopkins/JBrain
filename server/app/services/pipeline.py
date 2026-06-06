@@ -756,7 +756,7 @@ def _p_kb_audit(ctx, limit=1000):
     Returns {flagged: [{id,title,slug,issues:[...]}], bad, ok, scanned}."""
     rows = ctx.conn.execute(
         "SELECT id, title, slug, content_md FROM notes "
-        "WHERE kind='kb' AND deleted_at IS NULL ORDER BY title"
+        "WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL ORDER BY title"
     ).fetchall()
     capped = rows[: max(1, min(int(limit), 5000))]
     flagged = []

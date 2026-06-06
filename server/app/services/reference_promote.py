@@ -31,10 +31,21 @@ def _title_for(cand) -> str:
     return f"kb/Reference/Medicine/{_category(cand)}/{leaf}"
 
 
+def _is_medication(cand) -> bool:
+    """A drug candidate (captured via drug_reference) — re-fetched and cited differently from a
+    health topic (RxNorm → MedlinePlus Connect, not the health-topics search)."""
+    try:
+        src = cand["source"]
+    except (KeyError, IndexError):
+        src = None
+    return (src or "") == "rxnorm" or _category(cand) == "Medications"
+
+
 def _stub(cand, url: str, snippet: str, fetched: str) -> str:
     leaf = (cand["topic"] or "").replace("/", " ").strip()
+    kind = "medication" if _is_medication(cand) else "health topic"
     body = f"# {leaf}\n\n"
-    body += ("_Reference seed — general background drafted from a health topic you looked up. "
+    body += (f"_Reference seed — general background drafted from a {kind} you looked up. "
              "Not medical advice; not endorsed by NLM. Enrich it from your own notes over time._\n\n")
     if snippet:
         body += snippet.strip() + "\n\n"
@@ -69,8 +80,10 @@ def run(conn, min_hits: int = 2, limit: int = 5) -> dict:
         if title in pending_titles:                # already pending in staging — don't double-stage
             conn.execute("UPDATE reference_candidates SET status='staged' WHERE id=?", (cand["id"],))
             continue
-        # Re-fetch fresh (cached → fast) so the cited summary is current; fall back to what we captured.
-        fresh = medref.health_topic(conn, cand["topic"]) or {}
+        # Re-fetch fresh (cached → fast) so the cited link/summary is current; fall back to what we
+        # captured. A drug candidate resolves via RxNorm→MedlinePlus Connect, a topic via health-topics.
+        fresh = (medref.drug_topic(conn, cand["topic"]) if _is_medication(cand)
+                 else medref.health_topic(conn, cand["topic"])) or {}
         url = fresh.get("url") or cand["url"]
         snippet = fresh.get("snippet") or (cand["snippet"] or "")
         fetched = (today or (cand["last_seen"] or "")[:10])

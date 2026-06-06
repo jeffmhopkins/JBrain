@@ -227,6 +227,18 @@ def resolve(conn, name: str) -> dict | None:
     return out
 
 
+def drug_topic(conn, name: str) -> dict | None:
+    """Resolve a medication NAME to a host-pinned MedlinePlus consumer drug page (NLM, public domain).
+    Thin wrapper over resolve(): returns {match, rxcui, url, title[, candidate, score]} or None, with the
+    returned URL HOST-PINNED to a public NLM host (a feed can't redirect us off-NLM). The outbound
+    RxNav / MedlinePlus Connect fetch happens here (cached); fail-soft to None. This is the single
+    drug-info entry point the gated drug_reference tool and its approval endpoint both call."""
+    res = resolve(conn, name)
+    if not res or not _host_ok(res.get("url", "")):
+        return None
+    return res
+
+
 def _apply_link(conn, article_title: str, url: str) -> bool:
     """Ensure the medication article carries a single marked MedlinePlus 'Further reading'
     line (idempotent; replaces a stale URL). Versioned; returns True if it changed the body."""

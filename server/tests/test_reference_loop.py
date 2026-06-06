@@ -136,15 +136,50 @@ def test_promote_skips_topic_already_articled(conn, monkeypatch):
 
 
 def test_medical_reference_tool_captures_resolved_topic_not_owner_query(conn, monkeypatch):
-    # The owner's query carries PHI ("platelets of 18"); the captured candidate must hold ONLY the
-    # MedlinePlus-resolved topic + source, never the query text or that value.
-    from app.services import architect
+    # Even if the model passes a PHI-laden term, once the owner approves the captured candidate holds
+    # ONLY the MedlinePlus-resolved topic + source — never the query text or that value.
+    from app.services import architect, external_lookups
     monkeypatch.setattr(medref, "health_topic",
                         lambda c, q: {"url": "https://medlineplus.gov/ttp.html", "title": "TTP",
                                       "snippet": "A rare blood disorder."})
-    out = architect._tool_medical_reference(conn, "do my platelets of 18 on 2026-05-30 fit TTP?")
+    q = "do my platelets of 18 on 2026-05-30 fit TTP?"
+    _, ev = architect._tool_medical_reference(conn, None, q)       # proposed (gated; nothing captured yet)
+    external_lookups.decide(conn, ev["id"], approve=True)
+    out, _ = architect._tool_medical_reference(conn, None, q)      # approved → fetch + capture
     assert "medlineplus.gov/ttp.html" in out and "not medical advice" in out.lower()
     row = conn.execute("SELECT * FROM reference_candidates").fetchone()
     assert row["topic"] == "TTP"                                  # the RESOLVED topic, not the query
     blob = " ".join(str(row[k]) for k in ("topic", "url", "snippet", "category", "source"))
     assert "18" not in blob and "2026-05-30" not in blob and "platelet" not in blob.lower()
+
+
+# --- the approval gate: medical_reference sends nothing until the owner approves ----
+
+def _boom(*a, **k):
+    raise AssertionError("external fetch happened before approval!")
+
+
+def test_medical_reference_gated_until_approved(conn, monkeypatch):
+    from app.services import architect, external_lookups
+    monkeypatch.setattr(medref, "health_topic", _boom)             # must NOT be called while pending
+    txt, ev = architect._tool_medical_reference(conn, None, "thrombotic thrombocytopenic purpura")
+    assert ev and ev["type"] == "external_proposal" and ev["term"].startswith("thrombotic")
+    assert "PROPOSED" in txt
+    assert conn.execute("SELECT status FROM external_lookups").fetchone()["status"] == "pending"
+    assert conn.execute("SELECT COUNT(*) c FROM reference_candidates").fetchone()["c"] == 0   # nothing captured
+    # owner approves → the fetch is now allowed, and the topic is captured for the loop
+    monkeypatch.setattr(medref, "health_topic", lambda c, q: {"url": "https://medlineplus.gov/ttp.html",
+                                                              "title": "Platelet Disorders", "snippet": "summary"})
+    external_lookups.decide(conn, ev["id"], approve=True)
+    txt2, ev2 = architect._tool_medical_reference(conn, None, "thrombotic thrombocytopenic purpura")
+    assert ev2 is None and "medlineplus.gov/ttp.html" in txt2
+    assert conn.execute("SELECT COUNT(*) c FROM reference_candidates").fetchone()["c"] == 1
+
+
+def test_medical_reference_denied_never_fetches(conn, monkeypatch):
+    from app.services import architect, external_lookups
+    monkeypatch.setattr(medref, "health_topic", _boom)
+    _, ev = architect._tool_medical_reference(conn, None, "atrial fibrillation")
+    external_lookups.decide(conn, ev["id"], approve=False)
+    txt, ev2 = architect._tool_medical_reference(conn, None, "atrial fibrillation")  # _boom still installed
+    assert ev2 is None and "declined" in txt.lower()                # denied → no fetch, no re-propose

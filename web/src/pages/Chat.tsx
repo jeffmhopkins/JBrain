@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { createEntry, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
+import { approveExternalLookup, createEntry, denyExternalLookup, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
@@ -170,6 +170,9 @@ export default function Chat() {
   const [applied, setApplied] = useState<{ id: number; summary: string }[]>([]);
   // Charts streamed during the current turn (transient; persisted as event rows on reload).
   const [charts, setCharts] = useState<{ analyte: string; unit?: string | null; from?: string | null; to?: string | null; title?: string }[]>([]);
+  // Pending external-lookup proposals (the medical_reference gate): the assistant wants to send a
+  // term to MedlinePlus; nothing is sent until the owner approves the exact term via an inline chip.
+  const [proposals, setProposals] = useState<{ id: number; term: string }[]>([]);
   const [undone, setUndone] = useState<Set<number>>(new Set());
 
   const endRef = useRef<HTMLDivElement>(null);
@@ -435,9 +438,9 @@ export default function Chat() {
     return errors;
   }
 
-  async function send(e?: FormEvent) {
+  async function send(e?: FormEvent, override?: string) {
     e?.preventDefault();
-    const text = input.trim();
+    const text = (override ?? input).trim();
     // streaming/busy gate the UI but are async React state; sendingRef is the synchronous
     // latch that blocks a second tap during this send's async pre-flight (GPS, conv-create,
     // upload) before that state has flushed.
@@ -445,6 +448,7 @@ export default function Chat() {
     if (text === "/clear") { setInput(""); setEntries([]); newConversation(); return; }
     if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
     sendingRef.current = true;
+    setProposals([]);   // a new turn supersedes any pending external-lookup chips
     // Both chat modes stream a spoken-able prose reply; entry/medical don't.
     const speakable = mode === "assisted" || mode === "research" || mode === "analyze";
     // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
@@ -570,6 +574,8 @@ export default function Chat() {
           setStagingTick((t) => t + 1);
         } else if (ev.type === "applied" && ev.action) {
           setApplied((a) => [...a, ev.action!]);
+        } else if (ev.type === "external_proposal" && ev.id && ev.term) {
+          setProposals((p) => p.some((x) => x.id === ev.id) ? p : [...p, { id: ev.id!, term: ev.term! }]);
         } else if (ev.type === "chart" && ev.chart) {
           setCharts((c) => [...c, ev.chart!]);
         } else if (ev.type === "replace_text") {
@@ -624,6 +630,19 @@ export default function Chat() {
       // keep the ⚠️ / the restored composer.
       if (!errored && cid) { await loadMessages(cid); setApplied([]); setCharts([]); }
     }
+  }
+
+  // The medical_reference gate: approve sends the EXACT term to MedlinePlus (the only outbound
+  // moment) then auto-continues; skip declines and the assistant uses internal references only.
+  async function approveProposal(p: { id: number; term: string }) {
+    setProposals((ps) => ps.filter((x) => x.id !== p.id));
+    try { await approveExternalLookup(p.id); } catch { /* the continuation will report a miss */ }
+    send(undefined, `I approved the external lookup for "${p.term}". Please continue.`);
+  }
+  async function skipProposal(p: { id: number; term: string }) {
+    setProposals((ps) => ps.filter((x) => x.id !== p.id));
+    try { await denyExternalLookup(p.id); } catch { /* ignore */ }
+    send(undefined, `Don't look up "${p.term}" externally — use my own references and notes instead.`);
   }
 
   const cur = MODES.find((m) => m.key === mode)!;
@@ -693,6 +712,17 @@ export default function Chat() {
           );
         })}
         {charts.map((c, i) => <LabChartCard key={`ch${i}`} spec={c} />)}
+        {proposals.map((p) => (
+          <div key={`xp${p.id}`} className="ext-proposal">
+            <div className="ext-proposal-text">
+              🔍 Look up <strong>“{p.term}”</strong> on MedlinePlus (external)? Nothing is sent until you approve.
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 6 }}>
+              <button className="primary" disabled={streaming || busy} onClick={() => approveProposal(p)}>Approve &amp; search</button>
+              <button className="ghost" disabled={streaming || busy} onClick={() => skipProposal(p)}>Skip</button>
+            </div>
+          </div>
+        ))}
         {applied.map((a) => (
           <div key={`a${a.id}`} className="applied-chip">
             <span>✓ {renderSummary(a.summary)}</span>

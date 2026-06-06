@@ -600,6 +600,21 @@ CREATE TABLE IF NOT EXISTS reference_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_refcand_status ON reference_candidates(status, hits);
 
+-- External-lookup approvals: a HARD gate so the medical_reference tool never sends a term to an
+-- external service (MedlinePlus/NLM) until the owner has seen the EXACT term and approved it — so
+-- the owner can be sure no PII leaves the system in a search query. A decision is remembered per
+-- term (approve once, not every time). status: pending (proposed, nothing sent) -> approved | denied.
+CREATE TABLE IF NOT EXISTS external_lookups (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool        TEXT NOT NULL,                  -- 'medical_reference'
+  term        TEXT NOT NULL,                  -- the EXACT term that would be sent externally
+  norm_key    TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at  TEXT,
+  UNIQUE(tool, norm_key)
+);
+
 
 -- Physical "am I inside this place?" truth, updated cheaply on each kept fix. The
 -- scheduler (never the ingest path) reads this to fire location triggers.

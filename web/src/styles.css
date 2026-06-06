@@ -990,3 +990,12 @@ table.sql-result th { background: var(--bg-elev-2); }
 .cite-pop-head { color: var(--ok, #7fb37f); }
 .cite-pop-head strong { color: var(--text); }
 .cite-pop-body { color: var(--text-dim); }
+
+/* External-lookup proposal (the medical_reference gate): the assistant can only ASK to send a
+   term to MedlinePlus; nothing leaves until the owner approves the exact term here. */
+.ext-proposal {
+  margin: 8px 0; padding: 10px 12px; border: 1px solid var(--accent, #6aa9c9);
+  border-radius: 10px; background: rgba(106,169,201,0.10); font-size: 13px;
+}
+.ext-proposal-text { color: var(--text); }
+.ext-proposal strong { color: var(--text); }

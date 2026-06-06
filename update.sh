@@ -68,6 +68,10 @@ fi
 _dstatus running building
 echo "==> Rebuilding and restarting (volumes + .env preserved)…"
 export GIT_SHA="$(git rev-parse HEAD)"
+# Delegate the build to Buildx Bake — Compose's recommended, faster build path (bundled
+# with the buildx plugin on any Docker that ships Compose v2). BUILDKIT_PROGRESS (set
+# above) still controls streaming, so the live console / captured log are unaffected.
+export COMPOSE_BAKE=true
 $DC build api || { echo "FAIL: image build failed — current version is still running (see output above)." >&2; exit 1; }
 
 # Re-render the Caddyfile from the template so Caddy config changes (e.g. the live

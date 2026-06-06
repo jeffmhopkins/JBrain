@@ -8,8 +8,9 @@
 # this updater and Caddy keep running throughout.
 set -eu
 
-# docker:cli is Alpine; ensure git + the compose plugin are present.
-apk add --no-cache git docker-cli-compose >/dev/null 2>&1 || true
+# docker:cli is Alpine; ensure git + the compose AND buildx plugins are present.
+# buildx is required because we build via Compose Bake (COMPOSE_BAKE, set below).
+apk add --no-cache git docker-cli-compose docker-cli-buildx >/dev/null 2>&1 || true
 git config --global --add safe.directory /repo >/dev/null 2>&1 || true
 
 MARKER=/data/update-requested.json
@@ -23,6 +24,10 @@ SELF=/repo/updater/run.sh
 _selfhash() { md5sum "$SELF" 2>/dev/null | cut -d' ' -f1; }
 SELF_HASH="$(_selfhash)"
 export BUILDKIT_PROGRESS=plain   # line-buffered build output so the console streams live
+# Delegate the build to Buildx Bake — Compose's recommended, faster build path. Needs
+# the buildx plugin (installed above). Plain progress (set above) still streams the
+# build line-by-line to the live deploy console, so capture is unaffected.
+export COMPOSE_BAKE=true
 # status.json carries a coarse PHASE so the PWA indicator follows progress.
 _ustatus() { printf '{"state":"%s","phase":"%s","at":"%s"}\n' "$1" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_DIR/status.json" 2>/dev/null || true; }
 echo "[updater] watching for update requests…"

@@ -146,6 +146,15 @@ export function useTts() {
     window.speechSynthesis.cancel();
     setSpeaking(false);
   }
+  /** Unlock the engine from within a user gesture (a silent utterance) so a later
+   *  speak() fired from an async callback isn't blocked by mobile autoplay/gesture
+   *  policies. Call this synchronously inside a click/submit handler. */
+  function prime() {
+    if (!supported) return;
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  }
   /** Speak `text` with the saved voice + speed. No-ops (returns false) if unsupported. */
   function speak(text: string): boolean {
     if (!supported || !text.trim()) return false;
@@ -162,7 +171,7 @@ export function useTts() {
     return true;
   }
 
-  return { supported, voices, voiceURI, setVoice, rate, setRate, speaking, speak, stop };
+  return { supported, voices, voiceURI, setVoice, rate, setRate, speaking, speak, stop, prime };
 }
 
 // Global "read replies aloud" flag, toggled from the top bar and read by the Chat

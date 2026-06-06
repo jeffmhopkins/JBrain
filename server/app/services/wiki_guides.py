@@ -18,10 +18,10 @@ import yaml
 
 from . import prompts
 
-# Taxonomy roots (the seeded domains). Order is display order. "Health" sits next to
-# People: it is the per-person PHI satellite (kb/Health/<Person>) split out of the People
-# article so a person can be shared without leaking their medical history.
-DOMAINS = ["Reference", "People", "Health", "Groups", "Places", "Things", "Activities"]
+# Taxonomy roots (the seeded domains). Order is display order. "Health" and "Finance" sit
+# together after People as the firewalled PII vaults (kb/Health/<Person>, kb/Finance/<Sub>/<Name>)
+# split out of the shareable wiki, so a subject can be shared without leaking medical or financial data.
+DOMAINS = ["Reference", "People", "Health", "Finance", "Groups", "Places", "Things", "Activities"]
 
 # Spec defaults — overlaid by the general guide's spec, then the domain guide's spec.
 _DEFAULTS = {
@@ -85,6 +85,29 @@ HEALTH_PREFIX = "kb/health/"
 def is_health_title(title: str) -> bool:
     """True for a personal-health page (kb/Health/<Person>) — case-insensitive prefix match."""
     return (title or "").lower().startswith(HEALTH_PREFIX)
+
+
+# The PRIVATE/sensitive domains: PII vaults that are firewalled out of the shareable wiki
+# (no other domain may link them), share-hardened (any share is browser-bound + finite-TTL),
+# and hidden from research recipients. "Health" is live; "Finance" is registered here so the
+# firewall protects any kb/Finance/* note from the moment one exists — it is added to DOMAINS
+# (with its guide) separately, so this registry can lead the taxonomy without churn.
+PRIVATE_DOMAINS = ("Health", "Finance")
+_PRIVATE_PREFIXES = tuple(f"kb/{d.lower()}/" for d in PRIVATE_DOMAINS)
+
+
+def is_private_title(title: str) -> bool:
+    """True for any sensitive-domain page (kb/Health/… or kb/Finance/…) — the single firewall
+    predicate reused by the share layer, research scope, the structure lint, and the entity index."""
+    t = (title or "").lower()
+    return any(t.startswith(p) for p in _PRIVATE_PREFIXES)
+
+
+def private_domain_for(title: str) -> str | None:
+    """The private domain a title belongs to, or None. (Returns a domain only once it's also in
+    DOMAINS — i.e. fully wired with a guide; before that domain_for_title won't recognise it.)"""
+    d = domain_for_title(title)
+    return d if d in PRIVATE_DOMAINS else None
 
 
 def parse_spec(text: str) -> dict:
@@ -169,9 +192,10 @@ def validate_structure(title: str, content_md: str) -> dict:
     if frozen:
         warnings.append(f'"{frozen.group(0)}" looks frozen — use a live @t[...] token so it stays current')
 
-    # Reference articles must live in a subcategory (kb/Reference/<Sub>/<Name>), not flat.
-    if domain == "Reference" and len([p for p in (title or "").split("/") if p]) < 4:
-        warnings.append("Reference article should sit in a subcategory (kb/Reference/<Subcategory>/<Name>), not flat")
+    # Foldered domains must live in a subcategory (kb/<Domain>/<Sub>/<Name>), not flat:
+    # Reference (the general-knowledge tree) and Finance (the vault: Accounts/, Investments/, …).
+    if domain in ("Reference", "Finance") and len([p for p in (title or "").split("/") if p]) < 4:
+        warnings.append(f"{domain} article should sit in a subcategory (kb/{domain}/<Subcategory>/<Name>), not flat")
 
     return {"ok": not errors, "errors": errors, "warnings": warnings, "stub": is_stub, "domain": domain}
 

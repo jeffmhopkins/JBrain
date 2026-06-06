@@ -72,17 +72,18 @@ export default function NotePage() {
   const [shareCopied, setShareCopied] = useState(false);
   const [place, setPlace] = useState<Place | null>(null);   // geofence backing a loc/ note
 
-  // A kb/Health/<Person> page is a personal medical record (PHI). The server force-hardens any
-  // share of it (browser-bound + finite TTL, view-only); reflect that in the dialog so the owner
-  // isn't surprised: default bind on + a finite expiry, hide the "Can edit" option.
-  const isHealth = (note?.title || "").toLowerCase().startsWith("kb/health/");
+  // A kb/Health/<Person> or kb/Finance/<…> page is a private personal record (PHI / financial PII).
+  // The server force-hardens any share of it (browser-bound + finite TTL, view-only); reflect that
+  // in the dialog so the owner isn't surprised: default bind on + a finite expiry, hide "Can edit".
+  const lowTitle = (note?.title || "").toLowerCase();
+  const isPrivate = lowTitle.startsWith("kb/health/") || lowTitle.startsWith("kb/finance/");
   useEffect(() => {
-    if (sharing && isHealth) {
+    if (sharing && isPrivate) {
       setShareBind(true);
       setShareEditable(false);
       setShareTtl((t) => (t > 0 ? t : 30));
     }
-  }, [sharing, isHealth]);
+  }, [sharing, isPrivate]);
 
   async function remove() {
     if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
@@ -260,15 +261,15 @@ export default function NotePage() {
             <div className="share-stack">
               <strong className="share-stack-head">Create a public link</strong>
 
-              {isHealth && (
+              {isPrivate && (
                 <div className="share-help" style={{ background: "var(--warn-bg, #fff6e5)", padding: "8px 10px", borderRadius: 8 }}>
-                  🔒 This is a private <strong>health record</strong>. Shared links are always
+                  🔒 This is a private <strong>personal record</strong>. Shared links are always
                   view-only, lock to the first device that opens them, and expire — they can't be
                   made permanent or editable.
                 </div>
               )}
 
-              {!isHealth && (
+              {!isPrivate && (
                 <div className="share-row">
                   <div className="share-row-label">Who can use it</div>
                   <div className="share-control">
@@ -289,9 +290,9 @@ export default function NotePage() {
 
               <div className="share-row" style={{ display: "block" }}>
                 <ShareOptions value={{ bind: shareBind, single_use: false, ttl_days: shareTtl }}
-                              show={{ singleUse: false, ttlMin: isHealth ? 1 : 0 }}
-                              onChange={(p) => { if (p.ttl_days !== undefined) setShareTtl(Math.max(isHealth ? 1 : 0, p.ttl_days));
-                                                 if (p.bind !== undefined) setShareBind(isHealth ? true : p.bind); }} />
+                              show={{ singleUse: false, ttlMin: isPrivate ? 1 : 0 }}
+                              onChange={(p) => { if (p.ttl_days !== undefined) setShareTtl(Math.max(isPrivate ? 1 : 0, p.ttl_days));
+                                                 if (p.bind !== undefined) setShareBind(isPrivate ? true : p.bind); }} />
                 <div className="share-help" style={{ marginTop: 4 }}>
                   Lock ties the link to the first browser that opens it; others get a resettable lock page. Friction against re-sharing, not strong security.
                 </div>

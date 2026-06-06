@@ -282,11 +282,13 @@ def transcribe(att_id: int) -> None:
         _set_status(conn, att_id, "done")
         conn.commit()
         # The transcript changes the note's analyzable content — refresh its AI analysis so the
-        # gist/facts/entities reflect what was said (best-effort; no-ops without an LLM key).
+        # gist/facts/entities reflect what was said. Gated by the "auto-analyze new notes" toggle
+        # (parity with the image-vision path) so a manual transcribe with the feature off enriches
+        # the panel without spending a note-analysis call. Best-effort; no-ops without an LLM key.
         if att["note_id"] is not None:
             try:
                 from . import note_analysis
-                if note_analysis.analyze(conn, att["note_id"]):
+                if note_analysis.auto_enabled(conn) and note_analysis.analyze(conn, att["note_id"]):
                     conn.commit()
             except Exception:  # noqa: BLE001 — analysis is a bonus; never fail the transcript on it
                 pass

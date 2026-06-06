@@ -40,19 +40,22 @@ and a graph.
 - **Attachments** — attach **any number of files, up to 100 MB each**, to a note
   (stored in the DB so backups stay complete) — both on a note's page and right from
   the compose box while capturing. **Audio & video play inline.** Searchable text is
-  extracted automatically: text/code files are decoded, **PDFs** are text-extracted,
-  **image EXIF/metadata** is pulled, **images** get an AI vision summary, and **audio &
-  video** are **transcribed locally** (faster-whisper, no API key — video via its audio
-  track). **Video** additionally has **frames sampled every 25% and described by the vision
-  model**, so its on-screen content is captured too — all indexed for keyword + semantic
-  search and available to the AI. The per-note
-  **AI analysis** sidecar folds in this attachment text (PDF/document text, transcripts,
-  image summaries) too, so its gist/facts/entities reflect what's in your files.
-- **Auto-analyze new notes** — an opt-in toggle (**System → Note analysis**, off by
-  default) that computes a note's **AI analysis** the moment you add it — and folds each
-  attachment in as it's processed (image vision summaries, audio/video transcripts, and
-  document/PDF text) — instead of waiting for the nightly analysis batch. Backed by the
-  `analyze-new-note` workflow (its enabled flag is the switch). Needs an LLM key.
+  extracted automatically: text/code files are decoded, **PDFs** are text-extracted, and
+  **image EXIF/metadata** is pulled — all indexed for keyword + semantic search. With
+  **Auto-analyze** on (below), attachments also get **AI enrichment**: **images** get a
+  vision summary, and **audio & video** are **transcribed locally** (faster-whisper, no API
+  key — video via its audio track), with **video frames sampled every 25% and described by
+  the vision model** so on-screen content is captured too. The per-note **AI analysis**
+  sidecar folds in this attachment content (PDF/document text, transcripts, image summaries),
+  so its gist/facts/entities reflect what's in your files.
+- **Auto-analyze new notes & their attachments** — a **master toggle** (**System → Note
+  analysis**, off by default) for automatic AI processing. On: a note's **AI analysis** is
+  computed the moment you add it, and its attachments **auto-enrich** (image vision summaries,
+  audio/video transcription) — each folding into the note's analysis as it lands — instead of
+  waiting for the nightly batch. Off: nothing auto-processes (you can still analyze or
+  transcribe any attachment by hand from its panel; the note's own analysis still runs
+  nightly). Backed by the `analyze-new-note` workflow (its enabled flag is the switch). AI
+  vision & note analysis need an LLM key; transcription is local.
 - **Search** — hybrid **keyword (FTS5)** + **semantic** (local embeddings, no
   extra API key).
 - **Knowledge graph** — an interactive map of notes and their links.

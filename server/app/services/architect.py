@@ -57,6 +57,14 @@ _DEFAULT_MODE_TOOLS = {
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
                  "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
+    # "Analyze" = research's read set + reference_lookup (the owner's own kb/Reference library).
+    "analyze": ["reference_lookup", "find", "search_notes", "read_note", "read_notes", "related_notes",
+                "list_tags", "notes_with_tag", "list_recent_notes", "search_attachments",
+                "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes",
+                "geo_distance", "nearby_notes", "where_was_i", "time_at_place", "places_visited",
+                "distance_traveled", "trail_summary", "entries_at_place", "reverse_geocode",
+                "forward_geocode", "drug_reference", "list_abnormal_labs", "show_lab_chart",
+                "lab_stat", "lab_value_at"],
 }
 
 # Tool input schemas (descriptions come from prompts.yaml `tools.<name>`).
@@ -96,6 +104,8 @@ _TOOL_SCHEMAS = {
     "search_notes": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
     "find": {"type": "object", "properties": {
+        "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
+    "reference_lookup": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "default": 6}}, "required": ["query"]},
     "read_note": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
     "read_notes": {"type": "object", "properties": {
@@ -353,7 +363,7 @@ def validate_agent_config(conn=None) -> list[str]:
     descriptions / action prompts. Used at startup and in tests."""
     warnings: list[str] = []
     known = set(_TOOL_SCHEMAS)
-    for mode in ("assisted", "research"):
+    for mode in ("assisted", "research", "analyze"):
         names = _mode_tool_names(mode)
         for n in names:
             if n not in known:
@@ -455,6 +465,29 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
     return _untrusted("find-results",
                       "Best matching passages — quote these VERBATIM and cite the [[Title]] above each "
                       "(read_note one for its full text):\n\n" + "\n\n".join(out))
+
+
+# The owner's curated reference library lives under this prefix (kb/Reference/Medicine/…, etc.).
+_REFERENCE_PREFIX = "kb/reference/"
+
+
+def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
+    """FIRST-LINE reference: search ONLY the owner's curated reference library (kb/Reference/…) and
+    return the best articles each with a quotable passage + [[Title]]. The owner's trusted, curated
+    sources — consulted before any external lookup. Read-only."""
+    from . import search as search_svc
+    rows = search_svc.hybrid_notes(conn, query, 24)
+    hits = [r for r in rows if (r["title"] or "").lower().startswith(_REFERENCE_PREFIX)][:max(1, min(int(limit or 6), 10))]
+    if not hits:
+        return _untrusted("reference", f"No reference articles found under kb/Reference for “{(query or '').strip()}”.")
+    out = []
+    for r in hits:
+        c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (r["id"],)).fetchone()
+        passage = _quotable_passage(clock.expand_tokens(c["content_md"] if c else ""), query)
+        out.append(f"[[{r['title']}]]\n  “{passage}”" if passage else f"[[{r['title']}]]")
+    return _untrusted("reference",
+                      "Owner's reference library — cite these [[Title]] and quote VERBATIM "
+                      "(these are the owner's curated, trusted references):\n\n" + "\n\n".join(out))
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
@@ -1881,6 +1914,8 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
                                   args.get("range"), args.get("from"), args.get("to"))
     if name == "find":
         return _tool_find(conn, args["query"], args.get("limit", 6)), None
+    if name == "reference_lookup":
+        return _tool_reference_lookup(conn, args["query"], args.get("limit", 6)), None
     if name == "search_notes":
         return _tool_search_notes(conn, args["query"], args.get("limit", 8)), None
     if name == "read_note":
@@ -2136,9 +2171,36 @@ def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
     return out, changed
 
 
+# A measurement-shaped figure (number + clinical unit) or an ISO date — an owner-specific datum that
+# MUST be grounded. The quote verifier only polices QUOTED spans; this catches a fabricated value
+# smuggled into ordinary (unquoted) analysis prose, which is the residual hole when analysis is allowed.
+_LAB_UNIT = (r"(?:mg/dl|mmol/l|g/dl|mg/l|µg/l|ug/l|ng/ml|pg/ml|iu/l|u/l|mol/l|mmhg|bpm|°c|°f|kg|lb|cm|mm|"
+             r"k/ul|k/µl|×?10\^?\d+/l|cells/u?l|/ul|/µl|%|mg|mcg|units?)")
+_VALUE_RE = re.compile(r"\b\d[\d,]*(?:\.\d+)?\s?" + _LAB_UNIT + r"\b", re.IGNORECASE)
+_ISODATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+
+def _verify_values(text: str, corpus: str) -> tuple[str, bool]:
+    """Flag any measurement-shaped figure or ISO date in the reply that does NOT appear in what a
+    tool returned this turn — so a fabricated owner value can't ride in as unquoted analysis prose.
+    Conservative + SOFT: appends an 'unverified figures' notice (never mangles text). Returns
+    (text, changed)."""
+    cn = _norm_quote(corpus)
+    bad: list[str] = []
+    for m in list(_VALUE_RE.finditer(text)) + list(_ISODATE_RE.finditer(text)):
+        tok = m.group(0).strip()
+        nt = _norm_quote(tok)
+        if nt and nt not in cn and tok not in bad:
+            bad.append(tok)
+    if not bad:
+        return text, False
+    return text.rstrip() + ("\n\n_(These figures couldn't be matched to the records I pulled this "
+                            "turn — treat them as unverified: " + ", ".join(bad[:6]) + ".)_"), True
+
+
 # Read-only tools that count as a FRESH retrieval over current data (research-mode grounding guard).
 _RETRIEVAL_TOOLS = frozenset({
-    "find", "search_notes", "read_note", "read_notes", "related_notes", "list_recent_notes",
+    "find", "reference_lookup", "search_notes", "read_note", "read_notes", "related_notes", "list_recent_notes",
     "notes_with_tag", "list_tags", "search_attachments", "read_attachment", "query_sql",
     "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
     "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
@@ -2197,8 +2259,11 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     tools = _tools_for(mode)
     model = agent_model or provider.default_model()
     max_tokens = prompts.get_int("agent.max_tokens", _DEFAULT_MAX_TOKENS)
-    max_iterations = prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS)
-    token_budget = prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS)
+    # Per-mode budget overrides (e.g. Analyze gets a deeper multi-step ceiling); fall back to agent.*.
+    max_iterations = prompts.get_int(f"modes.{mode}.max_iterations",
+                                     prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS))
+    token_budget = prompts.get_int(f"modes.{mode}.max_total_tokens",
+                                   prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS))
     assistant_text_parts: list[str] = []
     total_tokens = 0
     stopped_early = False
@@ -2242,7 +2307,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             # GROUNDING GUARD (research mode): a factual answer that called ZERO retrieval tools this
             # turn is answering from memory/stale context. Discard the draft, nudge once to re-ground,
             # and let the loop run again — the streamed memory-draft is cleared from the screen.
-            if (mode == "research" and not did_retrieve and not nudged
+            if (mode in ("research", "analyze") and not did_retrieve and not nudged
                     and _looks_factual("".join(assistant_text_parts))):
                 nudged = True
                 assistant_text_parts.clear()
@@ -2298,9 +2363,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     # returned this turn — so a fabricated link/citation/quote can never be persisted or clicked. If
     # anything changed, tell the client to swap the streamed text for the verified version.
     if final_text:
+        corpus = "\n".join(turn_corpus)
         final_text, dropped = _verify_reply(conn, final_text, tool_urls)
-        final_text, q_changed = _verify_quotes(final_text, "\n".join(turn_corpus))
-        if dropped or q_changed:
+        final_text, q_changed = _verify_quotes(final_text, corpus)
+        # Analysis prose is unquoted, so the quote verifier can't see a fabricated owner value in it —
+        # this catches measurement-shaped figures / dates not grounded in this turn's tool corpus.
+        v_changed = False
+        if mode in ("research", "analyze"):
+            final_text, v_changed = _verify_values(final_text, corpus)
+        if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",

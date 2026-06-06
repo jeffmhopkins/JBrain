@@ -21,7 +21,7 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 class MessageIn(BaseModel):
     text: str
-    mode: str = "assisted"          # 'assisted' | 'research'
+    mode: str = "assisted"          # 'assisted' | 'research' | 'analyze'
     lat: float | None = None
     lon: float | None = None
     location_label: str | None = None
@@ -82,7 +82,7 @@ def send_message(conversation_id: int, body: MessageIn):
         else None
     )
 
-    mode = body.mode if body.mode in ("assisted", "research") else "assisted"
+    mode = body.mode if body.mode in ("assisted", "research", "analyze") else "assisted"
 
     async def event_stream():
         # Bridge the architect's async generator through a queue so we can interleave a

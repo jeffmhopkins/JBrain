@@ -153,3 +153,27 @@ def test_verify_quotes_grounds_against_user_message():
     user = "please summarize: the trip to Chicago was for the marathon expo"
     out, changed = architect._verify_quotes('You said "the trip to Chicago was for the marathon expo".', user)
     assert not changed
+
+
+# --- value grounding guard (_verify_values) + reference scoping (Analyze mode) ----
+
+def test_verify_values_flags_ungrounded_measurement():
+    out, changed = architect._verify_values("Your platelet count of 9 ×10^9/L is critically low.",
+                                            "lab_stat: wbc 6.0 thou/cumm on 2026-01-01")
+    assert changed and "unverified" in out and "9 ×10^9/L" in out
+
+
+def test_verify_values_passes_grounded_measurement_and_date():
+    corpus = "lab_stat result: LDL 142 mg/dL on 2026-05-01 (flag high)"
+    out, changed = architect._verify_values("Your LDL was 142 mg/dL on 2026-05-01.", corpus)
+    assert not changed
+
+
+def test_verify_values_flags_ungrounded_date():
+    out, changed = architect._verify_values("On 2019-03-03 your levels dropped sharply.", "nothing here")
+    assert changed and "2019-03-03" in out
+
+
+def test_verify_values_ignores_unitless_counts():
+    out, changed = architect._verify_values("I found 3 notes and 2 entries on this topic.", "corpus")
+    assert not changed

@@ -147,6 +147,12 @@ async def lifespan(app: FastAPI):
         try:
             from .services import embeddings, wiki_guides
             await asyncio.to_thread(embeddings._get_model)
+            # One-time full re-chunk after a chunking-strategy migration (flag set by the
+            # migration runner). Runs first so the corpus is uniformly re-indexed; a no-op
+            # otherwise. Off the event loop so re-embedding never blocks the server.
+            rc = await asyncio.to_thread(lambda: embeddings.run_pending_rechunk(get_conn()))
+            if rc is not None:
+                print(f"[embeddings] re-chunked {rc} item(s) under the new chunking strategy", flush=True)
             n = await asyncio.to_thread(lambda: embeddings.reindex_missing_note_chunks(get_conn()))
             if n:
                 print(f"[embeddings] backfilled chunk vectors for {n} note(s)", flush=True)

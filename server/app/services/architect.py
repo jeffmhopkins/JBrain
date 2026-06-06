@@ -1046,8 +1046,10 @@ def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
     for r in rows:
         ci = r.get("chunk_index")
         loc = f" [chunk {ci}]" if ci is not None else ""
+        # Wider snippet than notes: the attachment snippet is neighbour-expanded
+        # (embeddings._expanded_snippet), so surface that surrounding context to the model.
         lines.append(f"- #{r['attachment_id']} {r['filename']}{loc} (in note '{r['title']}')"
-                     + (f"\n    {_snippet(r['snippet'], query, 160)}" if r.get("snippet") else ""))
+                     + (f"\n    {_snippet(r['snippet'], query, 400)}" if r.get("snippet") else ""))
     return _untrusted("search-results", "\n".join(lines))
 
 

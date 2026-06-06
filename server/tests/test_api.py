@@ -3071,6 +3071,77 @@ def test_note_chunking_finds_buried_terms_and_collapses(monkeypatch, tmp_path):
     assert "notes/daily/x" in [h["title"] for h in search.hybrid_notes(conn, "thrombocytopenic purpura", 8)]
 
 
+def test_chunk_text_markdown_structure_and_token_safety():
+    """Structure-aware splitting: ATX headers become a per-chunk breadcrumb (so a short
+    section embeds WITH its disambiguating context), fenced code is never split on an
+    inner '#', and no chunk exceeds the char ceiling that keeps it under the embedder's
+    512-token truncation. Pure unit — no DB, no model."""
+    from app.services.attachments import CHUNK_MAX_CHARS, chunk_text
+    md = (
+        "# Setup\n\nIntro text.\n\n"
+        "## Linux\n\nInstall on linux.\n\n"
+        "```python\ndef f():\n    # not a header inside a fence\n    return 1\n```\n\n"
+        "## Windows\n\nInstall on windows.\n"
+    )
+    chunks = chunk_text(md)
+    assert any(c.startswith("Setup > Linux") for c in chunks)      # breadcrumb prepended
+    assert any(c.startswith("Setup > Windows") for c in chunks)
+    assert any("def f():" in c for c in chunks)                    # code-fence body survives intact
+    assert all(len(c) <= CHUNK_MAX_CHARS for c in chunks)          # token-safety ceiling holds
+    # A dense, separator-free blob still gets cut at the ceiling (no silent embedder truncation).
+    assert chunk_text("z" * 5000) and all(len(c) <= CHUNK_MAX_CHARS for c in chunk_text("z" * 5000))
+
+
+def test_attachment_search_snippet_folds_in_neighbors(client):
+    """Embed-small / return-large for attachments: a hit's snippet is neighbour-expanded —
+    the matched chunk is returned WITH its adjacent chunks so the preview carries context.
+    Edge chunks clamp the window without error."""
+    from app.db import get_conn
+    from app.services import embeddings
+    conn = get_conn()
+    aid = conn.execute(
+        "INSERT INTO attachments (note_id, filename, mime, content_text, sha256) "
+        "VALUES (NULL, 'f.txt', 'text/plain', '', 'sha-snip')"
+    ).lastrowid
+    for i, t in enumerate(["AAA first", "BBB middle match", "CCC third"]):
+        conn.execute(
+            "INSERT INTO attachment_chunks (attachment_id, note_id, chunk_index, text) "
+            "VALUES (?, NULL, ?, ?)", (aid, i, t))
+    conn.commit()
+    snip = embeddings._expanded_snippet(conn, aid, 1, "BBB middle match")
+    assert "AAA first" in snip and "BBB middle match" in snip and "CCC third" in snip
+    edge = embeddings._expanded_snippet(conn, aid, 0, "AAA first")   # window clamps at the start
+    assert "AAA first" in edge and "BBB middle match" in edge and "CCC third" not in edge
+
+
+def test_rechunk_migration_flag_and_run(client, monkeypatch):
+    """The chunking-strategy migration flags a one-time full re-chunk; run_pending_rechunk
+    consumes the flag, rebuilds note chunk rows under the current splitter, and is a no-op
+    afterward (so it can't re-run every boot). embed_many is stubbed — no model needed."""
+    import app.db as db
+    from app.db import get_conn, get_meta, set_meta
+    from app.services import embeddings, notes as ns
+    monkeypatch.setattr(embeddings, "embed_many",
+                        lambda ts: [[0.0] * embeddings.EMBEDDING_DIM for _ in ts])
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "notes/x", "# Title\n\nbody one two three")
+    conn.execute("DELETE FROM note_chunks")                      # simulate a pre-change corpus
+    set_meta(conn, "schema_version", "43")
+    set_meta(conn, "rechunk:pending", "0")
+    conn.commit()
+
+    db._run_migrations(conn)                                     # upgrade 43 -> 44
+    assert get_meta("rechunk:pending", conn=conn) == "1"        # migration flagged the re-chunk
+
+    n = embeddings.run_pending_rechunk(conn)
+    assert n is not None and n >= 1                              # the note was reprocessed
+    assert conn.execute(
+        "SELECT COUNT(*) FROM note_chunks WHERE note_id = ?", (nid,)
+    ).fetchone()[0] >= 1                                         # chunks rebuilt
+    assert get_meta("rechunk:pending", conn=conn) == "0"        # flag cleared
+    assert embeddings.run_pending_rechunk(conn) is None         # idempotent — no-op next boot
+
+
 def test_geotrail_math(client):
     """Dwell (split-gap), distance (jitter-filtered), labeling, and stay-points."""
     from app.db import get_conn

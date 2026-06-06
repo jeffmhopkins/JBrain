@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 
 def init_db() -> None:
@@ -629,6 +629,15 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         _add_column(conn, "research_specs", "lab_window_from", "TEXT")
         _add_column(conn, "research_specs", "lab_window_to", "TEXT")
         _add_column(conn, "research_sessions", "charted_json", "TEXT NOT NULL DEFAULT '[]'")
+
+    if current < 44:
+        # Chunking strategy change: markdown/structure-aware splitting + a tighter char
+        # ceiling so a chunk can't overrun the embedder's 512-token truncation. Existing
+        # chunk vectors (and the chunk_index values read_attachment trusts) were built by
+        # the OLD splitter, so flag a one-time full re-chunk. It runs off the event loop in
+        # the startup warm task (run_pending_rechunk) — re-embedding the whole corpus must
+        # not block boot. No DDL: chunk tables are unchanged, only their contents.
+        set_meta(conn, "rechunk:pending", "1")
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

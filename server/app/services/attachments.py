@@ -7,14 +7,28 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 
 from . import embeddings
 
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024  # 100 MB (audio/video can be large)
 
-CHUNK_CHARS = 1500
+# A chunk is capped at 1200 chars so that even token-DENSE content (code, transcripts,
+# tables ≈ 2.5 chars/token) stays under bge-small's hard 512-token input limit — past
+# which the embedder SILENTLY truncates the tail, blinding the vector half of search to
+# it. For ordinary prose (≈ 4 chars/token) 1200 chars ≈ 300 tokens, squarely inside the
+# empirically optimal 256–400-token retrieval band. The cap is a deterministic guarantee
+# (no tokenizer dependency); it doubles as the size target.
+CHUNK_MAX_CHARS = 1200
 CHUNK_OVERLAP = 200
-MAX_CHUNKS = 200
+MAX_CHUNKS = 300
+
+# Markdown structure: cut sections at ATX headers, never split inside a fenced code
+# block, and prefix every chunk with its header breadcrumb ("H1 > H2 > H3") so a short
+# section embeds WITH the context that disambiguates it — at zero LLM cost.
+_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_SEPARATORS = ("\n\n", "\n", ". ", " ")  # preferred break points, best→worst
 
 TEXT_EXTS = {
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml",
@@ -84,23 +98,97 @@ def extract_text(raw: bytes, mime: str, filename: str) -> str:
     return ""
 
 
+def _sections(text: str) -> list[tuple[str, str]]:
+    """Split markdown into (breadcrumb, body) sections at ATX headers, keeping fenced
+    code blocks intact (a `#` inside a fence is not a header). `breadcrumb` is the header
+    path standing above the body (e.g. "Setup > Linux"); the header line itself is lifted
+    into the breadcrumb rather than left in the body. Text with no headers yields a single
+    ("", whole-text) section."""
+    sections: list[tuple[str, str]] = []
+    path: list[tuple[int, str]] = []        # (level, title) stack
+    buf: list[str] = []
+    in_fence, fence_tok = False, ""
+
+    def flush() -> None:
+        body = "\n".join(buf).strip()
+        if body:
+            sections.append((" > ".join(t for _, t in path), body))
+        buf.clear()
+
+    for ln in text.split("\n"):
+        fence = _FENCE_RE.match(ln)
+        if fence:
+            tok = fence.group(1)
+            if not in_fence:
+                in_fence, fence_tok = True, tok
+            elif tok == fence_tok:
+                in_fence = False
+            buf.append(ln)
+            continue
+        m = None if in_fence else _HEADER_RE.match(ln)
+        if m:
+            flush()                          # close the open section before descending
+            level = len(m.group(1))
+            while path and path[-1][0] >= level:
+                path.pop()
+            path.append((level, m.group(2).strip()))
+        else:
+            buf.append(ln)
+    flush()
+    return sections
+
+
+def _best_break(body: str, start: int, end: int, budget: int) -> int:
+    """The position to end a window at: the latest preferred separator in the chunk's
+    final third (so chunks stay reasonably full), else a hard cut at `end`."""
+    lo = start + (budget * 2) // 3
+    for sep in _SEPARATORS:
+        brk = body.rfind(sep, lo, end)
+        if brk != -1 and brk > start:
+            return brk + len(sep)
+    return end
+
+
+def _window_split(breadcrumb: str, body: str) -> list[str]:
+    """Pack one section's body into <= CHUNK_MAX_CHARS windows (breadcrumb included),
+    breaking on paragraph/sentence boundaries where possible, with CHUNK_OVERLAP
+    carry-over. Each emitted chunk is prefixed with the breadcrumb."""
+    prefix = f"{breadcrumb}\n\n" if breadcrumb else ""
+    budget = max(CHUNK_MAX_CHARS - len(prefix), 200)    # leave room for the breadcrumb
+    out: list[str] = []
+    start, n = 0, len(body)
+    while start < n:
+        end = min(start + budget, n)
+        if end < n:
+            end = _best_break(body, start, end, budget)
+        piece = body[start:end].strip()
+        if piece:
+            out.append(prefix + piece)
+        if end >= n:
+            break
+        start = max(end - CHUNK_OVERLAP, start + 1)
+    return out
+
+
 def chunk_text(text: str) -> list[str]:
+    """Split text into overlapping, embed-ready chunks.
+
+    Markdown-aware: sections are cut at headers (each chunk carries its header breadcrumb
+    so a short section embeds with disambiguating context) and fenced code blocks are kept
+    intact. Within a section, text is packed into <= CHUNK_MAX_CHARS windows on
+    paragraph/sentence boundaries with CHUNK_OVERLAP carry-over; the char ceiling keeps
+    every chunk under the embedder's 512-token truncation limit. The returned list is flat
+    and contiguous — the chunk_index a consumer stores is just a position in it."""
     text = (text or "").strip()
     if not text:
         return []
     chunks: list[str] = []
-    start, n = 0, len(text)
-    while start < n and len(chunks) < MAX_CHUNKS:
-        end = min(start + CHUNK_CHARS, n)
-        if end < n:
-            brk = text.rfind("\n", start + CHUNK_CHARS - CHUNK_OVERLAP, end)
-            if brk != -1 and brk > start:
-                end = brk
-        chunks.append(text[start:end].strip())
-        if end >= n:
-            break
-        start = max(end - CHUNK_OVERLAP, start + 1)
-    return [c for c in chunks if c]
+    for breadcrumb, body in _sections(text):
+        for piece in _window_split(breadcrumb, body):
+            chunks.append(piece)
+            if len(chunks) >= MAX_CHUNKS:
+                return chunks
+    return chunks
 
 
 def _sync_attachment_fts(conn, att_id, note_id, filename, content):

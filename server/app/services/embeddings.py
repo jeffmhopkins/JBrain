@@ -110,6 +110,47 @@ def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     return n
 
 
+def reindex_all_chunks(conn) -> int:
+    """Re-chunk and re-embed EVERY note and attachment under the CURRENT chunking
+    strategy — used once after a strategy change, when existing chunk vectors (and the
+    chunk_index values read_attachment trusts) were built by the old splitter. Notes are
+    rebuilt from their stored title+body, attachments from their stored content_text — no
+    re-extraction. Commits as it goes so a crash resumes from roughly where it stopped.
+    Returns the number of items reprocessed."""
+    from .attachments import chunk_text  # lazy: attachments imports this module
+    n = 0
+    for r in conn.execute(
+        "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL"
+    ).fetchall():
+        full = f"{r['title']}\n\n{r['content_md']}".strip()
+        upsert_note_chunk_embeddings(conn, r["id"], full)
+        n += 1
+        if n % 50 == 0:
+            conn.commit()
+    for r in conn.execute(
+        "SELECT id, note_id, content_text FROM attachments WHERE content_text != ''"
+    ).fetchall():
+        upsert_attachment_embeddings(conn, r["id"], r["note_id"], chunk_text(r["content_text"]))
+        n += 1
+        if n % 50 == 0:
+            conn.commit()
+    conn.commit()
+    return n
+
+
+def run_pending_rechunk(conn) -> int | None:
+    """If a chunking-strategy migration flagged a full re-chunk ('rechunk:pending'), run
+    it ONCE, clear the flag, and return the count. Returns None when nothing is pending.
+    Called from the startup warm task so re-embedding the corpus never blocks boot."""
+    from ..db import get_meta, set_meta
+    if get_meta("rechunk:pending", conn=conn) != "1":
+        return None
+    n = reindex_all_chunks(conn)
+    set_meta(conn, "rechunk:pending", "0")
+    conn.commit()
+    return n
+
+
 def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, chunks: list[str]) -> None:
     """Store one vector per chunk for an attachment (multi-vector)."""
     delete_attachment_embeddings(conn, attachment_id)
@@ -138,8 +179,31 @@ def delete_attachment_embeddings(conn, attachment_id: int) -> None:
     conn.execute("DELETE FROM attachment_chunks WHERE attachment_id = ?", (attachment_id,))
 
 
+# Embed-small / return-large for attachments: a search hit folds the matched chunk's
+# immediate NEIGHBOURS into its snippet, so the preview carries enough surrounding context
+# to judge relevance (and to feed an LLM) without a separate read_attachment round-trip.
+ATT_SNIPPET_WINDOW = 1     # neighbour chunks each side
+ATT_SNIPPET_CHARS = 600    # cap on the expanded snippet
+
+
+def _expanded_snippet(conn, attachment_id: int, chunk_index, matched_text: str,
+                      cap: int = ATT_SNIPPET_CHARS) -> str:
+    """The matched chunk WITH ±ATT_SNIPPET_WINDOW neighbours from the same attachment,
+    concatenated and capped. Falls back to the matched chunk alone when it has no index."""
+    if chunk_index is None:
+        return matched_text[:cap]
+    rows = conn.execute(
+        "SELECT text FROM attachment_chunks "
+        "WHERE attachment_id = ? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index",
+        (attachment_id, chunk_index - ATT_SNIPPET_WINDOW, chunk_index + ATT_SNIPPET_WINDOW),
+    ).fetchall()
+    joined = "\n\n".join(r["text"] for r in rows) if rows else matched_text
+    return joined[:cap]
+
+
 def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]:
-    """Semantic search over attachment chunks, collapsed to best chunk per attachment."""
+    """Semantic search over attachment chunks, collapsed to best chunk per attachment.
+    Each hit's snippet is neighbour-expanded (see _expanded_snippet) for context."""
     qvec = embed(query)
     rows = conn.execute(
         """
@@ -166,7 +230,7 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
                 "slug": r["slug"],
                 "distance": r["distance"],
                 "chunk_index": r["chunk_index"],
-                "snippet": r["text"][:200],
+                "snippet": _expanded_snippet(conn, r["attachment_id"], r["chunk_index"], r["text"]),
             }
     return list(best.values())
 

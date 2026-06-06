@@ -17,6 +17,58 @@ export function useMediaQuery(query: string): boolean {
 
 export const useIsDesktop = () => useMediaQuery("(min-width: 900px)");
 
+// ---- Theme (manual light tiers) -----------------------------------------
+// Dark (default) · Light · Sunlight, chosen in System → Appearance and stored
+// per-device. The choice is applied to <html data-theme> and mirrored into the
+// browser/PWA chrome (meta theme-color + iOS status-bar style) so the system bar
+// matches the app. Like useGeo, setTheme broadcasts an event so any other open
+// view (and other tabs, via `storage`) re-syncs instantly.
+export type Theme = "dark" | "light" | "sunlight";
+const THEME_KEY = "jbrain_theme";
+const THEME_EVENT = "jbrain-theme-changed";
+// Matches --bg for each tier; used for the browser/PWA chrome colour.
+const THEME_BG: Record<Theme, string> = { dark: "#111315", light: "#f5f7f8", sunlight: "#ffffff" };
+
+function readTheme(): Theme {
+  const t = localStorage.getItem(THEME_KEY);
+  return t === "light" || t === "sunlight" ? t : "dark";
+}
+
+/** Apply a theme to the document + browser chrome. Exported so main.tsx can call it
+ *  on boot (a tiny inline <head> script also sets data-theme pre-paint to avoid a
+ *  dark→light flash). Dark is the default :root, so it carries no attribute. */
+export function applyTheme(theme: Theme): void {
+  const root = document.documentElement;
+  if (theme === "dark") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (meta) meta.content = THEME_BG[theme];
+  // A dark translucent iOS status bar over a light app looks broken; let the system
+  // pick a legible style for the light tiers instead.
+  const bar = document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]');
+  if (bar) bar.content = theme === "dark" ? "black-translucent" : "default";
+}
+
+export function useTheme() {
+  const [theme, setThemeState] = useState<Theme>(readTheme);
+  useEffect(() => {
+    const sync = () => setThemeState(readTheme());
+    window.addEventListener(THEME_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(THEME_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  function setTheme(next: Theme) {
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+    setThemeState(next);
+    window.dispatchEvent(new Event(THEME_EVENT));   // notify any other view right away
+  }
+  return { theme, setTheme };
+}
+
 export interface Coords { lat: number; lon: number; }
 
 // The opt-in location flag is shared by two independent hooks (useGeo's toggle/UI

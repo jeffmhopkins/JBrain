@@ -16,6 +16,11 @@ const NODE_REL = 5;   // node radius scale; labels are positioned from this
 const KIND_COLOR: Record<string, string> = { entry: "#38bdf8", kb: "#f59e0b", list: "#a78bfa" };
 const colorOf = (kind: string) => KIND_COLOR[kind] ?? "#94a3b8";
 
+// The canvas is transparent over the page background, so the focus ring must
+// contrast with whatever theme is active (near-white on dark, near-black on the
+// light tiers). Read the live --text token rather than baking a colour in.
+const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 type Kind = "all" | "kb" | "entry" | "list";
 const linkEnd = (e: number | GNode) => (typeof e === "object" ? e.id : e);
 
@@ -241,7 +246,7 @@ export default function GraphPage() {
               ctx.beginPath();
               ctx.arc(node.x, node.y, r + 3 / scale, 0, 2 * Math.PI);
               ctx.lineWidth = 2 / scale;
-              ctx.strokeStyle = "#e6edf3";
+              ctx.strokeStyle = cssVar("--text") || "#e6edf3";
               ctx.stroke();
             }
             const label = node._label ?? graphLabel(node.title);

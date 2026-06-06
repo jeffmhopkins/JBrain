@@ -1,0 +1,60 @@
+# Declarative action: SPLIT personal health out of People (one-time migration).
+#
+# Moves each person's personal medical section (## Health / ## Medications / ## Labs …, when it
+# carries a clinical signal) out of their kb/People/<Name> article and into a dedicated
+# kb/Health/<Name> PHI page, so the person can be shared without leaking their medical history.
+#
+# DETERMINISTIC (no LLM): prose is moved verbatim, footnote definitions are carried/copied so no
+# citation breaks, and anything ambiguous is reported for manual review rather than auto-cut.
+# Idempotent (a re-run no-ops), versioned/undoable (restore any page from its History), and run
+# under the KB write lock so it can't interleave with the nightly update/maintenance.
+#
+# Run it from the Workflows page. The shipped default is a PREVIEW (dry_run=true): the first
+# "Run now" only reports what WOULD move. Re-run with "Preview only" OFF to apply.
+#
+# NOTE: do not trigger a full "Reorganize knowledge base" while this runs.
+#
+# config keys:
+#   dry_run     — report only, write nothing (default true; turn OFF to apply)
+#   limit       — max people to migrate per apply run (default 200; re-run drains more)
+#   on_conflict — if a person's kb/Health page already exists: skip (default) / append / replace
+#   review      — post review cards (default true)
+type: wiki_extract_health
+category: Knowledge base
+config:
+  - { key: dry_run, label: Preview only (no writes), type: review, default: true }
+  - { key: limit, label: Max people per run, type: number, default: 200 }
+  - { key: on_conflict, label: "If a Health page already exists", type: text, default: skip }
+  - { key: review, label: Post review cards, type: review, default: true }
+steps:
+  - id: split
+    do: extract_health
+    with:
+      dry_run: "{{ config.dry_run }}"
+      limit: "{{ config.limit | default(200) }}"
+      on_conflict: "{{ config.on_conflict | default('skip') }}"
+
+  # After a real apply: re-aggregate entities (so each person points at their People page, never
+  # the new Health page), sweep dead links, and refresh the index map.
+  - do: rebuild_entity_index
+    when: "{{ not split.dry_run and split.extracted }}"
+  - do: flag_dead_links
+    when: "{{ not split.dry_run and split.extracted }}"
+  - do: refresh_index
+    when: "{{ not split.dry_run and split.extracted }}"
+
+  # Preview summary.
+  - do: create_review
+    when: "{{ config.review != false and split.dry_run }}"
+    with:
+      title: "Health split — preview ({{ split.extracted }} to move)"
+      message: "{{ split.extracted }} person(s) would move their medical section into kb/Health/. Borderline (manual review): {{ split.borderline }}. Re-run with “Preview only” OFF to apply."
+      link_title: "kb/_index"
+
+  # Applied summary.
+  - do: create_review
+    when: "{{ config.review != false and not split.dry_run }}"
+    with:
+      title: "Health records split out"
+      message: "Moved {{ split.extracted }} person(s) into kb/Health/. Skipped (existing page): {{ split.conflicts }}. Borderline (manual review): {{ split.borderline }}. Errors: {{ split.errors }}. Restore any page from its History to undo."
+      link_title: "kb/_index"

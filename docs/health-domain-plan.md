@@ -5,6 +5,31 @@ Move a person's **personal medical history** out of their `kb/People/<Name>` art
 person can be shared via a link without leaking their medical data, and PHI lives behind a
 single auditable firewall.
 
+## Implementation status
+
+**SHIPPED (all phases).** Two commits:
+
+- **PR 1 — domain + firewall + boundary (the safe core):** `Health` added to `DOMAINS` +
+  `is_health_title()`; the `actions.wiki_guide.health` guide; People/Reference specs forbid
+  linking `kb/Health`; the RT-2 leaf-collision fixes in `entity_index._link_articles`,
+  `create_article` dedup, and `check_needed_links`; PHI-hardening inside `share.create_link`
+  (so the mint route AND the architect `create_share_link` tool both force bind + finite-TTL)
+  + the boot invariant; and `kb/Health` exclusion from research candidates/retrieval.
+- **PR 2 — go-forward writing + migration (this change):** the People/Reference/`wiki_outline`
+  prompt rewrites (route personal medical → `kb/Health`, worded non-destructively so the
+  nightly maintain never strips an un-migrated `## Health`); the existence-gated incremental
+  router `_route_medical_to_health` (a person's medical captures flow to their Health page once
+  it exists — no flag, no half-state); and the one-time, deterministic, dry-run-first,
+  idempotent, undoable migration `services/health_split.py` wired as the `extract_health`
+  primitive, the `actions/wiki_extract_health.yaml` recipe, and the shipped-disabled
+  `workflows/wiki-extract-health.yaml`.
+
+All 389 server tests pass (incl. the firewall, share-hardening, research-exclusion, and
+migration suites). **Deferred to a follow-up:** the PWA share-dialog PHI affordances (the
+server boundary is already authoritative); operationally, run the migration during a
+maintenance window after a DB snapshot, and don't trigger a full Reorganize while it runs.
+
+
 This plan is the reconciled output of three independent architect drafts (surgical/security,
 robustness/edge-cases, migration/ops) put through an adversarial red-team that verified every
 claim against the code. Findings are folded in; the must-fixes the red-team surfaced are

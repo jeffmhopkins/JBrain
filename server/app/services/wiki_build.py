@@ -1316,6 +1316,24 @@ def _articles_for_note_entities(conn, note_id: int) -> set[str]:
     return {r["t"] for r in rows}
 
 
+def _route_medical_to_health(conn, note_title: str, targets: set[str]) -> set[str]:
+    """Keep a person's medical captures out of their (now medical-free) People article once the
+    health split has run: a notes/medical/… note that routes to kb/People/<X> is retargeted to
+    kb/Health/<X> WHEN that health page exists. Existence-gated, so before the one-time split
+    (no health page yet) behaviour is unchanged — there is never a half-split state. General
+    medical that routes to a Reference article is left alone."""
+    if not (note_title or "").lower().startswith("notes/medical/"):
+        return targets
+    from . import health_split
+    out: set[str] = set()
+    for t in targets:
+        if t.lower().startswith("kb/people/"):
+            out.add(health_split.health_page_for(conn, t) or t)
+        else:
+            out.add(t)
+    return out
+
+
 _WATERMARK = "kb_incremental:since"
 
 
@@ -1362,6 +1380,7 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
             targets = _articles_citing_title(conn, ch["title"])
         else:
             targets = _articles_citing(conn, ch["id"]) | _articles_for_note_entities(conn, ch["id"])
+            targets = _route_medical_to_health(conn, ch["title"], targets)
         change_targets.append((ch["changed_at"], targets))
         if not targets:
             if not ch["deleted"]:

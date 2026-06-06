@@ -2901,6 +2901,65 @@ def test_health_domain_firewall(client):
     assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
 
 
+def test_health_split_migration(client):
+    """The one-time migration: deterministically move a person's ## Health section into a
+    kb/Health/<Name> page — moving exclusive footnote defs, copying shared ones, leaving the
+    People page firewall-clean — idempotently, and conservatively skipping ambiguous cases."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_guides
+    conn = get_conn()
+
+    jeff = ("# Jeff Hopkins\nJeff Hopkins owns this knowledge base and lives in Portland.[^s1]\n\n"
+            "## Key facts\n- Relationship: self\n\n"
+            "## Health\nDiagnosed with [[kb/Reference/Medicine/Conditions/TTP]] in 2024; takes "
+            "prednisone 40 mg daily.[^s2] Blood pressure 120/80 mmHg.[^s1]\n\n"
+            "## References\n[^s1]: [[notes/medical/visit1]] — 2026-06-03\n"
+            "[^s2]: [[notes/medical/visit2]] — 2026-06-04\n")
+    ns.upsert_note(conn, "kb/People/Jeff Hopkins", jeff, kind="kb")
+    # A medical-looking heading with NO clinical signal is NOT cut (RT-6 false-positive guard)…
+    ns.upsert_note(conn, "kb/People/Carol",
+                   "# Carol\nCarol is a colleague.\n\n## Conditions\nRemote work, flexible hours.\n", kind="kb")
+    # …and medical signal with no clean section is flagged for review, never auto-cut.
+    ns.upsert_note(conn, "kb/People/Bob",
+                   "# Bob\nBob is my brother who was recently hospitalized after surgery.\n", kind="kb")
+    conn.commit()
+
+    # Dry run writes nothing.
+    pre = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert rep["dry_run"] and rep["extracted"] == 1 and rep["borderline"] == 1
+    assert ns.get_by_title(conn, "kb/Health/Jeff Hopkins") is None
+    assert ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"] == pre
+
+    # Apply: Jeff's health record is split out; both pages stay structurally valid.
+    rep = health_split.extract_health(conn, dry_run=False)
+    assert rep["extracted"] == 1 and rep["conflicts"] == 0 and rep["errors"] == 0
+    hp = ns.get_by_title(conn, "kb/Health/Jeff Hopkins")["content_md"]
+    pp = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    assert "Personal health record for [[kb/People/Jeff Hopkins]]." in hp
+    assert "prednisone 40 mg" in hp and "[[kb/Reference/Medicine/Conditions/TTP]]" in hp
+    assert "[^s2]:" in hp and "[^s1]:" in hp                 # exclusive def MOVED, shared def COPIED
+    assert "## Health" not in pp and "prednisone" not in pp  # People page is now medical-free
+    assert "[^s2]:" not in pp and "[^s1]:" in pp             # moved def gone, shared def kept
+    assert "[[kb/Health" not in pp                           # firewall: never links the health page
+    assert wiki_guides.validate_structure("kb/People/Jeff Hopkins", pp)["ok"]
+    assert wiki_guides.validate_structure("kb/Health/Jeff Hopkins", hp)["ok"]
+    # Carol untouched (no signal); Bob flagged borderline, not cut.
+    assert "## Conditions" in ns.get_by_title(conn, "kb/People/Carol")["content_md"]
+    assert ns.get_by_title(conn, "kb/Health/Bob") is None
+
+    # Idempotent: a second apply finds nothing left to move.
+    assert health_split.extract_health(conn, dry_run=False)["extracted"] == 0
+
+    # Incremental routing: a new medical capture for Jeff now reroutes to his Health page.
+    from app.services import wiki_build
+    assert health_split.health_page_for(conn, "kb/People/Jeff Hopkins") == "kb/Health/Jeff Hopkins"
+    routed = wiki_build._route_medical_to_health(conn, "notes/medical/visit3", {"kb/People/Jeff Hopkins"})
+    assert routed == {"kb/Health/Jeff Hopkins"}
+    # A non-medical note is never rerouted.
+    assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
+
+
 def test_geo_distance_resolves_place_geofence(client):
     """A saved place keeps its coords in the geofence table, not on its loc/ note, so
     geo_distance must resolve it by place name AND by the loc/ note title — otherwise a

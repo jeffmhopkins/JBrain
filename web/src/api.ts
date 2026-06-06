@@ -129,6 +129,10 @@ export const labsTurn = <T = any>(token: string, message: string) =>
   publicApi<T>(`/api/share/${encodeURIComponent(token)}/labs/turn`, { method: "POST", body: JSON.stringify({ message }) });
 export const getShareLabSeries = (token: string, analyte: string) =>
   publicApi<LabSeries>(`/api/share/${encodeURIComponent(token)}/labs/series?analyte=${encodeURIComponent(analyte)}`);
+// Assisted (research) share with attached labs — the AI surfaces a chart on demand; the recipient
+// fetches its series through this token-scoped, allow-list-rechecked, no-store endpoint.
+export const getResearchLabSeries = (token: string, analyte: string) =>
+  publicApi<LabSeries>(`/api/share/${encodeURIComponent(token)}/research/labs/series?analyte=${encodeURIComponent(analyte)}`);
 // Lab-share — owner management.
 export const createLabShare = (analytes: string[], opts: { window_from?: string | null; window_to?: string | null;
     allow_chat?: boolean; intro?: string; label?: string;
@@ -138,6 +142,10 @@ export const createLabShare = (analytes: string[], opts: { window_from?: string 
 export const researchDetail = <T = any>(linkId: number) => get<T>(`/api/shares/research/${linkId}`);
 export const researchSetScope = (linkId: number, prefixes: string[], kinds: string[] = []) =>
   post(`/api/shares/research/${linkId}/scope`, { prefixes, kinds });
+// Attach/adjust a scoped LABS allow-list (+ optional date window) on an assisted link. Empty = detach.
+export const researchSetLabScope = (linkId: number,
+    body: { analytes: string[]; window_from?: string | null; window_to?: string | null }) =>
+  post(`/api/shares/research/${linkId}/labs`, body);
 export const researchSetDetails = (linkId: number, body: any) => post(`/api/shares/research/${linkId}/details`, body);
 export const researchApprove = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/approve`, { ids });
 export const researchDismiss = (linkId: number, ids: number[]) => post(`/api/shares/research/${linkId}/dismiss`, { ids });

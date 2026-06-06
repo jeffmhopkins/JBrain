@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 
 def init_db() -> None:
@@ -618,6 +618,17 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # scoped AI chat). The spec's analytes_json is the allow-list (the ONLY boundary); the
         # link is inert until the owner activates it. schema.sql carries the identical block.
         conn.executescript(_LABSHARE_SCHEMA_SQL)
+
+    if current < 43:
+        # Assisted (research) shares can OPTIONALLY attach a scoped labs allow-list + date
+        # window; the recipient AI then gets the scoped lab TOOLS over those analytes. Default
+        # '[]' = no labs attached (default-deny); the same research_specs.status gate governs
+        # exposure. charted_json audits which analytes were actually served to a session.
+        # schema.sql carries the identical columns for fresh DBs.
+        _add_column(conn, "research_specs", "lab_analytes_json", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column(conn, "research_specs", "lab_window_from", "TEXT")
+        _add_column(conn, "research_specs", "lab_window_to", "TEXT")
+        _add_column(conn, "research_sessions", "charted_json", "TEXT NOT NULL DEFAULT '[]'")
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

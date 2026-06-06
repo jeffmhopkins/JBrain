@@ -128,7 +128,8 @@ def list_shares():
     # Research Q&A links (draft + active) with their exposure + usage counters.
     research_links = conn.execute(
         "SELECT sl.id, sl.token, sl.label, sl.created_at, sl.expires_at, rs.status AS spec_status, "
-        "       rs.bind, rs.single_use, rs.approved_ids_json, rs.reply_count, rs.max_total_replies, "
+        "       rs.bind, rs.single_use, rs.approved_ids_json, rs.lab_analytes_json, rs.reply_count, "
+        "       rs.max_total_replies, "
         "       (SELECT COUNT(*) FROM research_sessions s WHERE s.share_link_id=sl.id) AS sessions "
         "FROM share_links sl JOIN research_specs rs ON rs.share_link_id=sl.id "
         "WHERE sl.kind='research' AND sl.status='active' ORDER BY sl.created_at DESC"
@@ -137,6 +138,7 @@ def list_shares():
     def _rl(r):
         d = dict(r)
         d["approved_count"] = len(json.loads(d.pop("approved_ids_json") or "[]"))
+        d["lab_count"] = len(json.loads(d.pop("lab_analytes_json") or "[]"))
         d["url"] = share_svc.share_url(d["token"])
         return d
 
@@ -394,7 +396,7 @@ def create_lab_share(body: LabShareIn):
         raise HTTPException(status_code=400, detail="Select at least one result to share.")
     token, link_id = labshare_svc.create(
         conn, analytes=analytes, window_from=body.window_from, window_to=body.window_to,
-        allow_chat=body.allow_chat, intro=(body.intro or "").strip()[:1000],
+        allow_chat=False, intro=(body.intro or "").strip()[:1000],   # data-only: chat moved to assisted links
         label=(body.label or "").strip()[:80] or None, ttl_days=max(1, body.ttl_days),
         bind=body.bind, single_use=body.single_use,
         max_turns=body.max_turns, max_total_replies=body.max_total_replies)
@@ -472,6 +474,10 @@ def research_detail(link_id: int):
         "scope": json.loads(spec["scope_json"] or "{}"),
         "candidates": research_svc.list_candidates(conn, link_id),
         "approved": research_svc.list_approved(conn, link_id),
+        # Attached labs scope (owner-only metadata: analyte keys + window, never values).
+        "labs": {"analytes": sorted(research_svc.lab_allowed(spec)),
+                 "window_from": spec["lab_window_from"] if "lab_window_from" in spec.keys() else None,
+                 "window_to": spec["lab_window_to"] if "lab_window_to" in spec.keys() else None},
         "sessions": [{**dict(s), "retrieved": len(json.loads(s["retrieved_ids_json"] or "[]"))} for s in sessions],
     }
 
@@ -510,6 +516,26 @@ def research_set_scope(link_id: int, body: ResearchScopeIn):
     research_svc.set_scope(conn, link_id, _clean_scope(body.prefixes, body.kinds))
     conn.commit()
     return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id)}
+
+
+class ResearchLabsIn(BaseModel):
+    analytes: list[str] = []
+    window_from: str | None = None
+    window_to: str | None = None
+
+
+@router.post("/research/{link_id}/labs")
+def research_set_labs(link_id: int, body: ResearchLabsIn):
+    """Attach/adjust the scoped LABS allow-list + date window on an assisted (research) link.
+    An empty list detaches labs. Default-deny: nothing is exposed until the link is activated,
+    and the same research_specs.status gate governs it. Narrowing takes effect on the next read."""
+    conn = get_conn()
+    if research_svc.get_spec(conn, link_id) is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+    research_svc.set_lab_scope(conn, link_id, analytes=body.analytes,
+                               window_from=body.window_from, window_to=body.window_to)
+    conn.commit()
+    return {"ok": True, "labs": sorted({str(a).strip() for a in body.analytes if str(a).strip()})}
 
 
 class ResearchDetailsIn(BaseModel):
@@ -583,8 +609,8 @@ def research_activate(link_id: int):
     spec = research_svc.get_spec(conn, link_id)
     if not spec:
         raise HTTPException(status_code=404, detail="Not found.")
-    if not research_svc.scope.approved_ids(spec):
-        raise HTTPException(status_code=400, detail="Approve at least one note before activating.")
+    if not research_svc.scope.approved_ids(spec) and not research_svc.lab_allowed(spec):
+        raise HTTPException(status_code=400, detail="Approve at least one note or lab result before activating.")
     research_svc.activate_spec(conn, link_id)
     conn.commit()
     return {"ok": True}

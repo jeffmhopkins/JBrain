@@ -1,16 +1,19 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { researchStart, researchTurn } from "../api";
+import ShareChart from "./ShareChart";
 import { Icon } from "./Icon";
 
 type Phase = "consent" | "chatting" | "ended";
-interface Msg { role: "ai" | "me"; text: string; }
+type ChartSpec = { analyte: string; unit: string | null; from: string; to: string; title: string };
+interface Msg { role: "ai" | "me"; text: string; charts?: ChartSpec[]; }
 
 // Recipient view of a research Q&A link: ask questions answered by a scope-bounded
 // AI. Mirrors the brain's chat layout (and GuidedChat), but the recipient asks and
-// the AI answers (the inverse of guided intake).
-export default function ResearchChat({ token, brainName, intro }: {
-  token: string; brainName: string; intro?: string;
+// the AI answers (the inverse of guided intake). When the owner attached labs, the AI
+// can ALSO pull up specific lab charts on demand (rendered inline, never dumped up front).
+export default function ResearchChat({ token, brainName, intro, hasLabs }: {
+  token: string; brainName: string; intro?: string; hasLabs?: boolean;
 }) {
   const [phase, setPhase] = useState<Phase>("consent");
   const [name, setName] = useState(localStorage.getItem("jbrain_share_name") || "");
@@ -51,7 +54,7 @@ export default function ResearchChat({ token, brainName, intro }: {
     setInput(""); setMsgs((m) => [...m, { role: "me", text }]); setThinking(true); setErr("");
     try {
       const r = await researchTurn(token, text);
-      setMsgs((m) => [...m, { role: "ai", text: r.message }]);
+      setMsgs((m) => [...m, { role: "ai", text: r.message, charts: r.charts || [] }]);
       if (r.phase === "ended") setPhase("ended");
     } catch (e: any) { setErr(e?.message || "Couldn't send — please try again."); }
     finally { setThinking(false); }
@@ -71,7 +74,8 @@ export default function ResearchChat({ token, brainName, intro }: {
       {intro && <p>{intro}</p>}
       <p className="muted" style={{ fontSize: 13 }}>
         You’re chatting with an AI that can answer questions from a specific set of records {brainName}
-        {" "}shared. It only reads what they approved, and your conversation is logged for them. Not professional advice.
+        {" "}shared{hasLabs ? ", and can pull up specific lab results they chose to share" : ""}. It only
+        {" "}reads what they approved, and your conversation is logged for them. Not professional advice.
       </p>
       <input placeholder="Your name *" value={name} onChange={(e) => setName(e.target.value)}
              onKeyDown={(e) => { if (e.key === "Enter") begin(); }} />
@@ -94,6 +98,10 @@ export default function ResearchChat({ token, brainName, intro }: {
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role === "me" ? "user" : "assistant"}`}>
             {m.role === "ai" ? <div className="md msg-md"><ReactMarkdown>{m.text}</ReactMarkdown></div> : m.text}
+            {m.charts?.map((c, j) => (
+              <ShareChart key={j} token={token} analyte={c.analyte} from={c.from} to={c.to}
+                          title={c.title} variant="research" />
+            ))}
           </div>
         ))}
         {thinking && (

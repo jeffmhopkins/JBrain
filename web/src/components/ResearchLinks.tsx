@@ -1,15 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal";
 import ConversationView from "./ConversationView";
 import ShareOptions from "./ShareOptions";
 import {
   post, researchActivate, researchApprove, researchDetail, researchDismiss, researchRemove,
   researchResetBind, researchSetDetails, researchSession, researchDeleteSession,
+  researchSetLabScope, getLabAnalytes, LabAnalyte,
 } from "../api";
 
 interface RLink {
   id: number; label: string | null; url: string; spec_status: string;
-  approved_count: number; sessions: number; reply_count: number; max_total_replies: number;
+  approved_count: number; lab_count: number; sessions: number; reply_count: number; max_total_replies: number;
 }
 
 // Owner management for scoped Q&A "research" links: approve which notes are
@@ -44,6 +45,7 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
               <strong>{l.label || "Research link"}</strong>
               {draft ? <span className="badge tag-delete">draft — not live</span> : <span className="badge prio">live</span>}
               <span className="badge">{l.approved_count} note{l.approved_count === 1 ? "" : "s"}</span>
+              {l.lab_count > 0 && <span className="badge">{l.lab_count} lab{l.lab_count === 1 ? "" : "s"}</span>}
               {l.sessions > 0 && <span className="badge">{l.sessions} chat{l.sessions === 1 ? "" : "s"}</span>}
               <span className="spacer" />
               <span className="muted" style={{ fontSize: 12 }}>{l.reply_count}/{l.max_total_replies} answers used</span>
@@ -58,11 +60,12 @@ export default function ResearchLinks({ links, reload }: { links: RLink[]; reloa
             )}
             {draft && (
               <div className="row" style={{ marginTop: 8, gap: 8 }}>
-                <button className="primary" disabled={l.approved_count === 0}
-                        title={l.approved_count === 0 ? "Approve at least one note first (Manage)" : ""}
+                <button className="primary" disabled={l.approved_count === 0 && l.lab_count === 0}
+                        title={l.approved_count === 0 && l.lab_count === 0
+                          ? "Approve a note or attach a lab result first (Manage)" : ""}
                         onClick={() => activate(l)}>Activate link</button>
                 <button className="ghost" onClick={() => setManage(l.id)}>
-                  Manage{l.approved_count === 0 ? " — approve notes" : ""}
+                  Manage{l.approved_count === 0 && l.lab_count === 0 ? " — approve notes or labs" : ""}
                 </button>
                 <button className="ghost danger-hover" onClick={() => revoke(l)}>Delete</button>
               </div>
@@ -82,6 +85,13 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
   const [busy, setBusy] = useState(false);
   const [s, setS] = useState<Settings | null>(null);
   const [saved, setSaved] = useState(false);
+  // Attached-labs picker (optional): the AI can look up & chart ONLY these analytes, within the window.
+  const [labAll, setLabAll] = useState<LabAnalyte[]>([]);
+  const [labSel, setLabSel] = useState<Set<string>>(new Set());
+  const [labFrom, setLabFrom] = useState("");
+  const [labTo, setLabTo] = useState("");
+  const [labQ, setLabQ] = useState("");
+  const [labSaved, setLabSaved] = useState(false);
 
   async function refresh() {
     try {
@@ -96,9 +106,29 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
         intro: detail.spec.intro || "", bind: !!detail.spec.bind, single_use: !!detail.spec.single_use,
         ttl_days: remaining,
       });
+      setLabSel(new Set(detail.labs?.analytes || []));
+      setLabFrom(detail.labs?.window_from || "");
+      setLabTo(detail.labs?.window_to || "");
     } catch { /* ignore */ }
   }
   useEffect(() => { refresh(); }, [linkId]);
+  useEffect(() => { getLabAnalytes().then((r) => setLabAll(r.analytes || [])).catch(() => { /* none */ }); }, []);
+
+  const labFiltered = useMemo(() => {
+    const f = labQ.trim().toLowerCase();
+    return labAll.filter((a) => !f || a.test_name.toLowerCase().includes(f) || a.analyte.includes(f));
+  }, [labAll, labQ]);
+  function toggleLab(a: string) {
+    setLabSel((sl) => { const n = new Set(sl); n.has(a) ? n.delete(a) : n.add(a); return n; });
+  }
+  async function saveLabs() {
+    setBusy(true);
+    try {
+      await researchSetLabScope(linkId, { analytes: [...labSel], window_from: labFrom || null, window_to: labTo || null });
+      setLabSaved(true); setTimeout(() => setLabSaved(false), 1500); await refresh();
+    } catch (e: any) { alert(e?.message || "Couldn't save labs."); }
+    finally { setBusy(false); }
+  }
 
   async function act(fn: () => Promise<any>) { setBusy(true); try { await fn(); await refresh(); } finally { setBusy(false); } }
   async function saveSettings() {
@@ -118,7 +148,7 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
   const draft = d.spec.status === "draft";
   return (
     <Modal title={`Research link${draft ? " (draft)" : ""}`} size="wide" onClose={onClose} footer={<>
-      {draft && <button className="primary" disabled={busy || d.approved.length === 0}
+      {draft && <button className="primary" disabled={busy || (d.approved.length === 0 && labSel.size === 0)}
                         onClick={() => act(() => researchActivate(linkId)).then(onClose)}>Activate</button>}
       <button className="ghost" onClick={onClose}>Close</button>
     </>}>
@@ -151,6 +181,42 @@ function ManageModal({ linkId, onClose }: { linkId: number; onClose: () => void 
                   disabled={busy} onClick={() => act(() => researchDismiss(linkId, [n.id]))}>Dismiss</button>
         </div>
       ))}
+
+      <div className="adv-section" style={{ marginTop: 16 }}>
+        Attach lab results (optional) — {labSel.size} selected
+      </div>
+      <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+        The assistant can look up &amp; chart ONLY these results (within the date range below), on demand — nothing else.
+      </p>
+      {labAll.length === 0
+        ? <p className="muted" style={{ fontSize: 13 }}>No lab results available to attach.</p>
+        : <>
+            <input placeholder="Find a result…" value={labQ} onChange={(e) => setLabQ(e.target.value)}
+                   style={{ marginBottom: 8 }} disabled={busy} />
+            <div className="lab-share-list">
+              {labFiltered.map((a) => (
+                <label key={a.analyte} className={"lab-share-opt" + (labSel.has(a.analyte) ? " sel" : "")}>
+                  <input type="checkbox" className="share-check" checked={labSel.has(a.analyte)}
+                         onChange={() => toggleLab(a.analyte)} disabled={busy} />
+                  <span className="lab-pick-name" style={{ fontWeight: 600 }}>{a.test_name}</span>
+                  <span className="lab-share-opt-val muted">{a.last_value}{a.unit ? " " + a.unit : ""}</span>
+                </label>
+              ))}
+              {labFiltered.length === 0 && <div className="muted" style={{ padding: 12, fontSize: 13 }}>No results match.</div>}
+            </div>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
+              <label className="row" style={{ gap: 6 }}>From
+                <input type="date" value={labFrom} max={labTo || undefined}
+                       onChange={(e) => setLabFrom(e.target.value)} /></label>
+              <label className="row" style={{ gap: 6 }}>To
+                <input type="date" value={labTo} min={labFrom || undefined}
+                       onChange={(e) => setLabTo(e.target.value)} /></label>
+              {(labFrom || labTo) && <button className="ghost" style={{ fontSize: 12 }}
+                onClick={() => { setLabFrom(""); setLabTo(""); }}>All time</button>}
+              <span className="spacer" />
+              <button className="primary" disabled={busy} onClick={saveLabs}>{labSaved ? "Saved ✓" : "Save labs"}</button>
+            </div>
+          </>}
 
       <div className="adv-section" style={{ marginTop: 16 }}>Settings</div>
       <label className="share-field">What the AI may &amp; may NOT discuss (scope)

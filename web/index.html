@@ -8,6 +8,23 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>JBrain</title>
+    <!-- Apply the saved theme (Dark default · Light · Sunlight) before first paint
+         so a light-mode user never sees a dark flash on load. Mirrors applyTheme()
+         in hooks.ts; kept inline + tiny so it runs ahead of the bundle. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("jbrain_theme");
+          if (t === "light" || t === "sunlight") {
+            document.documentElement.setAttribute("data-theme", t);
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute("content", t === "light" ? "#f5f7f8" : "#ffffff");
+            var b = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+            if (b) b.setAttribute("content", "default");
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { get, post, u } from "../api";
 import { useAuth } from "../App";
 import { enablePush, pushSupported, pushSupportReason } from "../push";
-import { useGeo, useTts } from "../hooks";
+import { useGeo, useTts, useTheme, type Theme } from "../hooks";
 import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
 import OwnerSetting from "../components/OwnerSetting";
@@ -14,6 +14,7 @@ import MediaSettings from "../components/MediaSettings";
 export default function SystemPage() {
   const { disconnect, pwaVersion, serverVersion, versionMismatch, vapidPublicKey } = useAuth();
   const geo = useGeo();
+  const theme = useTheme();
   const [info, setInfo] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [msg, setMsg] = useState("");
@@ -257,6 +258,21 @@ export default function SystemPage() {
       <ModelPicker />
 
       <MediaSettings />
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Appearance</h3>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Theme for this device. <strong>Sunlight</strong> maximises contrast for reading in direct sun.
+        </p>
+        <div className="seg" role="group" aria-label="Theme">
+          {(["dark", "light", "sunlight"] as Theme[]).map((val) => (
+            <button key={val} className={theme.theme === val ? "on" : ""}
+                    onClick={() => theme.setTheme(val)} style={{ textTransform: "capitalize" }}>
+              {val}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Location stamping</h3>

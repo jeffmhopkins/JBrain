@@ -1,4 +1,5 @@
-/* Flat dark theme — one muted accent, monochrome icons, minimal elevation. */
+/* Flat theme — one muted accent, monochrome icons, minimal elevation. Dark by
+   default; manually-selected Light / Sunlight tiers override the tokens below. */
 :root {
   --bg: #111315;
   --bg-elev: #161a1c;
@@ -15,11 +16,63 @@
   --m-research: #c4ad6e;        /* muted gold — read-only */
   --danger: #c08585;
   --ok: #84a591;
+  /* Semantic tones reused across diff/approval/status surfaces. Kept as tokens so
+     the light tiers can darken them for contrast (the dark literals read poorly on
+     a white background). */
+  --good: #4ade80;                          /* success green — status, approvals */
+  --ins-fg: #a9cdb6; --ins-bg: rgba(132,165,145,0.22);   /* inline diff: added */
+  --del-fg: #d6a3a3; --del-bg: rgba(192,133,133,0.20);   /* inline diff: removed */
   --radius: 8px;
   --tabbar-h: 60px;
   --sidebar-w: 250px;
   --rail-w: 300px;
   color-scheme: dark;
+}
+
+/* ---- Light tiers (manually selected in System → Appearance) --------------
+   The dark palette above is the default; these override every colour token via
+   a [data-theme] attribute set on <html>. "light" is a comfortable indoor theme;
+   "sunlight" is a maximum-contrast variant tuned for direct-sun readability
+   (pure-white surfaces, black text, near-black hairlines). */
+:root[data-theme="light"] {
+  --bg: #f5f7f8;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eceff1;
+  --border: #d2d8dc;
+  --text: #1a1f23;
+  --text-dim: #5b656b;
+  --accent: #3f7d92;
+  --accent-soft: rgba(63,125,146,0.12);
+  --m-entry: #2f8f5b;
+  --m-medical: #c0504e;
+  --m-assisted: #2f7d97;
+  --m-research: #9a7b1f;
+  --danger: #b3403f;
+  --ok: #2f8f5b;
+  --good: #1f9d54;
+  --ins-fg: #1d7a45; --ins-bg: rgba(47,143,91,0.16);
+  --del-fg: #b3403f; --del-bg: rgba(179,64,63,0.14);
+  color-scheme: light;
+}
+:root[data-theme="sunlight"] {
+  --bg: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eef1f3;
+  --border: #232a2e;            /* near-black hairlines, visible under glare */
+  --text: #000000;
+  --text-dim: #39424a;          /* still high-contrast against white */
+  --accent: #0f5366;            /* deep, saturated teal */
+  --accent-soft: rgba(15,83,102,0.16);
+  --m-entry: #0f6a3c;
+  --m-medical: #962826;
+  --m-assisted: #0f5870;
+  --m-research: #6f5400;
+  --danger: #962826;
+  --ok: #0f6a3c;
+  --good: #0f6a3c;
+  --ins-fg: #0f6a3c; --ins-bg: rgba(15,106,60,0.18);
+  --del-fg: #962826; --del-bg: rgba(150,40,38,0.16);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -476,7 +529,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .update-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .status-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .status-dot.busy { background: #f59e0b; animation: status-pulse 1.1s ease-in-out infinite; }
-.status-dot.ok { background: #4ade80; }
+.status-dot.ok { background: var(--good); }
 .status-dot.err { background: var(--danger, #ff6b6b); }
 .status-dot.info { background: var(--accent, #4ea1ff); }
 @keyframes status-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
@@ -784,12 +837,12 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .approval-fields th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 3px 8px 3px 0; white-space: nowrap; vertical-align: top; }
 .approval-fields td { padding: 3px 6px; vertical-align: top; }
 .approval-fields td.was { color: var(--danger); }
-.approval-fields td.now { color: #4ade80; }
+.approval-fields td.now { color: var(--good); }
 .approval-fields td.arrow { color: var(--text-dim); }
 .approval-fields tr:not(.changed) td.was, .approval-fields tr:not(.changed) td.now { color: var(--text-dim); }
 .approval-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .approval-tags .tag-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
-.approval-tags .tag-chip.added { color: #4ade80; border-color: #4ade8066; }
+.approval-tags .tag-chip.added { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
 .approval-tags .tag-chip.removed { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
 .approval-tags .tag-chip.kept { color: var(--text-dim); }
 /* Inline tag editor on a note page */
@@ -839,7 +892,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .run-status { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); }
 .run-status.running { color: var(--text-dim); }
-.run-status.ok { color: #4ade80; border-color: rgba(74,222,128,0.45); }
+.run-status.ok { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
 .run-status.err { color: var(--danger); border-color: rgba(248,113,113,0.45); }
 .spinner { width: 12px; height: 12px; border: 2px solid var(--border);
   border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
@@ -904,11 +957,11 @@ pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--rad
 .md-diff > :last-child { margin-bottom: 0; }
 /* Inline word-level change. */
 .md-diff ins, .md-diff .jb-ins {
-  text-decoration: none; color: #a9cdb6;
-  background: rgba(132, 165, 145, 0.22); border-radius: 3px; padding: 0 2px; }
+  text-decoration: none; color: var(--ins-fg);
+  background: var(--ins-bg); border-radius: 3px; padding: 0 2px; }
 .md-diff del, .md-diff .jb-del {
-  text-decoration: line-through; color: #d6a3a3;
-  background: rgba(192, 133, 133, 0.20); border-radius: 3px; padding: 0 2px; }
+  text-decoration: line-through; color: var(--del-fg);
+  background: var(--del-bg); border-radius: 3px; padding: 0 2px; }
 /* Whole added / removed block (a new or deleted line, list item, heading…). */
 .md-diff .jb-block-ins {
   background: rgba(132, 165, 145, 0.12); box-shadow: inset 3px 0 0 var(--ok);
@@ -996,7 +1049,7 @@ table.sql-result th { background: var(--bg-elev-2); }
   position: absolute; left: 0; bottom: 1.5em; z-index: 30;
   width: min(340px, 80vw); display: flex; flex-direction: column; gap: 4px;
   padding: 8px 10px; font-size: 12px; line-height: 1.4;
-  background: var(--card, #1b1f24); color: var(--text); text-align: left;
+  background: var(--bg-elev-2); color: var(--text); text-align: left;
   border: 1px solid var(--border, #333); border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0,0,0,0.35); white-space: normal;
 }
@@ -1043,7 +1096,7 @@ table.sql-result th { background: var(--bg-elev-2); }
 .th-step-label { font-weight: 600; }
 .th-tool { font-size: 11px; color: var(--text-dim); background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
 .th-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: auto; }
-.th-badge-err { background: rgba(180,90,90,0.18); color: #d99; border: 1px solid rgba(180,90,90,0.4); }
+.th-badge-err { background: rgba(180,90,90,0.18); color: var(--danger); border: 1px solid rgba(180,90,90,0.4); }
 .th-event { font-size: 12px; color: var(--text-dim); margin: 4px 0 0 22px; }
 .th-refs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 22px; }
 .th-chip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--border); }

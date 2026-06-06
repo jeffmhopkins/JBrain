@@ -16,7 +16,7 @@ import json
 import re
 from collections import Counter, defaultdict
 
-from . import embeddings, people
+from . import embeddings, nickname_lexicon, people
 
 _TITLES = {"mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx", "rev", "fr", "the"}
 _NONWORD = re.compile(r"[^a-z0-9]+")
@@ -143,6 +143,7 @@ def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None
             comp[ra] |= comp[rb]
             del comp[rb]
 
+        person_like = typ in {"person", "animal"}
         by_token: dict = defaultdict(list)
         for n in norms:
             for t in clusters[typ][n]["tokens"]:
@@ -155,8 +156,23 @@ def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None
                     if _split_blocked(a, b):           # user forbade co-grouping these
                         continue
                     ta, tb = clusters[typ][a]["tokens"], clusters[typ][b]["tokens"]
+                    # A conflicting generational suffix (Jr vs Sr, or one carrying a suffix
+                    # and the other not) is a strong "different person" signal for people —
+                    # block the union on BOTH the raw-subset and nickname paths, so a
+                    # father/son who differ only by suffix never auto-merge.
+                    if person_like and nickname_lexicon.suffixes(ta) != nickname_lexicon.suffixes(tb):
+                        continue
                     if ta <= tb or tb <= ta:          # one name subsumes the other
                         union(a, b)
+                    elif person_like:
+                        # Nickname-aware fallback (person/animal only): map given-name tokens
+                        # to a canonical form (jeff→jeffrey, bob→robert) and retry the subset
+                        # test. The shared distinctive token that put a,b in this bucket is a
+                        # real surname (raw, unmapped), so this only fires for same-surname
+                        # variants.
+                        ma, mb = nickname_lexicon.map_tokens(ta), nickname_lexicon.map_tokens(tb)
+                        if ma <= mb or mb <= ma:
+                            union(a, b)
         # Acronym union: "ttp" ↔ "thrombotic thrombocytopenic purpura" (initials match).
         def _rep(n):
             raws = clusters[typ][n]["raws"]

@@ -73,38 +73,40 @@ def _persons(conn):
 
 def test_merge_unites_no_shared_token_clusters(client):
     """A user merge unites two clusters that share no distinctive token; the survivor keeps
-    both notes and the other name becomes an alias. Idempotent across a second rebuild."""
+    both notes and the other name becomes an alias. Idempotent across a second rebuild.
+
+    Uses two names with NO nickname relationship (so the Phase-2 nickname heuristic doesn't
+    pre-fold them) and no token-subset relationship — only the explicit merge unites them."""
     from app.db import get_conn
     from app.services import entity_index as ei, entity_decisions as ed
     conn = get_conn()
-    _mk(conn, "n1", [{"type": "person", "name": "Jeff Hopkins"}])
-    _mk(conn, "n2", [{"type": "person", "name": "Jeffrey Mark Hopkins"}])
+    _mk(conn, "n1", [{"type": "person", "name": "Orin Vasquez"}])
+    _mk(conn, "n2", [{"type": "person", "name": "Mira Lindqvist"}])
     conn.commit()
     ei.rebuild(conn)
-    # Heuristic alone: they DON'T fold (no shared distinctive surname-subset relationship
-    # that subsumes — "jeff hopkins" vs "jeffrey mark hopkins" don't subset on tokens).
+    # Heuristic alone: they DON'T fold (no shared distinctive token, no nickname relationship).
     assert len(_persons(conn)) == 2
 
-    # Merge "Jeff Hopkins" into "Jeffrey Mark Hopkins".
-    ed.add(conn, "merge", norm_a="Jeff Hopkins", canonical="Jeffrey Mark Hopkins")
+    # Merge "Orin Vasquez" into "Mira Lindqvist".
+    ed.add(conn, "merge", norm_a="Orin Vasquez", canonical="Mira Lindqvist")
     conn.commit()
     ei.rebuild(conn)
     persons = _persons(conn)
-    assert list(persons) == ["Jeffrey Mark Hopkins"]
-    assert persons["Jeffrey Mark Hopkins"] == 2          # both notes folded in
+    assert list(persons) == ["Mira Lindqvist"]
+    assert persons["Mira Lindqvist"] == 2          # both notes folded in
     # The merged-away name is an alias and resolves to the survivor's notes.
     survivor = conn.execute(
-        "SELECT id FROM entities WHERE normalized_key='jeffrey mark hopkins'").fetchone()["id"]
+        "SELECT id FROM entities WHERE normalized_key='mira lindqvist'").fetchone()["id"]
     aliases = [a["alias_norm"] for a in conn.execute(
         "SELECT alias_norm FROM entity_aliases WHERE entity_id=?", (survivor,)).fetchall()]
-    assert "jeff hopkins" in aliases
-    assert sorted(ei.note_ids_for_name(conn, "Jeff Hopkins")) == \
-        sorted(ei.note_ids_for_name(conn, "Jeffrey Mark Hopkins"))
+    assert "orin vasquez" in aliases
+    assert sorted(ei.note_ids_for_name(conn, "Orin Vasquez")) == \
+        sorted(ei.note_ids_for_name(conn, "Mira Lindqvist"))
 
     # (2) Idempotency — rebuild AGAIN; still one merged entity (the core regression).
     ei.rebuild(conn)
     persons2 = _persons(conn)
-    assert list(persons2) == ["Jeffrey Mark Hopkins"] and persons2["Jeffrey Mark Hopkins"] == 2
+    assert list(persons2) == ["Mira Lindqvist"] and persons2["Mira Lindqvist"] == 2
 
 
 def test_split_blocks_heuristic_union(client):
@@ -389,13 +391,14 @@ def test_merge_endpoint_round_trip(client):
     from app.db import get_conn
     from app.services import entity_index as ei
     conn = get_conn()
-    _mk(conn, "e1", [{"type": "person", "name": "Jeff Hopkins"}])
+    # Distinct surnames so they stay two entities until the explicit endpoint merge.
+    _mk(conn, "e1", [{"type": "person", "name": "Jeff Orozco"}])
     _mk(conn, "e2", [{"type": "person", "name": "Jeffrey Mark Hopkins"}])
     conn.commit()
     ei.rebuild(conn)
     ids = {r["normalized_key"]: r["id"] for r in conn.execute(
         "SELECT id, normalized_key FROM entities WHERE type='person'").fetchall()}
-    src, into = ids["jeff hopkins"], ids["jeffrey mark hopkins"]
+    src, into = ids["jeff orozco"], ids["jeffrey mark hopkins"]
 
     r = client.post("/api/entities/merge", json={"source_id": src, "into_id": into})
     assert r.status_code == 200, r.text
@@ -403,3 +406,167 @@ def test_merge_endpoint_round_trip(client):
     assert list(_persons(conn)) == ["Jeffrey Mark Hopkins"]
     ei.rebuild(conn)
     assert list(_persons(conn)) == ["Jeffrey Mark Hopkins"]
+
+
+# --------------------------------------------------------------------------------------
+# Phase 2: nickname/diminutive-aware person clustering.
+# --------------------------------------------------------------------------------------
+
+def test_nickname_shared_surname_auto_merges(client):
+    """Jeff Hopkins + Jeffrey Mark Hopkins auto-cluster with NO decision: shared surname
+    'hopkins' buckets them, jeff→jeffrey makes the mapped token sets subset."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "j1", [{"type": "person", "name": "Jeff Hopkins"}])
+    _mk(conn, "j2", [{"type": "person", "name": "Jeffrey Mark Hopkins"}])
+    conn.commit()
+    ei.rebuild(conn)
+    persons = _persons(conn)
+    assert list(persons) == ["Jeffrey Mark Hopkins"]      # most-tokens wins as canonical
+    assert persons["Jeffrey Mark Hopkins"] == 2
+    assert sorted(ei.note_ids_for_name(conn, "Jeff Hopkins")) == \
+        sorted(ei.note_ids_for_name(conn, "Jeffrey Mark Hopkins"))
+
+
+def test_nickname_bob_robert_auto_merges(client):
+    """Bob Smith + Robert Smith auto-cluster (bob↔robert, shared surname 'smith')."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "b1", [{"type": "person", "name": "Bob Smith"}])
+    _mk(conn, "b2", [{"type": "person", "name": "Robert Smith"}])
+    conn.commit()
+    ei.rebuild(conn)
+    assert len(_persons(conn)) == 1
+
+
+def test_nickname_different_surname_does_not_merge(client):
+    """Mike Jones vs Michael Smith: nickname-equivalent given names but NO shared surname,
+    so they're never even compared — two distinct entities."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "d1", [{"type": "person", "name": "Mike Jones"}])
+    _mk(conn, "d2", [{"type": "person", "name": "Michael Smith"}])
+    conn.commit()
+    ei.rebuild(conn)
+    assert set(_persons(conn)) == {"Mike Jones", "Michael Smith"}
+
+
+def test_nickname_suffix_conflict_blocks_merge(client):
+    """Jeff Hopkins Jr + Jeffrey Hopkins Sr share surname & nickname, but a Jr/Sr
+    generational-suffix conflict blocks the nickname merge."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "sx1", [{"type": "person", "name": "Jeff Hopkins Jr"}])
+    _mk(conn, "sx2", [{"type": "person", "name": "Jeffrey Hopkins Sr"}])
+    conn.commit()
+    ei.rebuild(conn)
+    # Nickname path is the only thing that could unite these (raw token sets don't subset:
+    # {jeff,hopkins,jr} vs {jeffrey,hopkins,sr}); the suffix conflict blocks it.
+    assert len(_persons(conn)) == 2
+
+    # One carrying a suffix and the other NOT is also a conflict on the nickname path:
+    # {bob,marsh,jr} vs {robert,marsh} don't raw-subset, so only nickname could unite them.
+    _mk(conn, "sx3", [{"type": "person", "name": "Bob Marsh Jr"}])
+    _mk(conn, "sx4", [{"type": "person", "name": "Robert Marsh"}])
+    conn.commit()
+    ei.rebuild(conn)
+    persons = _persons(conn)
+    assert "Bob Marsh Jr" in persons and "Robert Marsh" in persons
+
+
+def test_nickname_merge_overridden_by_split(client):
+    """A split still wins over a nickname auto-merge."""
+    from app.db import get_conn
+    from app.services import entity_index as ei, entity_decisions as ed
+    conn = get_conn()
+    _mk(conn, "ns1", [{"type": "person", "name": "Bob Marlow"}])
+    _mk(conn, "ns2", [{"type": "person", "name": "Robert Marlow"}])
+    conn.commit()
+    ei.rebuild(conn)
+    assert len(_persons(conn)) == 1                       # nickname-folded
+
+    ed.add(conn, "split", norm_a="Bob Marlow", norm_b="Robert Marlow")
+    conn.commit()
+    ei.rebuild(conn)
+    assert set(_persons(conn)) == {"Bob Marlow", "Robert Marlow"}
+    ei.rebuild(conn)                                      # idempotent
+    assert set(_persons(conn)) == {"Bob Marlow", "Robert Marlow"}
+
+
+def test_nickname_merge_survives_second_rebuild(client):
+    """A nickname auto-merge is stable across rebuilds."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "sr1", [{"type": "person", "name": "Liz Carmody"}])
+    _mk(conn, "sr2", [{"type": "person", "name": "Elizabeth Carmody"}])
+    conn.commit()
+    ei.rebuild(conn)
+    assert len(_persons(conn)) == 1
+    ei.rebuild(conn)
+    assert len(_persons(conn)) == 1
+
+
+def test_nickname_does_not_affect_non_person_types(client):
+    """Nickname mapping is person/animal only — an org named 'Bob' and 'Robert' sharing a
+    surname-like token is NOT nickname-folded."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "o1", [{"type": "org", "name": "Bob Industries"}])
+    _mk(conn, "o2", [{"type": "org", "name": "Robert Industries"}])
+    conn.commit()
+    ei.rebuild(conn)
+    orgs = {r["canonical_name"] for r in conn.execute(
+        "SELECT canonical_name FROM entities WHERE type='org'").fetchall()}
+    assert orgs == {"Bob Industries", "Robert Industries"}
+
+
+def test_nickname_animal_type_folds(client):
+    """Animal type IS person-like for nickname purposes."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "an1", [{"type": "animal", "name": "Charlie Whiskers"}])
+    _mk(conn, "an2", [{"type": "animal", "name": "Charles Whiskers"}])
+    conn.commit()
+    ei.rebuild(conn)
+    animals = [r["canonical_name"] for r in conn.execute(
+        "SELECT canonical_name FROM entities WHERE type='animal'").fetchall()]
+    assert len(animals) == 1
+
+
+def test_ambiguous_short_forms_do_not_auto_merge(client):
+    """Different real people who share a surname but whose given names are only AMBIGUOUS
+    short forms (Sandy≠Alexander, Jack≠Jonathan, Harry≠Henry, Al≠Albert) must NOT auto-merge.
+    These tokens were deliberately excluded from the lexicon; this guards re-introduction."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    pairs = [("Sandy Lee", "Alexander Lee"), ("Jack Brown", "Jonathan Brown"),
+             ("Harry Park", "Henry Park"), ("Al Green", "Albert Green")]
+    for i, (x, y) in enumerate(pairs):
+        _mk(conn, f"amb{i}a", [{"type": "person", "name": x}])
+        _mk(conn, f"amb{i}b", [{"type": "person", "name": y}])
+    conn.commit()
+    ei.rebuild(conn)
+    # Each pair stays as two distinct entities (8 people total).
+    assert len([r for r in conn.execute("SELECT id FROM entities WHERE type='person'")]) == 8
+
+
+def test_generational_suffix_blocks_even_exact_name(client):
+    """A Jr/Sr boundary is a 'different person' signal applied consistently: even an EXACT
+    same-spelled name + suffix (John Smith vs John Smith Jr) does not auto-merge — only the
+    suffix distinguishes a father/son, so they stay separate until an explicit merge."""
+    from app.db import get_conn
+    from app.services import entity_index as ei
+    conn = get_conn()
+    _mk(conn, "g1", [{"type": "person", "name": "John Smith"}])
+    _mk(conn, "g2", [{"type": "person", "name": "John Smith Jr"}])
+    conn.commit()
+    ei.rebuild(conn)
+    assert len([r for r in conn.execute("SELECT id FROM entities WHERE type='person'")]) == 2

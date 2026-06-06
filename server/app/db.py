@@ -164,6 +164,11 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
 def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
     # SQLite has no ADD COLUMN IF NOT EXISTS, so guard explicitly.
     if not _column_exists(conn, table, column):
@@ -701,12 +706,17 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # real dated entry note (the truth layer). is_correction marks the talk row;
         # source_note_id links it to the promoted note (SET NULL on note delete so the
         # talk record survives). schema.sql carries the identical columns + index.
-        _add_column(conn, "article_talk", "is_correction", "INTEGER NOT NULL DEFAULT 0")
-        _add_column(conn, "article_talk", "source_note_id",
-                    "INTEGER REFERENCES notes(id) ON DELETE SET NULL")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
-            "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
+        # Guard the table: article_talk is created by a pre-v40 migration, so a real upgrading
+        # DB has it — but migrations run BEFORE schema.sql, so on a DB that somehow lacks it
+        # there is nothing to ALTER (schema.sql, running right after, creates it complete with
+        # these columns + index). Without the guard the bare ALTER/CREATE INDEX would crash.
+        if _table_exists(conn, "article_talk"):
+            _add_column(conn, "article_talk", "is_correction", "INTEGER NOT NULL DEFAULT 0")
+            _add_column(conn, "article_talk", "source_note_id",
+                        "INTEGER REFERENCES notes(id) ON DELETE SET NULL")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_article_talk_source_note "
+                "ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL")
 
     if current < 48:
         # Durable entity-name healing: owner source-of-truth overrides for the derived entity

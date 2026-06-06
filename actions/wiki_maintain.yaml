@@ -43,6 +43,11 @@ steps:
   #     inert notes (+ cap) so they stop nagging the maintenance pass and posting Review cards.
   - do: tidy_talk
 
+  # 1d². Link-label hygiene (deterministic, no LLM): drop redundant/mismatched [[link|alias]]
+  #      labels so links render the article's clean short name (e.g. "Jeffrey Mark Hopkins",
+  #      not "People/Jeffrey Mark Hopkins") — keeps freshly-written links tidy without a rebuild.
+  - do: normalize_link_labels
+
   # 1e. Keep saved geofences reconciled with their kb/Places articles (location box + cross-link).
   - do: link_places
 

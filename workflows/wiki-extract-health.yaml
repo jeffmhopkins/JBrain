@@ -1,0 +1,21 @@
+# One-time migration: split personal health out of People into kb/Health (run-only, never scheduled).
+#
+# Wraps the deterministic wiki_extract_health action. Shipped DISABLED so the scheduler never
+# fires it; run it on demand with "Run now" on the Workflows page (manual runs ignore the enabled
+# flag). The default config is a PREVIEW (dry_run) — the first run reports what would move; turn
+# "Preview only" off and run again to apply. Every move is versioned/undoable.
+key: wiki-extract-health
+name: Split personal health into kb/Health (one-time)
+enabled: false
+
+trigger:
+  type: schedule
+  interval_seconds: 31536000   # 1 year — but enabled:false means it never auto-fires
+
+action:
+  type: wiki_extract_health
+  config:
+    dry_run: true
+    limit: 200
+    on_conflict: skip
+    review: true

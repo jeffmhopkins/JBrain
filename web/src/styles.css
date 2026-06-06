@@ -875,6 +875,13 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   .modal-foot { padding-bottom: 12px; }
   .wf-textarea-lg { min-height: 220px; }
 }
+/* In-wiki link-label audit panel. */
+.link-audit { margin-bottom: 12px; }
+.link-audit .chev { display: inline-flex; color: var(--text-dim); transition: transform .12s ease; }
+.link-audit .chev.open { transform: rotate(90deg); }
+.link-audit-item { padding: 8px 0; border-top: 1px solid var(--border); }
+.link-audit-item code { font-size: 12px; }
+
 pre.diff { background: var(--bg-elev-2); padding: 12px; border-radius: var(--radius); overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
 .diff-insert { color: var(--ok); }
 .diff-delete { color: var(--danger); text-decoration: line-through; }
@@ -990,3 +997,17 @@ table.sql-result th { background: var(--bg-elev-2); }
 .cite-pop-head { color: var(--ok, #7fb37f); }
 .cite-pop-head strong { color: var(--text); }
 .cite-pop-body { color: var(--text-dim); }
+
+/* External-lookup proposal (the medical_reference gate): the assistant can only ASK to send a
+   term to MedlinePlus; nothing leaves until the owner approves the exact term here. */
+.ext-proposal {
+  margin: 8px 0; padding: 10px 12px; border: 1px solid var(--accent, #6aa9c9);
+  border-radius: 10px; background: rgba(106,169,201,0.10); font-size: 13px;
+}
+.ext-proposal-text { color: var(--text); }
+.ext-proposal strong { color: var(--text); }
+.ext-proposal-input {
+  width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 13px;
+  border: 1px solid var(--border, #444); border-radius: 6px;
+  background: var(--bg, #12161a); color: var(--text);
+}

@@ -783,6 +783,126 @@ def test_diff_and_restore(client):
     assert after[0]["source"] == "restore"
 
 
+def test_link_label_audit_flags_and_fixes_mismatch(client):
+    # Two same-folder people, plus a note that links to Summer but LABELS it "Jeff Hopkins".
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/66070 Chapman Street",
+        "content_md": "Primary residence of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].\n"
+                      "Legit short form: [[kb/People/Jeff Hopkins|Jeff]].",
+    })
+
+    audit = client.get("/api/notes/links/audit").json()["findings"]
+    # Exactly one mismatch — the legit shortening ("Jeff") must NOT be flagged.
+    assert len(audit) == 1
+    f = audit[0]
+    assert f["display"] == "Jeff Hopkins"
+    assert f["target_title"] == "kb/People/Summer E. Hopkins"
+    assert f["resolved_title"] == "kb/People/Jeff Hopkins"
+    assert f["fixed"] == "[[kb/People/Summer E. Hopkins]]"   # drop alias → renders short name
+
+    # Fix it; the alias is gone (renders the target's name), and re-audit is clean.
+    assert client.post("/api/notes/links/audit/fix",
+                       json={"note_id": f["source_id"], "target": f["target"],
+                             "display": f["display"]}).json()["fixed"] is True
+    note = client.get(f"/api/notes/{f['source_slug']}").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]
+    assert "|Jeff]]" in note["content_md"]   # the legit short link is untouched
+    assert client.get("/api/notes/links/audit").json()["findings"] == []
+
+
+def test_verbose_alias_tidy_drops_path_echoes(client):
+    # Maintenance sweep: aliases that just echo the article's path/name are tidied to bare
+    # links (render the clean short name); a genuine shortening is left alone.
+    from app.db import get_conn
+    from app.services import wikilinks
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Den",
+        "content_md": ("A [[kb/People/Jeff Hopkins|People/Jeff Hopkins]], "
+                       "B [[kb/People/Jeff Hopkins|Jeff Hopkins]], "
+                       "C [[kb/People/Jeff Hopkins|Jeff]], "
+                       "D [[kb/People/Jeff Hopkins]]."),
+    })
+    conn = get_conn()
+    verbose = [f for f in wikilinks.scan_link_labels(conn) if f["kind"] == "verbose"]
+    assert len(verbose) == 2          # A (path echo) + B (name echo); C (short) + D (bare) untouched
+    assert wikilinks.normalize_all_link_labels(conn)["verbose"] == 2
+    conn.commit()
+    den = client.get("/api/notes/kb-places-den").json()["content_md"]
+    assert den.count("[[kb/People/Jeff Hopkins]]") == 3   # A, B, D now bare
+    assert "|People/Jeff Hopkins]]" not in den and "|Jeff Hopkins]]" not in den
+    assert "|Jeff]]" in den                                # genuine shortening kept
+
+
+def test_audit_link_labels_workflow_action(client):
+    # The nightly action end-to-end: detect → fix → Review summary.
+    from app.db import get_conn
+    from app.services import pipeline
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Cabin",
+        "content_md": "Owned by [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn = get_conn()
+    recipe = pipeline.get_action_def("audit_link_labels")
+    assert recipe is not None, "audit_link_labels action recipe should be registered"
+    pipeline.run_pipeline(conn, recipe, {"limit": 500, "fix": True, "review": True}, None, None)
+    conn.commit()
+
+    note = client.get("/api/notes/kb-places-cabin").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in note["content_md"]   # alias dropped
+    rc = conn.execute("SELECT title, message FROM review_items ORDER BY id DESC LIMIT 1").fetchone()
+    assert "wiki-link label" in rc["title"] and "Jeff Hopkins" in rc["message"]
+
+
+def test_wiki_viewed_event_hook_runs_subscribers_and_debounces(client):
+    # The generic on-view hook: firing wiki_viewed runs subscribed event-workflows.
+    # Here a flag-only (fix:false) audit subscriber runs but must NOT mutate notes.
+    import json as _json
+    from app.db import get_conn
+    conn = get_conn()
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/Loft",
+        "content_md": "Home of [[kb/People/Summer E. Hopkins|Jeff Hopkins]].",
+    })
+    conn.execute(
+        "INSERT INTO workflows (key, name, trigger_type, trigger_config, action_type, action_config, enabled, source) "
+        "VALUES ('t-onview', 'on view', 'event', ?, ?, ?, 1, 'user')",
+        (_json.dumps({"event": "wiki_viewed"}), "audit_link_labels",
+         _json.dumps({"fix": False, "review": False})),
+    )
+    conn.commit()
+
+    assert client.post("/api/events/wiki_unknown").json()["fired"] is False   # allow-listed only
+    assert client.post("/api/events/wiki_viewed").json()["fired"] is True
+    # Subscriber ran (flag-only → note untouched), and an immediate re-fire is debounced.
+    assert client.get("/api/notes/kb-places-loft").json()["content_md"].count("|Jeff Hopkins]]") == 1
+    assert conn.execute("SELECT last_status FROM workflows WHERE key='t-onview'").fetchone()["last_status"] == "ok"
+    assert client.post("/api/events/wiki_viewed").json().get("debounced") is True
+
+
+def test_rename_refreshes_stale_echo_alias(client):
+    # A note links to Jeff with the label echoing his name; renaming Jeff must not leave
+    # the stale "Jeff Hopkins" label pointing at the renamed (different) article.
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/House",
+        "content_md": "Resident: [[kb/People/Jeff Hopkins|Jeff Hopkins]].",
+    })
+    # Rename the person note (PUT with a new title renames in place).
+    jeff = client.get("/api/notes/kb-people-jeff-hopkins").json()
+    client.put(f"/api/notes/{jeff['slug']}",
+               json={"title": "kb/People/Summer E. Hopkins", "content_md": "Summer."})
+    house = client.get("/api/notes/kb-places-house").json()
+    assert "[[kb/People/Summer E. Hopkins]]" in house["content_md"]   # echo alias dropped
+    assert "Jeff Hopkins" not in house["content_md"]
+
+
 def test_architect_edits_attributed(client):
     import json as _json
     from app.db import get_conn
@@ -1891,7 +2011,9 @@ def test_medref_medications(client, monkeypatch):
             return {"approximateGroup": {"candidate": [{"rxcui": "6809", "score": "90", "name": "metformin"}]}}
         if "connect.medlineplus.gov" in url:
             return {"feed": {"entry": [{"title": {"_value": "Metformin"},
-                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html"}]}]}}
+                    "summary": {"_value": "Metformin is used to treat type 2 diabetes. It works by helping "
+                                          "to restore your body's proper response to insulin."},
+                    "link": [{"href": "https://medlineplus.gov/druginfo/meds/a696005.html?utm_source=mplusconnect"}]}]}}
         return {}
     monkeypatch.setattr(medref, "_http_get", fake_get)
 
@@ -1925,9 +2047,17 @@ def test_medref_medications(client, monkeypatch):
     todos = article_talk.open_for(conn, "kb/Reference/Medicine/Medications/Metformine XR")
     assert any("approximately matches" in t["body"] for t in todos)
 
-    # Read-only assistant tool (research mode).
-    txt, _ = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
-    assert "medlineplus.gov" in txt and "rxcui 6809" in txt
+    # Read-only assistant tool (research mode) — now GATED: the first call only PROPOSES (sends nothing),
+    # and the page comes back only after the owner approves the exact name.
+    from app.services import external_lookups
+    txt, ev = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev and ev["type"] == "external_proposal" and ev["tool"] == "drug_reference"
+    assert "PROPOSED" in txt and "medlineplus.gov" not in txt
+    external_lookups.decide(conn, ev["id"], approve=True)
+    txt2, ev2 = architect._run_tool(conn, None, "drug_reference", {"name": "metformin"}, mode="research")
+    assert ev2 is None and "medlineplus.gov" in txt2 and "rxcui 6809" in txt2
+    assert "type 2 diabetes" in txt2 and "restore your body" in txt2   # the public-domain summary, not just a link
+    assert "?utm_source" not in txt2                                   # tracking params stripped from the cited URL
 
 
 def test_talk_dedup_cap_and_demote(client):
@@ -2807,7 +2937,10 @@ def test_wiki_guides(client):
     assert not g.is_protected("kb/People/Allan")
     assert g.domain_for_title("kb/People/Allan") == "People"
     assert g.domain_for_title("kb/Reference/Medicine/TTP") == "Reference"
+    assert g.domain_for_title("kb/Health/Jeff Hopkins") == "Health"
     assert g.domain_for_title("kb/Nope/x") is None
+    assert g.is_health_title("kb/Health/Jeff Hopkins") and g.is_health_title("KB/HEALTH/X")
+    assert not g.is_health_title("kb/People/Jeff Hopkins")
 
     good = ("# Allan\nAllan is my brother and lives in Portland.[^s1]\n\n"
             "## Key facts\n- Relationship: brother\n\n## References\n[^s1]: [[notes/x]] — 2026-06-03\n")
@@ -2817,6 +2950,22 @@ def test_wiki_guides(client):
     pii = "# TTP\nA blood disorder my brother [[kb/People/Allan]] has.\n\n## Overview\nLow platelets.\n"
     r = g.validate_structure("kb/Reference/Medicine/TTP", pii)
     assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # PHI firewall: a People (or Reference) article that links a kb/Health/<Person> page is
+    # rejected, so a person's medical record can never be referenced from shareable content.
+    people_health = "# Allan\nMy brother.\n\n## Background\nSee [[kb/Health/Allan]] for his record.\n"
+    r = g.validate_structure("kb/People/Allan", people_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+    ref_health = "# TTP\nA disorder.\n\n## Overview\nSee [[kb/Health/Allan]].\n"
+    r = g.validate_structure("kb/Reference/Medicine/TTP", ref_health)
+    assert not r["ok"] and any("PII firewall" in e for e in r["errors"])
+
+    # A Health page MAY link back to its person and to general Reference/Medicine background.
+    health = ("# Allan\nPersonal health record for [[kb/People/Allan]].[^s1]\n\n"
+              "## Conditions\nHas [[kb/Reference/Medicine/Conditions/TTP]].[^s1]\n\n"
+              "## References\n[^s1]: [[notes/medical/x]] — 2026-06-03\n")
+    r = g.validate_structure("kb/Health/Allan", health)
+    assert r["ok"] and not r["errors"]
 
     r = g.validate_structure("kb/Things/Car", "# Car\n## History\nIt happened.[^s1]\n")
     assert not r["ok"]
@@ -2840,10 +2989,112 @@ def test_wiki_guides(client):
     assert not any("looks frozen" in w for w in dynamic["warnings"])
 
     conn = get_conn()
-    assert g.seed_guides(conn) == 7      # general + 6 domains
+    assert g.seed_guides(conn) == 8      # general + 7 domains (incl. Health)
     assert g.seed_guides(conn) == 0      # idempotent — no churn on re-seed
     titles = [row["title"] for row in conn.execute("SELECT title FROM notes WHERE kind='kb'").fetchall()]
-    assert "kb/People/_Guide" in titles and all(g.is_protected(t) for t in titles)
+    assert "kb/People/_Guide" in titles and "kb/Health/_Guide" in titles
+    assert all(g.is_protected(t) for t in titles)
+
+
+def test_health_domain_firewall(client):
+    """The kb/Health PHI firewall: a health-note share is force-hardened (bind + finite TTL)
+    no matter what the caller asks for; the person entity never binds to the Health page despite
+    the shared leaf; and health pages are excluded from research candidates + retrieval."""
+    from app.db import get_conn
+    from app.services import notes as ns, entity_index, research_scope, wiki_guides
+    from app.services import share as share_svc
+    conn = get_conn()
+
+    # --- RT-1: create_link forces bind + finite TTL on a kb/Health note, even when the caller
+    # passes ttl_days=None, bind=False (the architect's create_share_link tool does exactly that).
+    hid = ns.upsert_note(conn, "kb/Health/Jeff Hopkins",
+                         "# Jeff Hopkins\nPersonal health record for [[kb/People/Jeff Hopkins]].", kind="kb")
+    pid = ns.upsert_note(conn, "kb/People/Jeff Hopkins", "# Jeff Hopkins\nThe owner.", kind="kb")
+    conn.commit()
+    tok = share_svc.create_link(conn, hid, "view", ttl_days=None, bind=False); conn.commit()
+    row = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok,)).fetchone()
+    assert row["bind"] == 1 and row["expires_at"]            # hardened despite the unbound request
+    # A normal note share is unchanged (no forced bind / expiry).
+    nid = ns.upsert_note(conn, "Plain Note", "hi"); conn.commit()
+    tok2 = share_svc.create_link(conn, nid, "view", ttl_days=None, bind=False); conn.commit()
+    row2 = conn.execute("SELECT bind, expires_at FROM share_links WHERE token=?", (tok2,)).fetchone()
+    assert row2["bind"] == 0 and row2["expires_at"] is None
+    share_svc.assert_health_share_policy()                  # boot invariant holds
+
+    # --- RT-2: the Jeff person entity binds to kb/People/Jeff Hopkins, NOT the Health page that
+    # shares its leaf (the SELECT in _link_articles has no ORDER BY, so this must be deterministic).
+    conn.execute("INSERT INTO entities (type, canonical_name, normalized_key, note_count) VALUES "
+                 "('person', ?, ?, 1)", ("Jeff Hopkins", entity_index.normalize("Jeff Hopkins")))
+    conn.commit()
+    entity_index._link_articles(conn); conn.commit()
+    at = conn.execute("SELECT article_title FROM entities WHERE normalized_key=?",
+                      (entity_index.normalize("Jeff Hopkins"),)).fetchone()["article_title"]
+    assert at == "kb/People/Jeff Hopkins"
+
+    # --- RT-2/D2: research candidate surfacing excludes the Health page even under a matching prefix.
+    cand = research_scope.filter_match_ids(conn, {"prefixes": ["kb"]})
+    assert pid in cand and hid not in cand
+    # scoped_search never returns a Health body even if its id is force-injected into the allowlist.
+    assert not any(r["id"] == hid for r in research_scope.scoped_search(conn, {hid}, "health record"))
+
+
+def test_health_split_migration(client):
+    """The one-time migration: deterministically move a person's ## Health section into a
+    kb/Health/<Name> page — moving exclusive footnote defs, copying shared ones, leaving the
+    People page firewall-clean — idempotently, and conservatively skipping ambiguous cases."""
+    from app.db import get_conn
+    from app.services import notes as ns, health_split, wiki_guides
+    conn = get_conn()
+
+    jeff = ("# Jeff Hopkins\nJeff Hopkins owns this knowledge base and lives in Portland.[^s1]\n\n"
+            "## Key facts\n- Relationship: self\n\n"
+            "## Health\nDiagnosed with [[kb/Reference/Medicine/Conditions/TTP]] in 2024; takes "
+            "prednisone 40 mg daily.[^s2] Blood pressure 120/80 mmHg.[^s1]\n\n"
+            "## References\n[^s1]: [[notes/medical/visit1]] — 2026-06-03\n"
+            "[^s2]: [[notes/medical/visit2]] — 2026-06-04\n")
+    ns.upsert_note(conn, "kb/People/Jeff Hopkins", jeff, kind="kb")
+    # A medical-looking heading with NO clinical signal is NOT cut (RT-6 false-positive guard)…
+    ns.upsert_note(conn, "kb/People/Carol",
+                   "# Carol\nCarol is a colleague.\n\n## Conditions\nRemote work, flexible hours.\n", kind="kb")
+    # …and medical signal with no clean section is flagged for review, never auto-cut.
+    ns.upsert_note(conn, "kb/People/Bob",
+                   "# Bob\nBob is my brother who was recently hospitalized after surgery.\n", kind="kb")
+    conn.commit()
+
+    # Dry run writes nothing.
+    pre = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    rep = health_split.extract_health(conn, dry_run=True)
+    assert rep["dry_run"] and rep["extracted"] == 1 and rep["borderline"] == 1
+    assert ns.get_by_title(conn, "kb/Health/Jeff Hopkins") is None
+    assert ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"] == pre
+
+    # Apply: Jeff's health record is split out; both pages stay structurally valid.
+    rep = health_split.extract_health(conn, dry_run=False)
+    assert rep["extracted"] == 1 and rep["conflicts"] == 0 and rep["errors"] == 0
+    hp = ns.get_by_title(conn, "kb/Health/Jeff Hopkins")["content_md"]
+    pp = ns.get_by_title(conn, "kb/People/Jeff Hopkins")["content_md"]
+    assert "Personal health record for [[kb/People/Jeff Hopkins]]." in hp
+    assert "prednisone 40 mg" in hp and "[[kb/Reference/Medicine/Conditions/TTP]]" in hp
+    assert "[^s2]:" in hp and "[^s1]:" in hp                 # exclusive def MOVED, shared def COPIED
+    assert "## Health" not in pp and "prednisone" not in pp  # People page is now medical-free
+    assert "[^s2]:" not in pp and "[^s1]:" in pp             # moved def gone, shared def kept
+    assert "[[kb/Health" not in pp                           # firewall: never links the health page
+    assert wiki_guides.validate_structure("kb/People/Jeff Hopkins", pp)["ok"]
+    assert wiki_guides.validate_structure("kb/Health/Jeff Hopkins", hp)["ok"]
+    # Carol untouched (no signal); Bob flagged borderline, not cut.
+    assert "## Conditions" in ns.get_by_title(conn, "kb/People/Carol")["content_md"]
+    assert ns.get_by_title(conn, "kb/Health/Bob") is None
+
+    # Idempotent: a second apply finds nothing left to move.
+    assert health_split.extract_health(conn, dry_run=False)["extracted"] == 0
+
+    # Incremental routing: a new medical capture for Jeff now reroutes to his Health page.
+    from app.services import wiki_build
+    assert health_split.health_page_for(conn, "kb/People/Jeff Hopkins") == "kb/Health/Jeff Hopkins"
+    routed = wiki_build._route_medical_to_health(conn, "notes/medical/visit3", {"kb/People/Jeff Hopkins"})
+    assert routed == {"kb/Health/Jeff Hopkins"}
+    # A non-medical note is never rerouted.
+    assert wiki_build._route_medical_to_health(conn, "notes/trip", {"kb/People/Jeff Hopkins"}) == {"kb/People/Jeff Hopkins"}
 
 
 def test_geo_distance_resolves_place_geofence(client):
@@ -6861,3 +7112,20 @@ def test_analyze_mode_accepted_and_grounding_guard_fires(client, monkeypatch):
     events = _drive_run(cid, "do my labs fit TTP", "analyze", fake, monkeypatch)
     assert {"type": "replace_text", "text": ""} in events    # guard fired in analyze mode too
     assert fake.turn >= 3
+
+
+def test_external_lookup_approval_endpoint(client, monkeypatch):
+    # The gate's HTTP side: approve runs the (owner-authorized) external fetch; deny records it;
+    # a missing id 404s.
+    from app.db import get_conn
+    from app.services import architect, medref
+    conn = get_conn()
+    _, ev = architect._tool_medical_reference(conn, None, "atrial fibrillation")   # propose (nothing sent)
+    monkeypatch.setattr(medref, "health_topic", lambda c, q: {"url": "https://medlineplus.gov/afib.html",
+                                                              "title": "Atrial Fibrillation", "snippet": "s"})
+    r = client.post(f"/api/external-lookups/{ev['id']}/approve").json()
+    assert r["ok"] and r["found"] is True
+    assert conn.execute("SELECT status FROM external_lookups WHERE id=?", (ev["id"],)).fetchone()["status"] == "approved"
+    _, ev2 = architect._tool_medical_reference(conn, None, "hemolytic anemia")
+    assert client.post(f"/api/external-lookups/{ev2['id']}/deny").json()["ok"]
+    assert client.post("/api/external-lookups/999999/approve").status_code == 404

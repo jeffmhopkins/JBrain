@@ -1,0 +1,27 @@
+# Wiki-link LABEL audit — runs nightly at 01:50, BEFORE the 02:00 incremental update
+# and 03:00 maintenance, so link text is clean before those passes touch it.
+#
+# Finds [[Target|Display]] links whose shortened label names a DIFFERENT article than the
+# target — most often minted when a note is renamed/merged and the inbound-link rewrite
+# keeps the old |Display verbatim (e.g. [[kb/People/Summer E. Hopkins|Jeff Hopkins]]).
+# High-confidence only: the label resolves to a different article in the same folder, or is
+# a former title of the target. Corrects the label to the target's bare name
+# (deterministic, versioned/undoable), records each fix in the article's talk, and posts a
+# Review card summarising what changed. No LLM — a clean night is a true no-op.
+#
+# Set fix:false to flag-only (Review cards, fix by hand). Also runnable on demand from the
+# Workflows page.
+key: audit-link-labels
+name: Audit wiki-link labels
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "50 1 * * *"   # 1:50am local (server TZ) — before the 2am update + 3am maintenance
+
+action:
+  type: audit_link_labels
+  config:
+    limit: 500
+    fix: true
+    review: true

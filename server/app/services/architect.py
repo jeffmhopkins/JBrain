@@ -58,7 +58,7 @@ _DEFAULT_MODE_TOOLS = {
                  "entries_at_place", "reverse_geocode", "forward_geocode", "drug_reference",
                  "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at"],
     # "Analyze" = research's read set + reference_lookup (the owner's own kb/Reference library).
-    "analyze": ["reference_lookup", "find", "search_notes", "read_note", "read_notes", "related_notes",
+    "analyze": ["reference_lookup", "medical_reference", "find", "search_notes", "read_note", "read_notes", "related_notes",
                 "list_tags", "notes_with_tag", "list_recent_notes", "search_attachments",
                 "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes",
                 "geo_distance", "nearby_notes", "where_was_i", "time_at_place", "places_visited",
@@ -180,6 +180,9 @@ _TOOL_SCHEMAS = {
     "drug_reference": {"type": "object", "properties": {
         "name": {"type": "string", "description": "A medication name (brand or generic), e.g. 'metformin' or 'Tylenol'."}},
         "required": ["name"]},
+    "medical_reference": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "A health condition/topic/test, e.g. 'thrombotic thrombocytopenic purpura' or 'atrial fibrillation'."}},
+        "required": ["query"]},
     "save_place": {"type": "object", "properties": {
         "name": {"type": "string", "description": "The place to save as a geofence, e.g. 'Portland VA Hospital' or 'the gym'."}},
         "required": ["name"]},
@@ -1087,17 +1090,98 @@ def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
     return _untrusted("address", f"Suspected matches for “{query.strip()}” (OpenStreetMap):\n" + "\n".join(lines))
 
 
-def _tool_drug_reference(conn, name: str) -> str:
-    """The MedlinePlus consumer drug page for a medication name, resolved via RxNorm (NLM,
-    public domain). Read-only; a link to an authoritative source, not medical advice."""
-    from . import medref
-    res = medref.resolve(conn, name)
+def _drug_topic_name(title: str, fallback: str) -> str:
+    """The clean medication topic to capture/curate from a MedlinePlus drug page title — strip a
+    trailing ': MedlinePlus …' suffix (e.g. 'Metformin: MedlinePlus Drug Information' -> 'Metformin').
+    Falls back to the approved lookup name if the title is empty."""
+    leaf = (title or "").split(":")[0].strip()
+    return leaf or (fallback or "").strip()
+
+
+def _tool_drug_reference(conn, conversation_id, name: str):
+    """EXTERNAL medication reference: the MedlinePlus consumer drug page for a name, resolved via RxNorm
+    (NLM, public domain). GATED — it sends NOTHING externally (no RxNav / MedlinePlus Connect call) until
+    the owner approves the EXACT name, so no PII leaks in a drug query. An un-approved name is PROPOSED
+    (surfaced as a confirm chip); once approved the lookup runs and an EXACT match records a Medications
+    TOPIC-ONLY usage signal for the kb/Reference loop. Returns (result_text, event_or_None)."""
+    from . import medref, reference_candidates, external_lookups
+    term = (name or "").strip()
+    if not term:
+        return _untrusted("drug-ref", "No medication name given for a reference lookup."), None
+    state = external_lookups.check_or_propose(conn, "drug_reference", term)
+    if state["status"] == "denied":
+        return _untrusted("drug-ref", f"The owner declined an external MedlinePlus drug lookup for “{term}”. "
+                          "Answer from their own reference library and notes only; do not propose it again."), None
+    if state["status"] == "pending":
+        # Nothing has been sent. Surface the EXACT name to the owner as a confirm chip; tell the model to stop.
+        event = {"type": "external_proposal", "id": state["id"], "tool": "drug_reference", "term": term}
+        return (_untrusted("drug-ref",
+                f"EXTERNAL LOOKUP PROPOSED: “{term}” → MedlinePlus drug info (via RxNorm). NOTHING has been sent "
+                "externally. Tell the owner you'd like their approval to look up this exact medication, then STOP "
+                "— do not call more external tools this turn. Their own reference library and notes are still available."),
+                event)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED name (what the owner
+    # approved — possibly edited from the model's phrasing), not the raw argument.
+    lookup_name = state.get("term") or term
+    res = medref.drug_topic(conn, lookup_name)
     if not res:
-        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{(name or '').strip()}”.")
+        return _untrusted("drug-ref", f"No MedlinePlus drug reference found for “{lookup_name}”."), None
     tail = "" if res["match"] == "exact" else f" (approximate match to “{res.get('candidate')}”, score {res.get('score')})"
-    return _untrusted("drug-ref",
-                      f"MedlinePlus drug information for {name.strip()}{tail}: {res['title']} — {res['url']} "
-                      f"[RxNorm rxcui {res['rxcui']}, NLM/MedlinePlus — informational, not medical advice].")
+    if res["match"] == "exact":
+        # Capture ONLY the resolved public drug topic + its public-domain summary + source — never the
+        # owner's phrasing/data. An approximate match is too uncertain to curate, so it isn't captured.
+        try:
+            reference_candidates.record(conn, topic=_drug_topic_name(res.get("title", ""), lookup_name),
+                                        source="rxnorm", url=res["url"], snippet=res.get("summary", ""),
+                                        category="Medications")
+        except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+            pass
+    summary = f" {res['summary']}" if res.get("summary") else ""
+    return (_untrusted("drug-ref",
+                       f"MedlinePlus drug information for {lookup_name}{tail}: {res['title']} — {res['url']}.{summary} "
+                       "[RxNorm rxcui {rxcui}, NLM/MedlinePlus — informational, not medical advice; for specific dosing "
+                       "or personal guidance see the linked page or a clinician.]".format(rxcui=res['rxcui'])),
+            None)
+
+
+def _tool_medical_reference(conn, conversation_id, query: str):
+    """EXTERNAL, second-line reference: a MedlinePlus consumer health-topic page (NLM, public domain).
+    GATED — it sends NOTHING externally until the owner approves the EXACT term (so no PII leaks in a
+    search query). An un-approved term is PROPOSED (surfaced to the owner as a confirm chip); once
+    approved the lookup runs and records a TOPIC-ONLY usage signal for the kb/Reference loop. Returns
+    (result_text, event_or_None)."""
+    from . import medref, reference_candidates, external_lookups
+    term = (query or "").strip()
+    if not term:
+        return _untrusted("medical-ref", "No topic given for a reference lookup."), None
+    state = external_lookups.check_or_propose(conn, "medical_reference", term)
+    if state["status"] == "denied":
+        return _untrusted("medical-ref", f"The owner declined an external MedlinePlus lookup for “{term}”. "
+                          "Answer from their own reference library and notes only; do not propose it again."), None
+    if state["status"] == "pending":
+        # Nothing has been sent. Surface the EXACT term to the owner as a confirm chip; tell the model to stop.
+        event = {"type": "external_proposal", "id": state["id"], "tool": "medical_reference", "term": term}
+        return (_untrusted("medical-ref",
+                f"EXTERNAL LOOKUP PROPOSED: “{term}” → MedlinePlus. NOTHING has been sent externally. Tell the "
+                "owner you'd like their approval to search MedlinePlus for this exact term, then STOP — do not "
+                "call more external tools this turn. Their own reference library and notes are still available."),
+                event)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED term (what the owner
+    # approved — possibly edited from the model's original phrasing), not the raw query.
+    lookup_term = state.get("term") or term
+    res = medref.health_topic(conn, lookup_term)
+    if not res:
+        return _untrusted("medical-ref", f"No MedlinePlus health topic found for “{lookup_term}”."), None
+    try:
+        reference_candidates.record(conn, topic=res["title"], source="medlineplus",
+                                    url=res["url"], snippet=res.get("snippet", ""))
+    except Exception:  # noqa: BLE001 — capture is best-effort telemetry, never break the answer
+        pass
+    summary = f" {res['snippet']}" if res.get("snippet") else ""
+    return (_untrusted("medical-ref",
+                       f"MedlinePlus health topic for {lookup_term}: {res['title']} — {res['url']}.{summary} "
+                       "[NLM/MedlinePlus, public domain — reference information, not medical advice, not NLM-endorsed]."),
+            None)
 
 
 def _tool_save_place(conn, name: str) -> str:
@@ -1962,8 +2046,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
         return _tool_reverse_geocode(conn, conversation_id, args.get("lat"), args.get("lon")), None
     if name == "forward_geocode":
         return _tool_forward_geocode(conn, args["query"], args.get("limit", 5)), None
+    if name == "medical_reference":
+        return _tool_medical_reference(conn, conversation_id, args["query"])
     if name == "drug_reference":
-        return _tool_drug_reference(conn, args["name"]), None
+        return _tool_drug_reference(conn, conversation_id, args["name"])
     if name == "save_place":
         return _tool_save_place(conn, args["name"]), None
     if name == "list_recent_notes":
@@ -2207,7 +2293,7 @@ _RETRIEVAL_TOOLS = frozenset({
     "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
     "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
     "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
-    "show_lab_chart", "drug_reference", "reverse_geocode", "forward_geocode",
+    "show_lab_chart", "drug_reference", "medical_reference", "reverse_geocode", "forward_geocode",
 })
 _RESEARCH_NUDGE = (
     "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "

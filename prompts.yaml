@@ -257,8 +257,8 @@ modes:
   analyze:
     max_iterations: 14          # deeper, multi-step questions than a one-hop Q&A
     max_total_tokens: 120000
-    tools: [reference_lookup, find, search_notes, read_note, read_notes, related_notes, list_tags,
-            notes_with_tag, list_recent_notes, search_attachments, read_attachment, query_sql,
+    tools: [reference_lookup, medical_reference, find, search_notes, read_note, read_notes, related_notes,
+            list_tags, notes_with_tag, list_recent_notes, search_attachments, read_attachment, query_sql,
             current_location, locate_person, location_fixes, geo_distance, nearby_notes,
             where_was_i, time_at_place, places_visited, distance_traveled, trail_summary,
             entries_at_place, reverse_geocode, forward_geocode, drug_reference,
@@ -299,7 +299,8 @@ modes:
       1. The owner's OWN reference library FIRST — call reference_lookup for their curated
          kb/Reference/… articles (e.g. kb/Reference/Medicine/Conditions/…). Cite these as
          [[Title]]; they are the owner's trusted, curated references and outrank anything external.
-      2. drug_reference for a MEDICATION (an NLM/MedlinePlus link — a source, not advice).
+      2. If your library lacks it, an EXTERNAL source: medical_reference for a condition / test /
+         topic, or drug_reference for a MEDICATION (NLM/MedlinePlus links — a source, not advice).
       3. ONLY if neither has it, you MAY supply brief general background to interpret the data —
          but LABEL it exactly "(general knowledge — not from a source)" and keep it to
          definitions/criteria, never a specific claim about the owner. Always prefer a sourced answer.
@@ -349,6 +350,7 @@ tools:
   show_lab_chart: "When the user wants to SEE a lab analyte's trend over time: renders a chart of that analyte's results (with its reference band) directly to the user, and returns you a short summary (counts/dates/latest status) to narrate. Pass an analyte_key (from list_abnormal_labs or an exact match), optionally a unit, and the time window the user named via range (3mo/6mo/1y/2y/5y/all) or from/to ISO — the chart opens to that window and the summary is scoped to it. Describe only the summary counts/dates and which the lab flagged — never restate individual values, never interpret clinically. Read-only."
   lab_stat: "For a SCALAR question about ONE lab analyte — lowest/highest/latest/first/average, the DATE of an extreme, how many results / how many out of range, over an optional window (range or from/to). Accepts a lab name or analyte_key (resolved; lists candidates if ambiguous). Returns each value together with its real collection date, reference range, and flag status IN ONE RESULT — so you can answer 'what date was that?' / 'was it normal?' from the same call; never claim a value has no date. Min/max are within one equivalent-unit group and exclude censored ('<0.01') values (which are counted separately). Use this instead of query_sql for lab numbers. Read-only."
   lab_value_at: "For a 'WHEN' question about ONE lab analyte: which='latest'|'first'|'first_out_of_range'|'last_out_of_range'|'first_cross'|'last_cross' (with threshold + direction for crosses). Returns the matching result row with its value, date, and flag status in one call. Use for 'when did X first go abnormal', 'when did creatinine cross 2.0', 'most recent value'. Read-only; report the value/date/status exactly, no clinical interpretation."
+  medical_reference: "EXTERNAL, SECOND-LINE reference: look up a health condition / test / topic on MedlinePlus (NLM, public domain) — use this ONLY after reference_lookup finds nothing in the owner's own kb/Reference library. Pass a SHORT topic term (e.g. 'thrombotic thrombocytopenic purpura'), NEVER the owner's full question or any of their data — the term is sent to an external service. GATED: it sends NOTHING until the owner approves the exact term. If the result says 'EXTERNAL LOOKUP PROPOSED', tell the owner you'd like their approval to search that exact term on MedlinePlus, then STOP (don't call more external tools that turn); once they approve, calling it again returns the page. Cite the returned link; treat it as reference info, NEVER medical advice and never a fact about the owner. (Approved topics are remembered so the owner's own reference library can grow from them.) For a MEDICATION use drug_reference. Read-only; cached."
   reference_lookup: "FIRST-LINE reference: search the owner's OWN curated reference library (their kb/Reference/… articles, e.g. kb/Reference/Medicine/Conditions/…) and return the best-matching articles each with a quotable passage + its [[Title]]. Use this BEFORE any external lookup when you need authoritative background on a condition, test, procedure, or topic to analyze the owner's data against — these are the owner's trusted, curated sources. Cite them [[Title]] and quote verbatim. If it finds nothing, fall back to drug_reference (for a medication) or clearly-labelled general knowledge. Read-only."
   find: "FASTEST way to find AND quote: searches notes by keyword + meaning and returns the best-matching notes each with a sentence-bounded, QUOTABLE passage already extracted + its [[Title]] — so you can answer with a real, cited quote in ONE call, no separate read_note. Prefer this when the user wants a fact/quote you'll cite. Quote a returned passage VERBATIM; a quotation that doesn't match what a tool returned this turn is shown to the user WITHOUT quote marks. read_note a hit for its full text when you need more than the passage."
   search_notes: "When you need to find or avoid duplicating notes: search existing notes by keyword and meaning. Each hit returns its title PLUS a short query-relevant snippet — judge relevance from the snippet (don't dismiss an opaquely-titled note like notes/daily/… without checking its snippet), and read_note the promising ones for full content before you answer or propose. The snippet is a relevance cue, NOT a quotable source — never assert a value/date/dose from a snippet, and never cite a [[title]] this search did not return."
@@ -369,7 +371,7 @@ tools:
   reverse_geocode: "When the user wants the STREET ADDRESS for a coordinate — 'what's the address where I am / where I was at noon', or for a given lat/lon: returns a SUSPECTED address from OpenStreetMap. It's external and a best guess, so present it as 'suspected'/'looks like', never assert it as fact. Omit lat/lon to use the location shared in this conversation. If a saved place sits on the spot it's shown too (that's the authoritative local label — prefer it). Results are cached. For raw coordinates use location_fixes; for distance use geo_distance."
   forward_geocode: "When the user gives an ADDRESS or place name and wants its COORDINATES ('where is 500 Main St', 'find the lat/lon of City Hall', 'put this address on the map'): returns ranked SUSPECTED coordinate matches from OpenStreetMap — present them as candidates, not certainty. Useful to locate an address or to seed a saved place. Read-only; results are cached."
   save_place: "When the owner wants to SAVE a place so JBrain tracks visits/trail there ('save Portland VA Hospital as a place', 'add the gym to my places', 'remember this hospital as a place'): forward-geocodes the name and creates a saved geofence (+ its loc/ page). An already-saved name is reported as-is; a wrong location can be deleted on the Map. Use only when they clearly want to SAVE/track a place — for a one-off 'where is X' lookup use forward_geocode instead."
-  drug_reference: "When the user asks for authoritative info or a reference link for a MEDICATION ('what is metformin', 'link me the MedlinePlus page for my Tylenol', 'official info on lisinopril'): returns the MedlinePlus consumer drug page, resolved via RxNorm (NLM, public domain). It's a LINK to a reputable source, not medical advice — present it as such and never substitute your own clinical claims. An approximate name match is flagged as such. Read-only; cached."
+  drug_reference: "EXTERNAL medication reference: the MedlinePlus consumer drug page for a MEDICATION ('what is metformin', 'what does hctz do / how does it work', 'official info on lisinopril'), resolved via RxNorm (NLM, public domain). Returns a SHORT public-domain summary (what the drug is for + how it works) AND the source link. Pass ONLY the medication name (brand or generic), NEVER the owner's full question, dose, or any of their data — the name is sent to an external service. GATED: it sends NOTHING until the owner approves the exact name. If the result says 'EXTERNAL LOOKUP PROPOSED', tell the owner you'd like their approval to look up that exact medication, then STOP (don't call more external tools that turn); once they approve, calling it again returns the summary + page. Use the returned summary to explain what it is and how it works, CITING the link as the source — it's reference info, not medical advice, and never your own clinical claim. It does NOT include specific dosing: for 'recommended dose' questions, give the general purpose/mechanism from the summary and point to the linked page or a clinician for dosing — never state a dose as advice. An approximate name match is flagged as such. (Approved medications are remembered so the owner's own reference library can grow from them.) Read-only; cached."
   list_trips: "When the user asks about TRIPS / journeys / drives / their commute ('my trips this week', 'where did Allan drive yesterday', 'how was my commute', 'longest trip last month'): the server has already detected and measured each trip (a journey between two stops), so this returns them ready-made — start→end places, distance, duration, max speed — newest first. Pass `person` for someone other than the owner and optional `since`/`until` (owner's local time). Prefer this over re-deriving from raw fixes. Read-only. Use trip_detail with a trip's #id for its stops and full speed breakdown."
   trip_detail: "Full breakdown of ONE trip by its #id (from list_trips): exact distance vs straight-line, duration, avg + max speed, and every geofence it passed through with dwell time. Read-only."
   list_recent_notes: "When orienting at the start of a session: list the most recently updated notes."
@@ -498,23 +500,23 @@ actions:
         kb/Reference/Medicine/Medications/<Name>, or kb/Reference/Medicine/Procedures/<Name>.
       - PERSONAL medical history — a specific person's (usually the owner's) diagnoses,
         prescriptions, lab results, procedures, vitals and hospital encounters/admissions —
-        is PII. It belongs in THAT person's People article under a "## Health" section,
-        NEVER here. An encounter/admission is a personal event, not a Reference subject.
+        is PII. It belongs in THAT person's own kb/Health/<Name> page, NEVER here and NEVER in
+        their People article. An encounter/admission is a personal event, not a Reference subject.
       - Raw medical uploads are captured by the owner under notes/medical/… (Medical mode);
         they synthesise into exactly these two homes — general → Reference/Medicine,
-        personal → People/<Name> ## Health — and never blur the line between them.
+        personal → kb/Health/<Name> — and never blur the line between them.
 
       Use the shape that fits the subject (only for sections the sources support):
       - CONDITION (diagnosis): lead defines it; sections Overview, Symptoms, Causes,
-        Treatment, Prognosis. (A person's own diagnosis history stays in their People article.)
+        Treatment, Prognosis. (A person's own diagnosis history stays in their kb/Health/<Name> page.)
       - MEDICATION: lead = what it is and what it treats; sections Uses, Dosage forms,
-        Side effects, Notes. Keep it general — a specific prescription belongs in People.
+        Side effects, Notes. Keep it general — a specific prescription belongs in kb/Health/<Name>.
       - PROCEDURE / how-to: lead = what it accomplishes; numbered Steps; sections
         Frequency, Tips, What to expect.
       - CONCEPT / topic: lead defines it; thematic sections by aspect.
 
       ```spec
-      forbid_link_prefixes: [kb/People, kb/Groups]
+      forbid_link_prefixes: [kb/People, kb/Groups, kb/Health]
       recommended_sections: [Overview]
       ```
     people: |
@@ -526,20 +528,22 @@ actions:
       - LEAD: who they are and your relationship, in the first sentence.
       - "## Key facts": relationship, age/birthday, contact, where they live/work, key
         affiliations (link the org as [[kb/Groups/...]]).
-      - Sections as the person warrants: Background, Health, Preferences, Important dates,
+      - Sections as the person warrants: Background, Preferences, Important dates,
         History/interactions.
-      - "## Health" is the HOME for this person's personal medical history — diagnoses,
-        prescriptions, lab results, procedures, vitals, and hospital encounters/admissions
-        (the PII that must NEVER appear in Reference). Link the GENERAL article for each
-        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>) for background,
-        but keep the person-specific facts (their values, doses, dates, stays) here. Cite
-        the source notes (these come from the owner's notes/medical/… captures).
+      - This person's personal medical history — diagnoses, prescriptions, lab results,
+        procedures, vitals, and hospital encounters/admissions — does NOT live here. It lives
+        in their own kb/Health/<Name> page (a separate, share-firewalled domain). Do NOT add a
+        "## Health" section or any medical facts to this article, and never link kb/Health from
+        here (the owner reaches the record via backlinks/graph). General medical background
+        stays in kb/Reference/Medicine. (Existing ## Health content is relocated by the one-time
+        "Split personal health" maintenance action — don't delete it by hand.)
       - Cross-link the groups they belong to, things they own, places tied to them.
       - Cite every fact to the note it came from.
 
       ```spec
       require_lead: true
       recommended_sections: [Key facts, Background]
+      forbid_link_prefixes: [kb/Health]
       ```
     groups: |
       # Group & organization articles (kb/Groups)
@@ -600,6 +604,36 @@ actions:
       ```spec
       recommended_sections: [Key facts]
       ```
+    health: |
+      # Personal health records (kb/Health — one page per person)
+
+      The HOME for an individual's personal medical history — the PHI that must never appear
+      in their People article OR in Reference. One page per person, titled
+      kb/Health/<their People leaf name> (the same final name as their kb/People page), so a
+      person can be shared without leaking their medical data.
+
+      Put here, for this one person: diagnoses, prescriptions/medications they take, lab
+      results and vitals, procedures and surgeries, hospital encounters/admissions, and care
+      notes. These come from the owner's notes/medical/… captures. Structured lab numbers stay
+      in the lab tables; this page is the narrative record.
+
+      - LEAD: one line — "Personal health record for [[kb/People/<Name>]]." ALWAYS link back to
+        the person's People page in the lead.
+      - Link the GENERAL article for each condition/medication/procedure
+        ([[kb/Reference/Medicine/Conditions/<Name>]], …/Medications/<Name>, …/Procedures/<Name>)
+        for background — but keep the person-specific values, doses, dates and stays HERE.
+      - Sections as the record warrants: Conditions, Medications, Labs & vitals, Procedures,
+        Encounters, Care notes.
+      - Cite every fact to the source note it came from.
+      - Do NOT restate general medical facts — those live in kb/Reference/Medicine.
+      - This page is firewalled: nothing outside Health links to it, and it is never included
+        in a shared People article or a research share. It is the owner's private record.
+
+      ```spec
+      require_lead: true
+      recommended_sections: [Conditions, Medications]
+      recommend_link_prefixes: [kb/People, kb/Reference/Medicine]
+      ```
   wiki_outline: |
     You are organising a personal knowledge base into an encyclopedia. Below is a survey
     of the owner's notes (id, domain guess, one-line gist, key entities). Design the set
@@ -613,6 +647,7 @@ actions:
     Every article title is "kb/<Domain>/<Name>", using these domains:
     - Reference — general, de-identified knowledge (concepts, how-things-work, conditions, medications, procedures); never about a specific person
     - People — one article per individual (pets/animals count too — a pet is a household member, never a Thing)
+    - Health — one PHI page per person for their PERSONAL medical history (diagnoses, meds, lab results, vitals, procedures, hospital encounters); title kb/Health/<the person's exact People name>. NEVER put medical facts in the People article. General medical science still goes under Reference/Medicine.
     - Groups — organisations, household, teams, clubs
     - Places — durable knowledge about a location
     - Things — tracked assets/possessions (home, vehicles, devices, accounts)
@@ -624,6 +659,13 @@ actions:
 
     The entity roster's medications, conditions, procedures, events and concepts are
     Reference content — give each recurring one its own Reference article.
+
+    PERSONAL MEDICAL → HEALTH: a specific person's own medical history (their diagnoses,
+    prescriptions, lab results, vitals, procedures and hospital encounters — usually from
+    notes/medical/… captures) goes in kb/Health/<that person's exact People name>, one page per
+    person, NEVER in their People article and NEVER in Reference. For every person who has any
+    medical note, emit BOTH a kb/People/<Name> and a kb/Health/<Name> article, assigning the
+    medical source ids to the Health one and everything else to People.
 
     The roster's animals are PETS / household members → give each its own kb/People/<Name>
     profile (linking its vet visits, medications and care notes), and include it as a member
@@ -685,6 +727,7 @@ actions:
 
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
+    {"title": "kb/Health/Allan", "domain": "Health", "scope": "Allan's personal medical history", "sources": [<his medical note ids>]}
     {instructions}
     ENTITY ROSTER (recurring entities across the notes, with co-occurrence):
     {roster}

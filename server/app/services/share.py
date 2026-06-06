@@ -65,8 +65,39 @@ def touch(conn, link_id: int) -> None:
 
 # --- Owner: minting / listing / revoking -----------------------------------
 
+def _phi_clamp(ttl_days: int | None, bind: bool) -> tuple[int, bool]:
+    """The PHI hardening for any personal-health share: browser-bind ON and a finite TTL
+    (the caller's, if positive, else 14 days). A medical record is never a permanent, copyable
+    bearer credential — the same discipline create_labshare_link enforces for lab trends."""
+    days = int(ttl_days) if (ttl_days and int(ttl_days) > 0) else 14
+    return days, True
+
+
+def _phi_harden(conn, note_id: int, ttl_days: int | None, bind: bool) -> tuple[int | None, bool]:
+    """Force PHI hardening when note_id is a kb/Health/<Person> page; pass through otherwise."""
+    from . import wiki_guides
+    row = conn.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row and wiki_guides.is_health_title(row["title"]):
+        return _phi_clamp(ttl_days, bind)
+    return ttl_days, bind
+
+
+def assert_health_share_policy() -> None:
+    """Release-blocker (call at boot): the PHI clamp must yield a bound, finite-TTL share even
+    when the caller asks for an unbound, never-expiring one — so no mint path can leak a
+    permanent health-record link (this is THE chokepoint every note-share caller flows through)."""
+    days, bind = _phi_clamp(None, False)
+    if not bind or not days or int(days) <= 0:
+        raise RuntimeError("share PHI policy broken: kb/Health/* shares must be bound + finite-TTL")
+
+
 def create_link(conn, note_id: int, scope: str, label: str | None = None,
                 ttl_days: int | None = None, bind: bool = False) -> str:
+    # PHI firewall: a kb/Health/<Person> note is a personal medical record. Harden its share
+    # here — the single chokepoint every note-share caller (the /api/shares mint route AND the
+    # architect's create_share_link tool) passes through — so none can mint a permanent,
+    # unbound bearer link to it, regardless of the ttl_days/bind they request.
+    ttl_days, bind = _phi_harden(conn, note_id, ttl_days, bind)
     token = mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     conn.execute(

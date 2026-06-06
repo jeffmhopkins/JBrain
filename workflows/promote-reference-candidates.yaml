@@ -1,0 +1,14 @@
+# Nightly: promote repeatedly-looked-up external health topics into staged kb/Reference seeds so
+# the owner's own reference library grows from real usage (internal-first reference_lookup then
+# answers locally). Runs after the wiki maintain pass so dedup sees the freshest KB. Owner approves
+# each staged seed in the tray — nothing goes live automatically. Cheap (no LLM) on quiet nights.
+key: promote-reference-candidates
+name: Promote reference candidates
+enabled: true
+
+trigger:
+  type: schedule
+  cron: "0 4 * * *"   # 04:00 daily (server TZ), after the nightly KB build/maintain
+
+action:
+  type: promote_reference_candidates

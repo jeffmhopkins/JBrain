@@ -26,6 +26,7 @@ from .routers import (
     action_defs,
     attachments,
     auth_router,
+    events,
     push,
     lists,
     locations,
@@ -36,6 +37,7 @@ from .routers import (
     share,
     share_admin,
     chat,
+    external,
     entities,
     graph,
     notes,
@@ -133,6 +135,10 @@ async def lifespan(app: FastAPI):
     # declared scoped tools and nothing forbidden — makes the RECIPIENT_TOOLS contract non-vacuous.
     from .services import research_labs_ai
     research_labs_ai.assert_dispatch_safe()
+    # Release-blocker: a personal-health (kb/Health/*) note share must always be browser-bound
+    # and finite-TTL — never a permanent bearer link — no matter which caller mints it.
+    from .services import share as share_svc
+    share_svc.assert_health_share_policy()
 
     from .services import pipeline
     for w in pipeline.validate_action_defs():
@@ -205,7 +211,7 @@ app.add_middleware(
     expose_headers=["X-Locations-Truncated", "X-Locations-Count"],
 )
 
-for r in (auth_router, notes, chat, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical):
+for r in (auth_router, notes, chat, external, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, events):
     app.include_router(r.router)
 # The dictation-capture route (POST /api/notes/entry) accepts a per-person location key
 # in addition to the full key, so it lives on a separate, less-restricted router.

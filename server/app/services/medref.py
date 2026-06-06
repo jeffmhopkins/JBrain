@@ -23,7 +23,12 @@ _UA = "JBrain/0.1 (+https://github.com/jeffmhopkins/JBrain; personal brain)"
 _TIMEOUT = 8.0
 _RXNORM = "https://rxnav.nlm.nih.gov/REST"
 _MEDLINEPLUS = "https://connect.medlineplus.gov/service"
+_MPLUS_SEARCH = "https://wsearch.nlm.nih.gov/ws/query"   # MedlinePlus health-topics web service
 _RXNORM_OID = "2.16.840.1.113883.6.88"   # RxNorm code system OID, for MedlinePlus Connect
+
+# Only an href on one of these public NLM hosts may ever be stored/cited (a response can't
+# redirect us to an arbitrary URL — defense against a spoofed/compromised feed).
+_NLM_HOSTS = ("medlineplus.gov", "nlm.nih.gov")
 
 # A single marked line we keep at the foot of a medication article (idempotent find/replace).
 _MARK = "<!-- medref -->"
@@ -39,6 +44,69 @@ def _http_get(url: str):
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def _http_get_text(url: str) -> str:
+    """One NLM GET -> response text (for the XML health-topics service). Stubbable in tests."""
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def _host_ok(url: str) -> bool:
+    """True only if `url`'s host is a public NLM host — so we never store/cite an off-NLM href."""
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(host) and any(host == h or host.endswith("." + h) for h in _NLM_HOSTS)
+
+
+def _parse_first_topic(xml_text: str) -> dict:
+    """First MedlinePlus health-topic <document>: {url, title, snippet} (highlight tags stripped),
+    or {} . The url's host is re-validated by the caller before use."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:  # noqa: BLE001
+        return {}
+    doc = root.find(".//document")
+    if doc is None:
+        return {}
+    url = (doc.get("url") or "").strip()
+    title = summary = ""
+    for c in doc.findall("content"):
+        name = c.get("name")
+        # Replace the (escaped) HTML highlight/markup with spaces — NOT nothing — so list items
+        # and paragraphs don't run together ("platelets:</li><li>If" -> "platelets: If"); collapse ws.
+        text = " ".join(re.sub(r"<[^>]+>", " ", "".join(c.itertext())).split())
+        if name == "title" and not title:
+            title = text
+        elif name in ("FullSummary", "snippet") and not summary:
+            summary = text
+    if not url:
+        return {}
+    return {"url": url, "title": title or "MedlinePlus", "snippet": (summary or "")[:400]}
+
+
+def health_topic(conn, query: str) -> dict | None:
+    """Resolve a health-topic query to {url, title, snippet} from the MedlinePlus health-topics web
+    service (NLM, public domain). Cached; fail-soft to None; the returned URL is HOST-PINNED to NLM."""
+    key = _norm_key(query)
+    if not key:
+        return None
+    cached = _cache_get(conn, "mplus_topic", key)
+    if cached is not None:
+        return cached or None
+    url = f"{_MPLUS_SEARCH}?db=healthTopics&rettype=brief&retmax=1&term={urllib.parse.quote(query)}"
+    try:
+        out = _parse_first_topic(_http_get_text(url))
+    except Exception:  # noqa: BLE001
+        return None
+    if out and not _host_ok(out.get("url", "")):
+        out = {}                                   # reject an href that isn't on a public NLM host
+    _cache_put(conn, "mplus_topic", key, out)      # negative result cached as {} (won't re-fetch)
+    return out or None
 
 
 def _cache_get(conn, kind: str, key: str):
@@ -130,8 +198,15 @@ def medlineplus_url(conn, rxcui: str) -> dict | None:
         title = e.get("title")
         if isinstance(title, dict):
             title = title.get("_value")
+        summary = e.get("summary")
+        if isinstance(summary, dict):
+            summary = summary.get("_value")
         if href:
-            out = {"url": href, "title": title or "MedlinePlus"}
+            out = {"url": href.split("?")[0], "title": title or "MedlinePlus"}   # drop utm tracking params
+            if summary:
+                # The public-domain consumer summary ("what it's for / how it works"). Strip any HTML and
+                # collapse whitespace; cap length. NOT dosing — that lives on the page, behind the link.
+                out["summary"] = " ".join(re.sub(r"<[^>]+>", " ", str(summary)).split())[:600]
     _cache_put(conn, "mplus", str(rxcui), out)
     return out or None
 
@@ -154,9 +229,23 @@ def resolve(conn, name: str) -> dict | None:
     if not mp:
         return None
     out = {"match": match, "rxcui": rxcui, "url": mp["url"], "title": mp["title"]}
+    if mp.get("summary"):
+        out["summary"] = mp["summary"]
     if match == "approx":
         out["score"], out["candidate"] = score, candidate
     return out
+
+
+def drug_topic(conn, name: str) -> dict | None:
+    """Resolve a medication NAME to a host-pinned MedlinePlus consumer drug page (NLM, public domain).
+    Thin wrapper over resolve(): returns {match, rxcui, url, title[, candidate, score]} or None, with the
+    returned URL HOST-PINNED to a public NLM host (a feed can't redirect us off-NLM). The outbound
+    RxNav / MedlinePlus Connect fetch happens here (cached); fail-soft to None. This is the single
+    drug-info entry point the gated drug_reference tool and its approval endpoint both call."""
+    res = resolve(conn, name)
+    if not res or not _host_ok(res.get("url", "")):
+        return None
+    return res
 
 
 def _apply_link(conn, article_title: str, url: str) -> bool:

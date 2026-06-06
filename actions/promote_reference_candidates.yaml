@@ -1,0 +1,8 @@
+# Declarative action: turn health TOPICS the owner looked up repeatedly (via the Analyze-mode
+# medical_reference tool) into STAGED kb/Reference article seeds for the owner to approve. Each
+# seed is built deterministically from the public MedlinePlus source only (topic + link + summary)
+# — no LLM, no owner data — and is STAGED, never written live. Cheap no-op when nothing qualifies.
+type: promote_reference_candidates
+category: Knowledge base
+steps:
+  - do: promote_reference_candidates

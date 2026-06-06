@@ -2136,6 +2136,34 @@ def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
     return out, changed
 
 
+# Read-only tools that count as a FRESH retrieval over current data (research-mode grounding guard).
+_RETRIEVAL_TOOLS = frozenset({
+    "find", "search_notes", "read_note", "read_notes", "related_notes", "list_recent_notes",
+    "notes_with_tag", "list_tags", "search_attachments", "read_attachment", "query_sql",
+    "current_location", "locate_person", "location_fixes", "where_was_i", "time_at_place",
+    "places_visited", "distance_traveled", "trail_summary", "entries_at_place", "nearby_notes",
+    "geo_distance", "list_trips", "trip_detail", "list_abnormal_labs", "lab_stat", "lab_value_at",
+    "show_lab_chart", "drug_reference", "reverse_geocode", "forward_geocode",
+})
+_RESEARCH_NUDGE = (
+    "Answer ONLY from a fresh tool query over the current notes/DB THIS turn — not from memory or "
+    "earlier turns. Call a retrieval tool now (find / search_notes / read_note / query_sql / a lab or "
+    "location tool), then answer from exactly what it returns. If nothing is found, say the records "
+    "don't have it.")
+
+
+def _looks_factual(text: str) -> bool:
+    """Conservative: True if the reply ASSERTS something (so a zero-retrieval research answer should be
+    re-grounded), False for short acks, clarifying questions, or an honest 'I don't have it'."""
+    t = (text or "").strip()
+    if len(t) < 60 or t.endswith("?"):
+        return False
+    low = t.lower()
+    return not any(p in low for p in (
+        "i don't have", "i couldn't find", "no records", "don't have that", "i'm not sure",
+        "could you", "can you clarify", "what time", "which "))
+
+
 # --- Agent loop -------------------------------------------------------------
 
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
@@ -2177,6 +2205,8 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     need_sep = False   # insert a break when text resumes after a tool call
     tool_urls: set[str] = set()   # URLs that tools actually returned (the only ones allowed in the reply)
     turn_corpus: list[str] = [user_text]   # everything the model saw THIS turn — a quote must trace to it
+    did_retrieve = False   # has a fresh retrieval tool run this turn? (research-mode grounding guard)
+    nudged = False         # the grounding reminder fires at most once
 
     for _ in range(max_iterations):
         # The provider streams text deltas, records its own assistant turn into
@@ -2209,10 +2239,25 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                     total_tokens += max(1, max_tokens // 4)
 
         if not calls:
+            # GROUNDING GUARD (research mode): a factual answer that called ZERO retrieval tools this
+            # turn is answering from memory/stale context. Discard the draft, nudge once to re-ground,
+            # and let the loop run again — the streamed memory-draft is cleared from the screen.
+            if (mode == "research" and not did_retrieve and not nudged
+                    and _looks_factual("".join(assistant_text_parts))):
+                nudged = True
+                assistant_text_parts.clear()
+                turn_corpus[:] = [user_text]
+                yield {"type": "replace_text", "text": ""}        # wipe the memory-draft from the bubble
+                yield {"type": "tool", "tool": "search_notes"}    # status: "Searching your notes…"
+                messages.append({"role": "user", "content": _RESEARCH_NUDGE})
+                need_sep = False
+                continue
             break
 
         results = []
         for call in calls:
+            if call.name in _RETRIEVAL_TOOLS:
+                did_retrieve = True
             yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
             try:
                 result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)

@@ -6,7 +6,8 @@ import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
-import { makeLinkRenderer, renderWikiLinks } from "../util";
+import { renderWikiLinks } from "../util";
+import { makeChatLinkRenderer } from "../components/CitationLink";
 
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
 // but excluded from the LLM history server-side. `id` (when present) tags an
@@ -664,7 +665,7 @@ export default function Chat() {
             <div key={i} className={`msg ${m.role}`}>
               {m.role === "assistant" ? (
                 <div className="md msg-md">
-                  <ReactMarkdown components={{ a: makeLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
+                  <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(m.content)}</ReactMarkdown>
                 </div>
               ) : (
                 m.content

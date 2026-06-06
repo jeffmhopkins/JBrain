@@ -209,6 +209,11 @@ export const getAnalysisStatus = (id: number) =>
   isDemo() ? Promise.resolve({ status: "done" } as AnalysisStatus)
            : get<AnalysisStatus>(`/api/attachments/${id}/analysis-status`);
 
+// A tiny title + excerpt for a note, to preview a [[citation]] on hover in chat.
+export interface NotePreview { found: boolean; title?: string; excerpt?: string; }
+export const getNotePreview = (slug: string) =>
+  get<NotePreview>(`/api/notes/${encodeURIComponent(slug)}/preview`);
+
 // Force-recompute one note's AI analysis sidecar (ignores the content-hash cache).
 export const refreshNoteAnalysis = (slug: string) =>
   post<any>(`/api/notes/${encodeURIComponent(slug)}/analysis`);

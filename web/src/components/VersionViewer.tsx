@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { get, post } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
+import MarkdownDiff from "./MarkdownDiff";
 import Modal from "./Modal";
 
 export interface TimelineEntry {
@@ -110,26 +111,21 @@ export function DiffView({
   to: TimelineEntry;
   onClose: () => void;
 }) {
-  const [hunks, setHunks] = useState<{ type: string; lines: string[] }[]>([]);
+  const [content, setContent] = useState<{ before: string; after: string } | null>(null);
   const [titleChanged, setTitleChanged] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     get(`/api/notes/${slug}/diff/${from.version_id}/${to.version_id}`)
-      .then((d) => { setHunks(d.hunks); setTitleChanged(d.title_changed); })
-      .catch(() => setHunks([{ type: "equal", lines: ["(failed to load diff)"] }]));
+      .then((d) => { setContent({ before: d.before ?? "", after: d.after ?? "" }); setTitleChanged(d.title_changed); })
+      .catch(() => setFailed(true));
   }, [slug, from.version_id, to.version_id]);
 
-  const sym = (t: string) => (t === "insert" ? "+" : t === "delete" ? "−" : " ");
   return (
     <Modal title="Changes → current" onClose={onClose}>
       {titleChanged && <p className="muted">Title changed: “{from.title}” → “{to.title}”</p>}
-      <pre className="diff">
-        {hunks.flatMap((h, hi) =>
-          h.lines.map((ln, li) => (
-            <div key={`${hi}-${li}`} className={`diff-${h.type}`}>{sym(h.type)} {ln}</div>
-          )),
-        )}
-      </pre>
+      {failed && <p className="muted">(failed to load diff)</p>}
+      {content && <MarkdownDiff before={content.before} after={content.after} />}
     </Modal>
   );
 }

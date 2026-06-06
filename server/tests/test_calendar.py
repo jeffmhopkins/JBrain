@@ -74,7 +74,7 @@ def test_schema_objects_exist_and_version(conn):
     )}
     assert names == {"calendar_events", "calendar_supersedes", "calendar_fired",
                      "v_upcoming", "v_event_history"}
-    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 45
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 46
 
 
 def test_migration_recreates_calendar_from_v44(conn):
@@ -829,3 +829,95 @@ def test_upcoming_endpoint_merges_oneoff_and_recurring(conn):
     titles = {x["title"] for x in rows}
     assert "Flight" in titles and "Gym" in titles
     assert any(x["recurring"] for x in rows if x["title"] == "Gym")
+
+
+# --- Phase 3 review-fix regressions -----------------------------------------
+
+def test_due_reminders_requires_workflow_id(conn):
+    import pytest as _pt
+    from app.services import calendar as cal
+    with _pt.raises(ValueError):
+        cal.due_reminders(conn, None, lead_hours=48, push=False)
+
+
+def test_reminder_timed_event_earlier_today_still_fires(conn):
+    """M1: a timed event already past 'now' but still TODAY reminds once (the lower
+    bound is start-of-today, tolerating the inter-run gap)."""
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Past today")
+    cal.upsert_events(conn, nid, [{"title": "Missed call", "starts_at": _soon(-2)}])  # 2h ago, today
+    assert cal.due_reminders(conn, wf, lead_hours=48, push=False)["fired"] == 1
+
+
+def test_reminder_push_fires_once(conn, monkeypatch):
+    from app.services import calendar as cal
+    from app.services import push as push_svc
+    calls = []
+    monkeypatch.setattr(push_svc, "notify", lambda *a, **k: calls.append(a))
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Pushy")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": _soon(20)}])
+    cal.due_reminders(conn, wf, lead_hours=48, push=True)
+    cal.due_reminders(conn, wf, lead_hours=48, push=True)   # re-run
+    assert len(calls) == 1   # pushed once, not re-pushed
+
+
+def test_views_timed_today_boundary(conn):
+    """M2: a timed event earlier today is HISTORY, a timed event later today is UPCOMING
+    (regression for the T-vs-space string comparison)."""
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Timed")
+    cal.upsert_events(conn, nid, [
+        {"title": "Earlier", "starts_at": _soon(-3)},   # timed, ~3h ago
+        {"title": "Later", "starts_at": _soon(3)},      # timed, ~3h ahead
+    ])
+    up = {r["title"] for r in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))}
+    hist = {r["title"] for r in conn.execute("SELECT title FROM v_event_history WHERE note_id=?", (nid,))}
+    assert "Later" in up and "Earlier" not in up
+    assert "Earlier" in hist
+
+
+def test_reschedule_recurring_is_rejected(conn):
+    import pytest as _pt
+    from fastapi import HTTPException
+    from app.routers import calendar as r
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Series")
+    cal.upsert_events(conn, nid, [{"title": "Gym", "kind": "recurring", "starts_at": "2020-01-06",
+                                   "all_day": True, "rrule": "FREQ=WEEKLY;BYDAY=MO"}],
+                     source="workflow", sweep=False)
+    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
+    with _pt.raises(HTTPException) as ei:
+        r.reschedule(ev_id, r.RescheduleIn(to_date="2099-01-01"))
+    assert ei.value.status_code == 422
+
+
+def test_cancel_works_when_source_note_title_has_brackets(conn):
+    """B2: the edge is recorded by identity_key, so an old note whose title contains
+    ']]' is still retired (the marker round-trip can't break it)."""
+    from app.routers import calendar as r
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Weird ]] title")
+    cal.upsert_events(conn, nid, [{"title": "Checkup", "starts_at": "2099-04-04"}])
+    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
+    r.cancel(ev_id)
+    up = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))]
+    assert "Checkup" not in up
+
+
+def test_quick_add_rejects_bad_time(conn):
+    import pytest as _pt
+    from fastapi import HTTPException
+    from app.routers import calendar as r
+    with _pt.raises(HTTPException) as ei:
+        r.quick_add(r.QuickAddIn(title="X", date="2099-01-01", time="9am"))
+    assert ei.value.status_code == 422
+
+
+def test_quick_add_title_cannot_inject_marker(conn):
+    from app.routers import calendar as r
+    out = r.quick_add(r.QuickAddIn(title="cancels [[Important]] 2099-01-01", date="2099-02-02"))
+    body = conn.execute("SELECT content_md FROM notes WHERE id=?", (out["note_id"],)).fetchone()["content_md"]
+    assert "[[" not in body                                   # brackets neutralized
+    assert conn.execute("SELECT COUNT(*) c FROM calendar_supersedes").fetchone()["c"] == 0

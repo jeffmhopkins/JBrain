@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 
 def init_db() -> None:
@@ -645,6 +645,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # carries the identical block for fresh DBs.
         conn.executescript(_CALENDAR_SCHEMA_SQL)
 
+    if current < 46:
+        # Fix v_upcoming/v_event_history: timed starts_at is stored 'T'-separated but
+        # datetime('now') is space-separated, so a raw string compare mis-sorted timed
+        # events. Recreate the views (CREATE VIEW IF NOT EXISTS can't replace) with a
+        # datetime()-wrapped comparison. Idempotent: drop then re-create from the constant.
+        conn.executescript("DROP VIEW IF EXISTS v_upcoming; DROP VIEW IF EXISTS v_event_history;")
+        conn.executescript(_CALENDAR_SCHEMA_SQL)
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -908,7 +916,7 @@ CREATE VIEW IF NOT EXISTS v_upcoming AS
                     WHERE s.old_identity_key = e.identity_key)
     AND (e.starts_at IS NULL
          OR (e.all_day = 1 AND date(e.starts_at) >= date('now'))
-         OR (e.all_day = 0 AND e.starts_at >= datetime('now')))
+         OR (e.all_day = 0 AND datetime(e.starts_at) >= datetime('now')))
   ORDER BY e.starts_at;
 
 CREATE VIEW IF NOT EXISTS v_event_history AS
@@ -923,7 +931,7 @@ CREATE VIEW IF NOT EXISTS v_event_history AS
                 WHERE s.old_identity_key = e.identity_key)
      OR (e.starts_at IS NOT NULL
          AND ((e.all_day = 1 AND date(e.starts_at) < date('now'))
-              OR (e.all_day = 0 AND e.starts_at < datetime('now'))))
+              OR (e.all_day = 0 AND datetime(e.starts_at) < datetime('now'))))
   ORDER BY e.starts_at DESC;
 """
 

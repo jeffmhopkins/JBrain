@@ -984,7 +984,7 @@ CREATE VIEW IF NOT EXISTS v_upcoming AS
                     WHERE s.old_identity_key = e.identity_key)
     AND (e.starts_at IS NULL
          OR (e.all_day = 1 AND date(e.starts_at) >= date('now'))
-         OR (e.all_day = 0 AND e.starts_at >= datetime('now')))
+         OR (e.all_day = 0 AND datetime(e.starts_at) >= datetime('now')))
   ORDER BY e.starts_at;
 
 CREATE VIEW IF NOT EXISTS v_event_history AS
@@ -999,5 +999,5 @@ CREATE VIEW IF NOT EXISTS v_event_history AS
                 WHERE s.old_identity_key = e.identity_key)
      OR (e.starts_at IS NOT NULL
          AND ((e.all_day = 1 AND date(e.starts_at) < date('now'))
-              OR (e.all_day = 0 AND e.starts_at < datetime('now'))))
+              OR (e.all_day = 0 AND datetime(e.starts_at) < datetime('now'))))
   ORDER BY e.starts_at DESC;

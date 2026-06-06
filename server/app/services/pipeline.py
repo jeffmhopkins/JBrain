@@ -1299,7 +1299,7 @@ def _p_calendar_reminders(ctx, lead_hours=48, push=True):
     """Post a Review card (+ optional Web Push) for each live calendar event whose next
     occurrence falls within the lead window, deduped per instance so it fires once."""
     from . import calendar as cal
-    return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), bool(push))
+    return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), _truthy(push))
 
 
 _PRIMITIVES = {

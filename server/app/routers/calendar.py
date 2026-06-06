@@ -23,12 +23,28 @@ from ..services import notes as notes_svc
 router = APIRouter(prefix="/api/calendar", tags=["calendar"], dependencies=[CurrentUser])
 
 
+import re as _re
+
+_DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = _re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _sanitize_title(title: str) -> str:
+    """Keep a user title on one line and out of marker syntax when it lands in a note
+    body (so a crafted title can't inject a supersession marker)."""
+    return (title or "").replace("\n", " ").replace("\r", " ").replace("[[", "[").replace("]]", "]").strip()
+
+
 def _compose_starts(date: str, time: str | None) -> tuple[str, int]:
-    """(starts_at, all_day) from a date + optional HH:MM."""
+    """(starts_at, all_day) from a validated date + optional HH:MM. 422 on bad format."""
     date = (date or "").strip()[:10]
+    if not _DATE_RE.match(date):
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
     t = (time or "").strip()
     if t:
-        return f"{date}T{t[:5]}:00", 0
+        if not _TIME_RE.match(t):
+            raise HTTPException(status_code=422, detail="time must be HH:MM (24h)")
+        return f"{date}T{t}:00", 0
     return date, 1
 
 
@@ -45,7 +61,8 @@ def upcoming(within_days: int = 90, limit: int = 100):
     for r in conn.execute(
         "SELECT id, title, kind, starts_at, ends_at, all_day, status, location_label, "
         "note_id, note_title, note_slug FROM v_upcoming "
-        "WHERE kind != 'recurring' AND (starts_at IS NULL OR date(starts_at) <= ?) LIMIT 500",
+        "WHERE kind != 'recurring' AND (starts_at IS NULL OR date(starts_at) <= ?) "
+        "ORDER BY starts_at LIMIT 500",
         (horizon,),
     ).fetchall():
         d = dict(r)
@@ -97,20 +114,20 @@ class QuickAddIn(BaseModel):
 def quick_add(body: QuickAddIn):
     """Write a dated note for the event AND project its structured row (source='manual').
     The note is the durable record; the row is its (deterministic) projection."""
-    title = (body.title or "").strip()
-    date = (body.date or "").strip()[:10]
-    if not title or len(date) != 10:
-        raise HTTPException(status_code=422, detail="title and a YYYY-MM-DD date are required")
-    starts_at, all_day = _compose_starts(date, body.time)
+    title = _sanitize_title(body.title)
+    if not title:
+        raise HTTPException(status_code=422, detail="title is required")
+    starts_at, all_day = _compose_starts(body.date, body.time)
     when = starts_at.replace("T", " ")
     conn = get_conn()
     note_title = notes_svc.next_dated_title(conn, clock.today_local())
-    line = f"{title} — {when}" + (f"\n\n{body.detail.strip()}" if body.detail else "")
+    detail = _sanitize_title(body.detail) if body.detail else None
+    line = f"{title} — {when}" + (f"\n\n{detail}" if detail else "")
     try:
         note_id = notes_svc.upsert_note(conn, note_title, line, source="user", fire_events=False)
         cal.upsert_events(conn, note_id, [{
             "title": title, "kind": body.kind, "starts_at": starts_at,
-            "all_day": bool(all_day), "detail": body.detail,
+            "all_day": bool(all_day), "detail": detail,
         }], source="manual")
         conn.commit()
     except Exception:
@@ -125,13 +142,19 @@ def quick_add(body: QuickAddIn):
 
 def _load_event(conn, event_id: int) -> dict:
     row = conn.execute(
-        "SELECT e.id, e.title, e.kind, e.starts_at, e.all_day, e.note_id, n.title AS note_title "
-        "FROM calendar_events e JOIN notes n ON n.id = e.note_id WHERE e.id = ?", (event_id,),
+        "SELECT e.id, e.title, e.kind, e.starts_at, e.all_day, e.identity_key, e.note_id, "
+        "n.title AS note_title FROM calendar_events e JOIN notes n ON n.id = e.note_id WHERE e.id = ?",
+        (event_id,),
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Event not found")
     if not row["starts_at"]:
         raise HTTPException(status_code=422, detail="Event has no date to supersede")
+    if row["kind"] == "recurring":
+        # A recurring series can't have a single occurrence rescheduled/cancelled yet
+        # (would need per-instance EXDATE handling); retiring it would kill the series.
+        raise HTTPException(status_code=422,
+                            detail="Can't reschedule/cancel one occurrence of a recurring series yet")
     return dict(row)
 
 
@@ -147,12 +170,11 @@ def reschedule(event_id: int, body: RescheduleIn):
     conn = get_conn()
     ev = _load_event(conn, event_id)
     old_date = ev["starts_at"][:10]
-    to_date = (body.to_date or "").strip()[:10]
-    if len(to_date) != 10:
-        raise HTTPException(status_code=422, detail="to_date (YYYY-MM-DD) is required")
-    new_starts, new_all_day = _compose_starts(to_date, body.to_time)
-    marker = f"supersedes [[{ev['note_title']}]] {old_date}"
-    body_md = (f"Rescheduled {ev['title']} from {old_date} to {new_starts.replace('T', ' ')}.\n\n{marker}")
+    new_starts, new_all_day = _compose_starts(body.to_date, body.to_time)
+    # Human-readable record in the note (best-effort marker); the edge below is recorded
+    # DIRECTLY by identity_key so it's robust even if the old note's title is unusual.
+    marker = f"supersedes [[{_sanitize_title(ev['note_title'])}]] {old_date}"
+    body_md = f"Rescheduled {_sanitize_title(ev['title'])} from {old_date} to {new_starts.replace('T', ' ')}.\n\n{marker}"
     try:
         note_title = notes_svc.next_dated_title(conn, clock.today_local())
         new_note_id = notes_svc.upsert_note(conn, note_title, body_md, source="user", fire_events=False)
@@ -160,7 +182,8 @@ def reschedule(event_id: int, body: RescheduleIn):
             "title": ev["title"], "kind": ev["kind"], "starts_at": new_starts,
             "all_day": bool(new_all_day),
         }], source="manual", sweep=False)
-        cal.consolidate(conn, [{"id": new_note_id, "content_md": body_md}])
+        new_ik = cal.identity_key(new_note_id, ev["title"], ev["kind"], 0)
+        cal.record_supersession(conn, ev["identity_key"], new_ik, new_note_id, "structured")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -175,12 +198,13 @@ def cancel(event_id: int):
     conn = get_conn()
     ev = _load_event(conn, event_id)
     old_date = ev["starts_at"][:10]
-    marker = f"cancels [[{ev['note_title']}]] {old_date}"
-    body_md = f"Cancelled {ev['title']} on {old_date}.\n\n{marker}"
+    marker = f"cancels [[{_sanitize_title(ev['note_title'])}]] {old_date}"
+    body_md = f"Cancelled {_sanitize_title(ev['title'])} on {old_date}.\n\n{marker}"
     try:
         note_title = notes_svc.next_dated_title(conn, clock.today_local())
         new_note_id = notes_svc.upsert_note(conn, note_title, body_md, source="user", fire_events=False)
-        cal.consolidate(conn, [{"id": new_note_id, "content_md": body_md}])
+        # Direct edge (no replacement = cancellation), robust to the old note's title.
+        cal.record_supersession(conn, ev["identity_key"], None, new_note_id, "structured")
         conn.commit()
     except Exception:
         conn.rollback()

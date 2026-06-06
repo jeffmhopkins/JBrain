@@ -352,7 +352,9 @@ export interface ChatEvent {
 }
 
 // External-lookup approval (the medical_reference gate): nothing is sent externally until approved.
-export const approveExternalLookup = (id: number) => post<{ ok: boolean; found: boolean }>(`/api/external-lookups/${id}/approve`);
+// `term` lets the owner EDIT what's sent (e.g. trim a PHI-laden question down to a clean topic).
+export const approveExternalLookup = (id: number, term?: string) =>
+  post<{ ok: boolean; found: boolean; term: string }>(`/api/external-lookups/${id}/approve`, term ? { term } : undefined);
 export const denyExternalLookup = (id: number) => post<{ ok: boolean }>(`/api/external-lookups/${id}/deny`);
 
 // Stream the architect's reply over SSE (POST + ReadableStream, so we can send

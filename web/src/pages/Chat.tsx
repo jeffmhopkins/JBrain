@@ -635,9 +635,11 @@ export default function Chat() {
   // The medical_reference gate: approve sends the EXACT term to MedlinePlus (the only outbound
   // moment) then auto-continues; skip declines and the assistant uses internal references only.
   async function approveProposal(p: { id: number; term: string }) {
+    const term = p.term.trim();
+    if (!term) return;
     setProposals((ps) => ps.filter((x) => x.id !== p.id));
-    try { await approveExternalLookup(p.id); } catch { /* the continuation will report a miss */ }
-    send(undefined, `I approved the external lookup for "${p.term}". Please continue.`);
+    try { await approveExternalLookup(p.id, term); } catch { /* the continuation will report a miss */ }
+    send(undefined, `I approved the external lookup for "${term}". Please continue.`);
   }
   async function skipProposal(p: { id: number; term: string }) {
     setProposals((ps) => ps.filter((x) => x.id !== p.id));
@@ -715,10 +717,13 @@ export default function Chat() {
         {proposals.map((p) => (
           <div key={`xp${p.id}`} className="ext-proposal">
             <div className="ext-proposal-text">
-              🔍 Look up <strong>“{p.term}”</strong> on MedlinePlus (external)? Nothing is sent until you approve.
+              🔍 Search MedlinePlus (external)? <strong>Edit the term</strong> if you like — nothing is sent until you approve.
             </div>
+            <input className="ext-proposal-input" value={p.term} aria-label="External search term"
+                   onChange={(e) => setProposals((ps) => ps.map((x) => x.id === p.id ? { ...x, term: e.target.value } : x))}
+                   onKeyDown={(e) => { if (e.key === "Enter") approveProposal(p); }} />
             <div className="row" style={{ gap: 8, marginTop: 6 }}>
-              <button className="primary" disabled={streaming || busy} onClick={() => approveProposal(p)}>Approve &amp; search</button>
+              <button className="primary" disabled={streaming || busy || !p.term.trim()} onClick={() => approveProposal(p)}>Approve &amp; search</button>
               <button className="ghost" disabled={streaming || busy} onClick={() => skipProposal(p)}>Skip</button>
             </div>
           </div>

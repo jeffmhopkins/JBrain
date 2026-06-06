@@ -183,3 +183,24 @@ def test_medical_reference_denied_never_fetches(conn, monkeypatch):
     external_lookups.decide(conn, ev["id"], approve=False)
     txt, ev2 = architect._tool_medical_reference(conn, None, "atrial fibrillation")  # _boom still installed
     assert ev2 is None and "declined" in txt.lower()                # denied → no fetch, no re-propose
+
+
+def test_medical_reference_owner_edits_term_on_approval(conn, monkeypatch):
+    from app.services import architect, external_lookups
+    fetched = []
+    def fake(c, q):
+        fetched.append(q)
+        return {"url": "https://medlineplus.gov/ttp.html", "title": "Platelet Disorders", "snippet": "s"}
+    # the model proposes a PHI-laden term — nothing is fetched
+    monkeypatch.setattr(medref, "health_topic", _boom)
+    _, ev = architect._tool_medical_reference(conn, None, "do my platelets of 18 fit TTP?")
+    # owner EDITS it to a clean topic and approves
+    monkeypatch.setattr(medref, "health_topic", fake)
+    external_lookups.decide(conn, ev["id"], approve=True, term="thrombotic thrombocytopenic purpura")
+    # the model re-calls with its ORIGINAL phrasing → matches, and the EDITED term is what gets sent
+    txt, ev2 = architect._tool_medical_reference(conn, None, "do my platelets of 18 fit TTP?")
+    assert ev2 is None and "medlineplus.gov/ttp.html" in txt
+    assert fetched and fetched[-1] == "thrombotic thrombocytopenic purpura"   # edited term sent, NOT the PHI query
+    # and a direct call with the edited topic is also already approved (no fresh proposal)
+    _, ev3 = architect._tool_medical_reference(conn, None, "thrombotic thrombocytopenic purpura")
+    assert ev3 is None

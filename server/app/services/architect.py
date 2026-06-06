@@ -1125,10 +1125,12 @@ def _tool_medical_reference(conn, conversation_id, query: str):
                 "owner you'd like their approval to search MedlinePlus for this exact term, then STOP — do not "
                 "call more external tools this turn. Their own reference library and notes are still available."),
                 event)
-    # status == 'approved' → the external fetch is now allowed (the owner OK'd this exact term).
-    res = medref.health_topic(conn, term)
+    # status == 'approved' → the external fetch is now allowed. Use the STORED term (what the owner
+    # approved — possibly edited from the model's original phrasing), not the raw query.
+    lookup_term = state.get("term") or term
+    res = medref.health_topic(conn, lookup_term)
     if not res:
-        return _untrusted("medical-ref", f"No MedlinePlus health topic found for “{term}”."), None
+        return _untrusted("medical-ref", f"No MedlinePlus health topic found for “{lookup_term}”."), None
     try:
         reference_candidates.record(conn, topic=res["title"], source="medlineplus",
                                     url=res["url"], snippet=res.get("snippet", ""))
@@ -1136,7 +1138,7 @@ def _tool_medical_reference(conn, conversation_id, query: str):
         pass
     summary = f" {res['snippet']}" if res.get("snippet") else ""
     return (_untrusted("medical-ref",
-                       f"MedlinePlus health topic for {term}: {res['title']} — {res['url']}.{summary} "
+                       f"MedlinePlus health topic for {lookup_term}: {res['title']} — {res['url']}.{summary} "
                        "[NLM/MedlinePlus, public domain — reference information, not medical advice, not NLM-endorsed]."),
             None)
 

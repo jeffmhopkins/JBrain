@@ -55,8 +55,8 @@ _DEFAULT_PROMPT = (
 #   "Supersedes: [[Old appt]] on 2026-06-14"
 #   "cancels [[Mortgage due]] 2026-06-14"
 _MARKER_RE = re.compile(
-    r"(?:supersedes?|cancels?|reschedules?)\b[^\[]*\[\[\s*(?P<title>[^\]]+?)\s*\]\]"
-    r"[^\d]*(?P<date>\d{4}-\d{2}-\d{2})",
+    r"(?:supersedes?|cancels?|reschedules?)\b[^\[\n]{0,40}\[\[\s*(?P<title>[^\]\n]+?)\s*\]\]"
+    r"[^\d\n]{0,20}(?P<date>\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,
 )
 
@@ -178,19 +178,37 @@ def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extr
         upserted += 1
     # Deletion sweep: this note's derived rows that are no longer present (a date the
     # owner removed from the note). Bounded to this note + this source — the note is
-    # the source of truth, so a dropped mention drops the projection.
+    # the source of truth, so a dropped mention drops the projection. We first read the
+    # doomed identity_keys so we can also purge any supersession edges that referenced
+    # them — otherwise a stale edge would survive and (because identity_key is stable)
+    # silently re-hide the event if the same date is later re-added to the note.
     if seen:
         placeholders = ",".join("?" * len(seen))
-        cur = conn.execute(
-            f"DELETE FROM calendar_events WHERE note_id=? AND source=? "
+        doomed = [r["identity_key"] for r in conn.execute(
+            f"SELECT identity_key FROM calendar_events WHERE note_id=? AND source=? "
             f"AND identity_key NOT IN ({placeholders})",
             (note_id, source, *seen),
-        )
+        )]
     else:
-        cur = conn.execute(
-            "DELETE FROM calendar_events WHERE note_id=? AND source=?", (note_id, source)
-        )
-    return {"note_id": note_id, "upserted": upserted, "retired": cur.rowcount}
+        doomed = [r["identity_key"] for r in conn.execute(
+            "SELECT identity_key FROM calendar_events WHERE note_id=? AND source=?",
+            (note_id, source),
+        )]
+    for ik in doomed:
+        _purge_edges_for(conn, ik)
+    if doomed:
+        ph = ",".join("?" * len(doomed))
+        conn.execute(f"DELETE FROM calendar_events WHERE identity_key IN ({ph})", doomed)
+    return {"note_id": note_id, "upserted": upserted, "retired": len(doomed)}
+
+
+def _purge_edges_for(conn, identity_key: str) -> None:
+    """Drop supersession edges that reference an event being deleted (on either side),
+    so a removed event leaves no dangling edge to resurrect later."""
+    conn.execute(
+        "DELETE FROM calendar_supersedes WHERE old_identity_key=? OR new_identity_key=?",
+        (identity_key, identity_key),
+    )
 
 
 # --- supersession (a later note retires an earlier event) -------------------
@@ -207,22 +225,31 @@ def parse_supersession_markers(content_md: str) -> list[dict]:
 def _resolve_old_event(conn, old_title: str, old_date: str) -> dict | None:
     """The event on `old_date` whose source note is titled `old_title`."""
     row = conn.execute(
-        "SELECT e.id, e.identity_key FROM calendar_events e JOIN notes n ON n.id = e.note_id "
+        "SELECT e.id, e.identity_key, e.title FROM calendar_events e JOIN notes n ON n.id = e.note_id "
         "WHERE n.title = ? COLLATE NOCASE AND date(e.starts_at) = ? LIMIT 1",
         (old_title, old_date),
     ).fetchone()
     return dict(row) if row else None
 
 
-def _replacement_key(conn, note_id: int, exclude_ik: str | None) -> str | None:
-    """The superseding note's own replacement event (the rescheduled-to date): the
-    note's latest-dated event other than the one being retired. None = pure cancellation."""
-    row = conn.execute(
-        "SELECT identity_key FROM calendar_events WHERE note_id=? AND identity_key IS NOT ? "
-        "AND starts_at IS NOT NULL ORDER BY starts_at DESC LIMIT 1",
+def _replacement_key(conn, note_id: int, exclude_ik: str | None, old_title: str | None) -> str | None:
+    """The superseding note's replacement event (the rescheduled-to date). Matched by
+    TITLE AFFINITY to the retired event — NOT merely "latest date in the note", which
+    would wrongly pick an unrelated later event in a multi-event note. Falls back to the
+    note's sole event; None when ambiguous or absent (a pure cancellation)."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT identity_key, title FROM calendar_events WHERE note_id=? AND identity_key IS NOT ? "
+        "AND starts_at IS NOT NULL ORDER BY starts_at DESC",
         (note_id, exclude_ik),
-    ).fetchone()
-    return row["identity_key"] if row else None
+    )]
+    if not rows:
+        return None
+    if old_title:
+        on = normalize_title(old_title)
+        same = [r for r in rows if normalize_title(r["title"]) == on]
+        if same:
+            return same[0]["identity_key"]
+    return rows[0]["identity_key"] if len(rows) == 1 else None
 
 
 def record_supersession(conn, old_identity_key: str, new_identity_key: str | None,
@@ -236,23 +263,121 @@ def record_supersession(conn, old_identity_key: str, new_identity_key: str | Non
 
 
 def consolidate(conn, notes: list[dict]) -> dict:
-    """Apply structured supersession markers found in the given (changed) notes. Each
-    marker retires the referenced event via a calendar_supersedes edge. Idempotent.
-    Returns {edges} (number of edges asserted this pass)."""
+    """Apply structured supersession markers in the given (changed) notes. RECONCILES,
+    not just inserts: each note's STRUCTURED edges are rebuilt from its current markers,
+    so a marker the owner removed retracts its edge (the sidecar stays re-derivable).
+    'llm'-confidence edges (the (b) path) are left untouched here. Idempotent."""
     edges = 0
     for note in notes or []:
         nid = note.get("id")
         body = note.get("content_md") or ""
-        if nid is None or not body:
+        if nid is None:
             continue
+        # Drop this note's prior STRUCTURED edges so removed markers don't linger.
+        conn.execute(
+            "DELETE FROM calendar_supersedes WHERE superseded_by_note_id=? AND confidence='structured'",
+            (int(nid),),
+        )
         for mk in parse_supersession_markers(body):
             old = _resolve_old_event(conn, mk["old_title"], mk["old_date"])
             if not old:
                 continue
-            new_ik = _replacement_key(conn, int(nid), old["identity_key"])
+            new_ik = _replacement_key(conn, int(nid), old["identity_key"], old.get("title"))
             record_supersession(conn, old["identity_key"], new_ik, int(nid), "structured")
             edges += 1
     return {"edges": edges}
+
+
+_RESCHED_RE = re.compile(
+    r"\b(?:reschedul|postpon|cancel|bump|moved?\s+to|move\s+it|"
+    r"call(?:ed)?\s+off|push(?:ed)?\s+back)",
+    re.IGNORECASE,
+)
+
+
+def _candidate_events(conn, exclude_note_id: int, limit: int = 30) -> list[dict]:
+    """Live events from OTHER notes a free-prose note might be rescheduling/cancelling."""
+    rows = conn.execute(
+        "SELECT e.id, e.identity_key, e.title, e.starts_at, n.title AS note_title "
+        "FROM calendar_events e JOIN notes n ON n.id = e.note_id "
+        "WHERE e.note_id != ? AND e.status NOT IN ('cancelled','done') "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key) "
+        "ORDER BY e.starts_at DESC LIMIT ?",
+        (int(exclude_note_id), int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _llm_match_supersession(note_text: str, candidates: list[dict]) -> dict | None:
+    """Ask the LLM whether `note_text` clearly reschedules/cancels ONE candidate. Returns
+    {index, confidence:'high'|'low', cancel:bool} or None. The stubbable (b) LLM seam."""
+    block = "\n".join(
+        f"{i}. {c['title']} ({(c.get('starts_at') or '')[:10]}) — from note {c.get('note_title')}"
+        for i, c in enumerate(candidates)
+    )
+    prompt = (
+        "A personal note may RESCHEDULE or CANCEL one previously-scheduled event. Decide "
+        "whether the NOTE clearly refers to exactly ONE candidate event. Reply with ONLY a "
+        'JSON object {"index": <candidate number, or -1 if none clearly match>, '
+        '"confidence": "high"|"low", "cancel": true|false}. Be conservative: use "low" '
+        "unless the match is unambiguous.\n\nCANDIDATES:\n" + block + "\n\nNOTE:\n" + note_text[:1500]
+    )
+    try:
+        raw = llm.complete([{"role": "user", "content": prompt}],
+                           model=llm.model_for("cheap"), max_tokens=120)
+    except Exception:  # noqa: BLE001
+        return None
+    obj = _parse_obj(raw)
+    idx = obj.get("index")
+    if not isinstance(idx, int) or idx < 0:
+        return None
+    return {"index": idx,
+            "confidence": "high" if str(obj.get("confidence")).lower() == "high" else "low",
+            "cancel": bool(obj.get("cancel"))}
+
+
+def propose_supersessions(conn, notes: list[dict], *, workflow_id=None) -> dict:
+    """The (b) free-prose path. For changed notes that READ like a reschedule/cancellation
+    but carry NO structured marker, ask the LLM to match a live event: HIGH confidence
+    records an 'llm' edge; LOW posts a Review card for the owner (never auto-applied).
+    Reconciling + idempotent (re-derives this note's 'llm' edges each pass). No-op
+    without an LLM key, so the deterministic (a) path/tests are unaffected."""
+    if not llm.has_credentials():
+        return {"applied": 0, "staged": 0}
+    from . import reviews as reviews_svc
+    applied = staged = 0
+    for note in notes or []:
+        nid = note.get("id")
+        body = note.get("content_md") or ""
+        if nid is None:
+            continue
+        # Reconcile: drop this note's prior fuzzy edges before re-deriving.
+        conn.execute(
+            "DELETE FROM calendar_supersedes WHERE superseded_by_note_id=? AND confidence='llm'",
+            (int(nid),),
+        )
+        if not body.strip() or parse_supersession_markers(body) or not _RESCHED_RE.search(body):
+            continue
+        cands = _candidate_events(conn, int(nid))
+        if not cands:
+            continue
+        m = _llm_match_supersession(body, cands)
+        if not m or not (0 <= m["index"] < len(cands)):
+            continue
+        old = cands[m["index"]]
+        if m["confidence"] == "high":
+            new_ik = None if m["cancel"] else _replacement_key(conn, int(nid), old["identity_key"], old.get("title"))
+            record_supersession(conn, old["identity_key"], new_ik, int(nid), "llm")
+            applied += 1
+        else:
+            reviews_svc.create_review_item(
+                conn, workflow_id, "Possible reschedule/cancellation",
+                f"The note “{note.get('title')}” may reschedule or cancel “{old['title']}” "
+                f"({(old.get('starts_at') or '')[:10]}). To confirm, add a marker: "
+                f"supersedes [[{old.get('note_title')}]] {(old.get('starts_at') or '')[:10]}",
+                None)
+            staged += 1
+    return {"applied": applied, "staged": staged}
 
 
 def what_replaced(conn, event_id: int) -> dict | None:
@@ -361,6 +486,39 @@ def _parse_list(text: str) -> list[dict]:
     return []
 
 
+def _parse_obj(text: str) -> dict:
+    """Pull the first complete JSON object out of an LLM reply (fences/prose tolerant)."""
+    if not text:
+        return {}
+    start = text.find("{")
+    if start == -1:
+        return {}
+    depth = in_str = esc = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = 0
+            elif c == "\\":
+                esc = 1
+            elif c == '"':
+                in_str = 0
+            continue
+        if c == '"':
+            in_str = 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    out = json.loads(text[start:i + 1])
+                    return out if isinstance(out, dict) else {}
+                except Exception:  # noqa: BLE001
+                    return {}
+    return {}
+
+
 def classify_dates(conn, note: dict) -> list[dict]:
     """LLM-classify one note's dated commitments into event dicts. No-op (returns [])
     without an LLM key. The LLM-touching seam — stubbed in tests."""
@@ -387,19 +545,48 @@ def classify_dates(conn, note: dict) -> list[dict]:
     return _parse_list(text)
 
 
+def _parse_cursor(since: str) -> tuple[str, int]:
+    """A watermark is a composite "<updated_at>|<id>" cursor so notes that share an
+    updated_at are never starved by batch_limit (a bare timestamp + strict `>` would
+    drop the ones past the cap). Legacy/empty values parse to the very beginning."""
+    s = since or ""
+    if "|" in s:
+        ts, _, rid = s.rpartition("|")
+        try:
+            return ts, int(rid)
+        except ValueError:
+            return s, 0
+    return s, 0
+
+
+def cursor_for(rows: list[dict]) -> str:
+    """The composite watermark to store after processing `rows` (ordered by
+    (updated_at, id)): the last row's cursor. '' if nothing was processed."""
+    if not rows:
+        return ""
+    last = rows[-1]
+    return f"{last['updated_at']}|{last['id']}"
+
+
 def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
-    """Entry/daily notes changed since the watermark that EITHER have a detected date
-    OR already have calendar rows (so a note whose dates were all removed is revisited
-    and its orphaned rows get swept). classify_dates is gated on detected dates, so a
-    dateless-but-previously-dated note costs no LLM call — it just sweeps. Carries
-    content_md so the same batch feeds both extraction and the supersession scan."""
+    """Entry/daily notes changed since the watermark that need a calendar pass — those
+    that have a detected date, OR already have calendar rows (so a note whose dates were
+    all removed is revisited and its orphaned rows swept), OR carry a supersession marker
+    (so a pure-cancellation note with no date of its own still gets consolidated).
+    classify_dates is gated on detected dates, so dateless notes cost no LLM call.
+    Paged by the composite (updated_at, id) cursor; carries content_md for the
+    supersession scan."""
+    ts, rid = _parse_cursor(since)
     rows = conn.execute(
         "SELECT n.id, n.title, n.content_md, n.updated_at "
         "FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
-        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') AND n.updated_at > ? "
+        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') "
+        "AND (n.updated_at > ? OR (n.updated_at = ? AND n.id > ?)) "
         "AND ((a.dates_json IS NOT NULL AND a.dates_json != '[]') "
-        "     OR EXISTS (SELECT 1 FROM calendar_events ce WHERE ce.note_id = n.id)) "
-        "ORDER BY n.updated_at LIMIT ?",
-        (since or "", max(1, min(int(limit), 1000))),
+        "     OR EXISTS (SELECT 1 FROM calendar_events ce WHERE ce.note_id = n.id) "
+        "     OR n.content_md LIKE '%supersede%' OR n.content_md LIKE '%cancel%' "
+        "     OR n.content_md LIKE '%reschedul%') "
+        "ORDER BY n.updated_at, n.id LIMIT ?",
+        (ts, ts, rid, max(1, min(int(limit), 1000))),
     ).fetchall()
     return [dict(r) for r in rows]

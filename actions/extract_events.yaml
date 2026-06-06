@@ -36,12 +36,19 @@ steps:
           note_id: "{{ item.id }}"
           events: "{{ ev.events }}"
 
-  # Apply structured supersession markers found in this batch's notes.
+  # Apply structured `supersedes/cancels [[Note]] DATE` markers (the (a) path).
   - do: consolidate_calendar
     with: { notes: "{{ pending }}" }
 
-  # Advance the watermark to the newest note processed this run.
+  # Free-prose reschedules/cancellations without a marker (the (b) path): high
+  # confidence applies, low posts a Review card. No-op without an LLM key.
+  - do: propose_supersessions
+    with: { notes: "{{ pending }}" }
+
+  # Advance the composite (updated_at, id) watermark to the last note processed —
+  # pending is ordered by (updated_at, id), so its last row is the cursor. A bare
+  # max(updated_at) would starve notes sharing a timestamp past the batch cap.
   - do: set_meta
     with:
       key: "calendar:watermark"
-      value: "{{ pending | map(attribute='updated_at') | max }}"
+      value: "{{ pending[-1].updated_at ~ '|' ~ pending[-1].id }}"

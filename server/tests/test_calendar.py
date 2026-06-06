@@ -208,6 +208,166 @@ def test_supersession_marker_parsing():
     got = cal.parse_supersession_markers("blah cancels [[Mortgage due]] 2099-01-01 end")
     assert got == [{"old_title": "Mortgage due", "old_date": "2099-01-01"}]
     assert cal.parse_supersession_markers("no marker here") == []
+    # #6: bounded to one line — a marker must NOT bind a title to a far-away date.
+    assert cal.parse_supersession_markers("supersedes [[Dentist]]\n\nUnrelated 2099-09-09") == []
+
+
+def test_replacement_matches_by_title_not_latest_date(conn):
+    """#3: a multi-event reschedule note must link the SAME event, not its latest-dated
+    unrelated event."""
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "Dentist")
+    cal.upsert_events(conn, n1, [{"title": "Dentist visit", "starts_at": "2099-06-14"}])
+    old_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (n1,)).fetchone()["id"]
+    n2 = _mknote(conn, "Daily", body="supersedes [[Dentist]] 2099-06-14")
+    cal.upsert_events(conn, n2, [
+        {"title": "Dentist visit", "starts_at": "2099-06-21"},
+        {"title": "Big party", "starts_at": "2099-06-30"},   # unrelated, later
+    ])
+    cal.consolidate(conn, [{"id": n2, "content_md": "supersedes [[Dentist]] 2099-06-14"}])
+    repl = cal.what_replaced(conn, old_id)
+    assert repl and repl["title"] == "Dentist visit" and repl["starts_at"] == "2099-06-21"
+
+
+def test_stale_edge_does_not_resurrect_after_readd(conn):
+    """#4: sweeping the old event purges its edge, so re-adding the same date is clean."""
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "Appt")
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-14"}])
+    n2 = _mknote(conn, "Move", body="supersedes [[Appt]] 2099-06-14")
+    cal.upsert_events(conn, n2, [{"title": "Dentist", "starts_at": "2099-06-21"}])
+    cal.consolidate(conn, [{"id": n2, "content_md": "supersedes [[Appt]] 2099-06-14"}])
+    # Owner removes the date from n1 (sweep), then later re-adds the SAME date.
+    cal.upsert_events(conn, n1, [])
+    assert conn.execute("SELECT COUNT(*) c FROM calendar_supersedes").fetchone()["c"] == 0
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-14"}])
+    up = [r["note_id"] for r in conn.execute("SELECT note_id FROM v_upcoming WHERE note_id=?", (n1,))]
+    assert n1 in up   # the re-added event is visible again, not hidden by a stale edge
+
+
+def test_pure_cancellation_note_is_scanned(conn):
+    """#5: a marker-only note (no date of its own, no rows) still gets consolidated."""
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "Dentist")
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-14"}])
+    # A cancellation note: only a marker, no dates, no calendar rows.
+    n2 = _mknote(conn, "Oops", body="cancels [[Dentist]] 2099-06-14", dates=[],
+                 updated_at="2099-06-15 00:00:00")
+    pending = cal.pending_notes(conn, "", 40)
+    assert any(p["id"] == n2 for p in pending), "marker-only note must be in the batch"
+    cal.consolidate(conn, pending)
+    up = [r["note_id"] for r in conn.execute("SELECT note_id FROM v_upcoming WHERE note_id=?", (n1,))]
+    assert n1 not in up   # the cancelled event is gone from upcoming
+
+
+def test_watermark_no_starvation_at_timestamp_tie(conn):
+    """#2: notes sharing an updated_at must not be starved when batch_limit < their count.
+    The composite (updated_at, id) cursor drains them across runs."""
+    from app.services import calendar as cal
+    ids = []
+    for i in range(3):
+        ids.append(_mknote(conn, f"Note{i}", dates=[f"2099-0{i+1}-01: x"],
+                           updated_at="2099-05-05 12:00:00"))
+    seen = set()
+    since = ""
+    for _ in range(5):   # iterate batches of 2 until drained
+        batch = cal.pending_notes(conn, since, 2)
+        if not batch:
+            break
+        seen.update(p["id"] for p in batch)
+        since = cal.cursor_for(batch)
+    assert set(ids) <= seen   # every tied-timestamp note was eventually returned
+
+
+def test_cross_source_sweep_preserves_manual(conn):
+    """An extracted-source sweep must not touch a manual-source row for the same note."""
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Mixed source")
+    cal.upsert_events(conn, nid, [{"title": "Manual thing", "starts_at": "2099-01-01"}], source="manual")
+    cal.upsert_events(conn, nid, [{"title": "Extracted thing", "starts_at": "2099-02-01"}], source="extracted")
+    cal.upsert_events(conn, nid, [], source="extracted")   # sweep extracted only
+    rows = {r["title"] for r in conn.execute("SELECT title FROM calendar_events WHERE note_id=?", (nid,))}
+    assert rows == {"Manual thing"}
+
+
+def test_views_now_boundary(conn):
+    """now()-boundary realism: a just-past timed event and a today all-day event land
+    on the right side of v_upcoming / v_event_history."""
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Boundary")
+    conn.execute(
+        "INSERT INTO calendar_events (note_id, title, starts_at, all_day, status, identity_key, source) "
+        "VALUES (?,?,datetime('now','-1 minute'),0,'confirmed','bnd-past',?)", (nid, "JustPast", "extracted"))
+    conn.execute(
+        "INSERT INTO calendar_events (note_id, title, starts_at, all_day, status, identity_key, source) "
+        "VALUES (?,?,date('now'),1,'confirmed','bnd-today',?)", (nid, "TodayAllDay", "extracted"))
+    up = {r["title"] for r in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))}
+    hist = {r["title"] for r in conn.execute("SELECT title FROM v_event_history WHERE note_id=?", (nid,))}
+    assert "TodayAllDay" in up and "JustPast" not in up
+    assert "JustPast" in hist
+
+
+def test_classify_cancelled_status_lands_in_history(conn, monkeypatch):
+    """A note whose event the LLM marks status=cancelled goes to history, not upcoming."""
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Cancelled appt", body="Dentist 2099-08-08 — cancelled",
+                  dates=["2099-08-08: dentist"])
+    monkeypatch.setattr(cal.llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(cal.llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(cal.llm, "complete", lambda *a, **k: json.dumps([
+        {"title": "Dentist", "starts_at": "2099-08-08", "status": "cancelled"}]))
+    events = cal.classify_dates(conn, {"id": nid, "title": "Cancelled appt", "content_md": "x"})
+    cal.upsert_events(conn, nid, events)
+    up = {r["title"] for r in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))}
+    hist = {r["title"] for r in conn.execute("SELECT title FROM v_event_history WHERE note_id=?", (nid,))}
+    assert up == set() and "Dentist" in hist
+
+
+# --- the (b) free-prose supersession path (stubbed matcher) ------------------
+
+def test_propose_supersession_high_applies_low_stages(conn, monkeypatch):
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "Original")
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-14"}])
+    old_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (n1,)).fetchone()["id"]
+    n2 = _mknote(conn, "Note", body="had to reschedule the dentist to next week")
+    cal.upsert_events(conn, n2, [{"title": "Dentist", "starts_at": "2099-06-21"}])
+
+    monkeypatch.setattr(cal.llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(cal.llm, "model_for", lambda *a: "m")
+    # HIGH confidence -> auto-applies an 'llm' edge.
+    monkeypatch.setattr(cal, "_llm_match_supersession",
+                        lambda text, cands: {"index": 0, "confidence": "high", "cancel": False})
+    out = cal.propose_supersessions(conn, [{"id": n2, "title": "Note",
+                                            "content_md": "reschedule the dentist"}])
+    assert out["applied"] == 1
+    assert cal.what_replaced(conn, old_id) is not None
+    edge = conn.execute("SELECT confidence FROM calendar_supersedes").fetchone()
+    assert edge["confidence"] == "llm"
+
+
+def test_propose_supersession_low_confidence_stages_review(conn, monkeypatch):
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "Original2")
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-14"}])
+    n2 = _mknote(conn, "Vague", body="maybe cancel the dentist, not sure")
+
+    monkeypatch.setattr(cal.llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(cal.llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(cal, "_llm_match_supersession",
+                        lambda text, cands: {"index": 0, "confidence": "low", "cancel": False})
+    out = cal.propose_supersessions(conn, [{"id": n2, "title": "Vague",
+                                            "content_md": "maybe cancel the dentist"}])
+    assert out["staged"] == 1
+    # No edge applied; a review card was posted instead.
+    assert conn.execute("SELECT COUNT(*) c FROM calendar_supersedes").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM review_items").fetchone()["c"] == 1
+
+
+def test_propose_supersession_noop_without_llm(conn):
+    from app.services import calendar as cal
+    out = cal.propose_supersessions(conn, [{"id": 1, "content_md": "reschedule the thing"}])
+    assert out == {"applied": 0, "staged": 0}
 
 
 # --- rrule expansion --------------------------------------------------------
@@ -297,7 +457,7 @@ def test_extract_events_action_writes_rows_and_advances_watermark(conn, monkeypa
 
     rows = conn.execute("SELECT title, starts_at FROM calendar_events WHERE note_id=?", (nid,)).fetchall()
     assert len(rows) == 1 and rows[0]["title"] == "Flight" and rows[0]["starts_at"] == "2099-07-01"
-    assert get_meta("calendar:watermark") == "2099-07-01 09:00:00"
+    assert get_meta("calendar:watermark") == f"2099-07-01 09:00:00|{nid}"   # composite cursor
 
 
 def test_extract_events_action_sweeps_when_dates_removed(conn, monkeypatch):

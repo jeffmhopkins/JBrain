@@ -1276,6 +1276,14 @@ def _p_consolidate_calendar(ctx, notes):
     return cal.consolidate(ctx.conn, list(notes or []))
 
 
+def _p_propose_supersessions(ctx, notes):
+    """The free-prose (b) supersession path: LLM-match reschedule/cancel notes that lack
+    a structured marker — high confidence applies an 'llm' edge, low posts a Review card.
+    No-op without an LLM key."""
+    from . import calendar as cal
+    return cal.propose_supersessions(ctx.conn, list(notes or []), workflow_id=ctx.workflow_id)
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1353,6 +1361,7 @@ _PRIMITIVES = {
     "extract_events": _p_extract_events,
     "upsert_calendar_events": _p_upsert_calendar_events,
     "consolidate_calendar": _p_consolidate_calendar,
+    "propose_supersessions": _p_propose_supersessions,
 }
 
 
@@ -1415,6 +1424,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                                           {"name": "source", "type": "str"}], "output": "object"},
     "consolidate_calendar": {"summary": "Apply structured supersession markers in the given notes (a later note reschedules/cancels an earlier event).",
                              "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
+    "propose_supersessions": {"summary": "Free-prose (LLM) supersession: match reschedule/cancel notes without a marker — high confidence applies, low posts a review.",
+                              "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
     "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",
                         "inputs": [{"name": "limit", "type": "int"}, {"name": "force", "type": "bool"}], "output": "list"},
     "analyze_note": {"summary": "(Re)compute one note's AI analysis sidecar (no-op if unchanged, unless force).",

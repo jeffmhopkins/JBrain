@@ -360,12 +360,27 @@ draft schema in §1.1** — those corrections are authoritative for Phase 1.
   upsert UPDATEs in place. `seq` (0-based, by document order within the note)
   disambiguates two genuinely-distinct same-title/kind events in one note so the
   second can't silently overwrite the first. **Corrects §2.1 step 3.**
-- **Supersession edge = a `superseded_by_id` column** on `calendar_events`
-  (the retired row points at its replacement row) + `status='superseded'`.
-  Rows are upsert-stable (`ON CONFLICT DO UPDATE`), so the row id is a stable
-  target; `ON DELETE SET NULL` and a sweep that skips non-live rows keep
-  re-derivation idempotent. "Live events" and "what replaced X" are both clean
-  one-line SELECTs. **Replaces §1.1/§2.4's `supersedes_note_id`.**
+- **Supersession edge = a `calendar_supersedes` table** keyed by the STABLE
+  `identity_key` (`old_identity_key`, `new_identity_key`, `superseded_by_note_id`,
+  `confidence`). *(Adversarial review reversed an earlier "column on the row" call:
+  a column gets clobbered when the ORIGINAL note — which still mentions the event —
+  is re-extracted and its row rewritten in place. The edge must live outside the
+  churning row.)* The views exclude rows whose `identity_key` appears as an
+  `old_identity_key`. Sweeping/deleting an event purges its edges (so a removed-then-
+  re-added date can't be resurrected by a stale edge), and `consolidate` RECONCILES
+  a note's structured edges from its current markers (a removed marker retracts its
+  edge). **Replaces §1.1/§2.4's `supersedes_note_id`.**
+- **Both supersession paths shipped.** (a) structured `supersedes/cancels [[Note]]
+  DATE` markers (deterministic, single-line-bounded regex; replacement matched by
+  title affinity, not "latest date in the note"). (b) free-prose: `propose_supersessions`
+  asks the LLM whether a reschedule/cancel note matches a live event — HIGH confidence
+  records an `'llm'` edge, LOW posts a Review card (never auto-applied); no-op without
+  an LLM key.
+- **Watermark = a composite `"<updated_at>|<id>"` cursor.** A bare `max(updated_at)`
+  starves notes sharing a timestamp once `batch_limit` truncates them; paging by
+  `(updated_at, id)` guarantees forward progress. `pending_notes` also surfaces notes
+  that carry a supersession marker (so a date-less pure-cancellation note is scanned)
+  or already have calendar rows (so a date removed from a note sweeps its orphans).
 - **rrule via `dateutil.rrule`** (already present transitively through `croniter`;
   added explicitly to requirements). Correct BYDAY/COUNT/UNTIL/DST handling
   without re-implementing RFC 5545. **Resolves open question 1.**

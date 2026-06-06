@@ -43,12 +43,31 @@ This is the **established JBrain sidecar pattern**, pointed at time:
 **The one real tension (state it honestly):** JBrain's discipline is *notes are
 truth; sidecars are derived* (`schema.sql:111-112` "A SIDECAR — it never mutates
 the note body, so the raw note stays the source of truth"). A calendar invites
-drift toward "the place you edit appointments directly." v1 resists this:
-extracted rows are **re-derivable**; manual rows are a flagged exception
-(`source='manual'`) and, where possible, also drop a `[[wiki-link]]` back into a
-note so the note remains the durable record. If this ever becomes the
-authoritative store you edit instead of notes, it is fighting the rest of the
-system — that boundary is the thing to watch in review.
+drift toward "the place you edit appointments directly." **v1 closes this hole by
+design: the calendar UI never writes the sidecar directly — every create/edit is a
+NOTE write, and the sidecar is re-derived from notes by a consolidation pass.**
+
+Concretely (the owner-confirmed model):
+
+- **Creating** an event from the UI writes a **new dated/daily note** (or appends
+  a structured line to today's daily note) — the durable record lives in a note,
+  exactly like the existing Daily Log flow.
+- **Changing/cancelling** an event is one of two note operations, never a direct
+  row edit:
+  1. **Edit the original note** (versioned like every edit), or
+  2. **Write a superseding note** — "this replaces the dentist appt on the 14th →
+     moved to the 21st" — that points back at the original.
+- A **consolidation pass** then re-derives the calendar from notes: it upserts
+  the changed rows and retires the superseded ones. This is the same
+  "supersede stale facts + consolidate" discipline the KB maintenance already
+  follows (`docs/kb-maintenance-redesign.md`), and the same Daily Log → Daily
+  Summaries shape the README documents.
+
+So **every** `calendar_events` row is derived, carries `note_id` provenance, and
+is re-derivable — there is no special "manually authored, do not re-derive"
+category to fight consolidation. `source` records *how the originating note line
+was authored* (`extracted` from prose vs `manual` from the calendar quick-add UI),
+but the row is a projection either way.
 
 ---
 
@@ -67,7 +86,8 @@ would be a footgun.
 -- entered by hand. The note stays the source of truth (like note_analysis /
 -- lab_results); these rows are a re-derivable sidecar, never authoritative.
 -- identity_key is a deterministic dedup hash with a partial-unique index, so a
--- re-extraction upserts in place instead of duplicating (NULL opts out / manual).
+-- re-extraction upserts in place instead of duplicating. EVERY row is derived
+-- from a note (the calendar UI writes notes, never these rows directly — §2.2).
 CREATE TABLE IF NOT EXISTS calendar_events (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   note_id        INTEGER REFERENCES notes(id) ON DELETE CASCADE,        -- provenance
@@ -89,8 +109,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   entity_id      INTEGER REFERENCES entities(id) ON DELETE SET NULL,    -- the doctor/org/etc.
   status         TEXT NOT NULL DEFAULT 'confirmed'
                    CHECK (status IN ('confirmed','tentative','cancelled','done')),
-  identity_key   TEXT,                            -- dedup hash; NULL = manual, never dedup'd
-  source         TEXT NOT NULL DEFAULT 'extracted', -- 'extracted'|'manual'|'workflow'
+  supersedes_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL, -- a later note replaced/cancelled this (see §2.4)
+  identity_key   TEXT,                            -- dedup hash; EVERY row has one (all rows are derived)
+  source         TEXT NOT NULL DEFAULT 'extracted', -- how the source note line was authored: 'extracted'|'manual'|'workflow'
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -169,18 +190,59 @@ flow. Steps (all using existing or thin-new `pipeline.py` `_PRIMITIVES`):
 Because rows carry `note_id`, deleting/editing a note re-derives or cascades
 (`ON DELETE CASCADE`), so the projection self-heals.
 
-### 2.2 Manual entry (escape hatch)
+### 2.2 Manual entry & edits — ALWAYS via a note (no direct row writes)
 
-A `POST /api/calendar` create path (`source='manual'`). To honor the
-source-of-truth boundary, manual creation **also appends a dated line to a note**
-(a "Calendar" or daily-log note) via the existing `append_to_note` primitive, so
-the durable record still lives in a note and the manual row is just its index
-entry. Manual rows set `identity_key = NULL` so extraction never clobbers them.
+The owner-confirmed rule: **the calendar UI never writes `calendar_events`
+directly.** Every create/edit is a note write, and the same extraction pass
+(§2.1) derives the row. This keeps notes the single source of truth with zero
+special-casing.
+
+- **Create** — the "add to calendar" UI writes a **new dated note** (or appends a
+  structured line to today's daily note) via the existing `write_note` /
+  `append_to_note` primitives. The quick-add form is just a convenient way to
+  author a well-formed dated note line; the extractor turns it into a row on the
+  next consolidation tick (or synchronously after the write).
+- **Change/cancel** — never an in-place row edit. Two note operations only:
+  1. **edit the original note** (it's versioned like any edit, and re-extraction
+     upserts the changed row), or
+  2. **write a superseding note** that references the original — see §2.4.
+
+`source` on the resulting row is `manual` when the originating note line came from
+the quick-add UI, `extracted` when it came from free prose — purely informational;
+both are derived rows with `note_id` provenance and a real `identity_key`.
 
 ### 2.3 Recurrence promotion (from existing detector)
 
 Extend `promote_recurrences` (§1.2) to emit `kind='recurring'` rows. No new
 clustering code — just a new sink.
+
+### 2.4 Supersession & consolidation
+
+Because edits are note writes, the projection needs to know when a newer note
+**replaces/cancels** an event a prior note created. This is the same problem KB
+maintenance already solves by "superseding stale facts"
+(`docs/kb-maintenance-redesign.md`). Mechanism:
+
+- A superseding note carries an explicit back-reference to what it replaces:
+  - from the UI **reschedule/cancel** action, the form pre-fills a marker (a
+    `[[wiki-link]]` to the original note plus the original event's date), so the
+    edge is unambiguous; and/or
+  - in free prose, the consolidation LLM step recognizes "moved to / cancelled /
+    rescheduled" language pointing at a prior event.
+- The **consolidation pass** (a step in `extract_events`, or its own
+  `consolidate_calendar` action on a watermark) then: writes the new/updated row,
+  and sets the prior row's `status` to `cancelled` (or `done`) rather than
+  deleting it — so history (`v_event_history`, "it was originally the 14th") is
+  preserved, mirroring how `trips` snapshots and `note_versions` never lose the
+  past.
+
+Schema support: add `supersedes_note_id INTEGER REFERENCES notes(id)` to
+`calendar_events` (the note that this row was superseded *by* is found by walking
+forward; the simplest stored edge is "this note supersedes that note"). The exact
+identity model for matching a superseding note to the right prior row — explicit
+link vs. LLM best-effort vs. a stable logical `series_key` — is **open question #3
+below**, now the central design question rather than the source-of-truth question
+(which this section settles).
 
 ---
 
@@ -213,8 +275,9 @@ No new notification infrastructure — both channels already ship.
   `event_history`, thin read-only tools mirroring the lab tools
   (`prompts.yaml` `list_abnormal_labs` / `lab_stat` shape) so the AI answers
   "what's on my calendar this week" conversationally and cites the source note.
-- **Calendar tab** (phase 3, `web/`) — a month/agenda view under Advanced
+- **Calendar tab** (phase 4, `web/`) — a month/agenda view under Advanced
   (alongside Browse · Automate · Data · Review), each item linking to its note.
+  Its quick-add / reschedule / cancel controls **write notes** (§2.2), not rows.
   Out of scope for the doc-only first pass.
 - **Search** — automatic: rows link to notes, which are already in FTS5 +
   semantic search.
@@ -224,15 +287,17 @@ No new notification infrastructure — both channels already ship.
 ## 5. Phasing
 
 - **Phase 0 (this doc):** approve the schema + boundary rules.
-- **Phase 1:** migration adds `calendar_events` + `calendar_fired` + views;
-  `extract_events` action/workflow (staged); `upsert_calendar_events` primitive.
+- **Phase 1:** migration adds `calendar_events` (+ `supersedes_note_id`) +
+  `calendar_fired` + views; `extract_events` action/workflow (staged);
+  `upsert_calendar_events` + consolidation/supersession (§2.4) primitives.
   Queryable via SQL/Research immediately. *(This was the "Schema + extraction
   only" option.)*
 - **Phase 2:** `list_upcoming` / `event_history` Research tools; recurrence
   promotion branch in `promote_recurrences`.
-- **Phase 3:** `upcoming-reminders` workflow (Review cards + Web Push); manual
-  entry API + the source-note append.
-- **Phase 4:** Calendar tab in the PWA.
+- **Phase 3:** `upcoming-reminders` workflow (Review cards + Web Push); calendar
+  **quick-add** UI that writes a dated note (never the row) + the
+  reschedule/cancel action that writes a superseding note (§2.2/§2.4).
+- **Phase 4:** Calendar tab in the PWA (month/agenda view).
 
 ---
 
@@ -245,9 +310,15 @@ No new notification infrastructure — both channels already ship.
    events (mixing date and datetime in one column, as `lab_results.collected_at`
    already does), or split a separate `date`/`time`? The medical tables chose the
    single-column approach; matching it is simpler.
-3. **Manual-vs-extracted boundary** — is the "manual create also appends to a
-   note" rule (§2.2) worth the friction, or should manual rows be allowed to
-   stand alone (accepting the slight source-of-truth drift)?
+3. **Supersession identity model** *(source-of-truth question RESOLVED — §0/§2.2:
+   the UI always writes notes, the sidecar is re-derived)*. The open part is how a
+   superseding note is matched to the prior row it replaces (§2.4): (a) explicit
+   `[[wiki-link]]` + date marker the reschedule/cancel UI pre-fills (precise, but
+   relies on going through the UI); (b) LLM best-effort over free prose (handles
+   "moved the dentist to Friday" but can mis-match); (c) a stable logical
+   `series_key` the extractor assigns so the same real-world event keeps one
+   identity across notes (most robust, hardest to compute deterministically).
+   Likely (a)+(b): structured edge when the UI provides it, LLM fallback otherwise.
 4. **Lead time / quiet hours** — should reminder lead-time and a no-push window
    be workflow config (per the editable-workflow pattern) or fixed?
 5. **Scope of the recurrence branch** — should detecting a recurrence *replace*

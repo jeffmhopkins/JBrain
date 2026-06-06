@@ -304,23 +304,33 @@ export default function MapPage() {
 
   const curTs = timeline[idx] ?? 0;
 
-  // Fit to everything we have (trail + notes) ONCE per (re)load — never on a live
-  // append, so polling doesn't keep snapping the user's pan/zoom back.
+  // Fit ONCE per (re)load — never on a live append, so polling doesn't keep snapping
+  // the user's pan/zoom back. Prefer framing just the default user's tail over the
+  // range; fall back to the whole trail + notes when there isn't one (e.g. the default
+  // user has no fixes in range, or people haven't loaded yet — see the refit note below).
   useEffect(() => {
     const m = map.current; if (!m || !needFitRef.current) return;
-    const coords = [
-      ...points.map((p) => [p.lat, p.lon] as [number, number]),
-      ...notes.map((n) => [n.lat, n.lon] as [number, number]),
-    ];
+    const def = people.find((p) => p.is_default) || people[0];
+    const mine = def ? points.filter((p) => personOf(p.source)?.id === def.id) : [];
+    const coords = mine.length
+      ? mine.map((p) => [p.lat, p.lon] as [number, number])
+      : [
+          ...points.map((p) => [p.lat, p.lon] as [number, number]),
+          ...notes.map((n) => [n.lat, n.lon] as [number, number]),
+        ];
     if (coords.length) {
       m.fitBounds(L.latLngBounds(coords), { padding: [30, 30], maxZoom: 16 });
-      needFitRef.current = false;
+      // Keep refitting until we've either framed the default user's own tail or we know
+      // people are loaded (so the all-trail fallback is intentional). This survives a
+      // points-arrive-before-people race: the fit re-runs when `people` resolves and
+      // lands on the user's tail instead of being stuck on the all-trail fallback.
+      if (mine.length || def) needFitRef.current = false;
       // Sync the zoom that drives DP tolerance to the fitted zoom NOW, so the first
       // trail paint simplifies at the right detail instead of flashing the over-collapsed
       // zoom-2 track for the frame before `zoomend` fires.
       setZoomLevel((cur) => { const z = Math.round(m.getZoom()); return cur === z ? cur : z; });
     }
-  }, [points, notes]);
+  }, [points, notes, people]);
 
   // ?focus=<slug>: center on that note and open its pin, regardless of scrub.
   useEffect(() => {

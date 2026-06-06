@@ -207,12 +207,6 @@ export default function SystemPage() {
         {up === "idle" && msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
       </div>
 
-      <OwnerSetting />
-
-      <ModelPicker />
-
-      <MediaSettings />
-
       {stats && (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>Maintenance</h3>
@@ -249,6 +243,12 @@ export default function SystemPage() {
           </p>
         </div>
       )}
+
+      <OwnerSetting />
+
+      <ModelPicker />
+
+      <MediaSettings />
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Location stamping</h3>

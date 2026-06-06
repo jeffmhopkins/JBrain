@@ -318,7 +318,8 @@ def _article_leads(conn) -> dict:
     """{kb article title -> its lead sentence} (first non-heading line), for embed context."""
     out: dict = {}
     for a in conn.execute(
-        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL"
+        "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "AND redirect_to IS NULL"
     ).fetchall():
         for line in (a["content_md"] or "").splitlines():
             s = line.strip().lstrip("#").strip()
@@ -364,7 +365,11 @@ def _link_articles(conn) -> None:
     breaking incremental routing, disambiguation, and the browse link."""
     conn.execute("UPDATE entities SET article_title = NULL")
     leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
-    for k in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL").fetchall():
+    # Exclude redirects: an entity must point at the CANONICAL article, never a merged-away
+    # redirect row (which would route browse/disambiguation to a one-line redirect marker).
+    for k in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL"
+    ).fetchall():
         leaf_map.setdefault(normalize(k["title"].split("/")[-1]), k["title"])
     aliases: dict = {}       # entity_id -> [alias_norm, ...]
     for a in conn.execute("SELECT entity_id, alias_norm FROM entity_aliases").fetchall():

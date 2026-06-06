@@ -1,5 +1,5 @@
 import { Children, isValidElement, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
@@ -23,6 +23,9 @@ interface Note {
   lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
+  // When this note is a merged-away redirect, the canonical target (title + slug to forward to).
+  redirect_to?: string | null;
+  redirect_to_slug?: string | null;
 }
 
 // Render a "/"-path title as a clickable directory breadcrumb: each ancestor
@@ -47,6 +50,9 @@ function titleCrumbs(title: string) {
 export default function NotePage() {
   const { slug } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set when we land here after following a redirect, so we can show "Redirected from".
+  const redirectedFrom = (location.state as { redirectedFrom?: string } | null)?.redirectedFrom;
   const isDesktop = useIsDesktop();
   const { appTz } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
@@ -135,6 +141,16 @@ export default function NotePage() {
     reload();
   }, [slug]);
 
+  // A merged-away page is a redirect: forward to the canonical article, carrying the old
+  // title so the target can show a "Redirected from" note. (Replace history so Back skips it.)
+  useEffect(() => {
+    if (note?.redirect_to && note.redirect_to_slug && note.redirect_to_slug !== slug) {
+      navigate(`/note/${note.redirect_to_slug}`, {
+        replace: true, state: { redirectedFrom: note.title },
+      });
+    }
+  }, [note, slug, navigate]);
+
   // For a loc/ place note, pull the geofence it backs (matched by note_slug, else by
   // name) so the page can show the API specifics above the note's content.
   useEffect(() => {
@@ -182,6 +198,11 @@ export default function NotePage() {
 
   const article = (
     <div className="content">
+      {redirectedFrom && (
+        <div className="muted" style={{ marginBottom: 8, fontSize: "0.9em" }}>
+          Redirected from <em>{redirectedFrom}</em>
+        </div>
+      )}
       <h1 className="note-title">
         {titleCrumbs(note.title)}
         {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}

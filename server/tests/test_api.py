@@ -2331,8 +2331,9 @@ def test_recategorize_article_moves_and_rewrites_inbound_links(client):
 
 
 def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
-    """Merge unions sources into one article, soft-deletes the others, and rewrites inbound
-    [[source]]→[[into]] links (never unwraps them)."""
+    """Merge unions sources into one article, CONVERTS each source to a redirect (live row,
+    redirect_to set — not soft-deleted, so old [[source]] links / external URLs still
+    resolve), and rewrites inbound [[source]]→[[into]] links (never unwraps them)."""
     from app.db import get_conn
     from app.services import wiki_build, llm
     from app.services import notes as ns
@@ -2348,7 +2349,13 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
         "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
     res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
     assert res["ok"], res
-    assert not conn.execute("SELECT 1 FROM notes WHERE title='kb/Things/GroverCat' AND deleted_at IS NULL").fetchone()
+    # Source is now a REDIRECT: still live (keeps its title slot), redirect_to → the merged
+    # article, body replaced with the one-line marker.
+    src = conn.execute(
+        "SELECT deleted_at, redirect_to, content_md FROM notes WHERE title='kb/Things/GroverCat'"
+    ).fetchone()
+    assert src["deleted_at"] is None and src["redirect_to"] == "kb/Things/Grover"
+    assert src["content_md"] == "Redirects to [[kb/Things/Grover]]."
     owner = conn.execute("SELECT content_md FROM notes WHERE title='kb/People/Owner'").fetchone()["content_md"]
     assert "[[kb/Things/Grover]]" in owner and "GroverCat" not in owner   # inbound rewritten to the merged title
 

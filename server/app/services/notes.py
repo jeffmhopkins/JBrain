@@ -212,6 +212,12 @@ def next_medical_title(conn, dest: str) -> str:
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
     conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
+    # A redirect row must NOT be a keyword hit: its old title still occupies the UNIQUE
+    # title slot, but a search for that title should surface the canonical article, not the
+    # one-line redirect marker. We drop the stale FTS row (above) and skip re-indexing.
+    row = conn.execute("SELECT redirect_to FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row and row["redirect_to"]:
+        return
     conn.execute(
         "INSERT INTO notes_fts (note_id, title, content) VALUES (?, ?, ?)",
         (note_id, title, content_md),
@@ -325,8 +331,11 @@ def upsert_note(
             renamed_from = existing["title"]   # rewrite inbound [[links]] after the write
             slug = _unique_slug(conn, title, exclude_id=note_id)
         conn.execute(
+            # A real content write supersedes any redirect on this title (clear redirect_to),
+            # so a row can never be a redirect AND a live article at once (FTS/embeddings/browse
+            # would otherwise disagree). create_redirect uses a direct UPDATE, not this path.
             "UPDATE notes SET title = ?, slug = ?, content_md = ?, deleted_at = NULL, "
-            "updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
+            "redirect_to = NULL, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
             (title, slug, content_md, note_id),
         )
         if has_location:  # only overwrite location when new coords are supplied

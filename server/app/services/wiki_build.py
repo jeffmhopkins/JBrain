@@ -52,10 +52,15 @@ def reset(conn) -> dict:
     build artifacts, not static guides, so they're cleared here too (and regenerated)."""
     from . import notes as notes_svc
     rows = conn.execute(
-        "SELECT id, title FROM notes WHERE kind = 'kb' AND deleted_at IS NULL"
+        "SELECT id, title, redirect_to FROM notes WHERE kind = 'kb' AND deleted_at IS NULL"
     ).fetchall()
     deleted = kept = 0
     for r in rows:
+        # Redirects are durable: a merged-away page must survive a full rebuild so old
+        # [[links]] keep resolving. Keep them (don't soft-delete) and count as kept.
+        if r["redirect_to"]:
+            kept += 1
+            continue
         derived = r["title"].startswith("kb/_disambig/")
         if wiki_guides.is_protected(r["title"]) and not derived:
             kept += 1
@@ -373,7 +378,7 @@ def dead_links(conn) -> list[dict]:
     rows = conn.execute(
         "SELECT s.title AS source_title, s.slug AS source_slug, l.target_title "
         "FROM links l JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL "
-        "WHERE l.target_note_id IS NULL AND s.kind='kb' AND ("
+        "WHERE l.target_note_id IS NULL AND s.kind='kb' AND s.redirect_to IS NULL AND ("
         "  s.title NOT LIKE 'kb/\\_%' ESCAPE '\\' "
         "  OR s.title = 'kb/_index' OR s.title LIKE 'kb/\\_disambig/%' ESCAPE '\\') "
         "ORDER BY s.title, l.target_title",
@@ -641,7 +646,8 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
 
 def _known_titles(conn) -> list[str]:
     return sorted({r["title"] for r in conn.execute(
-        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
+        r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
 
 
 def scoped_known_titles(conn, title: str, all_titles, budget: int = 600) -> list[str]:
@@ -899,7 +905,9 @@ def create_article(conn, subject: str, etype: str | None = None, min_notes: int 
                        "WHERE normalized_key=? ORDER BY note_count DESC LIMIT 1", (norm,)).fetchone()
     if ent and ent["article_title"]:
         return {"ok": True, "folded": True, "title": ent["article_title"], "reason": "article already exists"}
-    for r in conn.execute("SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL"):
+    for r in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL"
+    ):
         if entity_index.normalize(r["title"].split("/")[-1]) == norm:
             return {"ok": True, "folded": True, "title": r["title"], "reason": "near-duplicate title exists"}
     ids = entity_index.note_ids_for_name(conn, subject)
@@ -938,7 +946,7 @@ def refresh_index(conn) -> int:
     from . import notes as notes_svc
     arts = [{"title": r["title"], "domain": wiki_guides.domain_for_title(r["title"]) or "", "scope": ""}
             for r in conn.execute(
-                r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+                r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
                 r"AND title NOT LIKE 'kb/\_%' ESCAPE '\' ORDER BY title")]
     notes_svc.upsert_note(conn, "kb/_index", build_index_md(arts), kind="kb",
                           source="index", version_note="index refreshed")
@@ -986,6 +994,85 @@ def recategorize_article(conn, title: str, new_title: str) -> dict:
         kb_lock_release(conn)
 
 
+def _resolve_redirect_chain(conn, title: str, _seen: set[str] | None = None) -> str:
+    """Follow redirect_to from `title` to a FINAL target (a non-redirect title). Cycle-safe:
+    stops and returns the last title if it loops back. Case-insensitive lookup."""
+    seen = _seen if _seen is not None else set()
+    cur = title
+    while True:
+        key = cur.lower()
+        if key in seen:
+            return cur
+        seen.add(key)
+        row = conn.execute(
+            "SELECT redirect_to FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+            (cur,)).fetchone()
+        if not row or not row["redirect_to"]:
+            return cur
+        cur = row["redirect_to"]
+
+
+def create_redirect(conn, from_title: str, to_title: str) -> dict:
+    """Make `from_title` a REDIRECT to `to_title`: old [[from]] links / external URLs keep
+    resolving while the page drops out of browse/index. The target is resolved through any
+    existing redirect chain to a FINAL target, so we never point a redirect at a redirect.
+    Refuses a self-redirect or a cycle. Under the KB lock (re-entrant).
+
+    If a row titled `from_title` already exists, it's CONVERTED IN PLACE: kept live
+    (deleted_at NULL) with the same slug, redirect_to set, kind='kb', body replaced with a
+    one-line marker — because notes.title is UNIQUE and a soft-deleted source would keep the
+    title slot, blocking a fresh redirect row. Otherwise a new kb redirect row is inserted.
+    Inbound dangling [[from]] links are re-pointed at the (possibly revived) row. Does NOT
+    refresh the index — callers do."""
+    from . import embeddings
+    from_title = (from_title or "").strip()
+    to_title = (to_title or "").strip()
+    if not from_title or not to_title:
+        return {"ok": False, "reason": "need both from and to titles"}
+    target = _resolve_redirect_chain(conn, to_title)
+    if target.lower() == from_title.lower():
+        return {"ok": False, "reason": "refused: self-redirect / cycle"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "reason": "KB busy — try again shortly"}
+    try:
+        marker = f"Redirects to [[{target}]]."
+        existing = conn.execute(
+            "SELECT id FROM notes WHERE lower(title)=lower(?)", (from_title,)).fetchone()
+        if existing:
+            nid = existing["id"]
+            conn.execute(
+                "UPDATE notes SET content_md=?, kind='kb', redirect_to=?, deleted_at=NULL, "
+                "updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?",
+                (marker, target, nid))
+            # The redirect row must not surface as a keyword hit on the old title, and its own
+            # marker shouldn't manufacture spurious links: drop FTS + outgoing links.
+            conn.execute("DELETE FROM notes_fts WHERE note_id=?", (nid,))
+            conn.execute("DELETE FROM links WHERE source_note_id=?", (nid,))
+            embeddings.delete_note_embedding(conn, nid)
+        else:
+            slug = _unique_redirect_slug(conn, from_title)
+            cur = conn.execute(
+                "INSERT INTO notes (title, slug, content_md, kind, redirect_to, updated_at) "
+                "VALUES (?, ?, ?, 'kb', ?, strftime('%Y-%m-%d %H:%M:%f','now'))",
+                (from_title, slug, marker, target))
+            nid = cur.lastrowid
+        # Old [[from_title]] links (now dangling) re-point at this row so they keep resolving.
+        wikilinks.resolve_dangling_links(conn, nid, from_title)
+        return {"ok": True, "from": from_title, "to": target}
+    finally:
+        kb_lock_release(conn)
+
+
+def _unique_redirect_slug(conn, title: str) -> str:
+    from . import notes as notes_svc
+    base = notes_svc.slugify(title)
+    slug, i = base, 2
+    while conn.execute("SELECT 1 FROM notes WHERE slug=?", (slug,)).fetchone():
+        slug = f"{base}-{i}"
+        i += 1
+    return slug
+
+
 def merge_articles(conn, sources: list[str], into: str) -> dict:
     """Fold one or more kb articles INTO another: rewrite the merged article from the union
     of all their source notes, soft-delete the sources, and rewrite every inbound
@@ -1031,7 +1118,10 @@ def merge_articles(conn, sources: list[str], into: str) -> dict:
             sn = by[s]
             if not sn:
                 continue
-            notes_svc.soft_delete(conn, sn["id"])
+            # CONVERT the source to a redirect IN PLACE (keeps its UNIQUE title slot live) so
+            # old [[old]] links / external URLs still resolve — then still rewrite inbound
+            # [[old]]→[[into]] so live articles point straight at the canonical page.
+            create_redirect(conn, s, into)
             notes_svc._rename_inbound_links(conn, s, into, into_id)   # [[old]]→[[into]], never unwrap
         if out.get("talk"):
             article_talk.record(conn, into, out["talk"])
@@ -1415,7 +1505,8 @@ def taxonomy_health(conn, post_card: bool = True) -> dict:
     counts + a sample of titles."""
     from . import reviews as reviews_svc
     arts = [r["title"] for r in conn.execute(
-        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'")]
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
+        r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'")]
     orphans = []
     for t in arts:
         inbound = conn.execute(
@@ -1492,7 +1583,8 @@ def write_batch(conn, articles: list[dict], instructions: str | None = None, on_
     # that survives (so links resolve when adding to an existing KB, not just full rebuild).
     planned = [str(a.get("title") or "").strip() for a in articles]
     existing = [r["title"] for r in conn.execute(
-        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()]
+        r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
+        r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()]
     known = sorted({t for t in planned + existing if t})
     valid, quarantined = [], []
     total = len(articles)

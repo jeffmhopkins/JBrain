@@ -1426,6 +1426,9 @@ button.cal-pill { border: none; color: var(--text); }
 .mode-seg button .icon { color: currentColor; }
 .mode-seg button.on { background: color-mix(in srgb, var(--mc) 18%, transparent); color: var(--text); }
 .mode-seg button.on .icon { color: var(--mc); }
+/* Caret on the active Entry segment hinting the sub-type row toggles on re-press. */
+.mode-seg .sub-caret { transition: transform .12s ease; opacity: .75; margin-left: 2px; }
+.mode-seg .sub-caret.open { transform: rotate(90deg); }
 
 /* Entry sub-selector (Generic / Medical / Financial) — a smaller .seg, accent per sub-type. */
 .sub-seg { width: 100%; margin-bottom: 8px; }

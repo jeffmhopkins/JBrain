@@ -87,7 +87,7 @@ const MODE_SAFETY: Record<Mode, string> = {
 // every read of the persisted mode goes through normalizeMode() at the one chokepoint below.
 // Unknown / retired values fall back to the launch default rather than crashing.
 const VALID_MODES: Mode[] = MODES.map((m) => m.key);
-const DEFAULT_MODE: Mode = "entry";   // fresh launch lands on Entry (the most common quick action)
+const DEFAULT_MODE: Mode = "research";   // fresh launch lands on read-only Research
 // Remap retired mode strings a returning session may still hold: medical→entry (now an Entry
 // sub-type), assisted→full, analyze→research (read stays read). Unknown → the launch default.
 const LEGACY_MODE: Record<string, Mode> = { medical: "entry", assisted: "full", analyze: "research" };
@@ -120,7 +120,7 @@ export default function Chat() {
   const ttsOn = useTtsEnabled();        // top-bar "read replies aloud" toggle
   const navigate = useNavigate();
   // Mode persists within a session (so navigating away from chat and back keeps it)
-  // but a fresh PWA launch starts a new session → empty → defaults to Entry mode.
+  // but a fresh PWA launch starts a new session → empty → defaults to Research mode.
   // normalizeMode() also guards against a stale/retired persisted value crashing the composer.
   const [mode, setMode] = useState<Mode>(() => normalizeMode(sessionStorage.getItem("jbrain_mode")));
   // Entry sub-type. Sticky per device (mirrors the dest preference), defaulting to Generic.

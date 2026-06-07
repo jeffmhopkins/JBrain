@@ -36,6 +36,10 @@ class DraftIn(BaseModel):
     source_ids: list[int]
 
 
+class RedraftIn(BaseModel):
+    max_tokens: int | None = None     # approved larger budget after a truncation
+
+
 class AcceptIn(BaseModel):
     rename_to: str | None = None     # opt-in retitle (must stay under kb/); None = keep title
 
@@ -147,6 +151,20 @@ def draft(run_id: str, body: DraftIn):
 
     async def gen():
         async for ev in rebuild_engine.run_draft(run, body.source_ids):
+            yield ev
+
+    return _sse(gen())
+
+
+@router.post("/{run_id}/redraft")
+def redraft(run_id: str, body: RedraftIn):
+    """Re-run the last drafting turn at a larger, user-approved budget after a truncation."""
+    run = rebuild_runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
+
+    async def gen():
+        async for ev in rebuild_engine.run_redraft(run, body.max_tokens):
             yield ev
 
     return _sse(gen())

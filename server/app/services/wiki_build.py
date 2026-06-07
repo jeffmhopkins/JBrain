@@ -284,6 +284,98 @@ def _neutralize_links(content: str, bad: set[str]) -> str:
     return re.sub(r"\[\^([^\]]+)\]", lambda m: m.group(0) if m.group(1) in defined else "", out)
 
 
+def _repair_citation_titles(content: str, bad: list[str], source_titles: list[str]):
+    """Fix a writer typo before _neutralize_links would delete the citation: a footnote
+    [[title]] that is a NORMALISED near-miss of exactly one CURATED source title is rewritten
+    to that exact title (so a single mistyped source can't leave a bare '## References'
+    heading). Conservative: only rewrites a target already deemed 'dead', only against THIS
+    run's curated sources, and refuses when ≥2 distinct sources normalise-equal (ambiguous).
+    Returns (content, still_bad)."""
+    from . import entity_index
+    if not bad or not source_titles:
+        return content, bad
+    norm_map: dict[str, set[str]] = {}
+    for t in source_titles:
+        norm_map.setdefault(entity_index.normalize(t), set()).add(t)
+    fixes: dict[str, str] = {}
+    still_bad: list[str] = []
+    for b in bad:
+        cands = norm_map.get(entity_index.normalize(b))
+        if cands and len(cands) == 1:
+            exact = next(iter(cands))
+            if exact != b:
+                fixes[b] = exact
+            else:
+                still_bad.append(b)   # already exact (shouldn't be 'bad', but don't drop it)
+        else:
+            still_bad.append(b)
+    if not fixes:
+        return content, still_bad
+
+    def repl(m):
+        inner = m.group(0)[2:-2]
+        target, sep, disp = inner.partition("|")
+        if target.strip() in fixes:
+            return f"[[{fixes[target.strip()]}{sep}{disp}]]"
+        return m.group(0)
+
+    return wikilinks.WIKILINK_RE.sub(repl, content), still_bad
+
+
+def add_links_to_content(conn, title: str, body: str):
+    """Deterministically link bare mentions in `body` that EXACTLY match an existing kb
+    article's leaf name — the in-memory half of check_needed_links, performing NO DB write so
+    a caller (the live rebuild engine / write_one) can apply it to a staged draft and persist
+    it with the single article write. Returns (new_body, proposals).
+
+    Self-guarding for the PII firewall: refuses entirely on a Reference or private (Health/
+    Finance) TARGET article (those must stay unnamed / never link People), and never offers a
+    private-domain target. Reuses check_needed_links's ambiguity/short/common-word refusals and
+    code/link/footnote masking, so it can't link a stop-word, an ambiguous leaf, or inside a
+    citation."""
+    from . import entity_index
+    if wiki_guides.is_private_title(title) or wiki_guides.domain_for_title(title) == "Reference":
+        return body, []
+    titles = _known_titles(conn)
+    leafmap: dict[str, list[str]] = {}
+    for t in titles:
+        if wiki_guides.is_private_title(t):
+            continue
+        leafmap.setdefault(t.split("/")[-1].strip().lower(), []).append(t)
+    ambiguous = {k for k, v in leafmap.items() if len(v) > 1}
+    try:
+        for amb in entity_index.ambiguous_terms(conn):
+            ambiguous.add(str(amb.get("term", "")).lower())
+    except Exception:  # noqa: BLE001
+        pass
+
+    def linkable(leaf_lower: str, leaf: str) -> bool:
+        if leaf_lower in ambiguous or len(leaf) < 4:
+            return False
+        if " " not in leaf and leaf_lower in _STOP_LEAVES:
+            return False
+        return True
+
+    spans = _mask_spans(body)
+    linked = {x.lower() for x in wikilinks.extract_links(body)}
+    props: list[dict] = []
+    for leaf_lower, cands in leafmap.items():
+        tgt = cands[0]
+        if tgt == title or tgt.lower() in linked:
+            continue
+        leaf = tgt.split("/")[-1]
+        if not linkable(leaf_lower, leaf):
+            continue
+        for m in re.finditer(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", body, re.IGNORECASE):
+            if not any(s <= m.start() < e for s, e in spans):
+                props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
+                break
+    for p in sorted(props, key=lambda x: -x["at"]):       # right-to-left preserves offsets
+        s, e = p["at"], p["at"] + len(p["surface"])
+        body = body[:s] + f"[[{p['target']}|{p['surface']}]]" + body[e:]
+    return body, [{"target": p["target"], "surface": p["surface"]} for p in props]
+
+
 def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | None = None,
                        known_titles: list[str] | None = None) -> str:
     """Assemble the actions.wiki_write prompt for one article from its already-loaded
@@ -297,7 +389,7 @@ def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | No
     owner = people.owner_name(conn)
     general = wiki_guides.guide_text(None)
     dguide = wiki_guides.guide_text(domain)
-    others = scoped_known_titles(conn, title, known_titles)
+    others = scoped_known_titles(conn, title, known_titles, source_ids=art.get("sources"))
     known_block = "\n".join(others) if others else "(no other articles yet)"
     guidance = f"\nADDITIONAL GUIDANCE — follow this too:\n{instructions.strip()}\n" if (instructions or "").strip() else ""
     return (prompts.get("actions.wiki_write", "")
@@ -335,7 +427,7 @@ def write_one(conn, art: dict, instructions: str | None = None,
     dguide = wiki_guides.guide_text(domain)
     # Only let the writer cross-link articles that will exist (minus this one), so it
     # can't invent a dead [[kb/People/Someone]] link. Capped to bound prompt size.
-    others = scoped_known_titles(conn, title, known_titles)
+    others = scoped_known_titles(conn, title, known_titles, source_ids=art.get("sources"))
     known_block = "\n".join(others) if others else "(no other articles yet)"
     # Per-article guidance (e.g. open directives carried in by rebuild_article). Empty for
     # an ordinary build. Without the placeholder in the prompt this was silently ignored.
@@ -353,6 +445,8 @@ def write_one(conn, art: dict, instructions: str | None = None,
         return base
 
     allowed = {t for t in (known_titles or [])} | {title}
+    source_titles = [s["title"] for s in srcs]
+    draft, _ = _repair_citation_titles(draft, _bad_links(conn, draft, allowed), source_titles)
     v = wiki_guides.validate_structure(title, draft)
     bad = _bad_links(conn, draft, allowed)
     # Bounded revise loop (§10 gate model: fail → a bounded, NON-REGRESSING revise). Up to
@@ -374,6 +468,7 @@ def write_one(conn, art: dict, instructions: str | None = None,
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
             break
+        revised, _ = _repair_citation_titles(revised, _bad_links(conn, revised, allowed), source_titles)
         v2 = wiki_guides.validate_structure(title, revised)
         bad2 = _bad_links(conn, revised, allowed)
         prev, cur = len(v["errors"]) + len(bad), len(v2["errors"]) + len(bad2)
@@ -389,6 +484,10 @@ def write_one(conn, art: dict, instructions: str | None = None,
         talk = list(talk) + [{"kind": "note",
                               "body": f"Unlinked dead reference [[{t}]] — no such article; kept as plain text."}
                              for t in bad]
+
+    # Deterministic add-link backstop (in memory): link any bare mention matching an existing
+    # kb leaf the writer left plain. Self-guards Reference/private targets (PII firewall).
+    draft, _added = add_links_to_content(conn, title, draft)
 
     return {"title": title, "domain": domain, "content_md": draft, "talk": talk,
             "ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}
@@ -747,19 +846,36 @@ def _known_titles(conn) -> list[str]:
         r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
 
 
-def scoped_known_titles(conn, title: str, all_titles, budget: int = 600) -> list[str]:
+def scoped_known_titles(conn, title: str, all_titles, budget: int = 600,
+                        source_ids: list[int] | None = None) -> list[str]:
     """Relevant cross-link candidates for `title`, replacing the old blind alphabetical
     `[:600]` cap. When the whole KB fits in `budget` we return everything (no need to
     scope). Past it, we PRIORITISE a relevant neighbourhood — articles that link to this
-    one (backlinks), this article's own current link targets, and same-folder siblings —
-    then top up to `budget`, so we never offer FEWER candidates than the old cap, but the
-    ones we keep when truncating are the relevant ones (the alphabetical slice dropped
-    everything after ~'kb/R…' regardless of relevance). Deterministic, no LLM."""
+    one (backlinks), this article's own current link targets, same-folder siblings, and the
+    kb pages of entities MENTIONED IN THE CHOSEN SOURCES (so the link vocabulary follows the
+    sources — the channel users intuitively expect) — then top up to `budget`, so we never
+    offer FEWER candidates than the old cap, but the ones we keep when truncating are the
+    relevant ones (the alphabetical slice dropped everything after ~'kb/R…' regardless of
+    relevance). Deterministic, no LLM."""
     others = [t for t in (all_titles or []) if t and t != title]
     if len(others) <= budget:
         return others
     others_set = set(others)
     keep: set[str] = set()
+    # Entities mentioned in the chosen source notes → their articles. Skipped for a Reference
+    # or private TARGET (those must not reference People/Groups — the PII firewall), matching
+    # add_links_to_content's guard so the writer is never even offered a forbidden link.
+    if (source_ids and not wiki_guides.is_private_title(title)
+            and wiki_guides.domain_for_title(title) != "Reference"):
+        ids = [int(i) for i in source_ids if i]
+        if ids:
+            q = ",".join("?" * len(ids))
+            for r in conn.execute(
+                f"SELECT DISTINCT e.article_title FROM entity_mentions m "
+                f"JOIN entities e ON e.id = m.entity_id "
+                f"WHERE m.note_id IN ({q}) AND e.article_title IS NOT NULL", ids):
+                if r["article_title"]:
+                    keep.add(r["article_title"])
     # Backlinks: kb articles that link TO this title (target_title survives soft-delete).
     for r in conn.execute(
         "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "

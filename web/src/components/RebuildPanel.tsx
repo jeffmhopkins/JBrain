@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   RebuildEvent, RebuildCandidate, RebuildSkipped, SSEHandle, ApiError,
-  rebuildStream, regatherStream, draftStream, guideStream, searchRebuildSources,
+  rebuildStream, regatherStream, draftStream, guideStream, redraftStream, searchRebuildSources,
   acceptRebuild, rejectRebuild,
 } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
@@ -62,6 +62,9 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   const [thread, setThread] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [guideInput, setGuideInput] = useState("");
   const [accepting, setAccepting] = useState(false);
+  // Stage-2 output budget. Starts at the server default; a truncated draft can be re-drafted
+  // at a larger, approved budget (server clamps the ceiling).
+  const [budget, setBudget] = useState(6000);
   const [renameOn, setRenameOn] = useState(false);
   const [renameLeaf, setRenameLeaf] = useState(currentLeaf);
 
@@ -173,9 +176,21 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     const chosen = candidates.filter((c) => c.on);
     if (!chosen.length || !runId.current) return;
     setDraftSources(chosen.map((c) => c.title));
-    setStage("draft"); setPhase("streaming"); setBusy(true); setStatus("Thinking…");
+    setStage("draft"); setPhase("streaming"); setBusy(true); setStatus("Thinking…"); setBudget(6000);
     sawContent.current = false; setDraft(""); setThoughts(""); setActivityOpen(false);
     const h = draftStream(runId.current, chosen.map((c) => c.note_id), handleDraft);
+    sse.current = h; h.done.catch(() => {});
+  }
+
+  // Re-run the last drafting turn at a larger budget after a truncation (server re-asks the
+  // same prompt — no auto-continue — and clamps the ceiling).
+  function reDraft() {
+    if (!runId.current || busy) return;
+    const next = budget < 10000 ? 10000 : 16000;
+    setBudget(next);
+    setDraft(""); setThoughts(""); sawContent.current = false; setWarn(null);
+    setBusy(true); setStatus("Thinking…"); setPhase("streaming"); setActivityOpen(false);
+    const h = redraftStream(runId.current, next, handleDraft);
     sse.current = h; h.done.catch(() => {});
   }
 
@@ -215,7 +230,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     if (!text || !runId.current || busy) return;
     setGuideInput("");
     setThread((t) => [...t, { role: "user", text }]);
-    setTab("draft"); setDraft(""); sawContent.current = false;
+    setTab("draft"); setDraft(""); sawContent.current = false; setBudget(6000);
     setBusy(true); setStatus("Revising…"); setPhase("guiding-streaming"); setActivityOpen(false);
     const h = guideStream(runId.current, text, handleDraft);
     sse.current = h;
@@ -249,6 +264,8 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     if (phase === "review" || phase === "truncated")
       return (<>
         <button className="ghost danger-hover rb-foot-btn" onClick={doReject}>Reject</button>
+        {phase === "truncated" && budget < 16000 &&
+          <button className="ghost rb-foot-btn" onClick={reDraft} disabled={busy}>Re-draft with more room</button>}
         <button className="ghost rb-foot-btn" onClick={openGuide}>Guide</button>
         <button className="primary rb-foot-btn" onClick={doAccept} disabled={accepting}>
           {accepting ? "Saving…" : (phase === "truncated" ? "Accept anyway" : "Accept")}</button>
@@ -321,7 +338,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
         {/* ---- STAGE 2: curate ---- */}
         {stage === "curate" && (
           <>
-            <div className="rb-hint">The AI picked these from your notes. Uncheck anything you don't want shaping the article — or add your own.</div>
+            <div className="rb-hint">The AI picked these from your notes. Uncheck anything you don't want shaping the article — or add your own. Sources are notes only; links to existing KB pages are added automatically.</div>
             <div className="rb-act-h">Sources found ({candidates.length})</div>
             {candidates.map((c) => (
               <div key={c.note_id} className={"rb-src" + (c.on ? " on" : " off")} onClick={() => toggle(c.note_id)}>

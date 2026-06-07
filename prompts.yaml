@@ -476,7 +476,8 @@ actions:
       - SECTIONS — thematic "## " sections in a logical order (chronological or by
         aspect). One subject per article; split rather than sprawl.
       - SEE ALSO (optional) — "## See also" linking sibling articles.
-      - REFERENCES — a "## References" footnote block whenever you cite a source.
+      - REFERENCES — a "## References" footnote block whenever you cite a source (never an
+        empty heading: include the definitions, or omit the section if nothing is cited).
 
       Voice: neutral, concise, summary style. State facts plainly. Never invent — every
       claim must trace to a source note. Prefer durable facts over fleeting chatter.
@@ -836,8 +837,10 @@ actions:
     faithful: use ONLY the source notes — invent nothing. Cite facts with footnotes: a
     marker like [^s1] in the text, defined under a "## References" section as
         [^s1]: [[Exact Source Title]] — DATE
-    Use the EXACT source-note titles given, so the citation links resolve. Output ONLY
-    the article Markdown, starting with "# <name>".
+    Use the EXACT source-note titles given, so the citation links resolve. Cite every fact
+    that comes from a source note, even in a short article. NEVER emit an empty "## References"
+    heading — include the footnote definitions under it, or omit the section entirely when the
+    article cites nothing. Output ONLY the article Markdown, starting with "# <name>".
     {instructions}
 
     GROUNDING — this is strict, especially for Reference. Include ONLY facts the source

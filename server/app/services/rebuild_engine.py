@@ -22,8 +22,21 @@ from . import llm
 
 log = logging.getLogger("jbrain")
 
-# Stage 2 output cap (adaptive thinking tokens also count toward this).
+# Stage 2 output cap (adaptive thinking tokens also count toward this). This is the
+# DEFAULT budget; a truncated draft can be re-drafted at a larger, user-approved budget
+# (the panel offers "Re-draft with more room"), clamped to _MAX_TOKENS_CEILING.
 _MAX_TOKENS = 6000
+_MAX_TOKENS_CEILING = 16000
+
+
+def _clamp_tokens(n) -> int:
+    """Bound a requested Stage-2 budget: never below the default, never above the ceiling
+    (so an approved re-draft can grow the budget without an unbounded cost blowout)."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return _MAX_TOKENS
+    return max(_MAX_TOKENS, min(n, _MAX_TOKENS_CEILING))
 # Stage 1 bounds.
 _GATHER_MAX_ITER = 5
 _GATHER_MAX_TOKENS = 1500
@@ -197,22 +210,25 @@ def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
     return cands, skipped
 
 
-async def _generate(run, conn) -> AsyncGenerator[dict, None]:
+async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
     """Stream ONE drafting turn from run.messages: thinking + the article body, then lint,
-    stage on the run, and emit `done`. Shared by the initial draft and Guide."""
+    stage on the run, and emit `done`. Shared by the initial draft and Guide. `max_tokens`
+    is the (clamped) output budget — a re-draft after truncation passes a larger value."""
     from . import wiki_build, wiki_guides
 
+    budget = _clamp_tokens(max_tokens)
     provider = llm.get_provider(run.model)
     run.status = "streaming"
     run.draft = ""
     parts: list[str] = []
     produced = False
+    truncated = False
     use_thinking = True
     # Retry once without thinking if the thinking config is rejected before any output.
     for attempt in range(2):
         try:
             async for ev in provider.stream_turn(run.messages, system=None, tools=[],
-                                                  model=run.model, max_tokens=_MAX_TOKENS, thinking=use_thinking):
+                                                  model=run.model, max_tokens=budget, thinking=use_thinking):
                 if run.cancelled:
                     return
                 if isinstance(ev, llm.ThinkingDelta):
@@ -224,6 +240,11 @@ async def _generate(run, conn) -> AsyncGenerator[dict, None]:
                     produced = True
                     parts.append(ev.text)
                     yield {"type": "content_delta", "text": ev.text}
+                elif isinstance(ev, llm.TurnEnd):
+                    # The provider's finish reason — "max_tokens" (Anthropic) / "length" (xAI)
+                    # means the body was cut off (the trailing ## References block is the first
+                    # casualty). Surfaced so the panel can offer a larger re-draft.
+                    truncated = ev.stop_reason in ("max_tokens", "length")
             break
         except Exception as exc:  # noqa: BLE001
             if attempt == 0 and use_thinking and not produced:
@@ -243,6 +264,12 @@ async def _generate(run, conn) -> AsyncGenerator[dict, None]:
     draft, talk = wiki_build._extract_talk(wiki_build._strip_fence(raw))
     allowed = set(run.known) | {run.title}
     bad = wiki_build._bad_links(conn, draft, allowed)
+    # Before deleting a "dead" citation, repair a writer typo: a footnote [[title]] that is a
+    # near-miss of one of THIS run's curated source titles is corrected to the exact title, so
+    # a single mistyped source can't leave a bare "## References" heading.
+    if bad:
+        source_titles = [s.get("title") for s in (run.sources or []) if s.get("title")]
+        draft, bad = wiki_build._repair_citation_titles(draft, bad, source_titles)
     if bad:
         draft = wiki_build._neutralize_links(draft, set(bad))
         talk = list(talk) + [
@@ -252,16 +279,26 @@ async def _generate(run, conn) -> AsyncGenerator[dict, None]:
         yield {"type": "lint", "ok": False,
                "message": f"Removed {len(bad)} dead link{'s' if len(bad) != 1 else ''} during cleanup."}
 
+    # Deterministic add-link backstop, applied IN MEMORY to the draft (no DB write — the single
+    # Accept write persists it), so a name the model left plain still links to its existing kb
+    # page. Self-guards: skips Reference/private TARGET articles and ambiguous/short leaves.
+    draft, _added = wiki_build.add_links_to_content(conn, run.title, draft)
+
+    if truncated:
+        yield {"type": "lint", "ok": False,
+               "message": "The draft was cut off at the length limit — re-draft with more room or review carefully."}
     v = wiki_guides.validate_structure(run.title, draft)
     run.draft = draft
     run.talk = talk
     run.status = "ready"
-    yield {"type": "done", "draft": draft, "truncated": False,
-           "lint": {"ok": v["ok"], "errors": v["errors"], "warnings": v["warnings"], "stub": v["stub"]}}
+    yield {"type": "done", "draft": draft, "truncated": truncated,
+           "lint": {"ok": v["ok"] and not truncated, "errors": v["errors"],
+                    "warnings": v["warnings"], "stub": v["stub"]}}
 
 
-async def run_draft(run, source_ids: list[int]) -> AsyncGenerator[dict, None]:
-    """Stage 2: write the article from ONLY the curated source ids."""
+async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
+    """Stage 2: write the article from ONLY the curated source ids. `max_tokens` lets an
+    approved re-draft (after truncation) run at a larger output budget."""
     from ..db import get_conn
     from . import wiki_build
 
@@ -279,14 +316,17 @@ async def run_draft(run, source_ids: list[int]) -> AsyncGenerator[dict, None]:
         run.status = "error"
         yield {"type": "error", "message": "Those sources couldn't be loaded."}
         return
+    # Remember the EXACT curated source titles so a mistyped footnote can be repaired (and so
+    # a re-draft keeps the same grounding set).
+    run.sources = [{"title": s["title"]} for s in srcs]
     if not run.known:
         run.known = wiki_build._known_titles(conn)
     run.messages = [{"role": "user", "content": wiki_build.build_write_prompt(conn, art, srcs, instr, run.known)}]
-    async for ev in _generate(run, conn):
+    async for ev in _generate(run, conn, max_tokens=max_tokens):
         yield ev
 
 
-async def run_guide(run, instruction: str) -> AsyncGenerator[dict, None]:
+async def run_guide(run, instruction: str, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
     """Steer a revision: append guidance and re-stream from the SAME loaded context."""
     from ..db import get_conn
 
@@ -299,5 +339,24 @@ async def run_guide(run, instruction: str) -> AsyncGenerator[dict, None]:
         f"Guidance: {instruction.strip()}"
     )
     run.messages.append({"role": "user", "content": steer})
-    async for ev in _generate(run, conn):
+    async for ev in _generate(run, conn, max_tokens=max_tokens):
+        yield ev
+
+
+async def run_redraft(run, max_tokens: int | None) -> AsyncGenerator[dict, None]:
+    """Re-run the last drafting turn at a larger (approved) budget after a truncation. Drops
+    the truncated assistant turn so the model answers the SAME prompt afresh — NOT an
+    auto-continue (no mid-stream re-stitching) — and works for both the initial draft and a
+    Guide revision, since either way run.messages ends with the right user prompt once the
+    truncated turn is removed."""
+    from ..db import get_conn
+
+    conn = get_conn()
+    if not run.messages:
+        run.status = "error"
+        yield {"type": "error", "message": "Nothing to re-draft — start the rebuild again."}
+        return
+    if run.messages[-1].get("role") == "assistant":
+        run.messages.pop()
+    async for ev in _generate(run, conn, max_tokens=max_tokens):
         yield ev

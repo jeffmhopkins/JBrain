@@ -378,21 +378,6 @@ export default function Chat() {
   }, []);
 
   // Swipe navigation lives on the shell body (vertical-only); pages don't wire touch handlers.
-  const slideFrom = useRef(16);   // px the mode-flash slides in from (button mode-change)
-
-  // Brief sliding mode-name flash on every switch (swipe or menu).
-  const [flashKey, setFlashKey] = useState(0);
-  const [showFlash, setShowFlash] = useState(false);
-  const flashTimer = useRef<number>();
-  const firstRender = useRef(true);
-  useEffect(() => {
-    if (firstRender.current) { firstRender.current = false; return; }
-    setShowFlash(true);
-    setFlashKey((k) => k + 1);
-    clearTimeout(flashTimer.current);
-    flashTimer.current = window.setTimeout(() => setShowFlash(false), 850);
-    return () => clearTimeout(flashTimer.current);
-  }, [mode]);
 
   // Assisted + research share ONE conversation/thread; only the per-turn AI permission
   // differs. (Entry has no conversation.)
@@ -719,7 +704,6 @@ export default function Chat() {
     send(undefined, `Don't look up "${p.term}" externally — use my own references and notes instead.`);
   }
 
-  const cur = MODES.find((m) => m.key === mode)!;
   // Effective sub-type: while the row is hidden, Entry is plain Generic regardless of the
   // last-selected sub. Drives the accent, placeholder, safety line, empty-state copy, and routing.
   const effSub: EntrySub = mode === "entry" && subPicker ? sub : "generic";
@@ -741,11 +725,6 @@ export default function Chat() {
 
   return (
     <div className="chat-wrap">
-      {showFlash && (
-        <div className="mode-flash" key={flashKey} style={{ ["--from" as any]: slideFrom.current + "px" }}>
-          <Icon name={cur.icon} size={16} /> {cur.label}
-        </div>
-      )}
       <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}>
         {/* ONE shared view for every mode. The conversation thread always shows; entry
             just SAVES (no AI turn) and appends its saved-note chips here too. */}

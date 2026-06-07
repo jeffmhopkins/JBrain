@@ -60,6 +60,23 @@ export function stripSummarySentinels(md: string): string {
   return (md || "").replace(/[ \t]*<!-- \/?jbrain:image-summary att=\d+ -->\n?/g, "");
 }
 
+// KB article bodies deterministically begin with a "# Title" heading that duplicates
+// the page title shown in the header. Strip that ONE leading H1 for DISPLAY (storage
+// unchanged) when it matches the title (or its leaf), so the page isn't titled twice.
+// Conservative: only the first line, only an H1, only on a match.
+export function stripLeadingTitleH1(md: string, title: string): string {
+  const body = md || "";
+  const full = (title || "").trim().toLowerCase();
+  const leaf = full.split("/").pop() || "";
+  if (!leaf) return body;
+  const m = /^\s*#\s+(.+?)\s*(?:\n|$)/.exec(body);
+  if (m) {
+    const h1 = m[1].trim().toLowerCase();
+    if (h1 === leaf || h1 === full) return body.slice(m[0].length).replace(/^\s*\n/, "");
+  }
+  return body;
+}
+
 // Build a Google Maps search URL for a free-text address or "lat,lng" pair.
 export function mapsUrl(query: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;

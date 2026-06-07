@@ -38,7 +38,8 @@ _FALLBACK_SYSTEM = {
                 "read/query_sql tools; never modify anything; cite notes as [[Title]].",
 }
 _DEFAULT_MODE_TOOLS = {
-    "assisted": ["find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
+    "assisted": ["reference_lookup", "medical_reference",
+                 "find", "search_notes", "read_note", "read_notes", "related_notes", "list_tags", "notes_with_tag",
                  "list_recent_notes", "search_attachments",
                  "read_attachment", "query_sql", "current_location", "locate_person", "location_fixes", "geo_distance", "nearby_notes",
                  "where_was_i", "time_at_place", "places_visited", "distance_traveled", "trail_summary",
@@ -2452,10 +2453,13 @@ def _looks_factual(text: str) -> bool:
 # --- Agent loop -------------------------------------------------------------
 
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
-              mode: str = "assisted", fresh_context: bool = False) -> AsyncGenerator[dict, None]:
-    """Stream the architect's reply. `mode` = 'assisted' | 'research'. `fresh_context` (set by the
-    client when the user left the app / navigated away and back / is resuming after a break) clears
-    prior conversation context so the model re-grounds instead of reusing stale earlier answers."""
+              mode: str = "assisted", fresh_context: bool = False,
+              deep: bool = False) -> AsyncGenerator[dict, None]:
+    """Stream the architect's reply. `mode` = 'assisted' (Full Brain) | 'research' (read-only).
+    `fresh_context` (set by the client when the user left the app / navigated away and back / is
+    resuming after a break) clears prior conversation context so the model re-grounds instead of
+    reusing stale earlier answers. `deep` (read-only only) raises the research budget for a
+    multi-step question without loosening its strict, facts-only posture."""
     settings = get_settings()
     # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
     # claude* → Anthropic; blank → the LLM_PROVIDER default).
@@ -2487,6 +2491,12 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                                      prompts.get_int("agent.max_iterations", _DEFAULT_MAX_ITERATIONS))
     token_budget = prompts.get_int(f"modes.{mode}.max_total_tokens",
                                    prompts.get_int("agent.max_total_tokens", _DEFAULT_MAX_TOTAL_TOKENS))
+    # "Deep" read-only opt-in: lift the budget toward the deep-reasoning ceiling for a
+    # multi-step question. Strictly a budget change — the strict research prompt + read-only
+    # tool set are unchanged, so it never gains write tools or an interpretive licence.
+    if deep and mode == "research":
+        max_iterations = max(max_iterations, prompts.get_int("modes.analyze.max_iterations", 14))
+        token_budget = max(token_budget, prompts.get_int("modes.analyze.max_total_tokens", 120000))
     assistant_text_parts: list[str] = []
     steps: list[dict] = []        # tool-call history for this turn (persisted with the reply)
     total_tokens = 0

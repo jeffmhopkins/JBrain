@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JBrain · Modes Redesign — faithful mockup</title>
+
+<!-- ============================================================================
+     REAL APP CSS — copied verbatim from web/src/styles.css (the relevant slices:
+     theme tokens, base resets, the unified shell top bar, the composer + mode
+     selector, the .seg segmented control, and the chat thread). Line ranges noted.
+     ============================================================================ -->
+<style id="app-css">
+/* tokens — styles.css:3-76 */
+:root {
+  --bg: #111315;
+  --bg-elev: #161a1c;
+  --bg-elev-2: #1c2123;
+  --border: #2a2f31;
+  --text: #d8dcde;
+  --text-dim: #828a8e;
+  --accent: #7f9aa6;
+  --accent-soft: rgba(127,154,166,0.14);
+  --m-entry: #8fb89c;
+  --m-medical: #cf8d8d;
+  --m-assisted: #8aacba;
+  --m-research: #c4ad6e;
+  --danger: #c08585;
+  --ok: #84a591;
+  --good: #4ade80;
+  --ins-fg: #a9cdb6; --ins-bg: rgba(132,165,145,0.22);
+  --del-fg: #d6a3a3; --del-bg: rgba(192,133,133,0.20);
+  --radius: 8px;
+  --tabbar-h: 60px;
+  --sidebar-w: 250px;
+  --rail-w: 300px;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f5f7f8; --bg-elev: #ffffff; --bg-elev-2: #eceff1; --border: #d2d8dc;
+  --text: #1a1f23; --text-dim: #5b656b; --accent: #3f7d92; --accent-soft: rgba(63,125,146,0.12);
+  --m-entry: #2f8f5b; --m-medical: #c0504e; --m-assisted: #2f7d97; --m-research: #9a7b1f;
+  --danger: #b3403f; --ok: #2f8f5b; --good: #1f9d54;
+  --ins-fg: #1d7a45; --ins-bg: rgba(47,143,91,0.16); --del-fg: #b3403f; --del-bg: rgba(179,64,63,0.14);
+  color-scheme: light;
+}
+:root[data-theme="sunlight"] {
+  --bg: #ffffff; --bg-elev: #ffffff; --bg-elev-2: #eef1f3; --border: #232a2e;
+  --text: #000000; --text-dim: #39424a; --accent: #0f5366; --accent-soft: rgba(15,83,102,0.16);
+  --m-entry: #0f6a3c; --m-medical: #962826; --m-assisted: #0f5870; --m-research: #6f5400;
+  --danger: #962826; --ok: #0f6a3c; --good: #0f6a3c;
+  --ins-fg: #0f6a3c; --ins-bg: rgba(15,106,60,0.18); --del-fg: #962826; --del-bg: rgba(150,40,38,0.16);
+  color-scheme: light;
+}
+
+/* base — styles.css:78-109 */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font: inherit; cursor: pointer; border: 1px solid var(--border);
+  background: var(--bg-elev-2); color: var(--text);
+  border-radius: var(--radius); padding: 8px 14px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent-soft); color: var(--text); border-color: var(--accent); font-weight: 600; }
+button.ghost { background: transparent; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+input, textarea {
+  font: inherit; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; width: 100%;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.icon { display: inline-block; vertical-align: middle; color: var(--text-dim); flex-shrink: 0; }
+
+/* shell top bar — styles.css:120-121,165-180,210 */
+.brand { font-size: 18px; font-weight: 600; letter-spacing: 0.2px; padding: 6px 10px 16px; color: var(--text); }
+.brand .dot { color: var(--accent); }
+.ushell { display: flex; flex-direction: column; height: var(--app-height, 100%); overflow: hidden; }
+.utop {
+  flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; background: var(--bg);
+}
+.utop .brand { padding: 0; }
+.bolt { background: transparent; border: none; color: var(--text-dim); padding: 6px; cursor: pointer; display: inline-flex; border-radius: 8px; }
+.bolt:hover { color: var(--text); }
+.ubody { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; }
+
+/* misc — styles.css:363-367 */
+.card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.muted { color: var(--text-dim); }
+.row { display: flex; gap: 10px; align-items: center; }
+.spacer { flex: 1; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border); }
+
+/* composer + mode selector — styles.css:247-310 */
+.composer-box {
+  margin: 8px 0 12px; flex-shrink: 0;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 18px; padding: 12px 14px;
+}
+.composer-box textarea {
+  background: transparent; border: none; padding: 0; width: 100%; resize: none;
+  color: var(--text); font-size: 16px; min-height: 2.6em; overflow-y: hidden;
+}
+.composer-box textarea:focus { outline: none; border: none; }
+.composer-box textarea::placeholder { color: var(--text-dim); }
+.composer-row { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.mode-wrap { position: relative; }
+.mode-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: transparent; border: none;
+  color: var(--text); padding: 5px 6px; cursor: pointer; font-size: 14px;
+}
+.mode-chip .icon { color: var(--mc, var(--text-dim)); }
+.m-entry { --mc: var(--m-entry); }
+.m-medical { --mc: var(--m-medical); }
+.m-assisted { --mc: var(--m-assisted); }
+.m-research { --mc: var(--m-research); }
+.mode-menu {
+  position: absolute; bottom: 100%; left: 0; margin-bottom: 8px; width: 360px; max-width: calc(100vw - 32px);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 14px;
+  padding: 6px; z-index: 60; box-shadow: 0 12px 30px rgba(0,0,0,.45);
+}
+.mode-menu .mode-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: transparent; border: none; border-left: 3px solid transparent;
+  color: var(--text); padding: 11px 14px; border-radius: 11px; cursor: pointer; min-height: 56px;
+}
+.mode-menu .mode-row:hover { background: var(--bg-elev); }
+.mode-menu .mode-tile {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--mc) 14%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--mc) 35%, var(--border));
+}
+.mode-menu .mode-tile .icon { color: var(--mc); }
+.mode-menu .mode-label { font-size: 16px; font-weight: 600; flex: none; }
+.mode-menu .mode-hint {
+  margin-left: auto; min-width: 0; text-align: right; font-size: 12.5px; color: var(--text-dim);
+  line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
+.icon-btn:hover { color: var(--text); }
+.icon-btn.send:not(:disabled) { color: var(--accent); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.attach-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.med-dest-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.med-dest-select { flex: 1; min-width: 0; max-width: 240px; font-size: 13px; color: var(--text); background: var(--surface, transparent); border: 1px solid var(--border, #3a3a3a); border-radius: 8px; padding: 3px 6px; }
+
+/* segmented control — styles.css:442-444 + 912-915 */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { background: transparent; border: none; padding: 6px 12px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+.seg button.on { background: var(--accent-soft); color: var(--text); }
+.seg button { border-radius: 0; border-left-width: 0; }
+.seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); border-left-width: 1px; }
+.seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+
+/* chat thread — styles.css:550-593 */
+.chat-wrap {
+  height: 100%; display: flex; flex-direction: column; position: relative;
+  width: 100%; max-width: 860px; margin: 0 auto; padding: 0 16px;
+}
+.mode-flash {
+  position: absolute; top: 50%; left: 50%; z-index: 6; pointer-events: none;
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+  border-radius: 999px; background: var(--bg-elev-2); border: 1px solid var(--border);
+  color: var(--text); font-size: 13px; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35); animation: modeFlash 0.85s ease forwards;
+}
+.mode-flash .icon { color: var(--accent); }
+@keyframes modeFlash {
+  0%   { opacity: 0; transform: translate(calc(-50% + var(--from, 16px)), -50%); }
+  18%  { opacity: 1; transform: translate(-50%, -50%); }
+  72%  { opacity: 1; transform: translate(-50%, -50%); }
+  100% { opacity: 0; transform: translate(-50%, calc(-50% - 6px)); }
+}
+.messages {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  padding: 8px 8px 8px 0;
+  scrollbar-width: thin; scrollbar-color: transparent transparent;
+}
+.messages.scrolling { scrollbar-color: var(--border) transparent; }
+.msg { max-width: 80%; padding: 12px 14px; border-radius: var(--radius); white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--border);
+  overflow-wrap: anywhere; min-width: 0; }
+.msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
+.msg.assistant { align-self: flex-start; background: var(--bg-elev); max-width: 100%; }
+.saved-chip {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-dim); background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; max-width: 80%;
+}
+.saved-chip .icon { color: var(--ok); }
+</style>
+
+<!-- ============================================================================
+     REDESIGN-ONLY additions (NOT yet in styles.css) — the genuinely new pieces:
+     the Financial accent token, the .m-full alias, the 3-mode segmented picker,
+     the Entry sub-selector, and the compose safety line. Plus mockup-page chrome,
+     all built from the same design tokens above.
+     ============================================================================ -->
+<style id="redesign-css">
+:root            { --m-financial: #b89cd6; }
+:root[data-theme="light"]    { --m-financial: #7a4fb0; }
+:root[data-theme="sunlight"] { --m-financial: #5b2d9c; }
+.m-full      { --mc: var(--m-assisted); }   /* Full Brain reuses the house accent */
+.m-financial { --mc: var(--m-financial); }
+
+.ic { display: inline-block; vertical-align: middle; }
+.ic svg { display: block; }
+
+/* Top-level 3-mode picker: reuse .seg, on its own row, themed by the active mode's --mc. */
+.mode-seg { width: 100%; margin-bottom: 10px; }
+.mode-seg button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px 6px; font-size: 13px; font-weight: 600; color: var(--text-dim); }
+.mode-seg button.on { background: color-mix(in srgb, var(--mc) 18%, transparent); color: var(--text); }
+.mode-seg button.on .ic { color: var(--mc); }
+
+/* Entry sub-selector: a smaller .seg, themed by the active sub-type accent (--mc via .m-*). */
+.sub-seg { width: 100%; margin-bottom: 8px; }
+.sub-seg button { flex: 1; padding: 6px 4px; font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.sub-seg button.on { background: color-mix(in srgb, var(--mc) 18%, transparent); color: var(--text); }
+
+/* Reuse the .med-dest-row look for the financial destination row (violet accent). */
+.fin-dest-row .ic { color: var(--m-financial); }
+
+/* Compose safety / scope line (read-only vs write hint), dot tinted by the current mode. */
+.compose-safety { display: flex; align-items: center; gap: 7px; margin-top: 8px; font-size: 11.5px; color: var(--text-dim); }
+.compose-safety .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--mc, var(--text-dim)); flex: none; }
+
+/* ---- Mockup page chrome (token-based, so it themes with the app) ---- */
+.page { max-width: 1080px; margin: 0 auto; padding: 22px 18px 60px; }
+.page h1 { font-size: 22px; margin: 0 0 4px; }
+.page .lede { color: var(--text-dim); font-size: 14px; margin: 0 0 20px; max-width: 760px; }
+.layout { display: grid; grid-template-columns: 360px 1fr; gap: 30px; align-items: start; }
+@media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
+
+/* Phone frame */
+.device { width: 360px; margin: 0 auto; border: 11px solid #20262b; border-radius: 36px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; background: #20262b; }
+.device .screen { height: 660px; background: var(--bg); position: relative; }
+.device .ushell { height: 100%; }
+.notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 20px; background: #20262b; border-radius: 0 0 13px 13px; z-index: 70; }
+
+/* right column copy */
+.notes h3 { font-size: 14px; margin: 18px 0 6px; }
+.notes p { font-size: 13.5px; color: var(--text-dim); line-height: 1.55; margin: 6px 0; }
+.notes code { background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--text-dim); margin: 10px 0 4px; }
+.legend .k { display: inline-flex; align-items: center; gap: 7px; }
+.legend .sw { width: 12px; height: 12px; border-radius: 4px; }
+.ctl-h { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); font-weight: 700; margin: 0 0 8px; }
+.tipline { font-size: 11.5px; color: var(--text-dim); text-align: center; padding: 4px 0 2px; min-height: 16px; }
+</style>
+</head>
+
+<body>
+<div class="page">
+  <h1>JBrain — Modes Redesign <span class="badge">faithful mockup</span></h1>
+  <p class="lede">Rebuilt on the <b>real <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">web/src/styles.css</code></b> (verbatim slices embedded above): the same theme tokens, <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">.composer-box</code>, <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">.med-dest-row</code>, <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">.seg</code>, <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">.msg</code> and per-mode <code style="background:var(--bg-elev-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px">--m-*</code> accents the app uses. Switch the real Dark / Light / Sunlight themes to confirm the tokens are live.</p>
+
+  <div class="layout">
+    <!-- LEFT: phone -->
+    <div>
+      <div class="device">
+        <div class="screen">
+          <div class="notch"></div>
+          <div class="ushell">
+            <div class="utop">
+              <span class="brand">JBrain<span class="dot">.</span></span>
+              <span class="spacer"></span>
+              <button class="bolt" title="Advanced"><span class="ic" id="boltIc"></span></button>
+            </div>
+
+            <div class="chat-wrap">
+              <div id="flashHost"></div>
+              <div class="messages" id="messages"></div>
+
+              <div class="composer-box" id="composerBox">
+                <!-- NEW: top-level 3-mode segmented picker (its own row) -->
+                <div class="seg mode-seg" id="modeSeg">
+                  <button data-mode="entry"    class="m-entry on"><span class="ic" data-i="entry"></span>Entry</button>
+                  <button data-mode="research" class="m-research"><span class="ic" data-i="research"></span>Research</button>
+                  <button data-mode="full"     class="m-full"><span class="ic" data-i="full"></span>Full&nbsp;Brain</button>
+                </div>
+
+                <!-- NEW: Entry sub-selector (only when Entry is active) -->
+                <div class="seg sub-seg" id="subSeg">
+                  <button data-sub="generic"   class="m-entry on">Generic</button>
+                  <button data-sub="medical"   class="m-medical">Medical</button>
+                  <button data-sub="financial" class="m-financial">Financial</button>
+                </div>
+
+                <!-- existing .med-dest-row, reused for Medical -->
+                <div class="med-dest-row" id="medDest">
+                  <span class="ic" data-i="medical"></span>
+                  <span class="muted">notes/medical/</span>
+                  <select class="med-dest-select">
+                    <option>Bloodwork</option><option>Visits</option><option>Procedures</option><option>Meds</option>
+                  </select>
+                  <button class="ghost" style="font-size:12px;padding:2px 8px">＋ New</button>
+                </div>
+
+                <!-- same pattern, Financial -->
+                <div class="med-dest-row fin-dest-row" id="finDest">
+                  <span class="ic" data-i="financial"></span>
+                  <span class="muted">notes/financial/</span>
+                  <select class="med-dest-select">
+                    <option>Statements</option><option>Receipts</option><option>Invoices</option><option>Taxes</option>
+                  </select>
+                  <button class="ghost" style="font-size:12px;padding:2px 8px">＋ New</button>
+                </div>
+
+                <textarea id="ta" rows="1" placeholder="Write an entry…"></textarea>
+
+                <div class="composer-row">
+                  <span class="spacer"></span>
+                  <button class="icon-btn" id="attachBtn" title="Attach"><span class="ic" data-i="clip"></span></button>
+                  <button class="icon-btn send" id="sendBtn" title="Send"><span class="ic" data-i="send"></span></button>
+                </div>
+
+                <div class="compose-safety" id="safety"><span class="sdot"></span><span id="safetyTxt"></span></div>
+              </div>
+              <div class="tipline" id="tip">Swipe ↕ on the composer to cycle the 3 modes.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: controls + notes -->
+    <div>
+      <div class="card">
+        <p class="ctl-h">Theme (real app tokens)</p>
+        <div class="seg" id="themeSeg" style="width:100%">
+          <button data-theme="dark" class="on">Dark</button>
+          <button data-theme="light">Light</button>
+          <button data-theme="sunlight">Sunlight</button>
+        </div>
+        <div class="legend">
+          <span class="k"><span class="sw" style="background:var(--m-entry)"></span>Entry · write</span>
+          <span class="k"><span class="sw" style="background:var(--m-research)"></span>Research · read-only</span>
+          <span class="k"><span class="sw" style="background:var(--m-assisted)"></span>Full Brain · write+tools</span>
+        </div>
+        <div class="legend">
+          <span class="k"><span class="sw" style="background:var(--m-medical)"></span>Medical sub</span>
+          <span class="k"><span class="sw" style="background:var(--m-financial)"></span>Financial sub <span class="badge">new token</span></span>
+        </div>
+      </div>
+
+      <div class="notes">
+        <h3>What's real vs. new</h3>
+        <p><b>Verbatim from the app:</b> every theme token, <code>.composer-box</code> / textarea, <code>.med-dest-row</code> + <code>.med-dest-select</code> (reused as-is for Financial), <code>.seg</code> segmented control, <code>.msg</code> / <code>.saved-chip</code> thread bubbles, the <code>.utop</code> top bar, and the <code>.mode-flash</code> switch animation.</p>
+        <p><b>New (this redesign):</b> the 3-mode <code>.seg.mode-seg</code> row replacing the old <code>.mode-chip</code> + popover; the Entry <code>.seg.sub-seg</code>; the <code>--m-financial</code> accent + <code>.m-full</code> alias; the <code>.compose-safety</code> line.</p>
+        <h3>Behavior</h3>
+        <p>Default mode on a fresh launch is <b>Entry</b>; the last-used mode is remembered within a session. <b>Research</b> is read-only, so <code>Attach</code> is hidden (matching the app's <code>mode!=="research"</code> gate). <b>Medical</b> reveals the destination picker and stages lab PDFs; <b>Financial</b> is folder-only filing.</p>
+        <p class="muted" style="font-size:12px">Tap the segments, switch sub-types, change themes, and Send to see real <code>.msg</code> / <code>.saved-chip</code> bubbles.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // --- inline icons (stroke=currentColor so app color rules flow through) ---
+  const S = (p, extra='') => `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" ${extra}>${p}</svg>`;
+  const ICON = {
+    entry:    S('<path d="M12 5v14M5 12h14"/>'),
+    research: S('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'),
+    full:     S('<path d="M12 3l2.1 4.6L19 9l-4 3.2L16 18l-4-2.6L8 18l1-5.8L5 9l4.9-1.4z"/>'),
+    medical:  S('<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>'),
+    financial:S('<circle cx="12" cy="12" r="8"/><path d="M12 7v10M9.5 9.5h4a1.5 1.5 0 010 3h-3a1.5 1.5 0 000 3h4"/>'),
+    clip:     S('<path d="M21 11.5l-8.5 8.5a5 5 0 01-7-7L13 5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8"/>'),
+    send:     S('<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>'),
+    bolt:     S('<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>'),
+  };
+  document.querySelectorAll('.ic[data-i]').forEach(el => el.innerHTML = ICON[el.dataset.i] || '');
+  document.getElementById('boltIc').innerHTML = ICON.bolt;
+
+  // --- config ---
+  const MODES = {
+    entry:    { label:'Entry',      mclass:'m-entry',    icon:ICON.entry,    attach:true  },
+    research: { label:'Research',   mclass:'m-research', icon:ICON.research, attach:false },
+    full:     { label:'Full Brain', mclass:'m-full',     icon:ICON.full,     attach:true  },
+  };
+  const ORDER = ['entry','research','full'];
+  const SUBS = {
+    generic:   { mclass:'m-entry',     ph:'Write an entry…',                         safety:'Saved straight to your wiki — no AI.' },
+    medical:   { mclass:'m-medical',   ph:'Log a lab, note, procedure…',             safety:'Filed to notes/medical/ — lab PDFs get staged for review.' },
+    financial: { mclass:'m-financial', ph:'Log a statement, receipt, transaction…',  safety:'Filed to notes/financial/ — folder-only.' },
+  };
+  const MODE_PH = { research:'Ask your brain… (read-only)', full:'Talk it out — full tool access…' };
+  const MODE_SAFETY = { research:'Read-only · won’t change anything in your brain.', full:'Full tools — can edit your brain (staging + one-tap undo).' };
+
+  const st = { mode:'entry', sub:'generic' };
+  const $ = id => document.getElementById(id);
+  const box=$('composerBox'), ta=$('ta'), subSeg=$('subSeg'), medDest=$('medDest'),
+        finDest=$('finDest'), attachBtn=$('attachBtn'), safetyTxt=$('safetyTxt'), messages=$('messages');
+
+  function render(){
+    const isEntry = st.mode==='entry';
+    const accentClass = isEntry ? SUBS[st.sub].mclass : MODES[st.mode].mclass;
+    box.className = 'composer-box ' + accentClass;          // drives --mc for .compose-safety dot
+
+    document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode===st.mode));
+    document.querySelectorAll('#subSeg button').forEach(b => b.classList.toggle('on', b.dataset.sub===st.sub));
+
+    subSeg.style.display = isEntry ? 'inline-flex' : 'none';
+    medDest.style.display = (isEntry && st.sub==='medical') ? 'flex' : 'none';
+    finDest.style.display = (isEntry && st.sub==='financial') ? 'flex' : 'none';
+
+    ta.placeholder = isEntry ? SUBS[st.sub].ph : MODE_PH[st.mode];
+    attachBtn.style.display = MODES[st.mode].attach ? 'inline-flex' : 'none';
+    safetyTxt.textContent = isEntry ? SUBS[st.sub].safety : MODE_SAFETY[st.mode];
+  }
+
+  function flash(dir){
+    const m = MODES[st.mode];
+    const host = $('flashHost');
+    host.innerHTML = `<div class="mode-flash" style="--from:${dir>=0?16:-16}px"><span class="icon">${m.icon}</span>${m.label}</div>`;
+    const node = host.firstElementChild;
+    node.addEventListener('animationend', ()=>{ if(node.parentNode) node.remove(); });
+  }
+
+  function setMode(m, dir){ if(m===st.mode){render();return;} st.mode=m; render(); flash(dir||0); }
+
+  document.querySelectorAll('#modeSeg button').forEach(b => b.onclick=()=>setMode(b.dataset.mode));
+  document.querySelectorAll('#subSeg button').forEach(b => b.onclick=()=>{ st.sub=b.dataset.sub; render(); });
+
+  // theme switch (real app: data-theme on <html>)
+  document.querySelectorAll('#themeSeg button').forEach(b => b.onclick=()=>{
+    document.querySelectorAll('#themeSeg button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+    document.documentElement.setAttribute('data-theme', b.dataset.theme);
+  });
+
+  // send → real .msg / .saved-chip bubbles
+  function send(){
+    const txt = ta.value.trim(); if(!txt) return;
+    if(st.mode==='entry'){
+      const where = st.sub==='medical' ? 'notes/medical/Bloodwork/04'
+                  : st.sub==='financial' ? 'notes/financial/Statements/02'
+                  : 'notes/2026/06/07/3';
+      const chip = document.createElement('a'); chip.className='saved-chip'; chip.href='#';
+      chip.innerHTML = `<span class="icon">${ICON.send}</span> Saved → ${where}`;
+      messages.appendChild(chip);
+    } else {
+      const me=document.createElement('div'); me.className='msg user'; me.textContent=txt; messages.appendChild(me);
+      const ai=document.createElement('div'); ai.className='msg assistant';
+      ai.textContent = st.mode==='research'
+        ? 'From your notes (read-only): … — every fact grounded in a search hit; nothing changed.'
+        : 'Here’s a proposed note plus 2 staged edits. Review & Apply, or one-tap Undo.';
+      setTimeout(()=>{ messages.appendChild(ai); messages.scrollTop=messages.scrollHeight; }, 260);
+    }
+    ta.value=''; messages.scrollTop=messages.scrollHeight;
+  }
+  $('sendBtn').onclick=send;
+  ta.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
+
+  // vertical swipe cycles the 3 modes (no horizontal swipe — OS back-gesture)
+  let sy=null;
+  box.addEventListener('touchstart', e=>{ sy=e.touches[0].clientY; }, {passive:true});
+  box.addEventListener('touchend', e=>{
+    if(sy==null) return; const dy=e.changedTouches[0].clientY-sy; sy=null;
+    if(Math.abs(dy)<40) return;
+    const i=ORDER.indexOf(st.mode), dir = dy<0?1:-1;
+    setMode(ORDER[(i+dir+ORDER.length)%ORDER.length], dir);
+  });
+
+  // seed the thread so the real bubble styles are visible immediately
+  (function seed(){
+    const c=document.createElement('a'); c.className='saved-chip'; c.href='#';
+    c.innerHTML = `<span class="icon">${ICON.send}</span> Saved → notes/2026/06/07/2`;
+    const u=document.createElement('div'); u.className='msg user'; u.textContent='what did my last CBC show?';
+    const a=document.createElement('div'); a.className='msg assistant';
+    a.textContent='From your notes (read-only): your most recent CBC (2026-05-18) was within range except a mildly low MCV. Nothing changed.';
+    messages.append(c,u,a);
+  })();
+
+  render();
+})();
+</script>
+</body>
+</html>

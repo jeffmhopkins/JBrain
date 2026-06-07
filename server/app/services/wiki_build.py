@@ -1132,6 +1132,12 @@ def recategorize_article(conn, title: str, new_title: str) -> dict:
         conn.execute("UPDATE article_talk SET article_title=? WHERE article_title=?", (new_title, title))
         conn.execute("UPDATE OR IGNORE entity_overrides SET article_title=? WHERE article_title=?",
                      (new_title, title))
+        # Leave a redirect at the OLD title so external URLs / shared links to its slug keep
+        # resolving: upsert_note's rename rewrites inbound [[links]] but mints a NEW slug and
+        # clears redirect_to, so the old slug would otherwise 404. The merge path already does
+        # this; do the same on rename. Created before the entity rebuild — _link_articles
+        # excludes redirect rows, so it can't steal the binding from the renamed article.
+        create_redirect(conn, title, new_title)
         entity_index.rebuild(conn)
         flag_dead_links(conn)
         refresh_index(conn)

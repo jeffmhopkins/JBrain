@@ -584,10 +584,16 @@ actions:
         the owner is ALWAYS primary for their own name) keeps the bare leaf kb/People/<Name>.
         Each OTHER person who shares that name gets their fullest known name as the leaf —
         kb/People/Allan Smith vs the bare kb/People/Allan — so the title matches how the brain
-        already tells them apart. This is only for DIFFERENT people who share a name; the SAME
-        person under a nickname/spelling is ONE article (the other forms become redirects/
-        aliases, never a second page). If an article for that person already exists, reuse its
-        title — don't re-mint a differently-named twin.
+        already tells them apart. This is only for DIFFERENT people who share a name. The
+        inverse — the SAME person who goes by several names (a nickname, full/legal name,
+        maiden name, spelling variant, or initials) — is ONE article, never a second page:
+        keep their single canonical kb/People/<Name> and record every other form as an ALIAS
+        of it (aliases resolve in search and links and surface in the auto-generated "Also
+        known as" line). If one of those names was ever its OWN article, FOLD it in — folding
+        leaves a redirect so old links keep resolving. But if a name you'd treat as a variant
+        actually belongs to a DIFFERENT person, that's the collision case above — disambiguate
+        by full name, don't alias. If an article for that person already exists under ANY of
+        their names, reuse it — don't re-mint a differently-named twin.
       - Cite every fact to the note it came from.
 
       ```spec

@@ -326,6 +326,44 @@ def test_graph_excludes_redirect_nodes(client):
     assert "kb/People/Bob" in nodes and "kb/People/Bobby" not in nodes
 
 
+def test_recategorize_leaves_redirect_at_old_title(client):
+    """Renaming/recategorizing a kb article leaves a REDIRECT at the OLD title so external
+    URLs / shared links to the old slug keep resolving. upsert_note's rename rewrites inbound
+    [[links]] but mints a NEW slug and clears redirect_to, so without this the old slug 404s."""
+    from app.db import get_conn
+    from app.services import wiki_build
+    conn = get_conn()
+    _mk(conn, "kb/People/Allan", "# Allan\nThe canonical Allan.")
+    conn.commit()
+    old_slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Allan'").fetchone()["slug"]
+
+    res = wiki_build.recategorize_article(conn, "kb/People/Allan", "kb/People/Allan Smith")
+    conn.commit()
+    assert res["ok"] and res["to"] == "kb/People/Allan Smith"
+
+    # The renamed article is LIVE at the new title and is NOT itself a redirect.
+    new_row = conn.execute(
+        "SELECT redirect_to FROM notes WHERE title='kb/People/Allan Smith'").fetchone()
+    assert new_row and new_row["redirect_to"] is None
+
+    # A redirect now sits at the OLD title, forwarding to the new one.
+    old_row = conn.execute(
+        "SELECT deleted_at, redirect_to FROM notes WHERE title='kb/People/Allan'").fetchone()
+    assert old_row and old_row["deleted_at"] is None
+    assert old_row["redirect_to"] == "kb/People/Allan Smith"
+
+    # The old slug still resolves (forwarded) through the API.
+    r = client.get(f"/api/notes/{old_slug}").json()
+    assert r["redirect_to"] == "kb/People/Allan Smith"
+
+    # The entity still binds to the live canonical article, never the new redirect row.
+    leaf_titles = {
+        k["title"] for k in conn.execute(
+            "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL")
+    }
+    assert "kb/People/Allan Smith" in leaf_titles and "kb/People/Allan" not in leaf_titles
+
+
 def test_reindex_skips_redirect_rows(client, monkeypatch):
     """reindex_missing_note_chunks must not re-embed a redirect's marker (semantic leak)."""
     from app.db import get_conn

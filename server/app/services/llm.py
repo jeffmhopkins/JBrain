@@ -57,6 +57,15 @@ class TextDelta:
     text: str
 
 
+# A chunk of the model's extended-thinking (reasoning) text. Only emitted when a
+# caller opts in via stream_turn(thinking=True) AND the provider supports it
+# (Anthropic only); the signature-bearing thinking blocks themselves are preserved
+# verbatim inside the assistant turn the adapter appends to `messages`.
+@dataclass
+class ThinkingDelta:
+    text: str
+
+
 @dataclass
 class ToolCallEvent:
     call: ToolCall
@@ -68,7 +77,12 @@ class TurnEnd:
     usage: dict | None = None   # {"input_tokens", "output_tokens"} if the provider reports it
 
 
-StreamEvent = TextDelta | ToolCallEvent | TurnEnd
+StreamEvent = TextDelta | ThinkingDelta | ToolCallEvent | TurnEnd
+
+# Extended-thinking request shape for Anthropic. `display:"summarized"` is REQUIRED on
+# Opus/Sonnet 4.x — the default is "omitted", which streams empty thinking text. Kept as
+# a single constant so the rebuild engine's "show the AI's thoughts" can't silently break.
+_ANTHROPIC_THINKING = {"type": "adaptive", "display": "summarized"}
 
 
 @runtime_checkable
@@ -88,7 +102,7 @@ class LLMProvider(Protocol):
 
     def stream_turn(self, messages: list[Message], *, system: str | None,
                     tools: list[ToolDef], model: str | None,
-                    max_tokens: int) -> AsyncGenerator[StreamEvent, None]: ...
+                    max_tokens: int, thinking: bool = False) -> AsyncGenerator[StreamEvent, None]: ...
 
     def append_tool_results(self, messages: list[Message], results: list[ToolResult]) -> None: ...
 
@@ -146,7 +160,7 @@ class AnthropicProvider:
                  "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
         return text, calls, usage
 
-    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens, thinking=False):
         from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
@@ -154,16 +168,26 @@ class AnthropicProvider:
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}
             for t in tools
         ]
-        async with client.messages.stream(
-            model=model or self.default_model(),
-            max_tokens=max_tokens,
-            system=system,
-            tools=wire_tools,
-            messages=messages,
-        ) as stream:
+        kwargs: dict = {
+            "model": model or self.default_model(),
+            "max_tokens": max_tokens,
+            "system": system,
+            "tools": wire_tools,
+            "messages": messages,
+        }
+        if thinking:
+            kwargs["thinking"] = _ANTHROPIC_THINKING
+        async with client.messages.stream(**kwargs) as stream:
             async for event in stream:
-                if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
+                if event.type != "content_block_delta":
+                    continue
+                dt = getattr(event.delta, "type", None)
+                if dt == "text_delta":
                     yield TextDelta(event.delta.text)
+                elif dt == "thinking_delta":
+                    # The reasoning summary; signature_delta blocks are ignored here (the
+                    # full signed thinking block survives in final.content below).
+                    yield ThinkingDelta(getattr(event.delta, "thinking", "") or "")
             final = await stream.get_final_message()
 
         # Record the model's turn verbatim (SDK content blocks) — opaque state the
@@ -284,7 +308,9 @@ class XAIProvider:
                  "output_tokens": getattr(u, "completion_tokens", 0) or 0} if u else None
         return text, calls, usage
 
-    async def stream_turn(self, messages, *, system, tools, model, max_tokens):
+    async def stream_turn(self, messages, *, system, tools, model, max_tokens, thinking=False):
+        # xAI/Grok has no extended-thinking concept — the flag is accepted and ignored
+        # (the rebuild engine simply won't receive ThinkingDelta events on this provider).
         client = self._client(async_=True)
         wire_tools = [{"type": "function", "function": {
             "name": t.name, "description": t.description, "parameters": t.json_schema}} for t in tools] or None

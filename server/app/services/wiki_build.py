@@ -284,6 +284,30 @@ def _neutralize_links(content: str, bad: set[str]) -> str:
     return re.sub(r"\[\^([^\]]+)\]", lambda m: m.group(0) if m.group(1) in defined else "", out)
 
 
+def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | None = None,
+                       known_titles: list[str] | None = None) -> str:
+    """Assemble the actions.wiki_write prompt for one article from its already-loaded
+    sources + the domain guides. Single source of truth for the writer prompt, shared by
+    write_one (single-shot) and the live streaming rebuild engine. Mirror any change to the
+    prompt assembly in write_one below."""
+    from . import people
+    title = str(art.get("title") or "").strip()
+    domain = art.get("domain") or wiki_guides.domain_for_title(title)
+    scope = str(art.get("scope") or "")
+    owner = people.owner_name(conn)
+    general = wiki_guides.guide_text(None)
+    dguide = wiki_guides.guide_text(domain)
+    others = scoped_known_titles(conn, title, known_titles)
+    known_block = "\n".join(others) if others else "(no other articles yet)"
+    guidance = f"\nADDITIONAL GUIDANCE — follow this too:\n{instructions.strip()}\n" if (instructions or "").strip() else ""
+    return (prompts.get("actions.wiki_write", "")
+            .replace("{owner}", owner)
+            .replace("{general_guide}", general).replace("{domain_guide}", dguide)
+            .replace("{domain}", domain or "").replace("{title}", title)
+            .replace("{known_titles}", known_block).replace("{instructions}", guidance)
+            .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
+
+
 def write_one(conn, art: dict, instructions: str | None = None,
               known_titles: list[str] | None = None) -> dict:
     """Write one article from its raw sources + the domain guide, then ONE
@@ -810,6 +834,70 @@ def kb_lock_release(conn, key: str = "kb_write") -> None:
     conn.commit()
 
 
+def rebuild_sources(conn, title: str, instructions: str | None = None):
+    """Resolve the PRIMARY SOURCES + merged writer instructions + scope for rebuilding
+    `title`. Sources = the article's prior citations (non-kb) ∪ the entity index for its
+    subject (search is never a seed); open directives/conflicts are carried into the writer.
+    Returns (art, instr, prior_content) where art = {title, domain, scope, sources}. Shared
+    by the nightly rebuild_article and the live streaming rebuild so both pick identical
+    inputs."""
+    from . import entity_index, article_talk, notes as notes_svc
+    title = (title or "").strip()
+    note = notes_svc.get_by_title(conn, title)
+    prior = (note["content_md"] if note else "") or ""
+    ids: set[int] = set()
+    for t in wikilinks.extract_links(prior):
+        if t.lower().startswith("kb/"):
+            continue
+        r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                         (t,)).fetchone()
+        if r:
+            ids.add(int(r["id"]))
+    ids |= {int(i) for i in entity_index.note_ids_for_name(conn, title.rsplit("/", 1)[-1])}
+    opens = article_talk.open_for(conn, title)
+    directives = "; ".join(o["body"] for o in opens
+                           if o.get("kind") in ("directive", "conflict") and o.get("body"))
+    instr = (instructions or "").strip()
+    if directives:
+        instr = (instr + "\nHonor these standing directives / unresolved conflicts: " + directives).strip()
+    scope = prior.splitlines()[0].lstrip("# ").strip() if prior.strip() else ""
+    art = {"title": title, "domain": wiki_guides.domain_for_title(title),
+           "scope": scope, "sources": sorted(ids)}
+    return art, instr, prior
+
+
+def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
+                     prior_note_id: int | None = None, rename_to: str | None = None) -> None:
+    """Persist a rebuilt article body and re-link it into the KB: upsert (revive-in-place,
+    keeping slug + version history), reconnect inbound links, record talk, rebuild the entity
+    index + disambiguation pages, and sweep dead links. The caller must hold the KB write lock
+    and commit afterwards. Shared by the nightly rebuild_article and the live Accept path so
+    they can't drift.
+
+    `rename_to` (live Accept only, with the user's explicit approval) retitles the article in
+    place: an id-targeted write changes the slug and rewrites inbound [[links]], exactly as the
+    notes rename (PUT) path does."""
+    from . import entity_index, article_talk, notes as notes_svc
+    new_title = (rename_to or "").strip() or title
+    if new_title.lower() != title.lower() and prior_note_id is not None:
+        notes_svc.upsert_note(conn, new_title, content_md, note_id=prior_note_id, kind="kb",
+                              source="rebuild", version_note="rebuilt from sources (renamed)")
+    else:
+        notes_svc.upsert_note(conn, new_title, content_md, kind="kb",
+                              source="rebuild", version_note="rebuilt from sources")
+    # soft_delete (nightly path) nulled inbound links' target_note_id; re-point them at the
+    # revived/renamed row so other articles' [[links]] to this one reconnect (as restore() does).
+    row = notes_svc.get_by_title(conn, new_title)
+    nid = row["id"] if row else prior_note_id
+    if nid is not None:
+        wikilinks.resolve_dangling_links(conn, nid, new_title)
+    if talk:
+        article_talk.record(conn, new_title, talk)
+    entity_index.rebuild(conn)                 # relink entity → fresh article
+    entity_index.write_disambiguation_pages(conn)
+    flag_dead_links(conn)                      # sweep any dangling cross-links
+
+
 def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
     """Regenerate ONE existing kb article from scratch from its PRIMARY SOURCES (the owner's
     notes), then re-link it into the KB. REGENERATE-IN-PLACE, never a wipe: it revives the
@@ -818,7 +906,7 @@ def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
     never a seed). Open directives/conflicts are carried into the writer. On a quarantine
     (lint fail) the prior version is restored and an open todo is recorded — a failed rebuild
     never leaves a hole. Runs under the KB write lock. Returns {ok, title, reason?, quarantined?}."""
-    from . import notes as notes_svc, entity_index, article_talk
+    from . import notes as notes_svc, article_talk
     title = (title or "").strip()
     note = notes_svc.get_by_title(conn, title)
     if not note or note["kind"] != "kb":
@@ -828,41 +916,12 @@ def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
                 "reason": "KB is busy (another build/maintain is running) — try again shortly"}
     try:
         nid = note["id"]
-        prior = note["content_md"] or ""
-        # 1. Primary sources: prior citations ∪ entity index for the subject. No search seed.
-        ids: set[int] = set()
-        for t in wikilinks.extract_links(prior):
-            if t.lower().startswith("kb/"):
-                continue
-            r = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
-                             (t,)).fetchone()
-            if r:
-                ids.add(int(r["id"]))
-        ids |= {int(i) for i in entity_index.note_ids_for_name(conn, title.rsplit("/", 1)[-1])}
-        # 2. Carry OPEN directives/conflicts into the writer so the rebuild doesn't drop them.
-        opens = article_talk.open_for(conn, title)
-        directives = "; ".join(o["body"] for o in opens
-                               if o.get("kind") in ("directive", "conflict") and o.get("body"))
-        instr = (instructions or "").strip()
-        if directives:
-            instr = (instr + "\nHonor these standing directives / unresolved conflicts: " + directives).strip()
-        scope = prior.splitlines()[0].lstrip("# ").strip() if prior.strip() else ""
-        art = {"title": title, "domain": wiki_guides.domain_for_title(title),
-               "scope": scope, "sources": sorted(ids)}
-        # 3. Soft-delete this one article, regenerate, revive the SAME row on success.
+        art, instr, _prior = rebuild_sources(conn, title, instructions)
+        # Soft-delete this one article, regenerate, revive the SAME row on success.
         notes_svc.soft_delete(conn, nid)
         out = write_one(conn, art, instr, known_titles=_known_titles(conn))
         if out.get("ok") and out.get("content_md"):
-            notes_svc.upsert_note(conn, title, out["content_md"], kind="kb",
-                                  source="rebuild", version_note="rebuilt from sources")
-            # soft_delete nulled inbound links' target_note_id; re-point them at the revived
-            # row so other articles' [[links]] to this one reconnect (as restore() does).
-            wikilinks.resolve_dangling_links(conn, nid, title)
-            if out.get("talk"):
-                article_talk.record(conn, title, out["talk"])
-            entity_index.rebuild(conn)                 # relink entity → fresh article
-            entity_index.write_disambiguation_pages(conn)
-            flag_dead_links(conn)                      # sweep any dangling cross-links
+            finalize_rebuild(conn, title, out["content_md"], out.get("talk"), prior_note_id=nid)
             conn.commit()
             return {"ok": True, "title": title}
         # Quarantine: restore the prior version (never leave a hole) + surface an open todo.

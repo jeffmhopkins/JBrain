@@ -5,8 +5,8 @@ import remarkGfm from "remark-gfm";
 import { del, get, post, put, getPlaces, personFromNote, Place } from "../api";
 import { useAuth } from "../App";
 import { useIsDesktop } from "../hooks";
-import { fmtTs, expandTimeTokensMarked } from "../time";
-import { linkifyAddresses, makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
+import { fmtTs, fmtRel, expandTimeTokensMarked } from "../time";
+import { linkifyAddresses, makeLinkRenderer, renderWikiLinks, stripSummarySentinels, stripLeadingTitleH1 } from "../util";
 import Attachments from "../components/Attachments";
 import AiAnalysisPanel from "../components/AiAnalysisPanel";
 import LabImportPanel from "../components/LabImportPanel";
@@ -14,6 +14,8 @@ import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
 import ListEditor from "../components/ListEditor";
+import NoteActionsMenu from "../components/NoteActionsMenu";
+import RebuildPanel from "../components/RebuildPanel";
 import ShareOptions from "../components/ShareOptions";
 import { Parsed, parseList, serialize } from "../lists";
 
@@ -28,20 +30,17 @@ interface Note {
   redirect_to_slug?: string | null;
 }
 
-// Render a "/"-path title as a clickable directory breadcrumb: each ancestor
-// segment links to the Wiki focused on that folder; the note's own name (the last
-// segment) stays plain. Long titles still wrap cleanly at the slashes (<wbr>).
-function titleCrumbs(title: string) {
+// The ANCESTOR path of a "/"-title as a small, clickable breadcrumb (the leaf is shown
+// big as the page title separately). "kb/Places/6070 …" → "kb › Places". Each crumb
+// links to the Wiki focused on that folder. Returns [] for a title with no parent.
+function pathCrumbs(title: string) {
   const segs = title.split("/");
-  return segs.map((seg, i) => {
-    const isLast = i === segs.length - 1;
+  return segs.slice(0, -1).map((seg, i) => {
     const path = segs.slice(0, i + 1).join("/");
     return (
       <span key={i}>
-        {i > 0 && <span className="crumb-sep">/<wbr /></span>}
-        {isLast ? seg : (
-          <Link to={`/wiki?q=${encodeURIComponent(path)}&kind=`} className="crumb-link">{seg}</Link>
-        )}
+        {i > 0 && <span className="crumb-sep">›</span>}
+        <Link to={`/wiki?q=${encodeURIComponent(path)}&kind=`} className="crumb-link">{seg}</Link>
       </span>
     );
   });
@@ -65,6 +64,8 @@ export default function NotePage() {
   const [listModel, setListModel] = useState<Parsed | null>(null);   // card editor for list notes
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);   // live AI rebuild panel open
+  const [showAbsTime, setShowAbsTime] = useState(false); // tap the meta time → full created/updated
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
   const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
@@ -99,6 +100,16 @@ export default function NotePage() {
       try { await navigator.clipboard.writeText(r.url); } catch { /* ignore */ }
     } catch (e: any) { alert(e?.message || "Couldn't create link."); }
   }
+
+  async function tagAsPerson() {
+    if (!note) return;
+    try {
+      const r = await personFromNote(note.slug);
+      alert(`Tagged as person “${r.name}”. Set their colour/aliases in Advanced → People.`);
+    } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
+  }
+
+  function rebuildNow() { setRebuilding(true); }
 
   function startEdit() {
     if (!note) return;
@@ -216,11 +227,30 @@ export default function NotePage() {
           Redirected from <em>{redirectedFrom}</em>
         </div>
       )}
-      <h1 className="note-title">
-        {titleCrumbs(note.title)}
-        {note.kind === "kb" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>KB</span>}
-        {note.kind === "place" && <span className="badge" style={{ marginLeft: 8, verticalAlign: "middle" }}>📍 Place</span>}
-      </h1>
+      <div className="note-head">
+        <div className="note-head-main">
+          {note.title.includes("/") && <div className="note-path">{pathCrumbs(note.title)}</div>}
+          <h1 className="note-title">
+            {note.title.split("/").pop()}
+            {note.kind === "kb" && <span className="badge note-title-badge">KB</span>}
+            {note.kind === "place" && <span className="badge note-title-badge">📍 Place</span>}
+          </h1>
+        </div>
+        {editing === null && (
+          <div className="note-head-actions">
+            <NoteActionsMenu items={[
+              ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
+                                          accent: true, hint: "AI rewrites it", onClick: rebuildNow }] : []),
+              { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
+              { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
+              ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",
+                                         hint: "Trail attribution", onClick: tagAsPerson }] : []),
+              { sep: true } as const,
+              { key: "delete", label: "Delete", icon: "trash", danger: true, onClick: remove },
+            ]} />
+          </div>
+        )}
+      </div>
       {note.kind === "place" && (
         <div className="geofence-card">
           {place ? (
@@ -237,22 +267,6 @@ export default function NotePage() {
               <Link to="/map">Add one on the Map</Link>
             </>
           )}
-        </div>
-      )}
-      {editing === null && (
-        <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: "flex-end" }}>
-          {note.kind === "kb" && (
-            <button className="ghost" title="Make this KB page a Person (for trail attribution)"
-                    onClick={async () => {
-                      try {
-                        const r = await personFromNote(note.slug);
-                        alert(`Tagged as person “${r.name}”. Set their colour/aliases in Advanced → People.`);
-                      } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
-                    }}>Tag as person</button>
-          )}
-          <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>
-          <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>
-          <button className="ghost danger-hover" onClick={remove}>Delete</button>
         </div>
       )}
       {sharing && (
@@ -320,14 +334,29 @@ export default function NotePage() {
           )}
         </div>
       )}
-      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <span>🕐 {fmtTs(note.created_at, appTz)}{fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz) ? ` · updated ${fmtTs(note.updated_at, appTz)}` : ""}</span>
-        {note.lat != null && note.lon != null && (
-          <Link to={`/map?focus=${note.slug}`} title="View on map">
-            <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
-          </Link>
-        )}
-      </div>
+      {note.created_at && (() => {
+        const changed = fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz);
+        const rel = changed ? `updated ${fmtRel(note.updated_at, appTz)}` : fmtRel(note.created_at, appTz);
+        const abs = changed
+          ? `${fmtTs(note.created_at, appTz)} · updated ${fmtTs(note.updated_at, appTz)}`
+          : fmtTs(note.created_at, appTz);
+        return (
+          <div className="muted note-meta">
+            <span className="note-time" onClick={() => setShowAbsTime((a) => !a)}
+                  title={abs}>🕐 {showAbsTime ? abs : rel}</span>
+            {note.lat != null && note.lon != null && (
+              <Link to={`/map?focus=${note.slug}`} title="View on map">
+                <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
+              </Link>
+            )}
+          </div>
+        );
+      })()}
+      {rebuilding && (
+        <RebuildPanel slug={note.slug} note={{ title: note.title, content_md: note.content_md }}
+          onClose={() => setRebuilding(false)}
+          onAccepted={(s) => { setRebuilding(false); if (s !== note.slug) navigate(`/note/${s}`); else reload(); }} />
+      )}
       <div className="row tag-editor" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {note.tags.map((t) => (
           <span key={t} className="badge tag-edit">#{t}
@@ -382,7 +411,8 @@ export default function NotePage() {
               }
               return <li className={cls || undefined} {...props}>{children}</li>;
             },
-          }}>{renderWikiLinks(linkifyAddresses(expandTimeTokensMarked(stripSummarySentinels(note.content_md), appTz)))}</ReactMarkdown>
+          }}>{renderWikiLinks(linkifyAddresses(expandTimeTokensMarked(stripSummarySentinels(
+            note.kind === "kb" ? stripLeadingTitleH1(note.content_md, note.title) : note.content_md), appTz)))}</ReactMarkdown>
         </div>
       )}
       {!isDesktop && <div style={{ marginTop: 24 }}>{rail}</div>}

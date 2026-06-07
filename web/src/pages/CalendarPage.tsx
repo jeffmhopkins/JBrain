@@ -35,11 +35,12 @@ function RemindChips({ allDay, value, onChange }: {
       <label>REMIND ME</label>
       <div className="rem-chips">
         {presets.map((p) => (
-          <button key={p.off} type="button" className={"rem-chip" + (on.has(p.off) ? " on" : "")}
+          <button key={p.label} type="button" className={"rem-chip" + (on.has(p.off) ? " on" : "")}
             aria-pressed={on.has(p.off)} onClick={() => toggle(p.off)}>{p.label}</button>
         ))}
         {value.length > 0 && (
-          <button type="button" className="rem-chip none" onClick={() => onChange([])}>None</button>
+          <button type="button" className="rem-chip none" aria-label="Clear reminders"
+            onClick={() => onChange([])}>None</button>
         )}
       </div>
     </div>
@@ -121,6 +122,7 @@ export default function CalendarPage() {
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState<{ ev?: CalEvent; addDate?: string; addTime?: string } | null>(null);
   const [, setTick] = useState(0);                          // 60s tick to keep the now-line live
+  const [reloadNonce, setReloadNonce] = useState(0);        // explicit refetch signal for the review banner
   const cache = useRef<Map<string, CalEvent[]>>(new Map());
   const today = todayIso(tz);
 
@@ -131,7 +133,7 @@ export default function CalendarPage() {
     if (v === "week") { const s = startOfWeek(c); return [ymd(s), ymd(addDays(s, 6))]; }
     const s = startOfWeek(startOfMonth(c)); return [ymd(s), ymd(addDays(s, 41))];
   }
-  function reload() { cache.current.clear(); load(); }
+  function reload() { cache.current.clear(); setReloadNonce((n) => n + 1); load(); }
   function load(): () => void {
     setLoading(true); setErr("");
     let ignore = false;
@@ -198,7 +200,7 @@ export default function CalendarPage() {
         </div>
       </div>
 
-      <ReviewBanner refreshKey={events.length} />
+      <ReviewBanner refreshKey={reloadNonce} />
       {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
       {loading && <p className="muted">Loading…</p>}
 
@@ -413,11 +415,21 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
   const [err, setErr] = useState("");
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [savedRem, setSavedRem] = useState(false);
+  const inflight = useRef(false);
+  const pendingVal = useRef<Reminder[] | null>(null);
   useEffect(() => { let go = true; calGetReminders(ev.id).then((r) => { if (go) setReminders(r.reminders); }).catch(() => {}); return () => { go = false; }; }, [ev.id]);
-  function changeReminders(v: Reminder[]) {
-    setReminders(v); setSavedRem(false);
-    calSetReminders(ev.id, v).then(() => setSavedRem(true)).catch((e: any) => setErr(String(e?.message || e)));
+  // Serialize saves: rapid toggles coalesce to the latest set, sent in order — so the
+  // server's full-replace can't be left in a stale state by an out-of-order response.
+  async function flushSave() {
+    if (inflight.current) return;
+    while (pendingVal.current) {
+      const v = pendingVal.current; pendingVal.current = null; inflight.current = true;
+      try { await calSetReminders(ev.id, v); setSavedRem(true); setTimeout(() => setSavedRem(false), 2000); }
+      catch (e: any) { setErr(String(e?.message || e)); }
+      finally { inflight.current = false; }
+    }
   }
+  function changeReminders(v: Reminder[]) { setReminders(v); setSavedRem(false); pendingVal.current = v; flushSave(); }
   async function run(fn: () => Promise<void>) {
     setBusy(true); setErr("");
     try { await fn(); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
@@ -457,6 +469,7 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
       </>}
       {mode === "view" && <>
         <RemindChips allDay={!isTimed(ev)} value={reminders} onChange={changeReminders} />
+        {ev.recurring && <p className="cal-recnote">Applies to the whole series.</p>}
         {savedRem && <p className="cal-recnote" style={{ color: "var(--ok)" }}>Reminders saved.</p>}
       </>}
       {ev.note_slug && <p style={{ marginTop: 8 }}><Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link></p>}

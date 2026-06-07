@@ -1184,3 +1184,65 @@ def test_recently_added_excludes_manual_and_dismissed(conn):
     assert "Extracted ev" in titles and "Manual ev" not in titles
     cal.dismiss_event(conn, cal.identity_key(n1, "Extracted ev", "event", 0))
     assert all(x["title"] != "Extracted ev" for x in cal.recently_added(conn, ""))
+
+
+# --- reminders red-team fixes ---
+
+def test_reminder_offsets_clamped_and_anchor_normalized(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Dentist", "event", 0)
+    # huge (storm risk) and negative offsets are rejected; a valid one is kept; anchor
+    # normalized to 'start' for a timed event even if client says 'day_of'.
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30, "anchor": "day_of"},
+                                 {"offset_minutes": 5256000}, {"offset_minutes": -60}])
+    rems = cal.get_reminders(conn, ik)
+    assert [r["offset_minutes"] for r in rems] == [30]
+    assert rems[0]["anchor"] == "start"
+    # all-day event -> anchor normalized to day_of
+    n2 = _mknote(conn, "Holiday")
+    cal.upsert_events(conn, n2, [{"title": "Anniv", "starts_at": "2099-06-15", "all_day": True}])
+    ik2 = cal.identity_key(n2, "Anniv", "event", 0)
+    cal.set_reminders(conn, ik2, [{"offset_minutes": 0, "anchor": "start"}])
+    assert cal.get_reminders(conn, ik2)[0]["anchor"] == "day_of"
+
+
+def test_huge_offset_no_storm(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Daily")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2099-06-01T09:00:00", "rrule": "FREQ=DAILY"}],
+                     source="workflow", sweep=False)
+    ik = cal.identity_key(nid, "Standup", "recurring", 0)
+    # Force an out-of-band offset directly (bypassing the clamp) to prove the horizon cap
+    # + per-tick backstop bound the firing.
+    conn.execute("INSERT INTO calendar_reminders (identity_key, offset_minutes, anchor) VALUES (?,?,?)",
+                 (ik, 5256000, "start"))
+    _set_now(monkeypatch, 2099, 6, 15, 8, 52)
+    out = cal.due_event_alarms(conn, wf, push=False)
+    assert out["fired"] <= 500   # bounded, not 3650+
+
+
+def test_cancel_removes_reminders(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-15"}])
+    ik = cal.identity_key(nid, "Dentist", "event", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])
+    n2 = _mknote(conn, "cancel note")
+    cal.record_supersession(conn, ik, None, n2, "structured")   # pure cancel
+    assert cal.get_reminders(conn, ik) == []
+
+
+def test_alarm_all_day_recurring_day_of(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Monthly bill")
+    cal.upsert_events(conn, nid, [{"title": "Rent", "kind": "recurring", "starts_at": "2099-01-15",
+                                   "all_day": True, "rrule": "FREQ=MONTHLY"}], source="workflow", sweep=False)
+    ik = cal.identity_key(nid, "Rent", "recurring", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 0, "anchor": "day_of"}])   # morning of
+    _set_now(monkeypatch, 2099, 6, 15, 9, 30)                  # 9:30am on a recurrence day
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1

@@ -280,6 +280,9 @@ def record_supersession(conn, old_identity_key: str, new_identity_key: str | Non
         conn.execute("UPDATE OR IGNORE calendar_reminders SET identity_key=? WHERE identity_key=?",
                      (new_identity_key, old_identity_key))
         conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (old_identity_key,))
+    else:
+        # Pure cancellation — drop the dead reminders so they can't linger or resurrect.
+        conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (old_identity_key,))
 
 
 def consolidate(conn, notes: list[dict]) -> dict:
@@ -808,6 +811,7 @@ def due_reminders(conn, workflow_id, lead_hours: int = 48, push: bool = True) ->
 # --- per-event reminders + revoke (Phase: settable reminders) ----------------
 
 _ALLDAY_ANCHOR_HOUR = 9   # all-day reminders are measured from 9am on the event day
+_MAX_FIRES_PER_TICK = 500   # backstop: never emit more than this many alarms in one pass
 
 def is_dismissed(conn, identity_key: str) -> bool:
     return conn.execute(
@@ -821,8 +825,17 @@ def get_reminders(conn, identity_key: str) -> list[dict]:
         "WHERE identity_key=? ORDER BY anchor, offset_minutes", (identity_key,))]
 
 
+_MAX_OFFSET_MIN = 43200   # 30 days — bounds expansion so one reminder can't storm
+
 def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
-    """Replace an event's reminder set. items: [{offset_minutes, anchor}]. Empty = none."""
+    """Replace an event's reminder set. items: [{offset_minutes, anchor}]. Empty = none.
+    Offsets are clamped to [0, 30 days] (a negative or absurd lead is rejected — it would
+    either never fire or expand into a notification storm). The anchor is NORMALIZED from
+    the event's own all_day, never trusted from the client (a 'start' offset on an all-day
+    event is meaningless)."""
+    row = conn.execute("SELECT all_day FROM calendar_events WHERE identity_key=? LIMIT 1",
+                       (identity_key,)).fetchone()
+    anchor = "day_of" if (row and row["all_day"]) else "start"
     conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (identity_key,))
     n = 0
     for it in items or []:
@@ -830,9 +843,8 @@ def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
             off = int(it.get("offset_minutes"))
         except (TypeError, ValueError):
             continue
-        anchor = it.get("anchor") or "start"
-        if anchor not in ("start", "day_of"):
-            anchor = "start"
+        if off < 0 or off > _MAX_OFFSET_MIN:
+            continue
         conn.execute(
             "INSERT OR IGNORE INTO calendar_reminders (identity_key, offset_minutes, anchor) VALUES (?,?,?)",
             (identity_key, off, anchor))
@@ -928,7 +940,9 @@ def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
     mx = conn.execute("SELECT MAX(offset_minutes) m FROM calendar_reminders WHERE enabled=1").fetchone()["m"]
     if mx is None:
         return {"fired": 0}
-    horizon = now + timedelta(minutes=int(mx))
+    # Defence in depth (set_reminders already clamps): bound the look-ahead so even a stray
+    # out-of-band offset can't expand a recurring series into a storm.
+    horizon = now + timedelta(minutes=min(int(mx), _MAX_OFFSET_MIN))
     # Expand recurring occurrences over [start-of-today, horizon] as full DATETIMES — a
     # date-only upper bound is midnight and would drop same-day TIMED occurrences; the
     # lower bound at today's midnight still catches all-day occurrences today.
@@ -937,6 +951,8 @@ def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
     pending: list[tuple[str, str, str]] = []
 
     def fire_for(ik, occ_iso, all_day, title, slug):
+        if len(pending) >= _MAX_FIRES_PER_TICK:        # hard backstop against a storm
+            return
         for rem in conn.execute(
             "SELECT offset_minutes, anchor FROM calendar_reminders WHERE identity_key=? AND enabled=1", (ik,)
         ).fetchall():

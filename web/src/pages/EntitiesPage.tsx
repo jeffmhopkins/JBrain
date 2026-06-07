@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { get } from "../api";
+import {
+  EntitySummary, EntityDetail, EntityDecision,
+  listEntities, getEntity, mergeEntities, splitEntities,
+  addEntityAlias, removeEntityAlias, listEntityDecisions,
+} from "../api";
 import { leaf, slugify } from "../util";
-
-interface Entity { id: number; type: string; canonical_name: string; note_count: number; article_title: string | null; }
-interface EntityDetail extends Entity { aliases?: string[]; notes: { id: number; title: string; slug: string; created_at: string }[]; }
 
 const ICON: Record<string, string> = {
   person: "👤", animal: "🐾", org: "🏢", place: "📍", thing: "📦", work: "🎬",
@@ -14,24 +15,60 @@ const TYPES = [["", "All"], ["person", "People"], ["animal", "Animals"], ["org",
   ["place", "Places"], ["thing", "Things"], ["work", "Media"], ["condition", "Conditions"],
   ["medication", "Meds"], ["procedure", "Procedures"], ["event", "Events"], ["concept", "Concepts"]];
 
-// Browse the canonical entity index aggregated from per-note AI analysis. Reached from
-// the analysis-panel chips (?q=&type=) or directly; clicking an entity shows every note
-// that mentions it, plus its KB article if one exists.
+// Inline entity search → pick. Used to choose the other side of a merge/split.
+function EntityPicker({ label, type, excludeId, onPick, disabled }: {
+  label: string; type: string; excludeId: number; onPick: (e: EntitySummary) => void; disabled?: boolean;
+}) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<EntitySummary[]>([]);
+  useEffect(() => {
+    if (!q.trim()) { setHits([]); return; }
+    let live = true;
+    listEntities(q.trim(), type).then((r) => { if (live) setHits(r.filter((e) => e.id !== excludeId).slice(0, 8)); }).catch(() => {});
+    return () => { live = false; };
+  }, [q, type, excludeId]);
+  return (
+    <div style={{ marginTop: 6 }}>
+      <input className="modal-input" placeholder={label} value={q} disabled={disabled}
+             onChange={(e) => setQ(e.target.value)} style={{ width: "100%" }} />
+      {hits.length > 0 && (
+        <ul style={{ listStyle: "none", padding: 0, margin: "4px 0", border: "1px solid var(--border,#333)", borderRadius: 6 }}>
+          {hits.map((e) => (
+            <li key={e.id}>
+              <button className="entity-row" disabled={disabled}
+                      onClick={() => { setQ(""); setHits([]); onPick(e); }}>
+                <span>{ICON[e.type] || "•"} {e.canonical_name}</span>
+                <span className="muted" style={{ fontSize: 12 }}>{e.note_count}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Browse the canonical entity index aggregated from per-note AI analysis. Clicking an entity
+// shows every note that mentions it, its KB article, and the durable identity controls
+// (merge a duplicate in, mark a different person apart, add/remove an alias) that survive
+// every entity_index.rebuild().
 export default function EntitiesPage() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const type = params.get("type") || "";
-  const [list, setList] = useState<Entity[]>([]);
+  const [list, setList] = useState<EntitySummary[]>([]);
   const [sel, setSel] = useState<EntityDetail | null>(null);
+  const [decisions, setDecisions] = useState<EntityDecision[]>([]);
+  const [aliasInput, setAliasInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ledgerOpen, setLedgerOpen] = useState(false);
 
-  useEffect(() => {
-    const qs = new URLSearchParams();
-    if (q) qs.set("q", q);
-    if (type) qs.set("type", type);
-    get<Entity[]>(`/api/entities?${qs}`).then(setList).catch(() => setList([]));
-  }, [q, type]);
+  function refreshList() {
+    listEntities(q, type).then(setList).catch(() => setList([]));
+  }
+  useEffect(refreshList, [q, type]);
 
-  // If the query names exactly one entity (e.g. arriving from a chip), open it.
   useEffect(() => {
     if (q && list.length >= 1 && (!sel || sel.canonical_name.toLowerCase() !== q.toLowerCase())) {
       const hit = list.find((e) => e.canonical_name.toLowerCase() === q.toLowerCase()) || (list.length === 1 ? list[0] : null);
@@ -39,9 +76,37 @@ export default function EntitiesPage() {
     }
   }, [list]); // eslint-disable-line
 
-  function open(id: number) { get<EntityDetail>(`/api/entities/${id}`).then(setSel).catch(() => {}); }
+  function open(id: number) {
+    setErr(""); setAliasInput("");
+    getEntity(id).then((d) => { setSel(d); listEntityDecisions(id).then(setDecisions).catch(() => setDecisions([])); }).catch(() => {});
+  }
   function setType(t: string) { const p = new URLSearchParams(params); t ? p.set("type", t) : p.delete("type"); setParams(p); }
   function setQ(v: string) { const p = new URLSearchParams(params); v ? p.set("q", v) : p.delete("q"); setParams(p); }
+
+  // Each identity op rebuilds the index server-side; refresh the detail (survivor) + list + ledger.
+  async function run(action: () => Promise<EntityDetail | { ok: boolean }>, keepId: number) {
+    if (busy) return;
+    setBusy(true); setErr("");
+    try {
+      const res = await action();
+      const detail = (res as EntityDetail).id ? (res as EntityDetail) : await getEntity(keepId);
+      setSel(detail);
+      listEntityDecisions(detail.id).then(setDecisions).catch(() => setDecisions([]));
+      refreshList();
+    } catch (e: any) {
+      setErr(e?.message || "That identity change didn’t go through.");
+    } finally { setBusy(false); }
+  }
+
+  // User-added alias decisions anchored to the selected entity (removable; heuristic a.k.a. aren't).
+  const userAliases = sel
+    ? decisions.filter((d) => d.kind === "alias" && d.norm_b === sel.normalized_key)
+    : [];
+  const decLabel = (d: EntityDecision) => {
+    if (d.kind === "merge") return `${d.display_a || d.norm_a} → ${d.display_b || d.canonical}`;
+    if (d.kind === "split") return `${d.display_a || d.norm_a} ∥ ${d.display_b || d.norm_b}`;
+    return `“${d.display_a || d.norm_a}” → ${d.norm_b}`;
+  };
 
   return (
     <div className="content">
@@ -72,18 +137,72 @@ export default function EntitiesPage() {
         </ul>
 
         {sel && (
-          <div style={{ flex: "1 1 320px" }}>
+          <div style={{ flex: "1 1 340px" }}>
             <h3 style={{ marginTop: 0 }}>{ICON[sel.type] || "•"} {sel.canonical_name}</h3>
             {!!sel.aliases?.length && <p className="muted" style={{ fontSize: 12, marginTop: -6 }}>a.k.a. {sel.aliases.join(", ")}</p>}
             {sel.article_title
               ? <p><Link to={`/note/${slugify(sel.article_title)}`} className="wikilink">📖 {leaf(sel.article_title)}</Link></p>
               : <p className="muted" style={{ fontSize: 13 }}>No KB article yet.</p>}
+
             <h4>Mentioned in {sel.notes.length} note{sel.notes.length === 1 ? "" : "s"}</h4>
             <ul style={{ paddingLeft: 18 }}>
-              {sel.notes.map((n) => (
-                <li key={n.id}><Link to={`/note/${n.slug}`}>{leaf(n.title)}</Link></li>
-              ))}
+              {sel.notes.map((n) => (<li key={n.id}><Link to={`/note/${n.slug}`}>{leaf(n.title)}</Link></li>))}
             </ul>
+
+            {/* ── Identity controls ── */}
+            <div className="card" style={{ marginTop: 12 }}>
+              <h4 style={{ marginTop: 0 }}>Identity</h4>
+              {err && <p style={{ color: "var(--danger,#e66)", fontSize: 13 }}>{err}</p>}
+
+              <label className="muted" style={{ fontSize: 12 }}>Add an alias (a nickname/variant that links here)</label>
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                <input className="modal-input" placeholder="e.g. Jeff Hopkins" value={aliasInput} disabled={busy}
+                       onChange={(e) => setAliasInput(e.target.value)}
+                       onKeyDown={(e) => { if (e.key === "Enter" && aliasInput.trim()) run(() => addEntityAlias(sel.id, aliasInput.trim()), sel.id); }}
+                       style={{ flex: 1 }} />
+                <button className="primary" disabled={busy || !aliasInput.trim()}
+                        onClick={() => { run(() => addEntityAlias(sel.id, aliasInput.trim()), sel.id); setAliasInput(""); }}>Add</button>
+              </div>
+              {userAliases.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  {userAliases.map((d) => (
+                    <span key={d.id} className="chip" style={{ marginRight: 6, display: "inline-flex", gap: 4, alignItems: "center" }}>
+                      {d.display_a || d.norm_a}
+                      <button className="ghost" style={{ padding: "0 4px" }} disabled={busy} title="Remove alias"
+                              onClick={() => run(() => removeEntityAlias(sel.id, d.norm_a), sel.id)}>✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 12 }}>
+                Fold a duplicate of this {sel.type} into it (it becomes the canonical page)
+              </label>
+              <EntityPicker label="Search the duplicate to merge in…" type={sel.type} excludeId={sel.id} disabled={busy}
+                            onPick={(e) => run(() => mergeEntities(e.id, sel.id), sel.id)} />
+
+              <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 12 }}>
+                Mark a different {sel.type} as NOT this one (block an accidental merge)
+              </label>
+              <EntityPicker label="Search the one to keep separate…" type={sel.type} excludeId={sel.id} disabled={busy}
+                            onPick={(e) => run(() => splitEntities(sel.id, e.id), sel.id)} />
+
+              {decisions.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <button className="ghost" style={{ fontSize: 12 }} onClick={() => setLedgerOpen((o) => !o)}>
+                    {ledgerOpen ? "▾" : "▸"} Identity decisions ({decisions.length})
+                  </button>
+                  {ledgerOpen && (
+                    <ul style={{ paddingLeft: 18, fontSize: 12 }} className="muted">
+                      {decisions.map((d) => <li key={d.id}>{d.kind}: {decLabel(d)}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <p className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+                These choices are durable — they survive every knowledge-base rebuild.
+              </p>
+            </div>
           </div>
         )}
       </div>

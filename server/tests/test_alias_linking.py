@@ -370,3 +370,28 @@ def test_build_write_prompt_injects_alias_offer_and_no_leftover_placeholder(conn
     prompt = wiki_build.build_write_prompt(conn, art, [], known_titles=["kb/People/Jeffrey Hopkins"])
     assert "{known_aliases}" not in prompt              # placeholder fully substituted
     assert '"Jeff Hopkins" → kb/People/Jeffrey Hopkins' in prompt
+
+
+# ---- G. search entity-expansion (owner chat) --------------------------------------------
+
+def test_hybrid_notes_entity_expand_reaches_alias_notes(conn):
+    from app.services import search
+    n1 = _mk(conn, "notes/2026/01/10", "had lunch downtown today", kind="entry")  # body has no "Jeff"
+    eid = _entity(conn, "Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    conn.execute("INSERT INTO entity_mentions (entity_id, note_id) VALUES (?,?)", (eid, n1["id"]))
+    conn.commit()
+    base = search.hybrid_notes(conn, "Jeff Hopkins", 8)                       # alias-blind
+    assert all(r["id"] != n1["id"] for r in base)
+    exp = search.hybrid_notes(conn, "Jeff Hopkins", 8, entity_expand=True)    # entity channel
+    assert any(r["id"] == n1["id"] for r in exp)
+
+
+def test_hybrid_notes_entity_expand_ignores_sentence_query(conn):
+    from app.services import search
+    n1 = _mk(conn, "notes/2026/01/11", "had lunch downtown today", kind="entry")
+    eid = _entity(conn, "Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    conn.execute("INSERT INTO entity_mentions (entity_id, note_id) VALUES (?,?)", (eid, n1["id"]))
+    conn.commit()
+    # The whole query isn't a bare name/alias → must NOT expand into the person's corpus.
+    exp = search.hybrid_notes(conn, "what did jeff hopkins eat", 8, entity_expand=True)
+    assert all(r["id"] != n1["id"] for r in exp)

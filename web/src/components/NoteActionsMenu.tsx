@@ -68,7 +68,7 @@ export default function NoteActionsMenu({ items, label = "Page actions" }: { ite
       <button ref={triggerRef} className={"icon-btn" + (open ? " active" : "")}
               aria-haspopup="menu" aria-expanded={open} aria-label={label}
               onClick={() => setOpen((o) => !o)}>
-        <Icon name="dots" size={20} />
+        <Icon name="dots" size={20} className="kebab-dots" />
       </button>
       {open && (
         <div className="note-menu" role="menu" aria-label={label} onKeyDown={onMenuKey}>

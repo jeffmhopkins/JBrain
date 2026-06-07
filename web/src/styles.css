@@ -311,6 +311,8 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .note-menu .mode-row.accent { --mc: var(--accent); }
 .note-menu .mode-row.danger { --mc: var(--danger); color: var(--danger); }
 .note-menu-sep { height: 1px; background: var(--border); margin: 5px 8px; }
+/* The kebab dots read as faint at the shared 1.7 stroke — fatten just these. */
+.icon.kebab-dots { stroke-width: 2.8; }
 
 .icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
 .icon-btn:hover { color: var(--text); }

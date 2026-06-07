@@ -360,11 +360,22 @@ export default function Chat() {
     } catch { alert("Couldn’t save that destination — please try again."); }
   }
 
-  // A vertical swipe in the left third of the composer (detected by the shell) carousels the
-  // mode — swipe up advances, swipe down reverses (direction arrives as event.detail ±1).
+  // A vertical swipe in the left third of the composer (detected by the shell) carousels whatever
+  // the row is showing: the Entry sub-types (Entry/Generic · Medical · Financial) when expanded,
+  // else the three modes. Swipe up advances, down reverses (direction arrives as event.detail ±1).
+  // Deps keep the closure's view of mode/subPicker fresh (re-subscribing is negligible).
   useEffect(() => {
     function cycle(e: Event) {
       const dir = (e as CustomEvent).detail === -1 ? -1 : 1;
+      if (mode === "entry" && subPicker) {
+        const keys = SUB_SEGS.map((s) => s.key);
+        setSub((s) => {
+          const next = keys[(keys.indexOf(s) + dir + keys.length) % keys.length];
+          localStorage.setItem("jbrain_entry_sub", next);
+          return next;
+        });
+        return;
+      }
       setMode((m) => {
         const i = MODES.findIndex((x) => x.key === m);
         const next = MODES[(i + dir + MODES.length) % MODES.length].key;
@@ -375,7 +386,7 @@ export default function Chat() {
     }
     window.addEventListener("jbrain:cyclemode", cycle);
     return () => window.removeEventListener("jbrain:cyclemode", cycle);
-  }, []);
+  }, [mode, subPicker]);
 
   // Swipe navigation lives on the shell body (vertical-only); pages don't wire touch handlers.
 

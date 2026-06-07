@@ -21,7 +21,7 @@ interface GuidedHist { id: number; name: string | null; goal: string; dispositio
 
 const leaf = (t: string | null) => (t || "").replace(/^(notes|kb|lists)\//i, "");
 const STATUS_CLR: Record<string, string> = {
-  accepted: "#4ade80", approved: "#4ade80", rejected: "var(--danger)", ended: "var(--danger)",
+  accepted: "#4ade80", approved: "#4ade80", saved: "#4ade80", rejected: "var(--danger)", ended: "var(--text-dim)",
   superseded: "var(--text-dim)", discarded: "var(--text-dim)", distress: "#fbbf24",
 };
 
@@ -333,10 +333,16 @@ export default function SharesPage() {
 
       <LabShareLinks links={labLinks} reload={load} />
 
-      {(history.length > 0 || guidedHistory.length > 0) && (
+      {(() => { const endedChats = chatLinks.filter((c) => c.status === "closed");
+        return (history.length > 0 || guidedHistory.length > 0 || endedChats.length > 0) && (
         <>
           <div className="adv-section">History</div>
           <div className="card share-hist">
+            {endedChats.map((c) => (
+              <HistRow key={"ch" + c.link_id} status={c.saved_note_slug ? "saved" : "ended"} slug={c.saved_note_slug}
+                       title={c.label || c.guest_name || "Encrypted chat"} meta={`chat · ${c.guest_name || "someone"}`}
+                       when={c.closed_at} appTz={appTz} />
+            ))}
             {guidedHistory.map((h) => (
               <HistRow key={"gh" + h.id} status={h.disposition} slug={h.note_slug}
                        title={leaf(h.goal || h.note_title)} meta={`guided · ${h.name || "someone"}`}
@@ -349,7 +355,7 @@ export default function SharesPage() {
             ))}
           </div>
         </>
-      )}
+      ); })()}
 
     </div>
   );

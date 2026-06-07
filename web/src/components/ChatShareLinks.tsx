@@ -57,9 +57,9 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
     finally { setBusy(false); }
   }
 
-  async function revoke(l: ChatLink) {
-    if (!confirm("Revoke this chat link? It stops working immediately.")) return;
-    try { await post(`/api/shares/${l.link_id}/revoke`); } catch { /* ignore */ }
+  async function endChat(l: ChatLink) {
+    if (!confirm("End this chat? It stops working for the recipient and moves to History. (Open it instead if you want the conversation saved to your brain.)")) return;
+    try { await post(`/api/shares/chat/${l.link_id}/close`); } catch { /* ignore */ }
     reload();
   }
 
@@ -123,14 +123,15 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
         </div>
       )}
 
-      {links.map((l) => {
+      {/* Active chats only — ended ones move to the Shares History section. */}
+      {links.filter((l) => l.status === "active").map((l) => {
         const waiting = !!l.last_guest_at && l.status === "active";
         const cached = storedLink(l.link_id);
         return (
           <div className="card" key={"chat" + l.link_id}>
             <div className="row">
               <strong>{l.label || l.guest_name || "Encrypted chat"}</strong>
-              <span className={"badge " + (l.status === "active" ? "prio" : "")}>{l.status === "active" ? "open" : "ended"}</span>
+              <span className="badge prio">{waiting ? "waiting" : "open"}</span>
               <span className="badge">{l.persist ? "history" : "ephemeral"}</span>
               {l.otp_required ? <span className="badge" title="Requires a one-time code">🔑 code</span> : null}
               {l.guest_name && <span className="badge">{l.guest_name}</span>}
@@ -141,11 +142,10 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
               <Link className="primary" to={`/shares/chat/${l.link_id}`} style={{ padding: "4px 10px", textDecoration: "none" }}>
                 {waiting ? "Join — waiting" : "Open chat"}
               </Link>
-              {cached && l.status === "active" && (
+              {cached && (
                 <button className="ghost" onClick={() => copy(cached, "l" + l.link_id)}>{copied === "l" + l.link_id ? "Copied" : "Copy link"}</button>
               )}
-              {l.saved_note_slug && <Link className="ghost" to={`/note/${l.saved_note_slug}`}>Saved note</Link>}
-              {l.status === "active" && <button className="ghost danger-hover" onClick={() => revoke(l)}>Revoke</button>}
+              <button className="ghost danger-hover" onClick={() => endChat(l)}>End</button>
             </div>
           </div>
         );

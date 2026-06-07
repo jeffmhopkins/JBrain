@@ -612,12 +612,20 @@ export async function streamChat(
   }
 }
 
-// --- Live page rebuild (KB-only) -------------------------------------------------
+// --- Live page rebuild (KB-only, two-stage: gather → curate → draft) -------------
+export interface RebuildCandidate {
+  note_id: number; title: string; date: string; reason: string;
+  on: boolean; private: boolean; added?: boolean;
+}
+export interface RebuildSkipped { note_id: number; title: string; date: string; reason: string; }
+
 // SSE events from the rebuild engine — same wire envelope as streamChat.
 export type RebuildEvent =
   | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string }
-  | { type: "sources"; items: { title: string }[] }
-  | { type: "thinking_delta"; text: string }
+  | { type: "tool_use"; tool: string; query?: string }                 // Stage 1: gather agent
+  | { type: "tool_result"; tool: string; summary: string; items?: string[] }
+  | { type: "sources_proposed"; candidates: RebuildCandidate[]; skipped: RebuildSkipped[] }
+  | { type: "thinking_delta"; text: string }                           // Stage 2: drafting
   | { type: "content_delta"; text: string }
   | { type: "lint"; ok: boolean; message: string }
   | { type: "done"; draft: string; truncated?: boolean;
@@ -665,11 +673,25 @@ function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => vo
   return { done, abort: () => ctrl.abort() };
 }
 
+// Stage 1: gather sources (streams the agent's tool use, ends with sources_proposed).
 export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
   streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}`, {}, onEvent);
 
+// Stage 1 again: find more sources for a hint, appended to the current set.
+export const regatherStream = (runId: string, hint: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/regather`, { hint }, onEvent);
+
+// Stage 2: draft the article from the curated source ids (streams thinking + body).
+export const draftStream = (runId: string, sourceIds: number[], onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/draft`, { source_ids: sourceIds }, onEvent);
+
 export const guideStream = (runId: string, text: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
   streamSSE(`/api/kb/rebuild/${runId}/guide`, { text }, onEvent);
+
+// Add-a-source picker on the curate screen (primary notes only).
+export const searchRebuildSources = (runId: string, q: string) =>
+  get<{ note_id: number; title: string; date: string }[]>(
+    `/api/kb/rebuild/${runId}/search?q=${encodeURIComponent(q)}`);
 
 export const acceptRebuild = (runId: string) =>
   post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`);

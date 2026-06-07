@@ -34,6 +34,8 @@ class RebuildRun:
     instructions: str | None = None
     messages: list[dict] = field(default_factory=list)   # verbatim provider blocks (opaque)
     known: list[str] = field(default_factory=list)       # cross-link candidates (allowed set)
+    candidates: list[dict] = field(default_factory=list)  # gathered sources: {note_id,title,date,reason,on,private,added}
+    skipped: list[dict] = field(default_factory=list)     # considered-but-skipped: {note_id,title,date,reason}
     draft: str = ""                         # the streamed/guided article body (staged, never live)
     thoughts: str = ""                      # accumulated extended-thinking text (owner-only)
     sources: list[dict] = field(default_factory=list)    # [{title}] the rebuild loaded

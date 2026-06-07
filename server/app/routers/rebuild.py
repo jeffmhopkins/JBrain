@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from ..auth import CurrentUser
 from ..db import get_conn
-from ..services import llm, rebuild_engine, rebuild_runs, wiki_build
+from ..services import llm, rebuild_engine, rebuild_runs, search, wiki_build
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/kb/rebuild", tags=["rebuild"], dependencies=[CurrentUser])
@@ -26,6 +26,14 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 class GuideIn(BaseModel):
     text: str
+
+
+class RegatherIn(BaseModel):
+    hint: str | None = None
+
+
+class DraftIn(BaseModel):
+    source_ids: list[int]
 
 
 def _sse(agen) -> StreamingResponse:
@@ -84,6 +92,7 @@ def _kb_note(conn, slug: str):
 
 @router.post("/start/{slug}")
 def start(slug: str):
+    """Stage 1: create a run and stream the gather agent's tool use → proposed sources."""
     conn = get_conn()
     note = _kb_note(conn, slug)
     title = note["title"]
@@ -92,7 +101,48 @@ def start(slug: str):
     async def gen():
         yield {"type": "run_started", "run_id": run.run_id, "slug": slug,
                "title": title, "base_rev": run.base_hash}
-        async for ev in rebuild_engine.run_rebuild(run):
+        async for ev in rebuild_engine.run_gather(run):
+            yield ev
+
+    return _sse(gen())
+
+
+def _live_run(run_id: str):
+    run = rebuild_runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
+    return run
+
+
+@router.post("/{run_id}/regather")
+def regather(run_id: str, body: RegatherIn):
+    """Stage 1 again, appending newly-found sources while keeping the user's current picks."""
+    run = _live_run(run_id)
+
+    async def gen():
+        async for ev in rebuild_engine.run_gather(run, hint=(body.hint or None), append=True):
+            yield ev
+
+    return _sse(gen())
+
+
+@router.get("/{run_id}/search")
+def search_add(run_id: str, q: str):
+    """Note search for the 'add a source' picker on the curate screen (primary notes only)."""
+    run = _live_run(run_id)
+    conn = get_conn()
+    hits = [h for h in search.hybrid_notes(conn, q, 8) if not h["title"].lower().startswith("kb/")]
+    meta = rebuild_engine._notes_meta(conn, [h["id"] for h in hits])
+    return [{"note_id": m["id"], "title": m["title"], "date": m["date"]} for m in meta]
+
+
+@router.post("/{run_id}/draft")
+def draft(run_id: str, body: DraftIn):
+    """Stage 2: write the article from the curated source ids."""
+    run = _live_run(run_id)
+
+    async def gen():
+        async for ev in rebuild_engine.run_draft(run, body.source_ids):
             yield ev
 
     return _sse(gen())

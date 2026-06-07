@@ -1435,13 +1435,14 @@ button.cal-pill { border: none; color: var(--text); }
 /* Secondary controls (Entry only) take their natural height; the textarea's min-height
    (the .sec-N rules below) grows to compensate so the box is the SAME height in every mode —
    no blank reserved band, the freed room becomes input area instead. */
-.composer-secondary { margin-bottom: 8px; }
+/* The dest picker is the only secondary row now. Pin its band to a known height (36 + 8 margin
+   = 44px) so the textarea compensation below is EXACT and Medical/Financial match the other modes. */
+.composer-secondary { height: 36px; overflow: hidden; margin-bottom: 8px; }
 .composer-secondary .med-dest-row { margin-bottom: 0; }
-/* Compensating textarea min-heights: 0 secondary rows (Research/Full) → tallest input;
-   1 row (Entry/Generic) → medium; 2 rows (Entry/Medical-Financial) → base. Keeps total constant. */
+/* Compensating textarea min-height so every mode is the SAME total height: no secondary band
+   (Generic/Research/Full) → +44px taller input; with the dest band (Medical/Financial) → base. */
 .composer-box.sec-0 textarea { min-height: 120px; }
 .composer-box.sec-1 textarea { min-height: 76px; }
-.composer-box.sec-2 textarea { min-height: 52px; }
 /* Action buttons are a right-aligned group with 44px tap targets; send is always rightmost. */
 .composer-row .icon-btn { min-width: 44px; min-height: 44px; padding: 0; align-items: center; justify-content: center; }
 /* Research "Deep" toggle ON — a SOLID filled bolt (matching the Advanced bolt), not a pill. */

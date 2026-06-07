@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Protocol, runtime_checkable
 
@@ -29,6 +30,27 @@ Message = dict[str, Any]
 # Cap how long a single LLM request can block (a hung provider must not freeze a
 # scheduled workflow / the request handling it).
 _LLM_TIMEOUT = 120.0
+
+# LLM SDK clients each own an httpx connection pool (persistent sockets / file descriptors)
+# and are designed to be long-lived and reused. Constructing a fresh one per call leaked FDs,
+# sockets, and memory under the single uvicorn worker — they were reclaimed only by nondeterministic
+# GC, so "a couple of research turns" (many calls each) climbed toward the open-FD ceiling and the
+# server stopped accepting connections. Cache one client per (provider, sync/async, credentials):
+# a credential change yields a new cache key and a fresh client; the old one is dropped. httpx
+# clients are safe to share across threads (sync) and across awaits on the single event loop (async).
+_client_lock = threading.Lock()
+_client_cache: dict[tuple, Any] = {}
+
+
+def _cached_client(key: tuple, factory):
+    cli = _client_cache.get(key)
+    if cli is None:
+        with _client_lock:
+            cli = _client_cache.get(key)
+            if cli is None:
+                cli = factory()
+                _client_cache[key] = cli
+    return cli
 
 
 @dataclass
@@ -126,6 +148,18 @@ class AnthropicProvider:
     def supports_tools(self) -> bool:
         return True
 
+    def _sync_client(self):
+        from anthropic import Anthropic
+        key = get_settings().llm_api_key
+        return _cached_client(("anthropic", "sync", key),
+                              lambda: Anthropic(api_key=key, timeout=_LLM_TIMEOUT))
+
+    def _async_client(self):
+        from anthropic import AsyncAnthropic
+        key = get_settings().llm_api_key
+        return _cached_client(("anthropic", "async", key),
+                              lambda: AsyncAnthropic(api_key=key, timeout=_LLM_TIMEOUT))
+
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
         text, _ = self.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
         return text
@@ -134,9 +168,7 @@ class AnthropicProvider:
         """Like complete(), but also returns the provider's finish reason. "max_tokens"
         means the body was cut off (the trailing ## References block is the first casualty)
         — batch writers use this to fail rather than save a half-written article."""
-        from anthropic import Anthropic
-
-        client = Anthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
+        client = self._sync_client()
         kwargs: dict = {"model": model or self.default_model(), "max_tokens": max_tokens, "messages": messages}
         if system:
             kwargs["system"] = system
@@ -151,9 +183,7 @@ class AnthropicProvider:
         (text, tool_calls, usage). The caller dispatches the calls and hands answers back
         via append_tool_results — the same loop shape as stream_turn, minus streaming.
         Used by the recipient labs assistant, which can't run the async stream."""
-        from anthropic import Anthropic
-
-        client = Anthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
+        client = self._sync_client()
         wire_tools = [
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}
             for t in tools
@@ -174,9 +204,7 @@ class AnthropicProvider:
         return text, calls, usage
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens, thinking=False):
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
+        client = self._async_client()
         wire_tools = [
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}
             for t in tools
@@ -242,7 +270,9 @@ class XAIProvider:
         from openai import AsyncOpenAI, OpenAI
         s = get_settings()
         cls = AsyncOpenAI if async_ else OpenAI
-        return cls(api_key=self._key(), base_url=s.xai_base_url, timeout=_LLM_TIMEOUT)
+        key, base = self._key(), s.xai_base_url
+        return _cached_client(("xai", "async" if async_ else "sync", key, base),
+                              lambda: cls(api_key=key, base_url=base, timeout=_LLM_TIMEOUT))
 
     def has_credentials(self) -> bool:
         return bool(self._key())

@@ -218,6 +218,7 @@ export default function Chat() {
   const bufRef = useRef("");            // full text received for the current turn
   const shownRef = useRef(0);           // chars revealed so far for the current turn
   const streamActiveRef = useRef(false); // true while SSE is still delivering tokens
+  const streamAbortRef = useRef<AbortController | null>(null); // aborts the in-flight chat stream on unmount/new turn
   // Set when the user left the app (tab/app backgrounded) or navigated away from chat and came
   // back — the next message then re-grounds from a fresh context instead of reusing stale answers.
   const freshCtxRef = useRef(false);
@@ -254,6 +255,8 @@ export default function Chat() {
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       _leftChatAt = Date.now();   // leaving chat → next return starts fresh
+      // Tear down any in-flight stream so its connection doesn't linger after we leave.
+      streamAbortRef.current?.abort();
     };
   }, []);
 
@@ -624,6 +627,9 @@ export default function Chat() {
       const msg = (text + extra).trim();
       const coords = await coordsP;   // resolved (or null) by now; bounded by GEO_MAX_WAIT
       const freshCtx = freshCtxRef.current; freshCtxRef.current = false;
+      streamAbortRef.current?.abort();   // never leave a prior turn's stream open under a new one
+      const streamCtrl = new AbortController();
+      streamAbortRef.current = streamCtrl;
       await streamChat(cid, msg, (ev) => {
         if (ev.type === "token") {
           if (ev.text) setStatus((s) => (s === "Responding…" ? s : "Responding…"));
@@ -660,7 +666,8 @@ export default function Chat() {
           bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
-      }, coords, mode === "full" ? "assisted" : "research", freshCtx, mode === "research" && deep);
+      }, coords, mode === "full" ? "assisted" : "research", freshCtx, mode === "research" && deep,
+         streamCtrl.signal);
       // Read the finished reply aloud when the top-bar toggle is on (Assisted + Research).
       if (speakable && !errored && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
@@ -687,6 +694,7 @@ export default function Chat() {
     } finally {
       streamActiveRef.current = false;
       activeAsstRef.current = null;
+      streamAbortRef.current = null;
       setStreaming(false);
       setStatus("");
       setUploadPct(null);

@@ -305,6 +305,9 @@
       <tr><td>3</td><td>Frontend 5→3 redesign + Entry sub-selector (one atomic typed change: <code>Mode</code> union, <code>PLACEHOLDER</code>, <code>speakable</code>, wire-mode expr, empty-state copy, <code>--m-*</code>/<code>.m-*</code> accents).</td><td>Backend already speaks the new vocabulary; normalizer covers stale storage.</td></tr>
       <tr><td>4</td><td>Cleanup after the PWA cache window drains: drop legacy aliases, purge orphaned <code>prompt_overrides</code>, finish docs.</td><td>Gated on telemetry, not a release count.</td></tr>
     </table>
+    <div class="callout ok"><span class="lab">implementation status</span>
+      <b>PR-1 + PR-2 landed</b> on this branch. PR-1: client mode <code>normalizeMode()</code> at the single read chokepoint + fresh-launch default → <b>Entry</b> (<span class="ref">web/src/pages/Chat.tsx</span>). PR-2: backend <code>normalize_mode()</code> fails <b>closed</b> to read-only <code>research</code> for any unknown wire string, with an alias map ready for the rename (<span class="ref">server/app/routers/chat.py</span>). No visible 5→3 redesign yet — that's PR-3, pending your review.
+    </div>
   </section>
 
   <!-- =================== BRAINSTORM + RED TEAMS =================== -->
@@ -340,9 +343,8 @@
     <h2>Decisions for you</h2>
     <p class="muted">The brainstorm resolved most things. These are genuine product calls where I have a recommendation but want your steer before implementation.</p>
 
-    <div class="decision"><div class="q">1. Surviving read-only mode — name &amp; depth</div>
-      <p class="muted">All teams agree the <b>strict, no-interpretation</b> posture should win as the default. Open: do we (a) keep it strictly shallow-but-broad, or (b) add an explicit per-turn "Deep analysis" opt-in inside Research for multi-step questions?</p>
-      <p><span class="rec">Recommendation:</span> Name it <b>Research</b>; keep strict posture; add a small "Deep" opt-in toggle later. Interpretation lives in Full Brain.</p>
+    <div class="decision"><div class="q">1. Read-only Research posture — ✓ DECIDED</div>
+      <p class="muted">Decided: <b>strict by default</b> (keep today's research prompt: facts-only, no clinical/financial interpretation) <b>plus a per-turn "Deep" opt-in</b> that raises the budget for multi-step questions. Deep interpretation otherwise lives in Full Brain. To implement in PR-3: surviving mode keeps the <code>research</code> prompt + a "deep" flag that lifts <code>max_iterations</code>/<code>max_total_tokens</code> toward analyze's ceiling on demand.</p>
     </div>
     <div class="decision"><div class="q">2. Default mode on launch — ✓ DECIDED</div>
       <p class="muted">Decided: <b>Entry on a fresh launch</b>; remember last-selected within a session; relaunch resets to Entry. Implementation: switch the fresh-launch fallback at <span class="ref">Chat.tsx:86</span> from <code>research</code> → <code>entry</code> (sessionStorage already handles in-session memory + relaunch reset).</p>
@@ -350,9 +352,8 @@
     <div class="decision"><div class="q">3. Sub-type scope — ✓ DECIDED</div>
       <p class="muted">Decided: <b>Folder-only</b> for all three. Medical retains lab-PDF staging; Financial is filing only (no form, no parsing). Structured capture / parsing deferred indefinitely.</p>
     </div>
-    <div class="decision"><div class="q">4. Should Full Brain gain the reference tools?</div>
-      <p class="muted">Adds <code>reference_lookup</code> (local) and optionally <code>medical_reference</code> (external, gated).</p>
-      <p><span class="rec">Recommendation:</span> Add local <code>reference_lookup</code> to Full Brain; keep <code>medical_reference</code> behind its existing approval gate; both stay out of read-only Research.</p>
+    <div class="decision"><div class="q">4. Reference tools in Full Brain — ✓ DECIDED</div>
+      <p class="muted">Decided: add <b>both</b> <code>reference_lookup</code> (local) and the approval-gated external <code>medical_reference</code> to Full Brain, and <b>port analyze's "never diagnose / label general knowledge" clauses into the assisted prompt</b> so the write-capable mode carries the same safety language. <code>medical_reference</code> stays behind its existing <code>PENDING_EXTERNAL</code> approval gate; neither is added to read-only Research. To implement in PR-3.</p>
     </div>
   </section>
 

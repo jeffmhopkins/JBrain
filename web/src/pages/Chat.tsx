@@ -62,6 +62,15 @@ const PLACEHOLDER: Record<Mode, string> = {
   research: "Ask your brain… (read-only)",
   analyze: "Ask an in-depth question… (read-only)",
 };
+// Modes a stored session value is allowed to resolve to. A blind cast of a stale or unknown
+// sessionStorage value would crash the composer (`MODES.find(...)!` → undefined → throw), so
+// every read of the persisted mode goes through normalizeMode() at the one chokepoint below.
+// Unknown / retired values fall back to the launch default rather than crashing.
+const VALID_MODES: Mode[] = MODES.map((m) => m.key);
+const DEFAULT_MODE: Mode = "entry";   // fresh launch lands on Entry (the most common quick action)
+function normalizeMode(raw: string | null): Mode {
+  return raw && (VALID_MODES as string[]).includes(raw) ? (raw as Mode) : DEFAULT_MODE;
+}
 // Friendly tool labels (the "Searching your notes…" status, and the per-reply tool-call
 // history) live in ../toolLabels so the streaming status and the history view never drift.
 
@@ -82,8 +91,9 @@ export default function Chat() {
   const ttsOn = useTtsEnabled();        // top-bar "read replies aloud" toggle
   const navigate = useNavigate();
   // Mode persists within a session (so navigating away from chat and back keeps it)
-  // but a fresh PWA launch starts a new session → empty → defaults to Research mode.
-  const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem("jbrain_mode") as Mode) || "research");
+  // but a fresh PWA launch starts a new session → empty → defaults to Entry mode.
+  // normalizeMode() also guards against a stale/retired persisted value crashing the composer.
+  const [mode, setMode] = useState<Mode>(() => normalizeMode(sessionStorage.getItem("jbrain_mode")));
   const [menuOpen, setMenuOpen] = useState(false);
   // Medical-mode destination picklist (notes/medical/<dest>/…), lazily loaded the first
   // time Medical mode is used; the chosen destination persists per device.

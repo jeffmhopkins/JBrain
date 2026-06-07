@@ -30,6 +30,25 @@ class MessageIn(BaseModel):
     fresh_context: bool = False
 
 
+# Canonical chat modes the architect understands. `mode` is request-scoped only — never
+# persisted (there is no `mode` column on conversations/messages), so the wire vocabulary
+# can evolve freely as long as both ends agree.
+_CANONICAL_MODES = ("assisted", "research", "analyze")
+# Legacy / forward-incompatible wire strings mapped to a canonical mode. The invariant:
+# read-only strings MUST map to a read-only mode and write strings to a write mode — never
+# cross the boundary. (Populated when a mode is retired, e.g. "analyze" -> "research".)
+_MODE_ALIASES: dict[str, str] = {}
+
+
+def normalize_mode(raw: str) -> str:
+    """Resolve a wire mode string to a canonical mode, failing CLOSED to read-only
+    'research' for anything unrecognized. A stale PWA or a forward-incompatible client
+    must never silently gain WRITE tools by sending a mode the server doesn't know."""
+    if raw in _CANONICAL_MODES:
+        return raw
+    return _MODE_ALIASES.get(raw, "research")
+
+
 @router.post("/conversations")
 def create_conversation():
     conn = get_conn()
@@ -108,7 +127,7 @@ def send_message(conversation_id: int, body: MessageIn):
         else None
     )
 
-    mode = body.mode if body.mode in ("assisted", "research", "analyze") else "assisted"
+    mode = normalize_mode(body.mode)
 
     async def event_stream():
         # Bridge the architect's async generator through a queue so we can interleave a

@@ -30,12 +30,17 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -
     if others error (e.g. embeddings unavailable).
 
     `entity_expand` (OWNER-CONTEXT ONLY — never a recipient/share path, which would leak
-    notes past their scope): when the WHOLE query resolves to a known entity OR one of its
-    ALIASES, blend that entity's mention notes into the fusion. This is what lets "Jeff"
-    reach notes filed under "Jeffrey" — the alias-blind FTS/vector halves can't. It is
-    deliberately whole-query (not span-detected), so a sentence query like "what did jeff
-    say about taxes" does NOT expand — only a bare name/alias does — which keeps it from
-    over-expanding common words into a person's whole corpus."""
+    notes past their scope): blend a resolved entity's mention notes into the fusion. Two
+    additive resolutions, both alias-aware so they reach notes the FTS/vector halves can't:
+      • WHOLE-QUERY: the entire query resolves to a known entity OR alias ("Jeff" → notes
+        filed under "Jeffrey").
+      • SPAN (entity_index.span_entity_note_ids): a known NAME mentioned INSIDE a sentence
+        ("what did jeff hopkins say about taxes" → that person's notes). Fires only on the
+        SAFE surface set — real entity keys, multi-token aliases, or user-decided single
+        names — and never on an ambiguous term, so common words / bare heuristic first names
+        do NOT expand into a corpus.
+    Both share the ambiguity guard and the same modest fixed-rank bump (surfaces a note but
+    can't dominate a genuine FTS/vector hit), and a no-name sentence expands nothing."""
     q = (q or "").strip()
     if not q:
         return []
@@ -95,6 +100,16 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -
             qn = entity_index.normalize(q)
             ambiguous = {str(t.get("term", "")).lower() for t in entity_index.ambiguous_terms(conn)}
             ids = [] if (not qn or qn in ambiguous) else entity_index.note_ids_for_name(conn, q)
+            # Span detection (strictly additive, same owner-only gate): also reach notes for a
+            # KNOWN name MENTIONED INSIDE a sentence query — "what did jeff hopkins say about
+            # taxes" → notes filed under "Jeffrey" — which the whole-query test above can't. It
+            # only fires on the safe surface set (real keys / multi-token or user-decided
+            # aliases, ambiguous dropped), so common words and bare heuristic first names don't
+            # expand. Union with the whole-query ids; bump() dedups so no note is double-counted.
+            # Thread the already-computed `ambiguous` set in so it isn't recomputed inside.
+            span_ids = entity_index.span_entity_note_ids(conn, q, ambiguous=ambiguous)
+            seen = set(ids)
+            ids = ids + [i for i in span_ids if not (i in seen or seen.add(i))]
             if ids:
                 qmarks = ",".join("?" * len(ids))
                 rows = conn.execute(

@@ -5,6 +5,7 @@ import { get, guidedAccept, guidedAcknowledge, guidedActivate, guidedDeleteSessi
 import ShareOptions from "../components/ShareOptions";
 import ResearchLinks from "../components/ResearchLinks";
 import LabShareLinks from "../components/LabShareLinks";
+import ChatShareLinks, { ChatLink } from "../components/ChatShareLinks";
 import ConversationView from "../components/ConversationView";
 import MarkdownDiff from "../components/MarkdownDiff";
 import { useAuth } from "../App";
@@ -35,6 +36,7 @@ export default function SharesPage() {
   const [guidedHistory, setGuidedHistory] = useState<GuidedHist[]>([]);
   const [researchLinks, setResearchLinks] = useState<any[]>([]);
   const [labLinks, setLabLinks] = useState<any[]>([]);
+  const [chatLinks, setChatLinks] = useState<ChatLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [openPrompt, setOpenPrompt] = useState<number | null>(null);
@@ -50,6 +52,7 @@ export default function SharesPage() {
       setGuidedEnded(r.guided_ended || []); setGuidedHistory(r.guided_history || []);
       setResearchLinks(r.research_links || []);
       setLabLinks(r.lab_links || []);
+      setChatLinks(r.chat_links || []);
     } catch { /* ignore */ }
     setLoading(false);
   }
@@ -323,6 +326,8 @@ export default function SharesPage() {
           </div>
         </div>
       ))}
+
+      <ChatShareLinks links={chatLinks} reload={load} />
 
       <ResearchLinks links={researchLinks} reload={load} />
 

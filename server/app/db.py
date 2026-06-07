@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 52
 
 
 def init_db() -> None:
@@ -757,6 +757,13 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         if _table_exists(conn, "workflows"):
             conn.execute("UPDATE workflows SET enabled=0 WHERE key='calendar-reminders'")
 
+    if current < 52:
+        # Encrypted share-link chat (kind='chat'): a real-time, end-to-end-encrypted 1:1
+        # channel between the owner and a recipient. The server is a BLIND RELAY — it stores
+        # only opaque ciphertext + the two wrapped copies of the channel key (it can derive
+        # neither). schema.sql carries the identical block for fresh DBs.
+        conn.executescript(_CHAT_SCHEMA_SQL)
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -952,6 +959,52 @@ CREATE VIEW IF NOT EXISTS v_encounter_timeline AS
   UNION ALL
   SELECT encounter_id, authored_at, 'document', COALESCE(title, doc_type), doc_type, note_id
     FROM clinical_documents WHERE authored_at IS NOT NULL;
+"""
+
+
+# Encrypted-chat schema, factored out so the migration (existing DBs) and schema.sql
+# (fresh DBs) stay in lockstep — keep this identical to the "Encrypted chat" section of
+# schema.sql. The server NEVER holds the channel key: owner_wrap/guest_wrap are the key
+# sealed under secrets only the owner's devices (access key) / the recipient (link fragment
+# [+ OTP]) hold, and message/file bodies are opaque AES-GCM ciphertext.
+_CHAT_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS chat_channels (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  persist       INTEGER NOT NULL DEFAULT 1,      -- 1 = keep the encrypted backlog; 0 = ephemeral (relay only)
+  otp_required  INTEGER NOT NULL DEFAULT 0,      -- 1 = recipient must enter an out-of-band code (mixed into key derivation; NEVER stored)
+  owner_wrap    TEXT NOT NULL,                   -- channel key sealed under a key derived from the access key {salt,iv,ct}
+  guest_wrap    TEXT NOT NULL,                   -- channel key sealed under the link-fragment secret [+ OTP] {salt,iv,ct}
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
+  saved_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,   -- set when the transcript is committed to the brain
+  guest_name    TEXT,                            -- display name the recipient gave on joining
+  last_guest_at TEXT,
+  last_owner_at TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channels_link ON chat_channels(share_link_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,               -- monotonic per channel (ordering + resume)
+  sender        TEXT NOT NULL CHECK (sender IN ('owner','guest')),
+  iv            TEXT NOT NULL,                  -- base64 AES-GCM nonce
+  ciphertext    TEXT NOT NULL,                  -- base64 AES-GCM ciphertext (opaque to the server)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_link_seq ON chat_messages(share_link_id, seq);
+
+CREATE TABLE IF NOT EXISTS chat_files (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  iv            TEXT NOT NULL,                  -- base64 AES-GCM nonce
+  blob          BLOB NOT NULL,                  -- AES-GCM ciphertext of the file bytes (opaque; filename/mime live in the encrypted message)
+  byte_size     INTEGER NOT NULL,              -- ciphertext size (for caps + UI)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_files_link ON chat_files(share_link_id);
 """
 
 

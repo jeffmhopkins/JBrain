@@ -4,16 +4,19 @@ Every handler resolves the token to exactly one note via share_svc.resolve_activ
 and exposes only that note. There is no note id/slug parameter anywhere here, so a
 token can never reach another note. Keep this file small and auditable.
 """
+import asyncio
 import hmac
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from ..db import get_conn
 from ..services import attachments as att_svc
+from ..services import chat_relay
+from ..services import chat_share as chat_svc
 from ..services import guided as guided_svc
 from ..services import lab_share_scope
 from ..services import labshare as labshare_svc
@@ -114,6 +117,8 @@ def share_read(token: str, request: Request):
         return _research_landing(conn, link)   # NEVER returns note content
     if link["kind"] == "labs":
         return _labs_landing(conn, link)       # consent only; charts/series need a started session
+    if link["kind"] == "chat":
+        return _chat_landing(conn, link, request)   # E2EE channel; key material rides the URL fragment
     st = _bind_status(link, request)
     if st == "locked":
         raise HTTPException(status_code=403, detail="This link is locked to the browser that accepted it.")
@@ -517,3 +522,150 @@ def share_propose(token: str, body: ProposeIn, request: Request):
     from ..services import push
     push.notify_review_created("JBrain", "New edit proposal to review")
     return {"ok": True, **r}
+
+
+# --- Encrypted chat (kind='chat') -------------------------------------------
+# A real-time, end-to-end-encrypted 1:1 channel with the owner. Every message/file body
+# is opaque ciphertext to the server (the key rides the URL fragment, never sent here).
+# The link is browser-bound (1:1): the first recipient to JOIN claims it.
+
+_KEEPALIVE_SECONDS = 15.0
+
+
+def _chat_landing(conn, link, request: Request) -> dict:
+    ch = chat_svc.get_channel(conn, link["id"])
+    if ch is None or ch["status"] != "active":
+        raise HTTPException(status_code=404, detail="This link isn't available.")
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This chat is already open in another browser.")
+    base = {"kind": "chat", "brain_name": get_settings().brain_name,
+            "otp_required": bool(ch["otp_required"]), "persist": bool(ch["persist"])}
+    if st == "unclaimed":
+        return {**base, "requires_claim": True}
+    # Already bound to THIS browser → hand back the material to resume the session.
+    return {**base, "requires_claim": False, "guest_wrap": ch["guest_wrap"], "guest_name": ch["guest_name"]}
+
+
+def _resolve_chat(conn, request: Request, token: str):
+    link = _resolve_or_404(conn, request, token)
+    if link["kind"] != "chat":
+        raise HTTPException(status_code=404, detail="Not found.")
+    ch = chat_svc.get_channel(conn, link["id"])
+    if ch is None or ch["status"] != "active":
+        raise HTTPException(status_code=409, detail="This chat has ended.")
+    return link, ch
+
+
+class ChatJoinIn(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+
+
+@router.post("/{token}/chat/join")
+def chat_join(token: str, body: ChatJoinIn, request: Request, response: Response):
+    """Claim the (1:1) chat link to THIS browser and return the wrapped key so the
+    recipient can derive the channel key from the URL fragment [+ OTP] client-side."""
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, ch = _resolve_chat(conn, request, token)
+    st = _bind_status(link, request)
+    if st == "locked":
+        raise HTTPException(status_code=403, detail="This chat is already open in another browser.")
+    name = (body.name or "").strip()[:80] or None
+    if st == "unclaimed":
+        secret = share_svc.mint_token()
+        cur = conn.execute(
+            "UPDATE share_links SET bind_secret=?, bound_at=datetime('now'), bound_name=? "
+            "WHERE id=? AND bind_secret IS NULL", (secret, name, link["id"]))
+        if cur.rowcount != 1:                         # another browser joined in the race
+            conn.rollback()
+            raise HTTPException(status_code=403, detail="This chat was just opened on another browser.")
+        conn.execute("UPDATE chat_channels SET guest_name=? WHERE share_link_id=?", (name, link["id"]))
+        conn.commit()
+        _bind_cookie(response, token, link["id"], secret)
+    elif name and not ch["guest_name"]:
+        conn.execute("UPDATE chat_channels SET guest_name=? WHERE share_link_id=?", (name, link["id"]))
+        conn.commit()
+    return {"guest_wrap": ch["guest_wrap"], "persist": bool(ch["persist"]),
+            "guest_name": name or ch["guest_name"], "status": "active"}
+
+
+@router.get("/{token}/chat/stream")
+async def chat_stream(token: str, request: Request, after: int = 0):
+    """Recipient SSE: replay the (persisted) backlog after `after`, then live messages +
+    presence. Cookie-bound to the browser that joined."""
+    conn = get_conn()
+    link, ch = _resolve_chat(conn, request, token)
+    _require_access(link, request)
+    link_id = link["id"]
+    persist = bool(ch["persist"])
+
+    async def gen():
+        hub, sub = await chat_relay.subscribe(link_id, "guest")
+        chat_svc.handle_presence(conn, link_id)
+        try:
+            if persist:
+                for ev in chat_svc.backlog(conn, link_id, after):
+                    yield chat_svc.sse(ev)
+            owner_p, guest_p = chat_relay.present(link_id)
+            yield chat_svc.sse({"type": "presence", "owner": owner_p, "guest": guest_p})
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    ev = await asyncio.wait_for(sub.queue.get(), timeout=_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield chat_svc.sse(ev)
+                if ev.get("type") == "closed":
+                    break
+        finally:
+            chat_relay.unsubscribe(hub, sub)
+            chat_svc.handle_presence(conn, link_id)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class ChatSendIn(BaseModel):
+    iv: str = Field(max_length=64)
+    ct: str = Field(max_length=700_000)
+
+
+@router.post("/{token}/chat/send")
+def chat_send(token: str, body: ChatSendIn, request: Request):
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, _ = _resolve_chat(conn, request, token)
+    _require_access(link, request)
+    ev = chat_svc.append_message(conn, link["id"], "guest", body.iv, body.ct)
+    return {"ok": True, "seq": ev["seq"]}
+
+
+@router.post("/{token}/chat/file")
+def chat_file_upload(token: str, request: Request, iv: str = Form(...), file: UploadFile = File(...)):
+    """Upload one ENCRYPTED file blob. The sender then references its id inside an encrypted
+    message, so the filename/mime never reach the server."""
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+    conn = get_conn()
+    link, _ = _resolve_chat(conn, request, token)
+    _require_access(link, request)
+    blob = file.file.read()
+    fid = chat_svc.store_file(conn, link["id"], iv[:64], blob)
+    return {"ok": True, "file_id": fid}
+
+
+@router.get("/{token}/chat/file/{file_id}")
+def chat_file_download(token: str, file_id: int, request: Request):
+    conn = get_conn()
+    link, _ = _resolve_chat(conn, request, token)
+    _require_access(link, request)
+    row = chat_svc.get_file(conn, link["id"], file_id)
+    return Response(
+        content=bytes(row["blob"]), media_type="application/octet-stream",
+        headers={"X-Chat-IV": row["iv"], "Cache-Control": "no-store",
+                 "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})

@@ -1,13 +1,17 @@
 """Owner-side (AUTHENTICATED) share-link management: mint, list, revoke, and
 accept/reject the edit proposals that arrive via public EDIT links."""
+import asyncio
 import hashlib
 import json
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser
 from ..db import get_conn
+from ..services import chat_relay
+from ..services import chat_share as chat_svc
 from ..services import labshare as labshare_svc
 from ..services import notes as notes_svc
 from ..services import research as research_svc
@@ -15,6 +19,8 @@ from ..services import share as share_svc
 from .staging import _apply_action
 
 router = APIRouter(prefix="/api/shares", tags=["shares"], dependencies=[CurrentUser])
+
+_KEEPALIVE_SECONDS = 15.0
 
 
 def _set_link_expiry(conn, link_id: int, ttl_days: int) -> None:
@@ -158,6 +164,7 @@ def list_shares():
         return d
 
     return {
+        "chat_links": chat_svc.list_channels(conn),
         "lab_links": [_ll(r) for r in lab_links],
         "research_links": [_rl(r) for r in research_links],
         "links": [{**dict(r), "url": share_svc.share_url(r["token"])} for r in links],
@@ -614,6 +621,124 @@ def research_activate(link_id: int):
     research_svc.activate_spec(conn, link_id)
     conn.commit()
     return {"ok": True}
+
+
+# --- Encrypted chat (kind='chat') — owner side --------------------------------
+# The channel key is sealed client-side; the owner's device unseals owner_wrap with a key
+# derived from the access key. The server only relays + persists opaque ciphertext.
+
+class ChatCreateIn(BaseModel):
+    owner_wrap: str = Field(max_length=4000)     # channel key sealed under the access-key KEK {salt,iv,ct}
+    guest_wrap: str = Field(max_length=4000)     # channel key sealed under the link-fragment secret [+ OTP]
+    persist: bool = True
+    otp_required: bool = False
+    label: str | None = Field(default=None, max_length=80)
+    ttl_days: int | None = None
+    single_use: bool = False
+
+
+@router.post("/chat")
+def chat_create(body: ChatCreateIn):
+    """Mint an encrypted-chat link + its channel. Returns the token (the client appends the
+    secret fragment locally) so the raw key never transits the server."""
+    conn = get_conn()
+    token, link_id = chat_svc.create_channel(
+        conn, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap,
+        persist=body.persist, otp_required=body.otp_required,
+        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, single_use=body.single_use)
+    conn.commit()
+    return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
+
+
+@router.get("/chat/{link_id}")
+def chat_detail(link_id: int):
+    return chat_svc.owner_detail(get_conn(), link_id)
+
+
+@router.get("/chat/{link_id}/stream")
+async def chat_owner_stream(link_id: int, after: int = 0):
+    """Owner SSE: replay the (persisted) backlog after `after`, then live messages + presence."""
+    conn = get_conn()
+    ch = chat_svc.get_channel(conn, link_id)
+    if ch is None:
+        raise HTTPException(status_code=404, detail="Chat not found.")
+    persist = bool(ch["persist"])
+
+    async def gen():
+        hub, sub = await chat_relay.subscribe(link_id, "owner")
+        chat_svc.handle_presence(conn, link_id)
+        try:
+            if persist:
+                for ev in chat_svc.backlog(conn, link_id, after):
+                    yield chat_svc.sse(ev)
+            owner_p, guest_p = chat_relay.present(link_id)
+            yield chat_svc.sse({"type": "presence", "owner": owner_p, "guest": guest_p})
+            if ch["status"] == "closed":
+                yield chat_svc.sse({"type": "closed"})
+                return
+            while True:
+                try:
+                    ev = await asyncio.wait_for(sub.queue.get(), timeout=_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield chat_svc.sse(ev)
+                if ev.get("type") == "closed":
+                    break
+        finally:
+            chat_relay.unsubscribe(hub, sub)
+            chat_svc.handle_presence(conn, link_id)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class ChatSendIn(BaseModel):
+    iv: str = Field(max_length=64)
+    ct: str = Field(max_length=700_000)
+
+
+@router.post("/chat/{link_id}/send")
+def chat_owner_send(link_id: int, body: ChatSendIn):
+    ev = chat_svc.append_message(get_conn(), link_id, "owner", body.iv, body.ct)
+    return {"ok": True, "seq": ev["seq"]}
+
+
+@router.post("/chat/{link_id}/file")
+def chat_owner_file(link_id: int, iv: str = Form(...), file: UploadFile = File(...)):
+    fid = chat_svc.store_file(get_conn(), link_id, iv[:64], file.file.read())
+    return {"ok": True, "file_id": fid}
+
+
+@router.get("/chat/{link_id}/file/{file_id}")
+def chat_owner_file_download(link_id: int, file_id: int):
+    row = chat_svc.get_file(get_conn(), link_id, file_id)
+    return Response(content=bytes(row["blob"]), media_type="application/octet-stream",
+                    headers={"X-Chat-IV": row["iv"], "Cache-Control": "no-store"})
+
+
+@router.post("/chat/{link_id}/close")
+def chat_close(link_id: int):
+    chat_svc.close_channel(get_conn(), link_id)
+    return {"ok": True}
+
+
+class ChatSaveIn(BaseModel):
+    transcript_md: str = Field(max_length=2_000_000)
+    title: str | None = Field(default=None, max_length=120)
+    guest_name: str | None = Field(default=None, max_length=80)
+    # Each attachment is {name, mime, data} where data is base64 of the DECRYPTED bytes.
+    attachments: list[dict] = []
+
+
+@router.post("/chat/{link_id}/save")
+def chat_save(link_id: int, body: ChatSaveIn):
+    """Commit the owner's client-decrypted transcript into the brain (auto-save on close).
+    Idempotent per channel."""
+    conn = get_conn()
+    out = chat_svc.save_to_brain(conn, link_id, transcript_md=body.transcript_md, title=body.title,
+                                 attachments=body.attachments, guest_name=body.guest_name)
+    return {"ok": True, **out}
 
 
 @router.post("/{link_id}/revoke")

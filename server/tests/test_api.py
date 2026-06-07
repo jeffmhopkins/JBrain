@@ -34,6 +34,13 @@ def client(monkeypatch):
     monkeypatch.setattr(embeddings, "upsert_attachment_embeddings", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "delete_attachment_embeddings", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "semantic_search_attachments", lambda *a, **k: [])
+    # The image/audio workers now embed via the split helpers (embed_attachment_chunks +
+    # write_attachment_embeddings), bypassing the upsert stub above; stub those too — and
+    # embed_many defensively — so no test loads the real fastembed model.
+    monkeypatch.setattr(embeddings, "embed_attachment_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(embeddings, "write_attachment_embeddings", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "embed_many",
+                        lambda ts: [[0.0] * embeddings.EMBEDDING_DIM for _ in ts])
 
     import app.db as db
     db._initialized = False
@@ -5108,6 +5115,15 @@ def test_image_summary_block_helpers_are_idempotent_and_id_scoped():
 def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
     from app.db import get_conn
     from app.services import image_analysis as ia, llm
+    conn = get_conn()
+
+    def _mark_pending(att_id):
+        # The worker only writes a row it owns (status 'pending') — in production start_analysis
+        # sets that (and force=True resets a 'done' row to pending for a re-run). This test drives
+        # analyze() directly, so simulate that pending hand-off before each run.
+        conn.execute("UPDATE attachments SET analysis_status = 'pending' WHERE id = ?", (att_id,))
+        conn.commit()
+
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     calls = {"n": 0}
     def fake_complete(messages, **kw):
@@ -5124,6 +5140,7 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
                       data={"analyze": "false"},
                       files={"file": ("pic.png", _png_bytes(), "image/png")}).json()
 
+    _mark_pending(att["id"])
     ia.analyze(att["id"])   # run worker synchronously (own-thread codepath, same conn in tests)
 
     # The summary lands on the attachment sidecar, NOT the note body (which is left clean).
@@ -5136,6 +5153,7 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
     assert status["status"] == "done"
 
     # Re-run replaces the summary rather than stacking it (and never touches the body).
+    _mark_pending(att["id"])
     ia.analyze(att["id"])
     atts2 = client.get("/api/notes/photo-host/attachments").json()
     assert "A solid square (call 2)" in atts2[0]["analysis_md"] and "call 1" not in atts2[0]["analysis_md"]
@@ -5208,11 +5226,34 @@ def test_image_analysis_non_image_and_unsupported(client, monkeypatch):
 
 
 def _inline_threads(monkeypatch, ia):
-    """Run the analysis worker inline (no real thread) for deterministic tests."""
+    """Run the analysis/transcription worker inline (no real thread) for deterministic tests.
+    This patches the shared threading.Thread, so it MUST delegate everything that isn't the
+    analysis worker — notably asyncio's default ThreadPoolExecutor workers, which the upload
+    route now uses via asyncio.to_thread — to a genuine Thread, or the executor deadlocks."""
+    real_thread = ia.threading.Thread
+
     class _Inline:
-        def __init__(self, target, args=(), daemon=None): self._t, self._a = target, args
-        def start(self): self._t(*self._a)
+        def __init__(self, *a, target=None, args=(), **kw):
+            self._target, self._args, self._real = target, args, None
+            # Only the analysis/transcription worker runs inline; anything else gets a real thread.
+            if getattr(target, "__name__", "") not in ("analyze", "transcribe"):
+                self._real = real_thread(*a, target=target, args=args, **kw)
+
+        def start(self):
+            if self._real is not None:
+                self._real.start()
+            else:
+                self._target(*self._args)
+
+        def join(self, *a, **k):
+            if self._real is not None:
+                self._real.join(*a, **k)
+
     monkeypatch.setattr(ia.threading, "Thread", _Inline)
+    # The worker's note-analysis fold-back now defers to a per-note coalescing thread; run it
+    # inline too so the deterministic tests don't spawn a background fold thread that outlives them.
+    from app.services import note_analysis as _na
+    monkeypatch.setattr(_na, "fold_run_inline", True)
 
 
 def test_image_upload_auto_analyzes_by_default(client, monkeypatch):
@@ -7262,6 +7303,7 @@ def test_transcription_completion_refreshes_note_analysis(client, monkeypatch):
     from app.db import get_conn
     from app.services import audio_transcription as at, note_analysis as na, llm
     conn = get_conn()
+    monkeypatch.setattr(na, "fold_run_inline", True)   # run the coalesced fold-back synchronously
     _enable_auto_analyze(client)   # the transcript→note-analysis fold-in is gated by the master switch
     note = client.post("/api/notes/entry", json={"text": "memo", "title": "Memo"}).json()
     nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]

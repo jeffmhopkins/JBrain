@@ -206,9 +206,11 @@ def _transcribe(raw: bytes) -> str:
 # --- Status + worker (writes the same analysis_* columns image analysis uses) ---
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
+    # Mirrors image_analysis._set_status: stamp analyzed_at on 'pending' too, so the shared
+    # stale-pending watchdog has a precise "analysis started at" clock for transcription too.
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
         "ELSE analyzed_at END WHERE id = ?",
         (status, detail, status, att_id),
     )
@@ -262,16 +264,32 @@ def transcribe(att_id: int) -> None:
             body = f"**Visual summary**\n\n{visual}\n\n**Transcript**\n\n{text or '_(no speech detected)_'}"
         else:
             body = text or "(No speech detected.)"
-        # Pre-compute chunk vectors outside the write path so the embed compute doesn't
-        # hold a write lock; upsert_attachment_embeddings then just (re)writes the rows.
+        # Embed the transcript BEFORE the first write opens the implicit write txn below. The embed
+        # is multi-second fastembed inference; running it between the UPDATE and the commit would
+        # hold the single WAL write lock across it and wedge every other writer within busy_timeout
+        # (5s) — including the owner chat persisting its turn on the event loop. (The prior comment
+        # here claimed this was already done, but only chunk_text was outside the lock — embed_many,
+        # the slow part, still ran under it.) A failure is best-effort: commit the transcript anyway
+        # with empty vectors; reindex_missing_attachment_analysis backfills them on next boot.
         from . import attachments as att_svc
         from . import embeddings
         chunks = att_svc.chunk_text(searchable)
+        try:
+            vectors = embeddings.embed_attachment_chunks(chunks)
+        except Exception:  # noqa: BLE001 — embed is best-effort; the transcript + FTS still land below
+            chunks, vectors = [], []
 
+        # Take the write lock now so the re-read + writes are one atomic unit (audio previously
+        # used an implicit txn). The slow embed already ran above, outside the lock.
+        conn.execute("BEGIN IMMEDIATE")
         att = conn.execute(
-            "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
+            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if not att:  # deleted mid-transcription
+        # Abandon if the row is gone or already TERMINAL ('error' from a watchdog reap, or 'done'
+        # from another worker) — never resurrect a terminal status. Atomic against the watchdog
+        # (which only flips rows WHERE status='pending'), so exactly one terminal status survives.
+        if not att or att["analysis_status"] in ("error", "done"):
+            conn.rollback()
             return
         # Transcript (+ any visual summary) IS the searchable content: store it as content_text,
         # the FTS body, and chunk embeddings, plus the human-readable sidecar (body).
@@ -280,19 +298,19 @@ def transcribe(att_id: int) -> None:
             (body, searchable, att_id),
         )
         att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], searchable)
-        embeddings.upsert_attachment_embeddings(conn, att_id, att["note_id"], chunks)
+        embeddings.write_attachment_embeddings(conn, att_id, att["note_id"], chunks, vectors)
         _set_status(conn, att_id, "done")
         conn.commit()
         # The transcript changes the note's analyzable content — refresh its AI analysis so the
-        # gist/facts/entities reflect what was said. Gated by the "auto-analyze new notes" toggle
-        # (parity with the image-vision path) so a manual transcribe with the feature off enriches
-        # the panel without spending a note-analysis call. Best-effort; no-ops without an LLM key.
+        # gist/facts/entities reflect what was said. DEFER to the per-note coalescing worker
+        # (parity with the image-vision path) so a mixed image+audio note collapses to ~one run
+        # that includes both the summaries and the transcript. Gated + hash-guarded inside
+        # request_fold; best-effort, AFTER the transcript commit so a fold-back hiccup never loses it.
         if att["note_id"] is not None:
             try:
                 from . import note_analysis
-                if note_analysis.auto_enabled(conn) and note_analysis.analyze(conn, att["note_id"]):
-                    conn.commit()
-            except Exception:  # noqa: BLE001 — analysis is a bonus; never fail the transcript on it
+                note_analysis.request_fold(conn, att["note_id"])
+            except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the transcript on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
         try:
@@ -318,8 +336,8 @@ def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
         return {"status": "error", "detail": "Attachment not found."}
     if not is_transcribable(row["mime"], row["filename"]):
         return {"status": "error", "detail": "Not an audio or video file."}
-    if row["analysis_status"] == "pending":
-        return {"status": "pending"}
+    if row["analysis_status"] == "pending" and not force:
+        return {"status": "pending"}      # in-flight; force lets an owner restart a wedged one
     if row["analysis_status"] == "done" and not force:
         return {"status": "done"}
 

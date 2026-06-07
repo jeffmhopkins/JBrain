@@ -90,6 +90,17 @@ async def _scheduler_loop():
             await asyncio.to_thread(lambda: entity_rebuild.reset_on_boot(get_conn()))
         except Exception:  # noqa: BLE001
             pass
+        try:
+            # Watchdog: fail any image/audio analysis stuck 'pending' past the threshold — a worker
+            # that hung without raising (e.g. a wedged model load) — so it becomes retryable instead
+            # of a permanent spinner. The boot reset_stale (lifespan) only catches a prior process's
+            # rows; this recovers ones orphaned WITHIN this long-lived process. Runs off the loop.
+            from .services import image_analysis
+            await asyncio.to_thread(
+                lambda: image_analysis.reset_stale(
+                    get_conn(), older_than_seconds=image_analysis.STALE_PENDING_SECONDS))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @asynccontextmanager

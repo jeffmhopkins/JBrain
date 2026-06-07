@@ -227,9 +227,13 @@ def vision_summary_frames(frames: list[bytes], filename: str = "") -> str:
 # --- Status + worker --------------------------------------------------------
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
+    # analyzed_at is stamped on EVERY status transition, incl. 'pending' — for a pending row it is
+    # the "analysis started at" clock the stale-pending watchdog (reset_stale) measures from; for
+    # done/error it is the completion time. (Without stamping pending, a re-analyze of an old
+    # attachment would carry a stale done-era timestamp and be reaped instantly.)
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
         "ELSE analyzed_at END WHERE id = ?",
         (status, detail, status, att_id),
     )
@@ -277,35 +281,56 @@ def analyze(att_id: int) -> None:
             _mark_error(conn, att_id, str(exc))
             return
 
+        # Embed the summary BEFORE opening the write txn. embed_attachment_chunks() is multi-second
+        # fastembed inference (and may trigger the one-time model load on a cold start); holding the
+        # BEGIN IMMEDIATE write lock across it would wedge every other writer within the 5s
+        # busy_timeout — including the owner chat persisting its turn on the event loop, the actual
+        # "all AI went unresponsive" failure. A failure here must NOT lose the summary: we fall
+        # through with empty vectors and commit the summary anyway; the startup
+        # reindex_missing_attachment_analysis backfill fills the missing vectors later.
+        from . import attachments as att_svc, embeddings
+        chunks = att_svc.chunk_text(body)
+        try:
+            vectors = embeddings.embed_attachment_chunks(chunks)
+        except Exception:  # noqa: BLE001 — embed is best-effort; the summary + FTS still land below
+            chunks, vectors = [], []
+
         # Store the summary on the ATTACHMENT (read-only sidecar) + flip status, atomically.
-        # No note write-back: the body is left untouched.
+        # No note write-back: the body is left untouched. Only FAST row writes happen inside the
+        # lock now — the slow embed already ran above, outside it.
         conn.execute("BEGIN IMMEDIATE")
         att = conn.execute(
-            "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
+            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if not att:
-            conn.rollback()  # attachment was deleted mid-analysis; nothing to record
+        # Abandon if the row is gone or already in a TERMINAL state: the stale-pending watchdog
+        # reaped a wedged 'pending' to 'error', or another worker already finished it 'done'. The
+        # invariant is "a terminal status is final" — never resurrect one. Re-reading INSIDE BEGIN
+        # IMMEDIATE makes this atomic against the watchdog (which only flips rows WHERE
+        # status='pending'), so exactly one terminal status survives and a slow worker can't
+        # overwrite a reaped row.
+        if not att or att["analysis_status"] in ("error", "done"):
+            conn.rollback()
             return
         conn.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
         # Keep the vision summary (incl. transcribed in-image text) searchable now that
         # it's not in the note body: keyword via attachments_fts AND semantic via the
         # attachment chunk vectors, so search_notes' hybrid fusion finds it either way.
-        from . import attachments as att_svc, embeddings
         att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], body)
-        embeddings.upsert_attachment_embeddings(conn, att_id, att["note_id"], att_svc.chunk_text(body))
+        embeddings.write_attachment_embeddings(conn, att_id, att["note_id"], chunks, vectors)
         _set_status(conn, att_id, "done")
         conn.commit()
         # The summary changes the note's analyzable content — refresh its AI analysis so the
         # gist/facts/entities fold in what's in the image (parity with the audio/video transcript
-        # path). Gated by the "auto-analyze new notes" toggle so it adds no per-image cost unless
-        # the owner opted in; best-effort and hash-guarded (no-ops when unchanged / no LLM key).
-        # AFTER the summary commit, in its own try/except, so a lock hiccup never loses the summary.
+        # path). DEFER to a per-note coalescing worker: N images landing together would otherwise
+        # each spend a fresh cheap-LLM run (every new summary changes the attachment-context hash)
+        # and could race the last summary out of the final run. request_fold coalesces to ~one run
+        # that includes all summaries; gated + hash-guarded inside. AFTER the summary commit, in its
+        # own try/except, so a fold-back hiccup never loses the summary.
         if att["note_id"] is not None:
             try:
                 from . import note_analysis
-                if note_analysis.auto_enabled(conn) and note_analysis.analyze(conn, att["note_id"]):
-                    conn.commit()
-            except Exception:  # noqa: BLE001 — analysis is a bonus; never fail the summary on it
+                note_analysis.request_fold(conn, att["note_id"])
+            except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the summary on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
         try:
@@ -339,8 +364,8 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
         return {"status": "error", "detail": "Attachment not found."}
     if not (row["mime"] or "").startswith("image/"):
         return {"status": "error", "detail": "Not an image."}
-    if row["analysis_status"] == "pending":
-        return {"status": "pending"}
+    if row["analysis_status"] == "pending" and not force:
+        return {"status": "pending"}      # in-flight; force lets an owner restart a wedged one
     if row["analysis_status"] == "done" and not force:
         return {"status": "done"}
     if not llm.has_credentials():
@@ -352,10 +377,36 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
     return {"status": "pending"}
 
 
-def reset_stale(conn) -> None:
-    """On boot, fail any analysis left 'pending' by a prior process."""
-    conn.execute(
-        "UPDATE attachments SET analysis_status = 'error', "
-        "analysis_detail = 'interrupted (server restarted)' WHERE analysis_status = 'pending'"
-    )
+# A 'pending' analysis older than this is presumed dead (a worker that hung without raising —
+# e.g. a wedged model load) and reaped to 'error' by the periodic watchdog. Comfortably above the
+# vision call's 120s LLM budget AND minutes-long CPU transcription, so a legitimately in-flight
+# analysis is never killed. (Edge: a multi-hour recording on a slow CPU could legitimately exceed
+# this and be reaped mid-run — bounded impact: the row becomes retryable and the late worker
+# abandons via the guarded commit, so no corruption. Raise this if very long media is common.)
+STALE_PENDING_SECONDS = 1800   # 30 min
+
+
+def reset_stale(conn, older_than_seconds: int | None = None) -> int:
+    """Fail analyses left 'pending'. On boot (older_than_seconds=None) reset ALL pending — a prior
+    process died mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
+    stuck past it (a worker that hung without ever reaching done/error), never a recent, legitimately
+    in-flight one. analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
+    created_at defends any legacy row that went pending before that stamp existed. One short UPDATE,
+    so it never holds the write lock long. Covers image AND audio/video (shared columns). Returns the
+    number of rows reset."""
+    if older_than_seconds is None:
+        cur = conn.execute(
+            "UPDATE attachments SET analysis_status = 'error', "
+            "analysis_detail = 'interrupted (server restarted)' WHERE analysis_status = 'pending'"
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE attachments SET analysis_status = 'error', "
+            "analysis_detail = 'analysis timed out (no result after "
+            + str(int(older_than_seconds) // 60) + " min; the worker may have hung)' "
+            "WHERE analysis_status = 'pending' "
+            "AND COALESCE(analyzed_at, created_at) < strftime('%Y-%m-%d %H:%M:%f','now', ?)",
+            (f"-{int(older_than_seconds)} seconds",),
+        )
     conn.commit()
+    return cur.rowcount

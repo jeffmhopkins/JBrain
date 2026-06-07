@@ -139,7 +139,8 @@ def search_add(run_id: str, q: str):
     """Note search for the 'add a source' picker on the curate screen (primary notes only)."""
     run = _live_run(run_id)
     conn = get_conn()
-    hits = [h for h in search.hybrid_notes(conn, q, 8) if not h["title"].lower().startswith("kb/")]
+    hits = [h for h in search.hybrid_notes(conn, q, 8, require_kb_ingest=True)
+            if not h["title"].lower().startswith("kb/")]
     meta = rebuild_engine._notes_meta(conn, [h["id"] for h in hits])
     return [{"note_id": m["id"], "title": m["title"], "date": m["date"]} for m in meta]
 

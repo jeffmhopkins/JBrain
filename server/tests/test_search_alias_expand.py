@@ -143,7 +143,7 @@ def test_reference_lookup_calls_hybrid_without_entity_expand(conn, monkeypatch):
     _mk(conn, "kb/Reference/Medicine/Asthma", "Asthma is a condition.", kind="kb")
     captured = {}
 
-    def fake_hybrid(c, q, limit=8, *, entity_expand=False):
+    def fake_hybrid(c, q, limit=8, *, entity_expand=False, **kwargs):
         captured["entity_expand"] = entity_expand
         return []
 

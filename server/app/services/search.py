@@ -23,7 +23,8 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in toks) or '""'
 
 
-def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -> list[dict]:
+def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False,
+                 require_tool_access: bool = False, require_kb_ingest: bool = False) -> list[dict]:
     """Notes matching `q` by keyword AND meaning — across both the note body and its
     attachments (image-analysis sidecars, PDFs, transcripts) — reciprocal-rank fused,
     deduped, best-first. Returns [{id, title, slug}]. Degrades to whichever sources work
@@ -121,4 +122,19 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -
         except Exception:  # noqa: BLE001
             pass
 
+    # Governance gate (single post-filter over the FUSED ids, so it covers every half —
+    # FTS, vector, attachments, entity-expand — and can't be bypassed by a future sub-query).
+    # Default off → owner-facing search/browse is unaffected; the assistant passes
+    # require_tool_access, KB-source gather passes require_kb_ingest.
+    if (require_tool_access or require_kb_ingest) and meta:
+        conds = []
+        if require_tool_access:
+            conds.append("tool_access = 1")
+        if require_kb_ingest:
+            conds.append("kb_ingest = 1")
+        ids = list(meta.keys())
+        qmarks = ",".join("?" * len(ids))
+        ok = {r["id"] for r in conn.execute(
+            f"SELECT id FROM notes WHERE id IN ({qmarks}) AND {' AND '.join(conds)}", ids)}
+        meta = {nid: m for nid, m in meta.items() if nid in ok}
     return sorted(meta.values(), key=lambda m: scores[m["id"]], reverse=True)[:limit]

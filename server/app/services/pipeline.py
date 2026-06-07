@@ -518,6 +518,7 @@ def _p_query_entry_changes(ctx, since="", limit=20):
         "(deleted_at IS NOT NULL) AS deleted, COALESCE(deleted_at, updated_at) AS changed_at "
         "FROM notes WHERE "
         "  (kind = 'daily' OR (kind = 'entry' AND title NOT LIKE 'notes/daily/%')) "
+        "  AND kb_ingest = 1 "                       # owner opted this entry OUT of the KB → not a source
         "  AND COALESCE(deleted_at, updated_at) > ? "
         "ORDER BY changed_at LIMIT ?",
         (since or "", max(1, min(int(limit), 1000))),
@@ -602,6 +603,7 @@ def _p_kb_uncited_pending(ctx, limit=25, since_floor="", reconsider=False):
         "SELECT n.id, n.title, n.slug, n.content_md, n.created_at, n.updated_at "
         "FROM notes n WHERE n.deleted_at IS NULL "
         "  AND (n.kind='daily' OR (n.kind='entry' AND n.title NOT LIKE 'notes/daily/%')) "
+        "  AND n.kb_ingest = 1 "                     # opted-out entries are never 'pending' coverage
         "  AND NOT EXISTS (SELECT 1 FROM links l JOIN notes kb ON kb.id=l.source_note_id "
         "       AND kb.kind='kb' AND kb.deleted_at IS NULL "
         "       WHERE l.target_note_id=n.id OR lower(l.target_title)=lower(n.title)) "
@@ -628,6 +630,7 @@ def _p_chatter_pending(ctx, limit=500):
         "SELECT n.id, n.title, n.slug, n.content_md, n.created_at "
         "FROM notes n WHERE n.deleted_at IS NULL "
         "  AND (n.kind='daily' OR (n.kind='entry' AND n.title NOT LIKE 'notes/daily/%')) "
+        "  AND n.kb_ingest = 1 "                     # opted-out entries never enter the recurrence pool
         "  AND NOT EXISTS (SELECT 1 FROM links l JOIN notes kb ON kb.id=l.source_note_id "
         "       AND kb.kind='kb' AND kb.deleted_at IS NULL "
         "       WHERE l.target_note_id=n.id OR lower(l.target_title)=lower(n.title)) "
@@ -866,7 +869,8 @@ def _p_gather_context(ctx, source_title=None, context_query=None):
         return clock.expand_tokens(row["content_md"]) if row else ""
     if context_query:
         out = ""
-        for r in embeddings.semantic_search(ctx.conn, context_query, 8):
+        # KB synthesis context: never pull in an entry the owner kept out of the KB.
+        for r in embeddings.semantic_search(ctx.conn, context_query, 8, require_kb_ingest=True):
             n = notes_svc.get_by_title(ctx.conn, r["title"])
             if n:
                 out += f"\n\n## {n['title']}\n{clock.expand_tokens(n['content_md'])}"

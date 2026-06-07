@@ -25,6 +25,10 @@ interface Note {
   lat: number | null; lon: number | null; location_label: string | null;
   backlinks: { id: number; title: string; slug: string }[];
   tags: string[];
+  // Per-note governance flags (0/1; absent or 1 = on). kb_ingest: feeds KB synthesis;
+  // tool_access: visible to the assistant's search/research tools.
+  kb_ingest?: number;
+  tool_access?: number;
   // When this note is a merged-away redirect, the canonical target (title + slug to forward to).
   redirect_to?: string | null;
   redirect_to_slug?: string | null;
@@ -145,6 +149,18 @@ export default function NotePage() {
   async function saveTags(next: string[]) {
     try { await put(`/api/notes/${slug}/tags`, { tags: next }); reload(); }
     catch (e: any) { alert(e?.message || "Couldn't update tags."); }
+  }
+
+  // The three coherent visibility presets → the two underlying flags. Full (1/1),
+  // Research-only (0/1), Private (0/0). Optimistic; reload on error to resync.
+  async function setVisibility(p: "full" | "research" | "private") {
+    if (!note) return;
+    const flags = p === "full" ? { kb_ingest: true, tool_access: true }
+      : p === "research" ? { kb_ingest: false, tool_access: true }
+      : { kb_ingest: false, tool_access: false };
+    setNote({ ...note, kb_ingest: flags.kb_ingest ? 1 : 0, tool_access: flags.tool_access ? 1 : 0 });
+    try { await put(`/api/notes/${slug}/flags`, flags); }
+    catch (e: any) { alert(e?.message || "Couldn't update visibility."); reload(); }
   }
 
   // Toggle a `- [ ]`/`- [x]` checkbox on the given (0-based) source line and save.
@@ -372,6 +388,33 @@ export default function NotePage() {
                  }
                }} />
       </div>
+      {editing === null && note.kind !== "kb" && note.kind !== "place" && (() => {
+        // Default-on: a missing flag (older payload) reads as enabled.
+        const kbOn = note.kb_ingest !== 0;
+        const toolOn = note.tool_access !== 0;
+        const preset = kbOn ? "full" : (toolOn ? "research" : "private");
+        const help = preset === "full"
+          ? "Your assistant can research this, and it can be summarized into your Knowledge Base."
+          : preset === "research"
+          ? "Your assistant can read this when you ask — but it's never folded into Knowledge Base articles."
+          : "Kept out of the Knowledge Base and out of assistant search results. Still searchable and readable by you.";
+        return (
+          <div className="note-visibility" style={{ marginBottom: 10 }}>
+            <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span className="muted" style={{ fontSize: 12 }}>Assistant &amp; Knowledge Base</span>
+              <div className="share-seg" role="group" aria-label="Visibility">
+                <button className={preset === "full" ? "primary" : "ghost"} aria-pressed={preset === "full"}
+                        onClick={() => setVisibility("full")}>Full</button>
+                <button className={preset === "research" ? "primary" : "ghost"} aria-pressed={preset === "research"}
+                        onClick={() => setVisibility("research")}>Research-only</button>
+                <button className={preset === "private" ? "primary" : "ghost"} aria-pressed={preset === "private"}
+                        onClick={() => setVisibility("private")}>Private</button>
+              </div>
+            </div>
+            <div className="share-help" style={{ marginTop: 4, fontSize: 12 }}>{help}</div>
+          </div>
+        );
+      })()}
       {editing !== null ? (
         <div>
           <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)}

@@ -242,6 +242,10 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
         body = body.rstrip() + f"\n\n---\n_Encrypted chat with {who}._\n"
     note_id = notes_svc.upsert_note(conn, note_title, body, create_only=True,
                                     source="shared", version_note=f"encrypted chat with {who}")
+    # Saved chats default to Research-only: the assistant may read them when asked
+    # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
+    # evergreen KB articles. The owner can opt a chat back into the KB per-note.
+    conn.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (note_id,))
     for a in (attachments or []):
         try:
             import base64

@@ -57,7 +57,7 @@ def _collect(conn, limit: int) -> dict:
     rows = conn.execute(
         "SELECT a.note_id, a.entities_json FROM note_analysis a "
         "JOIN notes n ON n.id = a.note_id "
-        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') "
+        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') AND n.kb_ingest = 1 "
         "ORDER BY a.note_id LIMIT ?",
         (max(1, int(limit)),),
     ).fetchall()

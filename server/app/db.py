@@ -125,7 +125,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 55
+SCHEMA_VERSION = 56
 
 
 def init_db() -> None:
@@ -807,6 +807,22 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
               created_at TEXT NOT NULL DEFAULT (datetime('now')));
             CREATE INDEX IF NOT EXISTS idx_article_talk_reply_talk ON article_talk_reply(talk_id);
         """)
+
+    if current < 56:
+        # Per-note governance flags. `kb_ingest` gates whether an entry is a SOURCE for KB
+        # synthesis; `tool_access` gates whether it surfaces in the assistant's search/research
+        # tools. Both default 1 (today's behaviour — ADD COLUMN ... DEFAULT 1 backfills every
+        # existing row). schema.sql carries the identical columns for fresh DBs. The coherent
+        # states are 1/1 (Full), 0/1 (Research-only), 0/0 (Private); the API forbids 1/0 (the
+        # KB would cite a source the assistant can't read).
+        _add_column(conn, "notes", "kb_ingest", "INTEGER NOT NULL DEFAULT 1")
+        _add_column(conn, "notes", "tool_access", "INTEGER NOT NULL DEFAULT 1")
+        # Existing saved guest-chats become Research-only to match the new write-time default
+        # (chat_share.save_to_brain). They stay assistant-readable (tool_access=1) but are no
+        # longer folded into KB articles. Already-synthesised mentions clear on the next rebuild.
+        conn.execute(
+            "UPDATE notes SET kb_ingest = 0 WHERE kind = 'entry' AND title LIKE 'notes/chats/%'"
+        )
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

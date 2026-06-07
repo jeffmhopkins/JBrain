@@ -254,20 +254,6 @@ export default function NotePage() {
           )}
         </div>
       )}
-      {editing === null && (
-        <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
-          <NoteActionsMenu items={[
-            ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
-                                        accent: true, hint: "AI rewrites it", onClick: rebuildNow }] : []),
-            { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
-            { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
-            ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",
-                                       hint: "Trail attribution", onClick: tagAsPerson }] : []),
-            { sep: true } as const,
-            { key: "delete", label: "Delete", icon: "trash", danger: true, onClick: remove },
-          ]} />
-        </div>
-      )}
       {sharing && (
         <div className="share-panel">
           {!minted ? (
@@ -333,12 +319,26 @@ export default function NotePage() {
           )}
         </div>
       )}
-      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <span>🕐 {fmtTs(note.created_at, appTz)}{fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz) ? ` · updated ${fmtTs(note.updated_at, appTz)}` : ""}</span>
         {note.lat != null && note.lon != null && (
           <Link to={`/map?focus=${note.slug}`} title="View on map">
             <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
           </Link>
+        )}
+        {editing === null && (
+          <span style={{ marginLeft: "auto" }}>
+            <NoteActionsMenu items={[
+              ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
+                                          accent: true, hint: "AI rewrites it", onClick: rebuildNow }] : []),
+              { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
+              { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
+              ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",
+                                         hint: "Trail attribution", onClick: tagAsPerson }] : []),
+              { sep: true } as const,
+              { key: "delete", label: "Delete", icon: "trash", danger: true, onClick: remove },
+            ]} />
+          </span>
         )}
       </div>
       <div className="row tag-editor" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>

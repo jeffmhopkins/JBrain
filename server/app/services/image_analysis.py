@@ -227,9 +227,13 @@ def vision_summary_frames(frames: list[bytes], filename: str = "") -> str:
 # --- Status + worker --------------------------------------------------------
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
+    # analyzed_at is stamped on EVERY status transition, incl. 'pending' — for a pending row it is
+    # the "analysis started at" clock the stale-pending watchdog (reset_stale) measures from; for
+    # done/error it is the completion time. (Without stamping pending, a re-analyze of an old
+    # attachment would carry a stale done-era timestamp and be reaped instantly.)
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
         "ELSE analyzed_at END WHERE id = ?",
         (status, detail, status, att_id),
     )
@@ -296,10 +300,16 @@ def analyze(att_id: int) -> None:
         # lock now — the slow embed already ran above, outside it.
         conn.execute("BEGIN IMMEDIATE")
         att = conn.execute(
-            "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
+            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if not att:
-            conn.rollback()  # attachment was deleted mid-analysis; nothing to record
+        # Abandon if the row is gone or already in a TERMINAL state: the stale-pending watchdog
+        # reaped a wedged 'pending' to 'error', or another worker already finished it 'done'. The
+        # invariant is "a terminal status is final" — never resurrect one. Re-reading INSIDE BEGIN
+        # IMMEDIATE makes this atomic against the watchdog (which only flips rows WHERE
+        # status='pending'), so exactly one terminal status survives and a slow worker can't
+        # overwrite a reaped row.
+        if not att or att["analysis_status"] in ("error", "done"):
+            conn.rollback()
             return
         conn.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
         # Keep the vision summary (incl. transcribed in-image text) searchable now that
@@ -354,8 +364,8 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
         return {"status": "error", "detail": "Attachment not found."}
     if not (row["mime"] or "").startswith("image/"):
         return {"status": "error", "detail": "Not an image."}
-    if row["analysis_status"] == "pending":
-        return {"status": "pending"}
+    if row["analysis_status"] == "pending" and not force:
+        return {"status": "pending"}      # in-flight; force lets an owner restart a wedged one
     if row["analysis_status"] == "done" and not force:
         return {"status": "done"}
     if not llm.has_credentials():
@@ -367,10 +377,34 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
     return {"status": "pending"}
 
 
-def reset_stale(conn) -> None:
-    """On boot, fail any analysis left 'pending' by a prior process."""
-    conn.execute(
-        "UPDATE attachments SET analysis_status = 'error', "
-        "analysis_detail = 'interrupted (server restarted)' WHERE analysis_status = 'pending'"
-    )
+# A 'pending' analysis older than this is presumed dead (a worker that hung without raising —
+# e.g. a wedged model load) and reaped to 'error' by the periodic watchdog. Comfortably above the
+# vision call's 120s LLM budget AND minutes-long CPU transcription, so a legitimately in-flight
+# analysis is never killed.
+STALE_PENDING_SECONDS = 1800   # 30 min
+
+
+def reset_stale(conn, older_than_seconds: int | None = None) -> int:
+    """Fail analyses left 'pending'. On boot (older_than_seconds=None) reset ALL pending — a prior
+    process died mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
+    stuck past it (a worker that hung without ever reaching done/error), never a recent, legitimately
+    in-flight one. analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
+    created_at defends any legacy row that went pending before that stamp existed. One short UPDATE,
+    so it never holds the write lock long. Covers image AND audio/video (shared columns). Returns the
+    number of rows reset."""
+    if older_than_seconds is None:
+        cur = conn.execute(
+            "UPDATE attachments SET analysis_status = 'error', "
+            "analysis_detail = 'interrupted (server restarted)' WHERE analysis_status = 'pending'"
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE attachments SET analysis_status = 'error', "
+            "analysis_detail = 'analysis timed out (no result after "
+            + str(int(older_than_seconds) // 60) + " min; the worker may have hung)' "
+            "WHERE analysis_status = 'pending' "
+            "AND COALESCE(analyzed_at, created_at) < strftime('%Y-%m-%d %H:%M:%f','now', ?)",
+            (f"-{int(older_than_seconds)} seconds",),
+        )
     conn.commit()
+    return cur.rowcount

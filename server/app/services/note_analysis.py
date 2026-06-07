@@ -269,8 +269,8 @@ def _fold_worker(note_id: int) -> None:
     """Background daemon: own thread-local connection. Drains the coalesced fold queue for one
     note — runs a pass, and if another completion landed meanwhile (_fold_pending), once more."""
     from ..db import close_conn, get_conn
-    conn = get_conn()
     try:
+        conn = get_conn()   # inside the try so a connection failure can't leave the note stuck inflight
         while True:
             _fold_once(conn, note_id)
             with _fold_lock:

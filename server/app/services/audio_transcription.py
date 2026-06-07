@@ -206,9 +206,11 @@ def _transcribe(raw: bytes) -> str:
 # --- Status + worker (writes the same analysis_* columns image analysis uses) ---
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
+    # Mirrors image_analysis._set_status: stamp analyzed_at on 'pending' too, so the shared
+    # stale-pending watchdog has a precise "analysis started at" clock for transcription too.
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
         "ELSE analyzed_at END WHERE id = ?",
         (status, detail, status, att_id),
     )
@@ -277,10 +279,17 @@ def transcribe(att_id: int) -> None:
         except Exception:  # noqa: BLE001 — embed is best-effort; the transcript + FTS still land below
             chunks, vectors = [], []
 
+        # Take the write lock now so the re-read + writes are one atomic unit (audio previously
+        # used an implicit txn). The slow embed already ran above, outside the lock.
+        conn.execute("BEGIN IMMEDIATE")
         att = conn.execute(
-            "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
+            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if not att:  # deleted mid-transcription
+        # Abandon if the row is gone or already TERMINAL ('error' from a watchdog reap, or 'done'
+        # from another worker) — never resurrect a terminal status. Atomic against the watchdog
+        # (which only flips rows WHERE status='pending'), so exactly one terminal status survives.
+        if not att or att["analysis_status"] in ("error", "done"):
+            conn.rollback()
             return
         # Transcript (+ any visual summary) IS the searchable content: store it as content_text,
         # the FTS body, and chunk embeddings, plus the human-readable sidecar (body).
@@ -327,8 +336,8 @@ def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
         return {"status": "error", "detail": "Attachment not found."}
     if not is_transcribable(row["mime"], row["filename"]):
         return {"status": "error", "detail": "Not an audio or video file."}
-    if row["analysis_status"] == "pending":
-        return {"status": "pending"}
+    if row["analysis_status"] == "pending" and not force:
+        return {"status": "pending"}      # in-flight; force lets an owner restart a wedged one
     if row["analysis_status"] == "done" and not force:
         return {"status": "done"}
 

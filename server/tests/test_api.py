@@ -5115,6 +5115,15 @@ def test_image_summary_block_helpers_are_idempotent_and_id_scoped():
 def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
     from app.db import get_conn
     from app.services import image_analysis as ia, llm
+    conn = get_conn()
+
+    def _mark_pending(att_id):
+        # The worker only writes a row it owns (status 'pending') — in production start_analysis
+        # sets that (and force=True resets a 'done' row to pending for a re-run). This test drives
+        # analyze() directly, so simulate that pending hand-off before each run.
+        conn.execute("UPDATE attachments SET analysis_status = 'pending' WHERE id = ?", (att_id,))
+        conn.commit()
+
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     calls = {"n": 0}
     def fake_complete(messages, **kw):
@@ -5131,6 +5140,7 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
                       data={"analyze": "false"},
                       files={"file": ("pic.png", _png_bytes(), "image/png")}).json()
 
+    _mark_pending(att["id"])
     ia.analyze(att["id"])   # run worker synchronously (own-thread codepath, same conn in tests)
 
     # The summary lands on the attachment sidecar, NOT the note body (which is left clean).
@@ -5143,6 +5153,7 @@ def test_image_analysis_appends_summary_and_is_rerunnable(client, monkeypatch):
     assert status["status"] == "done"
 
     # Re-run replaces the summary rather than stacking it (and never touches the body).
+    _mark_pending(att["id"])
     ia.analyze(att["id"])
     atts2 = client.get("/api/notes/photo-host/attachments").json()
     assert "A solid square (call 2)" in atts2[0]["analysis_md"] and "call 1" not in atts2[0]["analysis_md"]

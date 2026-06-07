@@ -1189,3 +1189,14 @@ button.cal-pill { border: none; color: var(--text); }
 .cal-block.cancelled, .cal-pill.cancelled { opacity: .5; }
 .cal-block.cancelled .bt { text-decoration: line-through; }
 .cal-pill.cancelled { text-decoration: line-through; }
+
+/* Calendar reminders chips + in-calendar review banner */
+.rem-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rem-chip { background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.rem-chip.on { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
+.rem-chip.none { margin-left: auto; }
+.cal-review { margin-bottom: 10px; }
+.cal-review-bar { width: 100%; display: flex; justify-content: space-between; align-items: center;
+  background: var(--accent-soft); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 9px 12px; font-size: 13px; color: var(--text); cursor: pointer; }

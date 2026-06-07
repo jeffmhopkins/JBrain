@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 51
 
 
 def init_db() -> None:
@@ -745,6 +745,18 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         conn.executescript("DROP VIEW IF EXISTS v_upcoming; DROP VIEW IF EXISTS v_event_history;")
         conn.executescript(_CALENDAR_SCHEMA_SQL)
 
+    if current < 51:
+        # Per-event reminders (calendar_reminders) + owner-revoked auto-extracted events
+        # (calendar_dismissed), both keyed by the stable identity_key. schema.sql carries
+        # the identical block. Also retire the daily 7am "morning brief": per-event
+        # reminders + the in-calendar review replace it (a non-locked workflow row is
+        # re-disabled by repo ingest; disable here too for immediacy).
+        conn.executescript(_CALENDAR_SCHEMA_SQL)
+        # workflows is created by schema.sql (runs before migrations on a real boot) and an
+        # early migration; guard in case this runs on a partial DB (e.g. a focused test).
+        if _table_exists(conn, "workflows"):
+            conn.execute("UPDATE workflows SET enabled=0 WHERE key='calendar-reminders'")
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -994,6 +1006,23 @@ CREATE TABLE IF NOT EXISTS calendar_fired (
   marker      TEXT NOT NULL,
   fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (workflow_id, kind, marker)
+);
+
+CREATE TABLE IF NOT EXISTS calendar_reminders (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity_key   TEXT NOT NULL,
+  offset_minutes INTEGER NOT NULL,
+  anchor         TEXT NOT NULL DEFAULT 'start' CHECK (anchor IN ('start','day_of')),
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(identity_key, offset_minutes, anchor)
+);
+CREATE INDEX IF NOT EXISTS idx_calreminders_ik ON calendar_reminders(identity_key);
+
+CREATE TABLE IF NOT EXISTS calendar_dismissed (
+  identity_key TEXT PRIMARY KEY,
+  payload_json TEXT,
+  dismissed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE VIEW IF NOT EXISTS v_upcoming AS

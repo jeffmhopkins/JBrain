@@ -1322,6 +1322,13 @@ def _p_calendar_reminders(ctx, lead_hours=48, push=True):
     return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), _truthy(push))
 
 
+def _p_calendar_alarms(ctx, push=True):
+    """Fire owner-set per-event reminders (calendar_reminders) at occurrence − offset,
+    once per (occurrence, offset), only before the event starts. No-op if none set."""
+    from . import calendar as cal
+    return cal.due_event_alarms(ctx.conn, ctx.workflow_id, _truthy(push))
+
+
 _PRIMITIVES = {
     "read_note": _p_read_note,
     "call_action": _p_call_action,
@@ -1405,6 +1412,7 @@ _PRIMITIVES = {
     "propose_supersessions": _p_propose_supersessions,
     "promote_recurrence_calendar": _p_promote_recurrence_calendar,
     "calendar_reminders": _p_calendar_reminders,
+    "calendar_alarms": _p_calendar_alarms,
 }
 
 
@@ -1471,6 +1479,8 @@ _PRIMITIVE_META: dict[str, dict] = {
                               "inputs": [{"name": "notes", "type": "list", "required": True}], "output": "object"},
     "promote_recurrence_calendar": {"summary": "Promote regular-cadence recurring chatter clusters into kind='recurring' calendar rows with an inferred rrule.",
                                     "inputs": [{"name": "clusters", "type": "list", "required": True}], "output": "object"},
+    "calendar_alarms": {"summary": "Fire owner-set per-event reminders at occurrence minus offset, once per (occurrence, offset), before the event starts.",
+                        "inputs": [{"name": "push", "type": "bool"}], "output": "object"},
     "calendar_reminders": {"summary": "Post Review cards (+ Web Push) for events whose next occurrence is within the lead window; deduped per instance.",
                            "inputs": [{"name": "lead_hours", "type": "int"}, {"name": "push", "type": "bool"}], "output": "object"},
     "analyze_pending": {"summary": "Ids of entry/daily notes whose AI analysis is missing or stale (or all, if force).",

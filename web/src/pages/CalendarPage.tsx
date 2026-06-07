@@ -2,9 +2,49 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   calUpcoming, calHistory, calRange, calQuickAdd, calReschedule, calCancel, CalEvent,
+  Reminder, AddedEvent, calGetReminders, calSetReminders,
+  calRecentlyAdded, calMarkReviewed, calDismiss, calUndismiss,
 } from "../api";
 import { useAuth } from "../App";
 import Modal from "../components/Modal";
+
+// Reminder presets. Timed events use minute offsets from start; all-day events use a
+// 9am day-of anchor (offset 0 = morning of; 900 = 6pm evening before; 2880 = 2 days before).
+const TIMED_PRESETS: { label: string; off: number }[] = [
+  { label: "At time", off: 0 }, { label: "10m", off: 10 }, { label: "30m", off: 30 },
+  { label: "1h", off: 60 }, { label: "2h", off: 120 }, { label: "1d", off: 1440 }, { label: "2d", off: 2880 },
+];
+const ALLDAY_PRESETS: { label: string; off: number }[] = [
+  { label: "Morning of", off: 0 }, { label: "Evening before", off: 900 }, { label: "2 days before", off: 2880 },
+];
+const remKey = (r: Reminder) => `${r.anchor || "start"}:${r.offset_minutes}`;
+
+function RemindChips({ allDay, value, onChange }: {
+  allDay: boolean; value: Reminder[]; onChange: (v: Reminder[]) => void;
+}) {
+  const anchor = allDay ? "day_of" : "start";
+  const presets = allDay ? ALLDAY_PRESETS : TIMED_PRESETS;
+  const on = new Set(value.filter((r) => (r.anchor || "start") === anchor).map((r) => r.offset_minutes));
+  function toggle(off: number) {
+    const has = on.has(off);
+    onChange(has ? value.filter((r) => !((r.anchor || "start") === anchor && r.offset_minutes === off))
+                 : [...value, { offset_minutes: off, anchor }]);
+  }
+  return (
+    <div className="cal-field">
+      <label>REMIND ME</label>
+      <div className="rem-chips">
+        {presets.map((p) => (
+          <button key={p.off} type="button" className={"rem-chip" + (on.has(p.off) ? " on" : "")}
+            aria-pressed={on.has(p.off)} onClick={() => toggle(p.off)}>{p.label}</button>
+        ))}
+        {value.length > 0 && (
+          <button type="button" className="rem-chip none" onClick={() => onChange([])}>None</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 type View = "list" | "day" | "week" | "month";
 const LS_VIEW = "jbrain_cal_view";
@@ -126,7 +166,7 @@ export default function CalendarPage() {
     return "";
   }, [view, cursor]);
 
-  async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string }) { await calQuickAdd(b); setSheet(null); reload(); }
+  async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string; reminders?: Reminder[] }) { await calQuickAdd(b); setSheet(null); reload(); }
   async function doReschedule(ev: CalEvent, to_date: string, to_time?: string) { await calReschedule(ev.id, to_date, to_time); setSheet(null); reload(); }
   async function doCancel(ev: CalEvent) { await calCancel(ev.id); setSheet(null); reload(); }
 
@@ -158,6 +198,7 @@ export default function CalendarPage() {
         </div>
       </div>
 
+      <ReviewBanner refreshKey={events.length} />
       {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
       {loading && <p className="muted">Loading…</p>}
 
@@ -370,6 +411,13 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
   const [time, setTime] = useState(isTimed(ev) ? ev.starts_at!.slice(11, 16) : "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [savedRem, setSavedRem] = useState(false);
+  useEffect(() => { let go = true; calGetReminders(ev.id).then((r) => { if (go) setReminders(r.reminders); }).catch(() => {}); return () => { go = false; }; }, [ev.id]);
+  function changeReminders(v: Reminder[]) {
+    setReminders(v); setSavedRem(false);
+    calSetReminders(ev.id, v).then(() => setSavedRem(true)).catch((e: any) => setErr(String(e?.message || e)));
+  }
   async function run(fn: () => Promise<void>) {
     setBusy(true); setErr("");
     try { await fn(); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
@@ -407,6 +455,10 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
         <div className="cal-field"><label>NEW TIME (blank = all-day)</label>
           <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
       </>}
+      {mode === "view" && <>
+        <RemindChips allDay={!isTimed(ev)} value={reminders} onChange={changeReminders} />
+        {savedRem && <p className="cal-recnote" style={{ color: "var(--ok)" }}>Reminders saved.</p>}
+      </>}
       {ev.note_slug && <p style={{ marginTop: 8 }}><Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link></p>}
       <p className="cal-recnote">Edits write a note — the calendar re-derives.</p>
     </Modal>
@@ -415,18 +467,27 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
 
 function QuickAddSheet({ date, time, onClose, onAdd }: {
   date: string; time?: string; onClose: () => void;
-  onAdd: (b: { title: string; date: string; time?: string; kind: string }) => Promise<void>;
+  onAdd: (b: { title: string; date: string; time?: string; kind: string; reminders?: Reminder[] }) => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [d, setD] = useState(date);
   const [t, setT] = useState(time || "");
   const [kind, setKind] = useState("event");
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // All-day reminders need a clock anchor; switching to/from a time flips the preset set,
+  // so clear any reminders that no longer match the new anchor.
+  const allDay = !t;
+  function setTimeAndFix(v: string) {
+    setT(v);
+    const want = v ? "start" : "day_of";
+    setReminders((rs) => rs.filter((r) => (r.anchor || "start") === want));
+  }
   async function add() {
     if (!title.trim() || !d) return;
     setBusy(true); setErr("");
-    try { await onAdd({ title: title.trim(), date: d, time: t || undefined, kind }); }
+    try { await onAdd({ title: title.trim(), date: d, time: t || undefined, kind, reminders: reminders.length ? reminders : undefined }); }
     catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
   }
   return (
@@ -439,13 +500,67 @@ function QuickAddSheet({ date, time, onClose, onAdd }: {
         <div className="cal-field" style={{ flex: 1 }}><label>DATE</label>
           <input type="date" value={d} onChange={(e) => setD(e.target.value)} /></div>
         <div className="cal-field" style={{ flex: 1 }}><label>TIME</label>
-          <input type="time" value={t} onChange={(e) => setT(e.target.value)} /></div>
+          <input type="time" value={t} onChange={(e) => setTimeAndFix(e.target.value)} /></div>
       </div>
       <div className="cal-field"><label>KIND</label>
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
           {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
         </select></div>
+      <RemindChips allDay={allDay} value={reminders} onChange={setReminders} />
       <p className="cal-recnote">Writes a dated note — your notes stay the source of truth.</p>
     </Modal>
+  );
+}
+
+// ---------- in-calendar review of overnight auto-extracted events ----------
+function addedWhen(e: AddedEvent): string {
+  const s = e.starts_at || "";
+  if (!s) return "(undated)";
+  return (e.all_day || !s.includes("T")) ? s.slice(0, 10) : s.slice(0, 16).replace("T", " ");
+}
+function ReviewBanner({ refreshKey }: { refreshKey: number }) {
+  const [items, setItems] = useState<AddedEvent[]>([]);
+  const [open, setOpen] = useState(false);
+  const [revoked, setRevoked] = useState<Record<number, string>>({});   // id -> identity_key (for Undo)
+  useEffect(() => {
+    let go = true;
+    calRecentlyAdded().then((r) => { if (go) setItems(r.events); }).catch(() => {});
+    return () => { go = false; };
+  }, [refreshKey]);
+  if (items.length === 0) return null;
+  async function revoke(e: AddedEvent) {
+    try { const r = await calDismiss(e.id); setRevoked((m) => ({ ...m, [e.id]: r.identity_key })); } catch { /* ignore */ }
+  }
+  async function undo(e: AddedEvent) {
+    const ik = revoked[e.id]; if (!ik) return;
+    try { await calUndismiss(ik); setRevoked((m) => { const n = { ...m }; delete n[e.id]; return n; }); } catch { /* ignore */ }
+  }
+  async function done() { try { await calMarkReviewed(); } catch { /* ignore */ } setItems([]); }
+  return (
+    <div className="cal-review">
+      <button className="cal-review-bar" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span>{items.length} added by auto-extraction</span>
+        <span className="muted">{open ? "Hide" : "Review"}</span>
+      </button>
+      {open && <div className="cal-card" style={{ marginTop: 6 }}>
+        {items.map((e) => {
+          const gone = !!revoked[e.id];
+          return (
+            <div className="cal-row" key={e.id} style={{ cursor: "default" }}>
+              <span className="when">{addedWhen(e)}</span>
+              <span className="ttl" style={gone ? { textDecoration: "line-through", color: "var(--text-dim)" } : undefined}>{e.title}</span>
+              <span className="meta" style={{ gap: 8 }}>
+                {e.note_slug && <Link className="open-day" to={`/note/${e.note_slug}`}>note</Link>}
+                {gone ? <button className="open-day" onClick={() => undo(e)}>Undo</button>
+                      : <button className="open-day" style={{ color: "var(--danger)" }} onClick={() => revoke(e)}>Revoke</button>}
+              </span>
+            </div>
+          );
+        })}
+        <div className="row" style={{ justifyContent: "flex-end", padding: 8 }}>
+          <button className="cal-today" onClick={done}>Done</button>
+        </div>
+      </div>}
+    </div>
   );
 }

@@ -154,6 +154,10 @@ def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extr
         seq = counters.get(gk, 0)
         counters[gk] = seq + 1
         ik = identity_key(note_id, ev["title"], ev["kind"], seq)
+        # The owner revoked this auto-extracted event from the in-calendar review — never
+        # re-create it (the note text still mentions the date; we just don't project it).
+        if is_dismissed(conn, ik):
+            continue
         existing = conn.execute(
             "SELECT id FROM calendar_events WHERE identity_key = ?", (ik,)
         ).fetchone()
@@ -208,12 +212,16 @@ def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extr
 
 
 def _purge_edges_for(conn, identity_key: str) -> None:
-    """Drop supersession edges that reference an event being deleted (on either side),
-    so a removed event leaves no dangling edge to resurrect later."""
+    """Drop everything that references an event being deleted, so a removed event leaves
+    no dangling state that could resurrect or mis-suppress it if the same identity_key is
+    later re-derived: supersession edges (either side), its per-event reminders, and its
+    fired-reminder markers (which would otherwise dedup-suppress a re-added occurrence)."""
     conn.execute(
         "DELETE FROM calendar_supersedes WHERE old_identity_key=? OR new_identity_key=?",
         (identity_key, identity_key),
     )
+    conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (identity_key,))
+    conn.execute("DELETE FROM calendar_fired WHERE marker LIKE ? || '%'", (identity_key,))
 
 
 # --- supersession (a later note retires an earlier event) -------------------
@@ -259,12 +267,19 @@ def _replacement_key(conn, note_id: int, exclude_ik: str | None, old_title: str 
 
 def record_supersession(conn, old_identity_key: str, new_identity_key: str | None,
                         note_id: int, confidence: str = "structured") -> None:
-    """Idempotently record one supersession edge (INSERT OR IGNORE on the PK)."""
+    """Idempotently record one supersession edge (INSERT OR IGNORE on the PK). On a
+    RESCHEDULE (a replacement exists) the per-event reminders FOLLOW the event to the new
+    identity_key, so "remind me 30m before" survives the move (UPDATE OR IGNORE skips an
+    offset the target already has)."""
     conn.execute(
         "INSERT OR IGNORE INTO calendar_supersedes "
         "(old_identity_key, new_identity_key, superseded_by_note_id, confidence) VALUES (?,?,?,?)",
         (old_identity_key, new_identity_key, int(note_id), confidence),
     )
+    if new_identity_key:
+        conn.execute("UPDATE OR IGNORE calendar_reminders SET identity_key=? WHERE identity_key=?",
+                     (new_identity_key, old_identity_key))
+        conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (old_identity_key,))
 
 
 def consolidate(conn, notes: list[dict]) -> dict:
@@ -710,20 +725,21 @@ def _reminder_due(starts_at: str, all_day, midnight, horizon, today_s: str, hori
     return midnight <= dt <= horizon
 
 
-def _already_fired(conn, workflow_id, marker: str) -> bool:
+def _already_fired(conn, workflow_id, marker: str, kind: str = "reminder") -> bool:
     return conn.execute(
-        "SELECT 1 FROM calendar_fired WHERE workflow_id=? AND kind='reminder' AND marker=?",
-        (workflow_id, marker),
+        "SELECT 1 FROM calendar_fired WHERE workflow_id=? AND kind=? AND marker=?",
+        (workflow_id, kind, marker),
     ).fetchone() is not None
 
 
-def _record_fire(conn, workflow_id, marker, title, when, slug) -> None:
+def _record_fire(conn, workflow_id, marker, title, when, slug,
+                 kind: str = "reminder", verb: str = "Upcoming") -> None:
     from . import reviews as reviews_svc
-    reviews_svc.create_review_item(
-        conn, workflow_id, f"Upcoming: {title}", f"Scheduled for {when}.", slug)
+    msg = f"Scheduled for {when}." if verb == "Upcoming" else f"Starts {when}."
+    reviews_svc.create_review_item(conn, workflow_id, f"{verb}: {title}", msg, slug)
     conn.execute(
-        "INSERT OR IGNORE INTO calendar_fired (workflow_id, kind, marker) VALUES (?, 'reminder', ?)",
-        (workflow_id, marker),
+        "INSERT OR IGNORE INTO calendar_fired (workflow_id, kind, marker) VALUES (?, ?, ?)",
+        (workflow_id, kind, marker),
     )
 
 
@@ -787,3 +803,186 @@ def due_reminders(conn, workflow_id, lead_hours: int = 48, push: bool = True) ->
         except Exception:  # noqa: BLE001 — a push hiccup must never fail the reminder pass
             pass
     return {"fired": len(pending_push)}
+
+
+# --- per-event reminders + revoke (Phase: settable reminders) ----------------
+
+_ALLDAY_ANCHOR_HOUR = 9   # all-day reminders are measured from 9am on the event day
+
+def is_dismissed(conn, identity_key: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM calendar_dismissed WHERE identity_key=?", (identity_key,)
+    ).fetchone() is not None
+
+
+def get_reminders(conn, identity_key: str) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT offset_minutes, anchor, enabled FROM calendar_reminders "
+        "WHERE identity_key=? ORDER BY anchor, offset_minutes", (identity_key,))]
+
+
+def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
+    """Replace an event's reminder set. items: [{offset_minutes, anchor}]. Empty = none."""
+    conn.execute("DELETE FROM calendar_reminders WHERE identity_key=?", (identity_key,))
+    n = 0
+    for it in items or []:
+        try:
+            off = int(it.get("offset_minutes"))
+        except (TypeError, ValueError):
+            continue
+        anchor = it.get("anchor") or "start"
+        if anchor not in ("start", "day_of"):
+            anchor = "start"
+        conn.execute(
+            "INSERT OR IGNORE INTO calendar_reminders (identity_key, offset_minutes, anchor) VALUES (?,?,?)",
+            (identity_key, off, anchor))
+        n += 1
+    return {"identity_key": identity_key, "count": n}
+
+
+def dismiss_event(conn, identity_key: str) -> dict:
+    """Owner revoked an auto-extracted event from the in-calendar review: snapshot it (so
+    Undo can restore instantly), drop the row + its fired markers, and remember the
+    revoke so extraction never re-creates it. The note's text is never touched."""
+    row = conn.execute("SELECT * FROM calendar_events WHERE identity_key=?", (identity_key,)).fetchone()
+    conn.execute("INSERT OR REPLACE INTO calendar_dismissed (identity_key, payload_json) VALUES (?,?)",
+                 (identity_key, json.dumps(dict(row)) if row else None))
+    conn.execute("DELETE FROM calendar_fired WHERE marker LIKE ? || '%'", (identity_key,))
+    conn.execute("DELETE FROM calendar_events WHERE identity_key=?", (identity_key,))
+    return {"identity_key": identity_key, "dismissed": True}
+
+
+_RESTORE_COLS = ["note_id", "title", "detail", "kind", "starts_at", "ends_at", "all_day", "tz",
+                 "rrule", "rdate_json", "exdate_json", "location_label", "lat", "lon", "place_id",
+                 "person_id", "entity_id", "status", "seq", "identity_key", "source"]
+
+
+def undismiss_event(conn, identity_key: str) -> dict:
+    """Undo a revoke: re-insert the snapshotted row and clear the dismissal so extraction
+    treats the event normally again."""
+    d = conn.execute("SELECT payload_json FROM calendar_dismissed WHERE identity_key=?", (identity_key,)).fetchone()
+    conn.execute("DELETE FROM calendar_dismissed WHERE identity_key=?", (identity_key,))
+    if d and d["payload_json"] and not conn.execute(
+            "SELECT 1 FROM calendar_events WHERE identity_key=?", (identity_key,)).fetchone():
+        try:
+            p = json.loads(d["payload_json"])
+        except Exception:  # noqa: BLE001
+            p = {}
+        have = [c for c in _RESTORE_COLS if c in p]
+        if have:
+            conn.execute(f"INSERT INTO calendar_events ({','.join(have)}) "
+                         f"VALUES ({','.join('?' * len(have))})", [p[c] for c in have])
+    return {"identity_key": identity_key, "dismissed": False}
+
+
+def recently_added(conn, since: str = "", limit: int = 100) -> list[dict]:
+    """Auto-created events (extracted + recurring promotions) added since the watermark,
+    for the in-calendar review — excludes dismissed/superseded and the owner's quick-adds."""
+    rows = conn.execute(
+        "SELECT e.id, e.identity_key, e.title, e.kind, e.starts_at, e.all_day, e.source, "
+        "e.created_at, n.slug AS note_slug, n.title AS note_title "
+        "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
+        "WHERE e.source IN ('extracted','workflow') AND e.created_at > ? "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_dismissed d WHERE d.identity_key = e.identity_key) "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key) "
+        "ORDER BY e.created_at DESC LIMIT ?",
+        (since or "", max(1, min(int(limit), 500))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _alarm_window(occ_start_iso: str, all_day, offset_minutes: int, anchor: str):
+    """(fire_at, cap) naive-local datetimes for one (occurrence, offset). Fire when
+    fire_at <= now < cap. Timed: fire offset minutes before the start; cap = start.
+    All-day: anchor at 9am on the event day; cap = end of that day. None if unparseable."""
+    from datetime import datetime, timedelta
+    from dateutil.parser import isoparse
+    try:
+        if all_day or anchor == "day_of" or "T" not in (occ_start_iso or ""):
+            day = isoparse(occ_start_iso[:10])
+            anchor_dt = day.replace(hour=_ALLDAY_ANCHOR_HOUR, minute=0, second=0, microsecond=0)
+            fire_at = anchor_dt - timedelta(minutes=offset_minutes)
+            cap = day.replace(hour=23, minute=59, second=59, microsecond=0)
+            return fire_at.replace(tzinfo=None), cap.replace(tzinfo=None)
+        start = isoparse(occ_start_iso)
+        if start.tzinfo is not None:
+            start = start.replace(tzinfo=None)
+        return start - timedelta(minutes=offset_minutes), start
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _alarm_label(cap, all_day) -> str:
+    return cap.strftime("%Y-%m-%d") if all_day else cap.strftime("%Y-%m-%d %H:%M")
+
+
+def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
+    """Fire owner-set per-event reminders: notify at occurrence_start − offset, once per
+    (occurrence, offset), only while the event hasn't started yet (so downtime never
+    blasts past-due reminders). Owner-local/DST-correct. No reminders set → no-op."""
+    if workflow_id is None:
+        raise ValueError("due_event_alarms requires a workflow_id (dedup integrity)")
+    from datetime import timedelta
+    from . import clock
+    now = clock.now_local().replace(tzinfo=None)
+    mx = conn.execute("SELECT MAX(offset_minutes) m FROM calendar_reminders WHERE enabled=1").fetchone()["m"]
+    if mx is None:
+        return {"fired": 0}
+    horizon = now + timedelta(minutes=int(mx))
+    # Expand recurring occurrences over [start-of-today, horizon] as full DATETIMES — a
+    # date-only upper bound is midnight and would drop same-day TIMED occurrences; the
+    # lower bound at today's midnight still catches all-day occurrences today.
+    today_s = now.date().isoformat()
+    horizon_iso = horizon.strftime("%Y-%m-%dT%H:%M:%S")
+    pending: list[tuple[str, str, str]] = []
+
+    def fire_for(ik, occ_iso, all_day, title, slug):
+        for rem in conn.execute(
+            "SELECT offset_minutes, anchor FROM calendar_reminders WHERE identity_key=? AND enabled=1", (ik,)
+        ).fetchall():
+            fire_at, cap = _alarm_window(occ_iso, all_day, int(rem["offset_minutes"]), rem["anchor"])
+            if fire_at is None or not (fire_at <= now < cap):
+                continue
+            marker = f"{ik}|{occ_iso}|{rem['offset_minutes']}|{rem['anchor']}"
+            if _already_fired(conn, workflow_id, marker, kind="alarm"):
+                continue
+            label = _alarm_label(cap, all_day)
+            _record_fire(conn, workflow_id, marker, title, label, slug, kind="alarm", verb="Reminder")
+            pending.append((title, label, slug))
+
+    for r in conn.execute(
+        "SELECT e.identity_key, e.starts_at, e.all_day, e.title, n.slug FROM calendar_events e "
+        "JOIN calendar_reminders cr ON cr.identity_key = e.identity_key AND cr.enabled=1 "
+        "LEFT JOIN notes n ON n.id = e.note_id "
+        "WHERE e.kind != 'recurring' AND e.starts_at IS NOT NULL AND e.status NOT IN ('cancelled','done') "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key) "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_dismissed d WHERE d.identity_key = e.identity_key) "
+        "GROUP BY e.identity_key"
+    ).fetchall():
+        fire_for(r["identity_key"], r["starts_at"], r["all_day"], r["title"], r["slug"])
+
+    for r in conn.execute(
+        "SELECT e.identity_key, e.starts_at, e.all_day, e.title, e.rrule, e.exdate_json, n.slug "
+        "FROM calendar_events e JOIN calendar_reminders cr ON cr.identity_key = e.identity_key AND cr.enabled=1 "
+        "LEFT JOIN notes n ON n.id = e.note_id "
+        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.starts_at IS NOT NULL "
+        "AND e.status NOT IN ('cancelled','done') "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key) "
+        "AND NOT EXISTS (SELECT 1 FROM calendar_dismissed d WHERE d.identity_key = e.identity_key) "
+        "GROUP BY e.identity_key"
+    ).fetchall():
+        try:
+            ex = json.loads(r["exdate_json"] or "[]")
+        except Exception:  # noqa: BLE001
+            ex = []
+        for occ in expand_rrule(r["rrule"], r["starts_at"], today_s, horizon_iso, exdates=ex):
+            fire_for(r["identity_key"], occ, r["all_day"], r["title"], r["slug"])
+
+    if push and pending:
+        try:
+            from . import push as push_svc
+            for title, label, slug in pending:
+                push_svc.notify(f"Reminder: {title}", f"Starts {label}", f"/n/{slug}" if slug else "/")
+        except Exception:  # noqa: BLE001
+            pass
+    return {"fired": len(pending)}

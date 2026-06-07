@@ -5,8 +5,7 @@
 # one-off events and the next instance of recurring series. Touches no notes.
 key: calendar-reminders
 name: Calendar reminders
-enabled: true
-
+enabled: false   # retired: replaced by per-event reminders (calendar-alarms) + the in-calendar review
 trigger:
   type: schedule
   cron: "0 7 * * *"   # 7am local (server TZ)

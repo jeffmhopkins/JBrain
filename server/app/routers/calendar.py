@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, get_meta, set_meta
 from ..services import calendar as cal
 from ..services import clock
 from ..services import notes as notes_svc
@@ -174,12 +174,14 @@ class QuickAddIn(BaseModel):
     time: str | None = None         # HH:MM (optional)
     kind: str = "event"
     detail: str | None = None
+    reminders: list[dict] | None = None     # [{offset_minutes, anchor}] — optional
 
 
 @router.post("/quick-add")
 def quick_add(body: QuickAddIn):
     """Write a dated note for the event AND project its structured row (source='manual').
-    The note is the durable record; the row is its (deterministic) projection."""
+    The note is the durable record; the row is its (deterministic) projection. Optional
+    per-event reminders are attached to the projected event's identity_key."""
     title = _sanitize_title(body.title)
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
@@ -195,6 +197,9 @@ def quick_add(body: QuickAddIn):
             "title": title, "kind": body.kind, "starts_at": starts_at,
             "all_day": bool(all_day), "detail": detail,
         }], source="manual")
+        if body.reminders:
+            ik = cal.identity_key(note_id, title, body.kind, 0)
+            cal.set_reminders(conn, ik, body.reminders)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -276,3 +281,88 @@ def cancel(event_id: int):
         conn.rollback()
         raise
     return {"note_id": new_note_id, "cancelled_event_id": event_id}
+
+
+_REVIEW_WATERMARK = "calendar.review:seen"
+
+
+def _event_ik(conn, event_id: int) -> str:
+    """The stable identity_key for an event row id (any kind), or 404."""
+    row = conn.execute("SELECT identity_key FROM calendar_events WHERE id=?", (event_id,)).fetchone()
+    if not row or not row["identity_key"]:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return row["identity_key"]
+
+
+class RemindersIn(BaseModel):
+    reminders: list[dict] = []          # [{offset_minutes:int, anchor:'start'|'day_of'}]
+
+
+@router.get("/events/{event_id}/reminders")
+def get_event_reminders(event_id: int):
+    conn = get_conn()
+    return {"reminders": cal.get_reminders(conn, _event_ik(conn, event_id))}
+
+
+@router.post("/events/{event_id}/reminders")
+def set_event_reminders(event_id: int, body: RemindersIn):
+    """Replace an event's reminders (config keyed by the stable identity_key)."""
+    conn = get_conn()
+    ik = _event_ik(conn, event_id)
+    try:
+        out = cal.set_reminders(conn, ik, body.reminders)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out
+
+
+@router.get("/recently-added")
+def recently_added():
+    """Auto-created events added since the last review — feeds the in-calendar review banner."""
+    conn = get_conn()
+    since = get_meta(_REVIEW_WATERMARK, "", conn=conn) or ""
+    return {"since": since, "events": cal.recently_added(conn, since)}
+
+
+@router.post("/reviewed")
+def mark_reviewed():
+    """Advance the review watermark to now — clears the 'recently added' banner."""
+    conn = get_conn()
+    now = conn.execute("SELECT datetime('now')").fetchone()[0]
+    set_meta(conn, _REVIEW_WATERMARK, now)
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/events/{event_id}/dismiss")
+def dismiss_event_route(event_id: int):
+    """Revoke an auto-extracted event: remove it and stop extraction re-creating it.
+    Reversible via /undismiss with the returned identity_key."""
+    conn = get_conn()
+    ik = _event_ik(conn, event_id)
+    try:
+        out = cal.dismiss_event(conn, ik)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out
+
+
+class UndismissIn(BaseModel):
+    identity_key: str
+
+
+@router.post("/undismiss")
+def undismiss_event_route(body: UndismissIn):
+    """Undo a revoke — restore the snapshotted event and let extraction treat it normally."""
+    conn = get_conn()
+    try:
+        out = cal.undismiss_event(conn, body.identity_key)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out

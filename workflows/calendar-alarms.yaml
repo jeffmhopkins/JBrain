@@ -1,0 +1,16 @@
+# Per-appointment reminders — runs every minute (the scheduler's tick) so a reminder set
+# for "30 min before a 2pm appointment" fires within a minute of 1:30pm local. Cheap: a
+# no-op unless some event has a reminder configured. Separate from (and replaces) the old
+# daily 7am brief, which is retired.
+key: calendar-alarms
+name: Calendar reminders (per-event)
+enabled: true
+
+trigger:
+  type: schedule
+  interval_seconds: 60
+
+action:
+  type: calendar_alarms
+  config:
+    push: true

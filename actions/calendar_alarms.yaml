@@ -1,0 +1,12 @@
+# Per-event reminders. Fires the reminders the owner set on individual events
+# (calendar_reminders) at occurrence − offset — once per (occurrence, offset), and only
+# while the event hasn't started yet (so downtime never blasts past-due reminders).
+# Owner-local/DST-correct. No-op when no per-event reminders are set. Posts a Review card
+# + optional Web Push, deduped via calendar_fired(kind='alarm').
+type: calendar_alarms
+category: Calendar
+config:
+  - { key: push, label: Also send Web Push, type: boolean, default: true }
+steps:
+  - do: calendar_alarms
+    with: { push: "{{ config.push | default(true) }}" }

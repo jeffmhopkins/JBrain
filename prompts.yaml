@@ -898,6 +898,11 @@ actions:
     EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
     {known_titles}
 
+    KNOWN ALIASES — a name on the left is another way of referring to the article on the
+    right. When the prose uses one of these names, LINK it to that article while KEEPING the
+    name as the link's display, e.g. [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]:
+    {known_aliases}
+
     SOURCE NOTES:
     {sources}
   wiki_revise: |
@@ -1048,6 +1053,11 @@ actions:
 
     EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
     {known_titles}
+
+    KNOWN ALIASES — a name on the left is another way of referring to the article on the
+    right. When the prose uses one of these names, LINK it to that article while KEEPING the
+    name as the link's display, e.g. [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]:
+    {known_aliases}
 
     CURRENT SOURCES (already cited by this article):
     {sources}

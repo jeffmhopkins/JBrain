@@ -342,3 +342,31 @@ def test_linker_produced_alias_link_survives_hygiene(conn):
     res = wikilinks.normalize_all_link_labels(conn)
     body = notes_svc.get_by_title(conn, "kb/Things/Truck")["content_md"]
     assert "[[kb/People/Jeffrey Hopkins|JEFF  Hopkins]]" in body and res["fixed"] == 0
+
+
+# ---- F. writer-prompt {known_aliases} offer ---------------------------------------------
+
+def test_known_aliases_block_lists_offer(conn):
+    from app.services import wiki_build
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    block = wiki_build.known_aliases_block(conn, ["kb/People/Jeffrey Hopkins"])
+    assert '"Jeff Hopkins" → kb/People/Jeffrey Hopkins' in block
+
+
+def test_known_aliases_block_empty_when_target_not_in_set(conn):
+    from app.services import wiki_build
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    assert wiki_build.known_aliases_block(conn, ["kb/Things/Truck"]) == "(none)"
+    assert wiki_build.known_aliases_block(conn, []) == "(none)"
+
+
+def test_build_write_prompt_injects_alias_offer_and_no_leftover_placeholder(conn):
+    from app.services import wiki_build
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    art = {"title": "kb/Things/Ford Truck", "domain": "Things", "scope": "a truck", "sources": []}
+    prompt = wiki_build.build_write_prompt(conn, art, [], known_titles=["kb/People/Jeffrey Hopkins"])
+    assert "{known_aliases}" not in prompt              # placeholder fully substituted
+    assert '"Jeff Hopkins" → kb/People/Jeffrey Hopkins' in prompt

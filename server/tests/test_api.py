@@ -5239,6 +5239,10 @@ def _inline_threads(monkeypatch, ia):
                 self._real.join(*a, **k)
 
     monkeypatch.setattr(ia.threading, "Thread", _Inline)
+    # The worker's note-analysis fold-back now defers to a per-note coalescing thread; run it
+    # inline too so the deterministic tests don't spawn a background fold thread that outlives them.
+    from app.services import note_analysis as _na
+    monkeypatch.setattr(_na, "fold_run_inline", True)
 
 
 def test_image_upload_auto_analyzes_by_default(client, monkeypatch):
@@ -7288,6 +7292,7 @@ def test_transcription_completion_refreshes_note_analysis(client, monkeypatch):
     from app.db import get_conn
     from app.services import audio_transcription as at, note_analysis as na, llm
     conn = get_conn()
+    monkeypatch.setattr(na, "fold_run_inline", True)   # run the coalesced fold-back synchronously
     _enable_auto_analyze(client)   # the transcript→note-analysis fold-in is gated by the master switch
     note = client.post("/api/notes/entry", json={"text": "memo", "title": "Memo"}).json()
     nid = conn.execute("SELECT id FROM notes WHERE slug = ?", (note["slug"],)).fetchone()["id"]

@@ -311,15 +311,16 @@ def analyze(att_id: int) -> None:
         conn.commit()
         # The summary changes the note's analyzable content — refresh its AI analysis so the
         # gist/facts/entities fold in what's in the image (parity with the audio/video transcript
-        # path). Gated by the "auto-analyze new notes" toggle so it adds no per-image cost unless
-        # the owner opted in; best-effort and hash-guarded (no-ops when unchanged / no LLM key).
-        # AFTER the summary commit, in its own try/except, so a lock hiccup never loses the summary.
+        # path). DEFER to a per-note coalescing worker: N images landing together would otherwise
+        # each spend a fresh cheap-LLM run (every new summary changes the attachment-context hash)
+        # and could race the last summary out of the final run. request_fold coalesces to ~one run
+        # that includes all summaries; gated + hash-guarded inside. AFTER the summary commit, in its
+        # own try/except, so a fold-back hiccup never loses the summary.
         if att["note_id"] is not None:
             try:
                 from . import note_analysis
-                if note_analysis.auto_enabled(conn) and note_analysis.analyze(conn, att["note_id"]):
-                    conn.commit()
-            except Exception:  # noqa: BLE001 — analysis is a bonus; never fail the summary on it
+                note_analysis.request_fold(conn, att["note_id"])
+            except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the summary on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
         try:

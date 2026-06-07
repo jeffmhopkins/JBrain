@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 
 from . import llm, prompts
 
@@ -211,10 +212,94 @@ def pending_ids(conn, limit: int = 60, force: bool = False) -> list[int]:
     and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it."""
     where = "n.deleted_at IS NULL AND n.kind IN ('entry','daily')"
     if not force:
-        where += " AND (a.note_id IS NULL OR n.updated_at > a.analyzed_at)"
+        # Also surface a note whose attachment enrichment (image summary / transcript) landed
+        # AFTER its last analysis — the coalesced fold-back (request_fold) is process-local, so a
+        # fold lost to a crash leaves the attachment's analyzed_at newer than the note_analysis
+        # row's; this clause is the durable backstop that lets the batch reconcile it. (The
+        # fold-back doesn't bump notes.updated_at, so n.updated_at > a.analyzed_at can't catch it.)
+        where += (" AND (a.note_id IS NULL OR n.updated_at > a.analyzed_at"
+                  " OR EXISTS (SELECT 1 FROM attachments att WHERE att.note_id = n.id"
+                  " AND att.analysis_md IS NOT NULL AND att.analysis_md != ''"
+                  " AND att.analyzed_at > a.analyzed_at))")
     rows = conn.execute(
         "SELECT n.id FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
         f"WHERE {where} ORDER BY n.updated_at DESC LIMIT ?",
         (max(1, int(limit)),),
     ).fetchall()
     return [r["id"] for r in rows]
+
+
+# --- Coalesced fold-back of attachment enrichment ---------------------------
+# When auto-analyze is on, every finished image-vision / audio-transcript worker wants to fold
+# its new content into the note's analysis. N attachments landing on one note at once would each
+# spend a fresh cheap-LLM run — analyze() hashes the note PLUS ALL attachment context (see
+# content_hash / context_block_for_note), so each sibling's summary changes the hash and the
+# hash guard can't collapse them — and a race could leave the FINAL summary out of the last run.
+#
+# Mirror services/entity_rebuild.py: a process-local coalescer with at most ONE in-flight worker
+# PER NOTE. A fold requested while that note's worker is running sets a 'pending' marker; the
+# worker loops once more when it finishes, so a burst collapses to ~one analysis that — because
+# analyze() re-reads live DB state — includes every committed summary, never dropping the last.
+# The worker uses its OWN thread-local connection (sqlite connections are per-thread). There is no
+# durable flag: a fold lost to a crash is reconciled by pending_ids' attachment-newer-than-analysis
+# backstop above (a fold-back is best-effort — "a bonus; never fail the summary on it").
+_fold_lock = threading.Lock()
+_fold_inflight: set[int] = set()   # note_ids with a live fold worker
+_fold_pending: set[int] = set()    # note_ids re-requested while their worker ran → run once more
+
+# Test seam (cf. entity_rebuild.run_inline): when True, request_fold runs analyze INLINE on the
+# caller's connection so a test observes the reconciled state synchronously. Left False in prod.
+fold_run_inline = False
+
+
+def _fold_once(conn, note_id: int) -> None:
+    """Run a single hash-guarded analysis pass for the note and commit if it produced one."""
+    try:
+        if auto_enabled(conn) and analyze(conn, note_id):
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 — a fold-back is a bonus; never crash the worker
+        log.info("note_analysis: fold-back failed for note %s (%s)", note_id, exc)
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fold_worker(note_id: int) -> None:
+    """Background daemon: own thread-local connection. Drains the coalesced fold queue for one
+    note — runs a pass, and if another completion landed meanwhile (_fold_pending), once more."""
+    from ..db import close_conn, get_conn
+    conn = get_conn()
+    try:
+        while True:
+            _fold_once(conn, note_id)
+            with _fold_lock:
+                if note_id not in _fold_pending:
+                    _fold_inflight.discard(note_id)
+                    return
+                _fold_pending.discard(note_id)   # consume the coalesced request; loop once more
+    except Exception:  # noqa: BLE001 — absolute backstop so a note can't get stuck 'in flight'
+        with _fold_lock:
+            _fold_inflight.discard(note_id)
+            _fold_pending.discard(note_id)
+    finally:
+        close_conn()   # one-shot worker created this connection → release its sqlite handle/FD
+
+
+def request_fold(conn, note_id: int) -> None:
+    """Async-enrichment callers (image/audio/video workers) use THIS instead of calling analyze()
+    directly: coalesce a burst of per-attachment completions on one note into ~one re-analysis that
+    includes ALL summaries. No-op when auto-analyze is off. Reads auto_enabled on the CALLER's
+    connection, then hands off to a worker with its own connection (or runs inline under the seam)."""
+    if note_id is None or not auto_enabled(conn):
+        return
+    if fold_run_inline:                       # test seam: reconcile synchronously
+        _fold_once(conn, note_id)
+        return
+    with _fold_lock:
+        if note_id in _fold_inflight:
+            _fold_pending.add(note_id)        # a worker is live → it will run once more for us
+            return
+        _fold_inflight.add(note_id)
+    threading.Thread(target=_fold_worker, args=(note_id,), daemon=True,
+                     name=f"note-fold-{note_id}").start()

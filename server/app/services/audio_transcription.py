@@ -293,15 +293,15 @@ def transcribe(att_id: int) -> None:
         _set_status(conn, att_id, "done")
         conn.commit()
         # The transcript changes the note's analyzable content — refresh its AI analysis so the
-        # gist/facts/entities reflect what was said. Gated by the "auto-analyze new notes" toggle
-        # (parity with the image-vision path) so a manual transcribe with the feature off enriches
-        # the panel without spending a note-analysis call. Best-effort; no-ops without an LLM key.
+        # gist/facts/entities reflect what was said. DEFER to the per-note coalescing worker
+        # (parity with the image-vision path) so a mixed image+audio note collapses to ~one run
+        # that includes both the summaries and the transcript. Gated + hash-guarded inside
+        # request_fold; best-effort, AFTER the transcript commit so a fold-back hiccup never loses it.
         if att["note_id"] is not None:
             try:
                 from . import note_analysis
-                if note_analysis.auto_enabled(conn) and note_analysis.analyze(conn, att["note_id"]):
-                    conn.commit()
-            except Exception:  # noqa: BLE001 — analysis is a bonus; never fail the transcript on it
+                note_analysis.request_fold(conn, att["note_id"])
+            except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the transcript on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
         try:

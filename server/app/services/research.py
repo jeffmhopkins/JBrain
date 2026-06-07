@@ -246,10 +246,15 @@ def _pre_turn_guard(conn, spec, session) -> dict | None:
         return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
     if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
                     "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
+        conn.rollback()  # release the (empty) write txn the no-op UPDATE opened
         return {"phase": "ended", "message": "This link has reached its usage limit."}
     if not _global_budget_ok(conn):
         conn.commit()
         return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
+    # Commit the reply billing NOW — never hold the SQLite write lock open across the
+    # (up to 120s) LLM call that follows. busy_timeout is only 5s, so a held lock would
+    # make every other writer fail within seconds and wedge the single-worker server.
+    conn.commit()
     return None
 
 
@@ -310,6 +315,7 @@ def answer(conn, link, spec, session, question: str) -> dict:
     try:
         raw = llm.complete(msgs, system=system, max_tokens=_ANSWER_MAX_TOKENS)
     except Exception:
+        conn.rollback()  # clear any open txn so this pooled connection can't wedge later writers
         return {"phase": "answer", "message": "Something went wrong — please try again in a moment."}
     reply = _sanitize(raw) or _NO_CONTEXT
     _record(conn, session, transcript, q, reply, [h["id"] for h in hits])

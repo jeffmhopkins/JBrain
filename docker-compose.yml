@@ -17,6 +17,11 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
+    # Bound RSS so a runtime leak/regression is contained and cleanly OOM-killed+restarted
+    # (visible in `docker inspect … State.OOMKilled`) instead of thrashing the whole host into
+    # swap. Holds the embedding + whisper models (loaded once) plus normal request headroom;
+    # raise via MEM_LIMIT in .env if you run larger local models.
+    mem_limit: ${MEM_LIMIT:-1536m}
     logging: *default-logging
     env_file: .env
     environment:

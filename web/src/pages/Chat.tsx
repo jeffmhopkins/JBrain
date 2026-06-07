@@ -120,7 +120,6 @@ export default function Chat() {
   const [sub, setSub] = useState<EntrySub>(() => normalizeSub(localStorage.getItem("jbrain_entry_sub")));
   // Read-only "Deep" opt-in (Research only): bigger budget, same strict facts-only posture.
   const [deep, setDeep] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   // Medical/Financial destination picklists (notes/<root>/<dest>/…), lazily loaded the first
   // time each sub-type is used; the chosen destination persists per device.
   const [dests, setDests] = useState<string[]>([]);
@@ -287,7 +286,7 @@ export default function Chat() {
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, [input]);
 
-  function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
+  function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); }
   function pickSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
 
   // Load the Medical destinations the first time the Medical sub-type is entered.

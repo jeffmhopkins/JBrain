@@ -583,8 +583,8 @@ export async function streamChat(
   deep = false,
 ): Promise<void> {
   const body: any = { text, mode };
-  if (freshContext) body.fresh_context = true;
-  if (deep) body.deep = true;   // read-only "Deep" opt-in: bigger budget, same strict posture   // user left/returned/changed topic → re-ground fresh
+  if (freshContext) body.fresh_context = true;   // user left/returned/changed topic → re-ground fresh
+  if (deep) body.deep = true;   // read-only "Deep" opt-in: bigger budget, same strict posture
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const ctrl = new AbortController();
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {

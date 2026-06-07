@@ -203,9 +203,10 @@ def sanitize_dest(dest: str, root: str = _MED_ROOT) -> str:
     """A safe folder path under notes/<root>/ from a user-supplied destination name.
 
     Collapses whitespace, drops empty/'.'/'..' segments (no path traversal), caps each
-    segment and the whole path, and strips a leading 'notes'/'<root>' the caller may
-    have included. Nested names ('Cardiology/Visits') are preserved. '' if nothing safe
-    remains."""
+    segment and the whole path, and strips a leading 'notes' or ANY capture root the caller
+    may have included (so a financial dest typed as 'medical/X' can't land cross-tree).
+    Nested names ('Cardiology/Visits') are preserved. '' if nothing safe remains."""
+    _ = root  # kept for call-site clarity; all capture roots are stripped regardless
     raw = (dest or "").strip().strip("/")
     segs: list[str] = []
     for s in raw.split("/"):
@@ -213,7 +214,7 @@ def sanitize_dest(dest: str, root: str = _MED_ROOT) -> str:
         if not s or s in (".", ".."):
             continue
         segs.append(s[:60])
-    while segs and segs[0].lower() in ("notes", root):
+    while segs and segs[0].lower() in ("notes", *CAPTURE_ROOTS):
         segs.pop(0)
     return "/".join(segs)[:160]
 

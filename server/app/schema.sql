@@ -516,6 +516,48 @@ CREATE TABLE IF NOT EXISTS labshare_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_labshare_sessions_link ON labshare_sessions(share_link_id);
 
+-- Encrypted chat (kind='chat'): a real-time, end-to-end-encrypted 1:1 channel between the
+-- owner and a recipient. The server is a BLIND RELAY — it stores only opaque ciphertext +
+-- the two wrapped copies of the channel key (it can derive neither). Keep this block
+-- identical to _CHAT_SCHEMA_SQL in db.py.
+CREATE TABLE IF NOT EXISTS chat_channels (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  persist       INTEGER NOT NULL DEFAULT 1,      -- 1 = keep the encrypted backlog; 0 = ephemeral (relay only)
+  otp_required  INTEGER NOT NULL DEFAULT 0,      -- 1 = recipient must enter an out-of-band code (mixed into key derivation; NEVER stored)
+  owner_wrap    TEXT NOT NULL,                   -- channel key sealed under a key derived from the access key {salt,iv,ct}
+  guest_wrap    TEXT NOT NULL,                   -- channel key sealed under the link-fragment secret [+ OTP] {salt,iv,ct}
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
+  saved_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,   -- set when the transcript is committed to the brain
+  guest_name    TEXT,                            -- display name the recipient gave on joining
+  last_guest_at TEXT,
+  last_owner_at TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channels_link ON chat_channels(share_link_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,               -- monotonic per channel (ordering + resume)
+  sender        TEXT NOT NULL CHECK (sender IN ('owner','guest')),
+  iv            TEXT NOT NULL,                  -- base64 AES-GCM nonce
+  ciphertext    TEXT NOT NULL,                  -- base64 AES-GCM ciphertext (opaque to the server)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_link_seq ON chat_messages(share_link_id, seq);
+
+CREATE TABLE IF NOT EXISTS chat_files (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+  iv            TEXT NOT NULL,                  -- base64 AES-GCM nonce
+  blob          BLOB NOT NULL,                  -- AES-GCM ciphertext of the file bytes (opaque)
+  byte_size     INTEGER NOT NULL,              -- ciphertext size (for caps + UI)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_files_link ON chat_files(share_link_id);
+
 -- Web Push subscriptions (one row per browser/device that opted in). The endpoint
 -- is a push-service capability URL; p256dh/auth are the client's encryption keys.
 CREATE TABLE IF NOT EXISTS push_subscriptions (

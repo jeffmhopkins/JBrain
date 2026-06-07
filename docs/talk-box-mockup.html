@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JBrain · Article Talk — interactive mockup</title>
+<style>
+/* ============================================================================
+   CSS copied VERBATIM from web/src/styles.css (the relevant subset) so this
+   mockup matches the real implementation. Tokens, base elements, .content,
+   .rail, .muted, .row, .modal-select, and every .talk-* class are the actual
+   shipped rules. The only additions are in the #harness block (clearly marked).
+   ============================================================================ */
+:root {
+  --bg: #111315;
+  --bg-elev: #161a1c;
+  --bg-elev-2: #1c2123;
+  --border: #2a2f31;
+  --text: #d8dcde;
+  --text-dim: #828a8e;
+  --accent: #7f9aa6;
+  --accent-soft: rgba(127,154,166,0.14);
+  --danger: #c08585;
+  --ok: #84a591;
+  --good: #4ade80;
+  --radius: 8px;
+  --rail-w: 300px;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f5f7f8; --bg-elev: #ffffff; --bg-elev-2: #eceff1; --border: #d2d8dc;
+  --text: #1a1f23; --text-dim: #5b656b; --accent: #3f7d92; --accent-soft: rgba(63,125,146,0.12);
+  --danger: #b3403f; --ok: #2f8f5b; --good: #1f9d54; color-scheme: light;
+}
+:root[data-theme="sunlight"] {
+  --bg: #ffffff; --bg-elev: #ffffff; --bg-elev-2: #eef1f3; --border: #232a2e;
+  --text: #000000; --text-dim: #39424a; --accent: #0f5366; --accent-soft: rgba(15,83,102,0.16);
+  --danger: #962826; --ok: #0f6a3c; --good: #0f6a3c; color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font: inherit; cursor: pointer; border: 1px solid var(--border);
+  background: var(--bg-elev-2); color: var(--text);
+  border-radius: var(--radius); padding: 8px 14px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent-soft); color: var(--text); border-color: var(--accent); font-weight: 600; }
+button.ghost { background: transparent; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+input, textarea {
+  font: inherit; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; width: 100%;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h3 { font-size: 15px; }
+.content { flex: 1; padding: 22px; max-width: 860px; width: 100%; margin: 0 auto; }
+.rail {
+  width: var(--rail-w); flex-shrink: 0; border-left: 1px solid var(--border);
+  background: var(--bg-elev); padding: 16px; min-height: 100vh;
+}
+.muted { color: var(--text-dim); }
+.row { display: flex; gap: 10px; align-items: center; }
+.modal-select {
+  width: 100%; padding: 9px; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+/* ---- AI talk panel (verbatim from styles.css) -------------------------- */
+.talk-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 4px 0;
+  min-width: 0; overflow-wrap: anywhere; }
+.talk-text { flex: 1; min-width: 0; }
+.talk-resolve { flex: 0 0 auto; padding: 0 6px; line-height: 1.4; }
+.talk-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.talk-add .modal-select { flex: 1 1 7rem; width: auto; min-width: 0; }
+.talk-add input { flex: 1 1 12ch; min-width: 0; font-size: 16px; }
+.talk-add button { flex: 1 0 100%; }
+.talk-item-block { padding: 2px 0 6px; }
+.talk-item-block + .talk-item-block { border-top: 1px solid var(--surface-2, rgba(127,127,127,0.1)); }
+.talk-replies { margin: 2px 0 2px 22px; border-left: 2px solid var(--surface-2, rgba(127,127,127,0.2)); padding-left: 8px; }
+.talk-reply { font-size: 12px; padding: 2px 0; overflow-wrap: anywhere; }
+.talk-reply-who { font-weight: 600; opacity: 0.7; }
+.talk-actions { margin-left: 22px; display: flex; gap: 12px; }
+.link-btn { background: none; border: 0; padding: 0; font-size: 11px; color: var(--accent, #3a7afe);
+  cursor: pointer; }
+.link-btn:disabled { opacity: 0.5; cursor: default; }
+.talk-reply-add { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 22px; }
+.talk-reply-add input { flex: 1 1 12ch; min-width: 0; font-size: 16px; }
+.talk-maint-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+/* ============================================================================
+   #harness — NOT part of the app. The toolbar + page frame that hosts the
+   mockup so you can flip theme / desktop-rail vs mobile and see it in context.
+   ============================================================================ */
+#harness-bar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 14px;
+  align-items: center; padding: 10px 16px; background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border); font-size: 13px; }
+#harness-bar strong { font-weight: 600; }
+#harness-bar .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+#harness-bar .seg button { border: 0; border-radius: 0; padding: 5px 10px; font-size: 12px; background: transparent; }
+#harness-bar .seg button.on { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+#harness-bar .note { color: var(--text-dim); font-size: 12px; }
+.page { display: flex; align-items: flex-start; }
+.page.mobile { display: block; }
+.page.mobile .faux-article { display: none; }
+.page.mobile .rail { width: 100%; border-left: 0; min-height: auto; }
+.page.mobile .rail-cap { display: block; }
+.rail-cap { display: none; font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+.faux-article h1 { font-size: 24px; margin: 0 0 4px; }
+.faux-article .crumbs { color: var(--text-dim); font-size: 12px; margin-bottom: 14px; }
+.faux-article p { line-height: 1.6; color: var(--text); }
+.faux-article sup { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="harness-bar">
+  <strong>Mockup harness</strong>
+  <span class="seg" id="themeSeg">
+    <button data-theme="dark" class="on">Dark</button>
+    <button data-theme="light">Light</button>
+    <button data-theme="sunlight">Sunlight</button>
+  </span>
+  <span class="seg" id="viewSeg">
+    <button data-view="desktop" class="on">Desktop (rail)</button>
+    <button data-view="mobile">Mobile</button>
+  </span>
+  <button class="ghost" id="resetBtn" style="font-size:12px;padding:5px 10px">Reset data</button>
+  <span class="note">All actions are simulated locally — “Resolve with AI now” fakes a maintenance pass after ~1.6s.</span>
+</div>
+
+<div class="page" id="page">
+  <main class="content faux-article">
+    <h1>Allan Pierce</h1>
+    <div class="crumbs">kb › People</div>
+    <p>Allan Pierce is a structural engineer based in Portland, Oregon.<sup>[1]</sup> He
+    co-founded the firm Pierce &amp; Vance in 2009 and led its bridge-retrofit practice
+    until 2021.<sup>[2]</sup></p>
+    <p>This is a stand-in article body so the talk panel sits in its real context — the
+    300&nbsp;px right rail on desktop. Switch to “Mobile” above to see it full-width, where
+    it renders inline below the article.</p>
+  </main>
+
+  <aside class="rail">
+    <div class="rail-cap">▸ On mobile this panel appears inline below the article.</div>
+    <div id="panel"></div>
+  </aside>
+</div>
+
+<script>
+/* ----------------------------------------------------------------------------
+   Faithful re-implementation of web/src/components/TalkPanel.tsx in vanilla JS.
+   Same DOM structure, class names, copy, and interactions; mock data + simulated
+   network so the interactions can be felt without a backend.
+   ---------------------------------------------------------------------------- */
+const KIND_ICON = { decision:"🧠", conflict:"⚠️", question:"❓", todo:"☑️", directive:"📌", note:"📝", correction:"✅" };
+const ADD_KINDS = [["note","Note"],["directive","Directive"],["correction","Correction"],["question","Question"],["todo","TODO"]];
+const PRIORITY = new Set(["correction","directive","conflict","question","todo"]);
+
+let nextId = 100, nextRid = 500;
+function seed() {
+  return [
+    { id:1, kind:"directive", body:"Keep the prose concise — this page has bloated.", author:"user",
+      resolved_at:null, resolution:null, replies:[
+        { id:nextRid++, author:"ai", body:"Trimmed the early-career section from 6 sentences to 2 last pass." },
+        { id:nextRid++, author:"user", body:"Good — also drop the list of minor awards entirely." },
+      ]},
+    { id:2, kind:"conflict", body:"Sources disagree on the firm's founding year (2009 vs 2010).", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:3, kind:"question", body:"Was Pierce & Vance renamed after the 2018 merger?", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:4, kind:"correction", body:"Born 1980, not 1981.", author:"user", is_correction:1,
+      source_note_slug:"2026/06/07/3", resolved_at:null, resolution:null, replies:[] },
+    { id:5, kind:"todo", body:"Add the seismic-retrofit patent number when a source surfaces.", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:6, kind:"note", body:"Merged two near-duplicate sentences about the 2015 award.", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:7, kind:"note", body:"Lead sentence now opens with the current role per house style.", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:8, kind:"decision", body:"Excluded the personal-blog source as non-authoritative.", author:"ai",
+      resolved_at:null, resolution:null, replies:[] },
+    { id:9, kind:"question", body:"Is the Portland address still current as of 2024?", author:"ai",
+      resolved_at:"2026-05-30", resolution:"answered — confirmed via the 2024 permit note.", replies:[] },
+    { id:10, kind:"todo", body:"Verify the bridge count in the lead.", author:"ai",
+      resolved_at:"2026-05-12", resolution:"dismissed by owner: not worth tracking.", replies:[] },
+  ];
+}
+
+const S = {
+  items: seed(),
+  kind: "directive",
+  body: "",
+  flash: "",
+  replyFor: null,
+  replyText: "",
+  busy: false,
+  maintaining: false,
+  maintMsg: "",
+  focus: null,   // restore focus after re-render: 'add' | ('reply:'+id) | null
+};
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+function correctionBadge(t) {
+  if (!t.is_correction) return "";
+  const base = "margin-left:6px;font-size:10px;border-radius:3px;padding:1px 5px;white-space:nowrap;";
+  return t.source_note_slug
+    ? `<a href="#" data-noop="1" title="Promoted to a truth-layer note" style="${base}background:#d4edda;color:#155724;">✓ truth note →</a>`
+    : `<span title="The promoted note was deleted" style="${base}background:#eee;color:#777;">✓ truth (note deleted)</span>`;
+}
+
+function repliesHtml(t) {
+  if (!t.replies || !t.replies.length) return "";
+  return `<div class="talk-replies">` + t.replies.map((r) =>
+    `<div class="talk-reply"><span class="talk-reply-who">${r.author === "ai" ? "AI" : "You"}:</span> <span>${esc(r.body)}</span></div>`
+  ).join("") + `</div>`;
+}
+
+function actionsHtml(t) {
+  const cancel = S.replyFor === t.id;
+  return `<div class="talk-actions">
+    <button class="link-btn" data-act="togglereply" data-id="${t.id}">${cancel ? "Cancel" : "Reply"}</button>
+    ${t.kind !== "correction" ? `<button class="link-btn" data-act="dismiss" data-id="${t.id}" ${S.busy ? "disabled" : ""}>Dismiss</button>` : ""}
+  </div>`;
+}
+
+function replyBoxHtml(id) {
+  if (S.replyFor !== id) return "";
+  return `<div class="talk-reply-add">
+    <input data-role="replyinput" data-id="${id}" placeholder="Reply — read by the next maintenance pass…" value="${esc(S.replyText)}" />
+    <button class="ghost" data-act="sendreply" data-id="${id}" ${(S.busy || !S.replyText.trim()) ? "disabled" : ""}>Send</button>
+  </div>`;
+}
+
+function render() {
+  const open = S.items.filter((t) => !t.resolved_at);
+  const done = S.items.filter((t) => t.resolved_at);
+  const primary = open.filter((t) => PRIORITY.has(t.kind) || t.author === "user");
+  const minor = open.filter((t) => !PRIORITY.has(t.kind) && t.author !== "user");
+
+  let h = `
+  <h3 style="margin-bottom:4px">AI talk</h3>
+  <p class="muted" style="font-size:11px;margin-top:0">
+    The AI's reasoning for this article. Add a directive or a <strong>Correction</strong> (a fact fix that
+    becomes a source-of-truth note), <strong>Reply</strong> to steer an item, or <strong>Dismiss</strong> one
+    you've handled. Replies and new items are worked by the scheduled maintenance pass — or run one now.
+  </p>`;
+
+  h += primary.map((t) => `
+    <div class="talk-item-block">
+      <div class="talk-item">
+        <span title="${t.kind}">${KIND_ICON[t.kind] || "•"}</span>
+        <span class="talk-text">${esc(t.body)}${t.author === "user" ? ` <em class="muted"> — you</em>` : ""}${correctionBadge(t)}</span>
+      </div>
+      ${repliesHtml(t)}
+      ${actionsHtml(t)}
+      ${replyBoxHtml(t.id)}
+    </div>`).join("");
+
+  if (open.length === 0) h += `<p class="muted" style="font-size:13px">No open items.</p>`;
+
+  if (minor.length > 0) {
+    h += `<details style="margin-top:8px" ${S._minorOpen ? "open" : ""} data-fold="minor">
+      <summary class="muted" style="font-size:12px;cursor:pointer">${minor.length} note${minor.length > 1 ? "s" : ""}</summary>` +
+      minor.map((t) => `
+        <div class="talk-item-block">
+          <div class="talk-item muted">
+            <span title="${t.kind}">${KIND_ICON[t.kind] || "•"}</span>
+            <span class="talk-text">${esc(t.body)}</span>
+          </div>
+          ${repliesHtml(t)}
+          ${actionsHtml(t)}
+          ${replyBoxHtml(t.id)}
+        </div>`).join("") + `</details>`;
+  }
+
+  if (open.length > 0) {
+    h += `<div class="talk-maint-row">
+      <button class="ghost" data-act="maintain" ${S.maintaining ? "disabled" : ""}>${S.maintaining ? "Running…" : "Resolve with AI now"}</button>
+      ${S.maintMsg ? `<span class="muted" style="font-size:11px">${esc(S.maintMsg)}</span>` : ""}
+    </div>`;
+  }
+
+  const ph = S.kind === "correction" ? "State the correct fact (e.g. spelled Bjørn, not Bjorn)…" : "Add a note for the next pass…";
+  h += `<div class="talk-add">
+    <select class="modal-select" data-role="addkind">
+      ${ADD_KINDS.map(([v, l]) => `<option value="${v}" ${v === S.kind ? "selected" : ""}>${l}</option>`).join("")}
+    </select>
+    <input data-role="addinput" placeholder="${ph}" value="${esc(S.body)}" />
+    <button class="ghost" data-act="add">Add</button>
+  </div>`;
+  if (S.flash) h += `<p class="muted" style="font-size:11px;color:#2a6a2a;margin-top:4px">${esc(S.flash)}</p>`;
+
+  if (done.length > 0) {
+    h += `<details style="margin-top:8px" ${S._doneOpen ? "open" : ""} data-fold="done">
+      <summary class="muted" style="font-size:12px;cursor:pointer">${done.length} resolved</summary>` +
+      done.map((t) => `
+        <div class="talk-item-block">
+          <div class="talk-item muted">
+            <span>${KIND_ICON[t.kind] || "•"}</span>
+            <span class="talk-text">
+              <span style="text-decoration:line-through">${esc(t.body)}</span>
+              ${t.resolution ? `<em style="display:block;text-decoration:none">→ ${esc(t.resolution)}</em>` : ""}
+            </span>
+          </div>
+          ${repliesHtml(t)}
+        </div>`).join("") + `</details>`;
+  }
+
+  const panel = document.getElementById("panel");
+  panel.innerHTML = h;
+  bind(panel);
+
+  // Restore focus (innerHTML re-render drops it) + caret to end.
+  if (S.focus === "add") focusEnd(panel.querySelector('[data-role="addinput"]'));
+  else if (S.focus && S.focus.startsWith("reply:")) focusEnd(panel.querySelector('[data-role="replyinput"]'));
+}
+
+function focusEnd(el) { if (!el) return; el.focus(); const v = el.value; el.value = ""; el.value = v; }
+
+function bind(panel) {
+  panel.querySelectorAll("[data-act]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      const id = Number(el.getAttribute("data-id"));
+      switch (el.getAttribute("data-act")) {
+        case "togglereply": S.replyFor = S.replyFor === id ? null : id; S.replyText = ""; S.focus = S.replyFor ? "reply:" + id : null; render(); break;
+        case "sendreply": sendReply(id); break;
+        case "dismiss": dismiss(id); break;
+        case "maintain": maintainNow(); break;
+        case "add": add(); break;
+      }
+    });
+  });
+  const addInput = panel.querySelector('[data-role="addinput"]');
+  if (addInput) {
+    addInput.addEventListener("input", (e) => { S.body = e.target.value; S.focus = "add"; });
+    addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
+  }
+  const addKind = panel.querySelector('[data-role="addkind"]');
+  if (addKind) addKind.addEventListener("change", (e) => { S.kind = e.target.value; S.focus = "add"; render(); });
+  const rin = panel.querySelector('[data-role="replyinput"]');
+  if (rin) {
+    rin.addEventListener("input", (e) => { S.replyText = e.target.value; S.focus = "reply:" + e.target.getAttribute("data-id");
+      const send = panel.querySelector('[data-act="sendreply"]'); if (send) send.disabled = !S.replyText.trim(); });
+    rin.addEventListener("keydown", (e) => { if (e.key === "Enter") sendReply(Number(e.target.getAttribute("data-id"))); });
+  }
+  panel.querySelectorAll("[data-fold]").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.getAttribute("data-fold") === "minor") S._minorOpen = d.open; else S._doneOpen = d.open;
+  }));
+  panel.querySelectorAll('[data-noop]').forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); alert("(mockup) would open the source-of-truth note."); }));
+}
+
+function add() {
+  if (!S.body.trim()) return;
+  const promoted = S.kind === "correction";
+  S.items.unshift({ id: nextId++, kind: S.kind, body: S.body.trim(), author: "user",
+    resolved_at: null, resolution: null, is_correction: promoted ? 1 : 0,
+    source_note_slug: promoted ? "2026/06/07/" + nextId : null, replies: [] });
+  S.flash = promoted ? "✓ Saved as a source-of-truth note (Correction)." : "";
+  S.body = ""; S.focus = "add"; render();
+}
+
+function sendReply(id) {
+  const text = S.replyText.trim();
+  if (!text || S.busy) return;
+  const t = S.items.find((x) => x.id === id);
+  if (t) t.replies.push({ id: nextRid++, author: "user", body: text });
+  S.replyText = ""; S.replyFor = null; S.focus = null; render();
+}
+
+function dismiss(id) {
+  if (S.busy) return;
+  if (!confirm("Dismiss this item? It will stop being worked by the maintenance pass.")) return;
+  const t = S.items.find((x) => x.id === id);
+  if (t) { t.resolved_at = "now"; t.resolution = "dismissed by owner"; }
+  render();
+}
+
+function maintainNow() {
+  if (S.maintaining) return;
+  S.maintaining = true; S.maintMsg = ""; render();
+  setTimeout(() => {
+    // Simulate a realistic surgical pass: apply the directive + answer what the
+    // sources support, leave a genuinely-unresolvable conflict open.
+    let resolved = 0;
+    const dir = S.items.find((t) => !t.resolved_at && t.kind === "directive");
+    if (dir) { dir.replies.push({ id: nextRid++, author: "ai", body: "Applied — trimmed the awards list and tightened the lead." });
+               dir.resolved_at = "now"; dir.resolution = "applied — directive carried into the rewrite."; resolved++; }
+    const q = S.items.find((t) => !t.resolved_at && t.kind === "question");
+    if (q) { q.resolved_at = "now"; q.resolution = "answered — added the renamed-entity note from the 2018 source."; resolved++; }
+    const openLeft = S.items.filter((t) => !t.resolved_at).length;
+    S.maintaining = false;
+    S.maintMsg = resolved ? `✓ Updated the article · resolved ${resolved}.` : "Ran the pass — no change needed.";
+    if (openLeft) S.maintMsg += ` · ${openLeft} still open`;
+    render();
+  }, 1600);
+}
+
+/* ---- harness controls ---- */
+document.getElementById("themeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-theme]"); if (!b) return;
+  document.documentElement.setAttribute("data-theme", b.getAttribute("data-theme"));
+  document.querySelectorAll("#themeSeg button").forEach((x) => x.classList.toggle("on", x === b));
+});
+document.getElementById("viewSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]"); if (!b) return;
+  document.getElementById("page").classList.toggle("mobile", b.getAttribute("data-view") === "mobile");
+  document.querySelectorAll("#viewSeg button").forEach((x) => x.classList.toggle("on", x === b));
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  Object.assign(S, { items: seed(), kind: "directive", body: "", flash: "", replyFor: null,
+    replyText: "", busy: false, maintaining: false, maintMsg: "", focus: null, _minorOpen: false, _doneOpen: false });
+  render();
+});
+
+render();
+</script>
+</body>
+</html>

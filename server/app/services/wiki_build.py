@@ -34,6 +34,56 @@ _TRUNCATED = ("max_tokens", "length")
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 _TALK_RE = re.compile(r"\n?```talk\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
+# Auto-continue: when a draft is cut off at the token cap, ask the model to RESUME exactly
+# where it stopped and emit ONLY the remainder — then concatenate the RAW partial + RAW
+# remainder and run _strip_fence/_extract_talk ONCE on the JOINED string (never per-segment,
+# or a ```talk/code fence split across the seam would corrupt extraction). Capped at ONE
+# continuation; a still-truncated continuation falls back to the existing re-draft (live) /
+# quarantine (batch). Cheaper than a full re-draft and never loses a long good draft.
+CONTINUE_PROMPT = (
+    "Your previous message was cut off at the length limit before you finished. "
+    "Continue the article from EXACTLY where you stopped — resume mid-word/mid-line if "
+    "that is where it ended — and output ONLY the remaining text. Do NOT restate, repeat, "
+    "or re-introduce anything you already wrote, and do NOT wrap your continuation in a code "
+    "fence. Pick up precisely at the cutoff and finish the article (including the trailing "
+    "```talk block if it was not yet emitted)."
+)
+
+
+def _join_continuation(partial: str, remainder: str) -> str:
+    """Stitch a truncated draft's RAW partial with its RAW continuation. We glue the two
+    text streams with no separator — the model is told to resume EXACTLY at the cutoff, so
+    inserting a newline could break a mid-word/mid-fence seam. Extraction (_strip_fence /
+    _extract_talk) is run by the CALLER on this joined string, ONCE, so a fence split across
+    the boundary re-forms before parsing."""
+    return (partial or "") + (remainder or "")
+
+
+def _complete_with_continue(msgs: list[dict], cap: int, ceiling: int) -> tuple[str, str | None]:
+    """Non-streaming completion with the batch truncation recovery ladder:
+      1. complete at `cap`; if cut off, retry ONCE at min(cap*2, ceiling) (the existing
+         bigger-cap retry — unchanged behaviour);
+      2. if STILL cut off, AUTO-CONTINUE exactly ONCE: append the truncated assistant text
+         and a "resume where you stopped" user turn, complete again, and JOIN the RAW
+         partial + RAW remainder.
+    Returns (raw_text, final_stop_reason). The caller runs _strip_fence/_extract_talk ONCE
+    on the returned raw text and treats a still-truncated final_stop as a quarantine. The
+    JOIN is raw so a ```talk/code fence split across the cap re-forms before extraction; the
+    continuation is capped at one so a perpetually-truncating model can't loop."""
+    text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+    if stop in _TRUNCATED:
+        cap = min(cap * 2, ceiling)
+        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+    if stop not in _TRUNCATED:
+        return text, stop
+    # One auto-continue turn on a fresh message list (don't mutate the caller's `msgs`):
+    # the original prompt, the truncated assistant draft, then the resume instruction.
+    cont_msgs = [*msgs,
+                 {"role": "assistant", "content": text},
+                 {"role": "user", "content": CONTINUE_PROMPT}]
+    remainder, stop2 = llm.complete_with_meta(cont_msgs, max_tokens=cap)
+    return _join_continuation(text, remainder), stop2
+
 
 def _extract_talk(text: str):
     """Pull a trailing ```talk JSON block out of the writer's output. Returns
@@ -494,13 +544,11 @@ def write_one(conn, art: dict, instructions: str | None = None,
     msgs = [{"role": "user", "content": prompt}]
     try:
         # Surface the finish reason so a draft cut off at the token cap (its trailing
-        # ## References is the first casualty) is retried once at a bigger cap, then FAILED
-        # — never silently saved half-written. Mirrors the live engine's truncation guard.
-        cap = 3000
-        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
-        if stop in _TRUNCATED:
-            cap = min(cap * 2, 6000)
-            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        # ## References is the first casualty) is recovered, not silently saved half-written.
+        # Recovery ladder: bigger-cap retry → ONE auto-continue (resume + raw join) → only
+        # then FAIL. Extraction runs ONCE on the joined raw text so a ```talk/code fence
+        # split across the cap re-forms first. Mirrors the live engine's truncation guard.
+        text, stop = _complete_with_continue(msgs, cap=3000, ceiling=6000)
         if stop in _TRUNCATED:
             base["errors"] = ["draft truncated at the token limit"]
             return base
@@ -877,13 +925,11 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
               .replace("{sources}", _sources_text(srcs)))
     msgs = [{"role": "user", "content": prompt}]
     try:
-        # Retry once at a bigger cap on truncation, then FAIL (changed=False → don't save)
-        # rather than persist a maintain output cut off at the token limit.
-        cap = 3500
-        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
-        if stop in _TRUNCATED:
-            cap = min(cap * 2, 6000)
-            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        # Bigger-cap retry → ONE auto-continue (resume + raw join) → then FAIL
+        # (changed=False → don't save) rather than persist a maintain output cut off at the
+        # token limit. _extract_maintain runs ONCE on the joined raw text so a ```maintain/
+        # ```article fence split across the cap re-forms before parsing.
+        text, stop = _complete_with_continue(msgs, cap=3500, ceiling=6000)
         if stop in _TRUNCATED:
             base["errors"] = ["maintain output truncated"]
             return base

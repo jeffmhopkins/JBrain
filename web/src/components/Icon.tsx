@@ -28,6 +28,9 @@ const PATHS: Record<string, string> = {
   // Speaker with sound waves (TTS on) and the muted variant (TTS off).
   speaker: "M11 5 6 9H2v6h4l5 4z M15.54 8.46a5 5 0 0 1 0 7.07 M19.07 4.93a10 10 0 0 1 0 14.14",
   speakerOff: "M11 5 6 9H2v6h4l5 4z M22 9l-6 6 M16 9l6 6",
+  // Vertical kebab — three dots (round caps render the zero-length segments as dots).
+  dots: "M12 5h.01 M12 12h.01 M12 19h.01",
+  trash: "M3 6h18 M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6",
 };
 
 export function Icon({ name, size = 19, className }: { name: keyof typeof PATHS | string; size?: number; className?: string }) {

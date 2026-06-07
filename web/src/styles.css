@@ -298,6 +298,20 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   background: color-mix(in srgb, var(--mc) 18%, var(--bg-elev));
   border-color: var(--mc);
 }
+/* Kebab actions menu on the note/wiki page — same row grammar as .mode-menu,
+   but it drops DOWN from the trigger and right-aligns under the kebab. */
+.note-menu {
+  --mc: var(--m-assisted);
+  position: absolute; top: 100%; right: 0; margin-top: 6px; width: 280px; max-width: calc(100vw - 32px);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 14px;
+  padding: 6px; z-index: 60; box-shadow: 0 12px 30px rgba(0,0,0,.45);
+}
+.note-menu .mode-row { min-height: 48px; padding: 9px 12px; }
+.note-menu .mode-hint { font-size: 12px; }
+.note-menu .mode-row.accent { --mc: var(--accent); }
+.note-menu .mode-row.danger { --mc: var(--danger); color: var(--danger); }
+.note-menu-sep { height: 1px; background: var(--border); margin: 5px 8px; }
+
 .icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
 .icon-btn:hover { color: var(--text); }
 .icon-btn.active { color: var(--accent); }

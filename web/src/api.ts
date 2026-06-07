@@ -560,9 +560,10 @@ export const personFromNote = (slug: string) => post<{ id: number; name: string 
 
 // The brain owner = the default person. Their name anchors first-person notes and titles
 // their kb/People/<name> page. is_set is false while it's still the unnamed default.
-export interface Owner { id: number | null; name: string; display: string; is_set: boolean; }
+export interface Owner { id: number | null; name: string; display: string; aliases?: string; is_set: boolean; }
 export const getOwner = () => get<Owner>("/api/people/owner");
-export const setOwner = (name: string) => put<Owner>("/api/people/owner", { name });
+export const setOwner = (name: string, aliases?: string) =>
+  put<Owner>("/api/people/owner", aliases === undefined ? { name } : { name, aliases });
 
 export interface MediaSettings {
   audio_model: string; audio_compute_type: string;

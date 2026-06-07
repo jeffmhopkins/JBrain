@@ -322,17 +322,51 @@ def _repair_citation_titles(content: str, bad: list[str], source_titles: list[st
     return wikilinks.WIKILINK_RE.sub(repl, content), still_bad
 
 
+def _apply_link_props(body: str, props: list[dict]) -> str:
+    """Insert [[target|surface]] for each prop, right-to-left so earlier offsets stay valid."""
+    for p in sorted(props, key=lambda x: -x["at"]):
+        s, e = p["at"], p["at"] + len(p["surface"])
+        body = body[:s] + f"[[{p['target']}|{p['surface']}]]" + body[e:]
+    return body
+
+
+def _alias_link_props(conn, body: str, title: str, surface_map: dict) -> list[dict]:
+    """Props for prose surfaces that match a REGISTERED ALIAS (entity_index.alias_surface),
+    linked to the alias's canonical article. The link displays the matched prose text
+    ([[canonical|Jeff Hopkins]]) and the match is round-trip verified — normalize(surface) ==
+    alias_norm — so the label-hygiene allow-list (which keys on normalize(display)) protects
+    exactly these links. Masks code/links/footnotes; never re-links an already-linked target;
+    one link per target. No DB write."""
+    from . import entity_index
+    spans = _mask_spans(body)
+    linked = {x.lower() for x in wikilinks.extract_links(body)}
+    props: list[dict] = []
+    for alias_norm, (art, disp) in surface_map.items():
+        if not disp or art == title or art.lower() in linked:
+            continue
+        pat = r"(?<!\w)" + r"\s+".join(re.escape(w) for w in disp.split()) + r"(?!\w)"
+        for m in re.finditer(pat, body, re.IGNORECASE):
+            if any(s <= m.start() < e for s, e in spans):
+                continue
+            surface = m.group(0)
+            if len(surface) < 4 or entity_index.normalize(surface) != alias_norm:
+                continue
+            props.append({"target": art, "surface": surface, "at": m.start()})
+            break
+    return props
+
+
 def add_links_to_content(conn, title: str, body: str):
-    """Deterministically link bare mentions in `body` that EXACTLY match an existing kb
-    article's leaf name — the in-memory half of check_needed_links, performing NO DB write so
-    a caller (the live rebuild engine / write_one) can apply it to a staged draft and persist
-    it with the single article write. Returns (new_body, proposals).
+    """Deterministically link bare mentions in `body` to their kb article — the in-memory half
+    of check_needed_links, performing NO DB write so a caller (the live rebuild engine /
+    write_one) can apply it to a staged draft and persist it with the single article write.
+    Returns (new_body, proposals). Two passes: (1) EXACT article-leaf matches; (2) registered
+    ALIAS matches (e.g. prose "Jeff Hopkins" → [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]).
 
     Self-guarding for the PII firewall: refuses entirely on a Reference or private (Health/
     Finance) TARGET article (those must stay unnamed / never link People), and never offers a
-    private-domain target. Reuses check_needed_links's ambiguity/short/common-word refusals and
-    code/link/footnote masking, so it can't link a stop-word, an ambiguous leaf, or inside a
-    citation."""
+    private-domain target. Reuses ambiguity/short/common-word refusals and code/link/footnote
+    masking, so it can't link a stop-word, an ambiguous leaf/alias, or inside a citation."""
     from . import entity_index
     if wiki_guides.is_private_title(title) or wiki_guides.domain_for_title(title) == "Reference":
         return body, []
@@ -356,9 +390,10 @@ def add_links_to_content(conn, title: str, body: str):
             return False
         return True
 
+    # Pass 1 — canonical article leaves.
     spans = _mask_spans(body)
     linked = {x.lower() for x in wikilinks.extract_links(body)}
-    props: list[dict] = []
+    leaf_props: list[dict] = []
     for leaf_lower, cands in leafmap.items():
         tgt = cands[0]
         if tgt == title or tgt.lower() in linked:
@@ -368,12 +403,19 @@ def add_links_to_content(conn, title: str, body: str):
             continue
         for m in re.finditer(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", body, re.IGNORECASE):
             if not any(s <= m.start() < e for s, e in spans):
-                props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
+                leaf_props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
                 break
-    for p in sorted(props, key=lambda x: -x["at"]):       # right-to-left preserves offsets
-        s, e = p["at"], p["at"] + len(p["surface"])
-        body = body[:s] + f"[[{p['target']}|{p['surface']}]]" + body[e:]
-    return body, [{"target": p["target"], "surface": p["surface"]} for p in props]
+    body = _apply_link_props(body, leaf_props)
+
+    # Pass 2 — registered aliases (re-mask against the post-leaf body so we never nest links).
+    try:
+        surface_map = entity_index.alias_surface(conn)
+    except Exception:  # noqa: BLE001 — alias surfacing must never break linking
+        surface_map = {}
+    alias_props = _alias_link_props(conn, body, title, surface_map)
+    body = _apply_link_props(body, alias_props)
+
+    return body, [{"target": p["target"], "surface": p["surface"]} for p in (leaf_props + alias_props)]
 
 
 def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | None = None,
@@ -546,34 +588,89 @@ def flag_dead_links(conn) -> dict:
 
 def link_owner(conn) -> dict:
     """Connect the default person (the note-taker / 'me') to their People article, so the
-    owner's page isn't an orphan. Matches the article leaf first against the person's real
-    name/aliases, then against the generic placeholders the writer uses when the default
-    person is unnamed ('Owner', 'Me'). Never guesses — returns linked:None rather than
+    owner's page isn't an orphan. Matches a LIVE (non-redirect) kb/People page by: (1) exact
+    normalized name/declared-alias; (2) a nickname-aware match (jeff↔jeffrey) GATED exactly
+    like the entity merge — a shared distinctive (surname) token, no conflicting generational
+    suffix, nickname-mapped token-subset — and only when EXACTLY ONE page matches (never guess
+    among several); (3) the generic placeholders an unnamed owner page uses ('Owner'/'Me').
+    Stores the matched (canonical) page's slug. Never guesses — returns linked:None rather than
     risk attaching 'me' to a family member's page."""
-    from . import people
+    from . import people, entity_index, nickname_lexicon
     o = people.owner(conn)
     if not o:
         return {"linked": None}
-    name = (o["name"] or "").strip().lower()
-    aliases = {a.strip().lower() for a in (o["aliases"] or "").split(",") if a.strip()}
-    strong = ({name} if name and name != "me" else set()) | aliases
-    weak = {"owner", "me", "the owner"} | ({name} if name else set())
+    name = (o["name"] or "").strip()
+    owner_norm = entity_index.normalize(name) if name and name.lower() != "me" else ""
+    alias_norms = {entity_index.normalize(a) for a in (o["aliases"] or "").split(",") if a.strip()}
+    alias_norms.discard("")
     rows = [dict(r) for r in conn.execute(
-        "SELECT slug, title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
+        "SELECT slug, title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
         "AND title LIKE 'kb/People/%'").fetchall()]
+    leaf_norm = lambda t: entity_index.normalize(t.split("/")[-1])
 
-    def find(cands):
+    # 1) Exact normalized match on the owner's name or a declared alias.
+    strong = ({owner_norm} if owner_norm else set()) | alias_norms
+    target = next((r for r in rows if leaf_norm(r["title"]) in strong), None) if strong else None
+
+    # 2) Nickname-aware, surname-gated, exactly-one-match (mirrors entity_index._merge_map).
+    if target is None and owner_norm:
+        otoks = set(owner_norm.split())
+        odist = {t for t in otoks if len(t) >= 3}
+        omap = nickname_lexicon.map_tokens(otoks)
+        osuf = nickname_lexicon.suffixes(otoks)
+        cands = []
         for r in rows:
-            if r["title"].split("/")[-1].strip().lower() in cands:
-                return r
-        return None
+            ltoks = set(leaf_norm(r["title"]).split())
+            if not (odist & {t for t in ltoks if len(t) >= 3}):     # require a shared real token
+                continue
+            if osuf != nickname_lexicon.suffixes(ltoks):            # Jr/Sr conflict → different person
+                continue
+            lmap = nickname_lexicon.map_tokens(ltoks)
+            if omap <= lmap or lmap <= omap:
+                cands.append(r)
+        if len(cands) == 1:                                          # never guess among ≥2
+            target = cands[0]
 
-    target = (find(strong) if strong else None) or find(weak)
+    # 3) Generic placeholder pages for an unnamed owner.
+    if target is None:
+        weak = {"owner", "me", "the owner"} | ({owner_norm} if owner_norm else set())
+        target = next((r for r in rows if leaf_norm(r["title"]) in weak), None)
+
     if not target:
         return {"linked": None}
     conn.execute("UPDATE people SET note_slug=? WHERE id=?", (target["slug"], o["id"]))
     conn.commit()
     return {"linked": target["title"], "person": o["name"]}
+
+
+def reconcile_owner(conn) -> dict:
+    """E1+E2: bind the owner to their People article (link_owner) AND register the owner's
+    display name + declared aliases as DURABLE entity_decisions('alias') of that article's
+    entity, so prose using a nickname ("Jeff Hopkins") links to the canonical page. Split-gated
+    (never re-binds across a user split) and idempotent (entity_decisions.add de-dupes). The
+    seeded aliases materialize into entity_aliases on the next entity_index.rebuild. Safe on the
+    request path (no LLM/embeddings). Returns {linked, person, aliases_seeded}."""
+    from . import people, entity_index, entity_decisions
+    res = link_owner(conn)
+    title = res.get("linked")
+    if not title:
+        return {**res, "aliases_seeded": 0}
+    o = people.owner(conn)
+    name = (o["name"] or "").strip()
+    ent = conn.execute("SELECT normalized_key FROM entities WHERE article_title=?", (title,)).fetchone()
+    if not ent or not name:
+        return {**res, "aliases_seeded": 0}
+    canon = ent["normalized_key"]
+    splits = entity_decisions.load_splits(conn)
+    seeded = 0
+    for form in [name, *[a.strip() for a in (o["aliases"] or "").split(",") if a.strip()]]:
+        an = entity_index.normalize(form)
+        if not an or an == canon or frozenset({canon, an}) in splits:
+            continue
+        entity_decisions.add(conn, kind="alias", type="person", norm_a=an, norm_b=canon, display_a=form)
+        seeded += 1
+    conn.commit()
+    return {**res, "aliases_seeded": seeded}
 
 
 _AKA_LINE_RE = re.compile(r"^\*Also known as:.*\*$")
@@ -1098,6 +1195,11 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
             return False
         return True
 
+    try:
+        surface_map = entity_index.alias_surface(conn)
+    except Exception:  # noqa: BLE001
+        surface_map = {}
+
     targets = [title] if title else titles
     out_articles = []
     for tt in targets:
@@ -1105,29 +1207,32 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
         if not note or note["kind"] != "kb":
             continue
         body = note["content_md"] or ""
+        # The article being edited must not name/link People from a Reference/private page.
+        public_target = not (wiki_guides.is_private_title(tt) or wiki_guides.domain_for_title(tt) == "Reference")
         spans = _mask_spans(body)
         linked = {x.lower() for x in wikilinks.extract_links(body)}
         props = []
-        for leaf_lower, cands in leafmap.items():
-            tgt = cands[0]
-            if tgt == tt or tgt.lower() in linked:
-                continue
-            leaf = tgt.split("/")[-1]
-            if not linkable(leaf_lower, leaf):
-                continue
-            for m in re.finditer(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", body, re.IGNORECASE):
-                if not any(s <= m.start() < e for s, e in spans):
-                    props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
-                    break
-        if mode == "auto" and props:
-            nb = body
-            for p in sorted(props, key=lambda x: -x["at"]):      # right-to-left preserves offsets
-                s, e = p["at"], p["at"] + len(p["surface"])
-                nb = nb[:s] + f"[[{p['target']}|{p['surface']}]]" + nb[e:]
+        if public_target:
+            for leaf_lower, cands in leafmap.items():
+                tgt = cands[0]
+                if tgt == tt or tgt.lower() in linked:
+                    continue
+                leaf = tgt.split("/")[-1]
+                if not linkable(leaf_lower, leaf):
+                    continue
+                for m in re.finditer(r"(?<!\w)" + re.escape(leaf) + r"(?!\w)", body, re.IGNORECASE):
+                    if not any(s <= m.start() < e for s, e in spans):
+                        props.append({"target": tgt, "surface": m.group(0), "at": m.start()})
+                        break
+        if mode == "auto" and props:                          # apply leaf links, then re-find aliases
+            body = _apply_link_props(body, props)
+        alias_props = _alias_link_props(conn, body, tt, surface_map) if public_target else []
+        if mode == "auto" and (props or alias_props):
+            nb = _apply_link_props(body, alias_props) if alias_props else body
             notes_svc.upsert_note(conn, tt, nb, kind="kb", source="user",
                                   version_note="added missing cross-links")
-        out_articles.append({"title": tt,
-                             "proposals": [{"target": p["target"], "surface": p["surface"]} for p in props]})
+        out_articles.append({"title": tt, "proposals": [
+            {"target": p["target"], "surface": p["surface"]} for p in (props + alias_props)]})
     if mode == "auto":
         conn.commit()
     return {"ok": True, "articles": out_articles,

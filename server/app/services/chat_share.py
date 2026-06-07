@@ -200,7 +200,8 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
             return {"note_slug": row["slug"], "already_saved": True}
     who = (guest_name or ch["guest_name"] or "a guest").strip() or "a guest"
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    note_title = notes_svc.root_title((title or f"Chat with {who} — {day}").strip()[:120], "notes")
+    base = (title or f"Chat with {who} — {day}").strip()[:120]
+    note_title = notes_svc.root_title(f"chats/{base}", "notes")     # file every saved chat under notes/chats/
     body = (transcript_md or "").strip() or "_(no messages)_"
     if "_Encrypted chat" not in body:                # provenance footer → entity extraction links the person
         body = body.rstrip() + f"\n\n---\n_Encrypted chat with {who}._\n"

@@ -89,7 +89,12 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -
     if entity_expand:  # alias-aware: blend the resolved entity's notes into the fusion
         try:
             from . import entity_index
-            ids = entity_index.note_ids_for_name(conn, q)
+            # Don't expand an AMBIGUOUS name (maps to ≥2 entities) — we can't safely pick one,
+            # and blending a same-named person's corpus would be wrong. This mirrors the linker's
+            # ambiguity guard so the search channel and the linker agree on what an alias resolves to.
+            qn = entity_index.normalize(q)
+            ambiguous = {str(t.get("term", "")).lower() for t in entity_index.ambiguous_terms(conn)}
+            ids = [] if (not qn or qn in ambiguous) else entity_index.note_ids_for_name(conn, q)
             if ids:
                 qmarks = ",".join("?" * len(ids))
                 rows = conn.execute(

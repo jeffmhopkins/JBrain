@@ -395,3 +395,49 @@ def test_hybrid_notes_entity_expand_ignores_sentence_query(conn):
     # The whole query isn't a bare name/alias → must NOT expand into the person's corpus.
     exp = search.hybrid_notes(conn, "what did jeff hopkins eat", 8, entity_expand=True)
     assert all(r["id"] != n1["id"] for r in exp)
+
+
+def test_hybrid_notes_entity_expand_skips_ambiguous_name(conn):
+    # "Jeff" maps to two distinct entities → ambiguous → must NOT expand either corpus.
+    from app.services import search
+    na = _mk(conn, "notes/2026/02/01", "lunch a", kind="entry")
+    nb = _mk(conn, "notes/2026/02/02", "lunch b", kind="entry")
+    ea = _entity(conn, "Jeff Hopkins", aliases=["Jeff"])
+    eb = _entity(conn, "Jeff Stevens", aliases=["Jeff"])
+    conn.execute("INSERT INTO entity_mentions (entity_id, note_id) VALUES (?,?)", (ea, na["id"]))
+    conn.execute("INSERT INTO entity_mentions (entity_id, note_id) VALUES (?,?)", (eb, nb["id"]))
+    conn.commit()
+    exp = search.hybrid_notes(conn, "Jeff", 8, entity_expand=True)
+    assert all(r["id"] not in (na["id"], nb["id"]) for r in exp)   # ambiguous → no blend
+
+
+def test_write_one_prompt_has_no_leftover_alias_placeholder(conn, monkeypatch):
+    # write_one builds its own prompt; ensure {known_aliases} is substituted (offer present).
+    from app.services import wiki_build, llm
+    src = _mk(conn, "notes/2026/02/03", "Jeff Hopkins bought a Ford truck.", kind="entry")
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    seen = {}
+    def fake_complete(messages, **kw):
+        seen["prompt"] = messages[0]["content"]
+        return "# Ford Truck\n\nA truck owned by [[kb/People/Jeffrey Hopkins|Jeff Hopkins]].\n"
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    art = {"title": "kb/Things/Ford Truck", "domain": "Things", "scope": "truck", "sources": [src["id"]]}
+    wiki_build.write_one(conn, art, known_titles=["kb/People/Jeffrey Hopkins"])
+    assert "{known_aliases}" not in seen["prompt"]
+    assert '"Jeff Hopkins" → kb/People/Jeffrey Hopkins' in seen["prompt"]
+
+
+def test_both_prompt_templates_carry_known_aliases_placeholder():
+    from app.services import prompts
+    assert "{known_aliases}" in prompts.get("actions.wiki_write", "")
+    assert "{known_aliases}" in prompts.get("actions.wiki_maintain", "")
+
+
+def test_notes_for_returns_normalized_key(conn):
+    from app.services import entity_index
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    eid = _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins")
+    detail = entity_index.notes_for(conn, eid)
+    assert detail["normalized_key"] == "jeffrey hopkins"

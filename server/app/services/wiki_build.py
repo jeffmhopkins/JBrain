@@ -34,12 +34,14 @@ _TRUNCATED = ("max_tokens", "length")
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 _TALK_RE = re.compile(r"\n?```talk\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
-# Auto-continue: when a draft is cut off at the token cap, ask the model to RESUME exactly
-# where it stopped and emit ONLY the remainder — then concatenate the RAW partial + RAW
-# remainder and run _strip_fence/_extract_talk ONCE on the JOINED string (never per-segment,
-# or a ```talk/code fence split across the seam would corrupt extraction). Capped at ONE
-# continuation; a still-truncated continuation falls back to the existing re-draft (live) /
-# quarantine (batch). Cheaper than a full re-draft and never loses a long good draft.
+# Auto-continue is LIVE-ONLY. When a draft is cut off at the token cap, the live, streaming
+# rebuild engine (rebuild_engine._generate) asks the model to RESUME exactly where it stopped,
+# stitches the RAW partial + RAW remainder with _join_continuation, and runs
+# _strip_fence/_extract_talk ONCE on the JOINED string. It is capped at ONE continuation and
+# surfaces truncated=True/lint ok=False, so a human reviews and ACCEPTS the stitched draft
+# before it is saved — a bad stitch is caught at the gate. The BATCH writers (write_one,
+# maintain_one) auto-save with no such gate, so they DELIBERATELY never auto-continue: they
+# retry once at a bigger cap, then quarantine (write_one ok=False / maintain_one changed=False).
 CONTINUE_PROMPT = (
     "Your previous message was cut off at the length limit before you finished. "
     "Continue the article from EXACTLY where you stopped — resume mid-word/mid-line if "
@@ -49,42 +51,38 @@ CONTINUE_PROMPT = (
     "```talk block if it was not yet emitted)."
 )
 
-# maintain_one's reply is shaped differently from a write: a ```article fence wrapping the
-# full revised article, then a ```maintain JSON block. A generic "finish the article" resume
-# would let the model forget to CLOSE ```article or emit ```maintain — _extract_maintain would
-# then return empty / lose the resolved+new items silently. So maintenance gets its OWN resume
-# prompt that re-states the exact two-fence contract it must still satisfy at the cutoff.
-MAINTAIN_CONTINUE_PROMPT = (
-    "Your previous message was cut off at the length limit before you finished. "
-    "Continue from EXACTLY where you stopped — resume mid-word/mid-line if that is where it "
-    "ended — and output ONLY the remaining text. Do NOT restate or repeat anything you "
-    "already wrote. Remember the required output is EXACTLY two fenced blocks and nothing "
-    "else: first a ```article block holding the full revised article (close it with a line of "
-    "three backticks), then a ```maintain block holding the JSON "
-    '{"resolved": [...], "new": [...]}. Finish whichever of those you had not yet completed — '
-    "if you were still inside the ```article block, finish the article and close the fence, "
-    "then emit the ```maintain block; if the article was already closed, emit the ```maintain "
-    "block. Do not wrap your continuation in any extra code fence."
-)
-
 
 _OVERLAP_WINDOW = 400          # max chars of partial-suffix / remainder-prefix we compare
+_OVERLAP_FLOOR = 12            # an overlap shorter than this is too coincidental to act on
 
 
 def _trim_restated_overlap(partial: str, remainder: str) -> str:
-    """If the continuation RESTATED tail of the partial instead of resuming after it, drop the
-    duplicated prefix from the remainder. We look for the LONGEST suffix of the partial (capped
-    at _OVERLAP_WINDOW chars) that the remainder begins with, and strip it. Conservative: the
-    overlap must be a reasonably long run (>= 12 chars) so an incidental short coincidence
-    ("the ", "\n\n") at the seam can't eat real continuation text — a genuine mid-word resume
-    has no such overlap and is left untouched."""
+    """If the continuation RESTATED the last complete unit it had already produced instead of
+    resuming after it, drop that duplicated prefix from the remainder. RESTRICTED to an
+    EDGE-ANCHORED EXACT restatement: the overlap must be one-or-more WHOLE trailing LINES of
+    the partial (a candidate suffix that begins exactly at a line boundary of the partial —
+    index 0 or just after a '\\n') that the remainder reproduces verbatim at its start. The
+    model clearly re-emitted the last complete line(s) it had written.
+
+    This is deliberately NOT a free mid-phrase substring trim. The previous version stripped
+    ANY >=12-char suffix overlap, which would silently DELETE a COINCIDENTALLY recurring phrase
+    across the seam (verified: '…the city of Washington' + 'the city of Washington remains…'
+    lost the phrase, because the shared run was a mid-line substring, not a restated whole line).
+    Anchoring to a line boundary means an incidental recurring phrase mid-line can't trigger a
+    trim — when in doubt we leave the text un-trimmed and the human sees the (visible) dup rather
+    than us silently dropping real content. A genuine mid-word resume has no line-anchored
+    overlap and is untouched."""
     if not partial or not remainder:
         return remainder
     window = partial[-_OVERLAP_WINDOW:]
-    # Longest k such that remainder starts with window's last k chars.
-    for k in range(len(window), 11, -1):
-        if remainder.startswith(window[-k:]):
-            return remainder[k:]
+    # Candidate overlaps: each WHOLE trailing line of the partial, i.e. the suffix of `window`
+    # starting at a line boundary (offset 0, or right after a '\n'). Longest first so a
+    # multi-line restatement is trimmed in one go.
+    starts = [0] + [i + 1 for i, ch in enumerate(window) if ch == "\n"]
+    for s in starts:                                   # ascending offset == descending length
+        cand = window[s:]
+        if len(cand) >= _OVERLAP_FLOOR and remainder.startswith(cand):
+            return remainder[len(cand):]
     return remainder
 
 
@@ -151,33 +149,6 @@ def _join_continuation(partial: str, remainder: str) -> str:
     remainder = _drop_duplicate_title(partial, remainder)
     remainder = _trim_restated_overlap(partial, remainder)
     return partial + _seam_separator(partial, remainder) + remainder
-
-
-def _complete_with_continue(msgs: list[dict], cap: int, ceiling: int,
-                            continue_prompt: str = CONTINUE_PROMPT) -> tuple[str, str | None]:
-    """Non-streaming completion with the batch truncation recovery ladder:
-      1. complete at `cap`; if cut off, retry ONCE at min(cap*2, ceiling) (the existing
-         bigger-cap retry — unchanged behaviour);
-      2. if STILL cut off, AUTO-CONTINUE exactly ONCE: append the truncated assistant text
-         and a "resume where you stopped" user turn, complete again, and JOIN the RAW
-         partial + RAW remainder.
-    Returns (raw_text, final_stop_reason). The caller runs _strip_fence/_extract_talk ONCE
-    on the returned raw text and treats a still-truncated final_stop as a quarantine. The
-    JOIN is raw so a ```talk/code fence split across the cap re-forms before extraction; the
-    continuation is capped at one so a perpetually-truncating model can't loop."""
-    text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
-    if stop in _TRUNCATED:
-        cap = min(cap * 2, ceiling)
-        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
-    if stop not in _TRUNCATED:
-        return text, stop
-    # One auto-continue turn on a fresh message list (don't mutate the caller's `msgs`):
-    # the original prompt, the truncated assistant draft, then the resume instruction.
-    cont_msgs = [*msgs,
-                 {"role": "assistant", "content": text},
-                 {"role": "user", "content": continue_prompt}]
-    remainder, stop2 = llm.complete_with_meta(cont_msgs, max_tokens=cap)
-    return _join_continuation(text, remainder), stop2
 
 
 def _extract_talk(text: str):
@@ -397,58 +368,51 @@ def _strip_fence(text: str) -> str:
 
 
 _WRAPPER_OPEN_RE = re.compile(r"^\s*```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
-# A close-immediately-followed-by-reopen of the WHOLE-document wrapper: a bare ``` line
-# directly followed by a ```markdown/```md/``` opener. This is the seam artifact left when a
-# continuation re-opened the wrapper the partial had just closed. We collapse it (remove both
-# lines) — it can only occur where the model closed and re-opened the OUTER wrapper, never in
-# legitimate prose (a real inner code block opens with ```lang and is preceded by text).
-_WRAPPER_REOPEN_RE = re.compile(r"\n```[ \t]*\n```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
 
 
 def _clean_wrapper_fence(text: str) -> str:
-    """Conservative cleanup of ```markdown WRAPPER-fence artifacts left by an auto-continued
-    draft, run AFTER the single _strip_fence. Two verified leak cases the anchored _FENCE_RE
-    can't catch once a continuation is stitched in:
-      (a) the continuation RE-OPENED the wrapper after the partial closed it, leaving an
-          adjacent ```\n```markdown pair mid-document;
-      (b) the partial CLOSED the wrapper at the cap, and the appended remainder pushed text
-          PAST the trailing ```, so the closing fence is no longer terminal and _FENCE_RE
-          leaves the whole ```markdown opener (and its now-orphaned ``` closer) in the body.
-    Fixes, in order, touching ONLY wrapper artifacts (never a genuine inner ```lang code block,
-    which opens with a language tag preceded by prose and is balanced):
-      1. collapse any close-then-reopen wrapper pair (case a);
-      2. if the document STILL starts with a bare ```/```markdown opener (case b), drop that
-         opener line AND the matching orphaned closing ``` (the LAST bare ``` line) so the
-         wrapper doesn't half-survive.
-    A document that opens with a fenced *code* block (```python …) is untouched: we only strip
-    a bare ``` or ```markdown / ```md opener, and only at the document edge."""
+    """EDGE-ANCHORED cleanup of a ```markdown WRAPPER-fence artifact left by an auto-continued
+    LIVE draft, run AFTER the single _strip_fence. The only artifact we touch is the verified
+    leak case (b): the partial CLOSED the whole-document wrapper at the cap, the appended
+    remainder then pushed text PAST the trailing ```, so the closing fence is no longer terminal
+    and the anchored _FENCE_RE leaves the WHOLE wrapper (a leading ```/```markdown/```md opener
+    plus its now-orphaned ``` closer) in the body. We drop that leading opener line AND the
+    matching orphaned closer so the wrapper doesn't half-survive.
+
+    Deliberately conservative — anchored to the DOCUMENT EDGE only:
+      * We act ONLY when the document STARTS with a bare ```/```markdown/```md opener (the
+        wrapper's own edge), never on a close-then-reopen pair in mid-document prose. A
+        mid-document ```\n```markdown can be two LEGITIMATE adjacent code blocks in prose that
+        is ABOUT fences, so collapsing it could silently merge real content — we leave it for
+        the human to catch in live review instead.
+      * A document opening with a fenced *code* block (```python …) is untouched: we only match
+        a bare ``` or ```markdown / ```md opener (no language tag), and only at the edge.
+      * We drop the orphaned closer ONLY when the fences before it are balanced and none follow
+        it, so we never break a real inner code block; if we can't be sure, we leave it."""
     if not text:
         return text
-    # 1) close-then-reopen wrapper seam → collapse to a single newline.
-    text = _WRAPPER_REOPEN_RE.sub("\n", text)
-    # 2) a wrapper opener still leading the document (closer no longer terminal).
     m = _WRAPPER_OPEN_RE.match(text)
-    if m:
-        rest = text[m.end():]
-        # Find the orphaned wrapper closer: the LAST line that is a bare ``` (the wrapper's
-        # own close). Only treat it as the wrapper closer when removing it leaves balanced
-        # fences in the remaining body (so we never break a real inner code block).
-        lines = rest.split("\n")
-        close_idx = None
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i].strip() == "```":
-                close_idx = i
-                break
-        if close_idx is not None:
-            # Fences BEFORE the closer, excluding it: must be balanced (even) so the closer we
-            # drop is the wrapper's, not an inner block's open/close.
-            before = sum(1 for ln in lines[:close_idx] if ln.strip().startswith("```"))
-            after = sum(1 for ln in lines[close_idx + 1:] if ln.strip().startswith("```"))
-            if before % 2 == 0 and after == 0:
-                del lines[close_idx]
-                rest = "\n".join(lines)
-        text = rest
-    return text.strip()
+    if not m:
+        return text.strip()                              # no wrapper opener at the edge → leave as-is
+    rest = text[m.end():]
+    # Find the orphaned wrapper closer: the LAST line that is a bare ``` (the wrapper's own
+    # close). Only treat it as the wrapper closer when removing it leaves balanced fences in
+    # the remaining body (so we never break a real inner code block).
+    lines = rest.split("\n")
+    close_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() == "```":
+            close_idx = i
+            break
+    if close_idx is not None:
+        # Fences BEFORE the closer, excluding it: must be balanced (even) so the closer we
+        # drop is the wrapper's, not an inner block's open/close.
+        before = sum(1 for ln in lines[:close_idx] if ln.strip().startswith("```"))
+        after = sum(1 for ln in lines[close_idx + 1:] if ln.strip().startswith("```"))
+        if before % 2 == 0 and after == 0:
+            del lines[close_idx]
+            rest = "\n".join(lines)
+    return rest.strip()
 
 
 def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
@@ -694,15 +658,19 @@ def write_one(conn, art: dict, instructions: str | None = None,
     msgs = [{"role": "user", "content": prompt}]
     try:
         # Surface the finish reason so a draft cut off at the token cap (its trailing
-        # ## References is the first casualty) is recovered, not silently saved half-written.
-        # Recovery ladder: bigger-cap retry → ONE auto-continue (resume + raw join) → only
-        # then FAIL. Extraction runs ONCE on the joined raw text so a ```talk/code fence
-        # split across the cap re-forms first. Mirrors the live engine's truncation guard.
-        text, stop = _complete_with_continue(msgs, cap=3000, ceiling=6000)
+        # ## References is the first casualty) is retried once at a bigger cap, then
+        # QUARANTINED (ok=False) — never silently saved half-written. The batch path has NO
+        # human Accept gate, so it never auto-continues/stitches a truncated draft (a bad
+        # stitch would auto-save uncaught); auto-continue lives only in the live engine.
+        cap = 3000
+        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            cap = min(cap * 2, 6000)
+            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
         if stop in _TRUNCATED:
             base["errors"] = ["draft truncated at the token limit"]
             return base
-        draft, talk = _extract_talk(_clean_wrapper_fence(_strip_fence(text)))
+        draft, talk = _extract_talk(_strip_fence(text))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"write failed: {exc}"]
         return base
@@ -726,8 +694,8 @@ def write_one(conn, art: dict, instructions: str | None = None,
                    .replace("{domain_guide}", dguide).replace("{domain}", domain or "")
                    .replace("{known_titles}", known_block).replace("{draft}", draft))
         try:
-            revised, rtalk = _extract_talk(_clean_wrapper_fence(_strip_fence(
-                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200))))
+            revised, rtalk = _extract_talk(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200)))
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
             break
@@ -1075,16 +1043,19 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
               .replace("{sources}", _sources_text(srcs)))
     msgs = [{"role": "user", "content": prompt}]
     try:
-        # Bigger-cap retry → ONE auto-continue (resume + raw join) → then FAIL
-        # (changed=False → don't save) rather than persist a maintain output cut off at the
-        # token limit. _extract_maintain runs ONCE on the joined raw text so a ```maintain/
-        # ```article fence split across the cap re-forms before parsing.
-        text, stop = _complete_with_continue(msgs, cap=3500, ceiling=6000,
-                                              continue_prompt=MAINTAIN_CONTINUE_PROMPT)
+        # Retry once at a bigger cap on truncation, then FAIL (changed=False → don't save)
+        # rather than persist a maintain output cut off at the token limit. maintain is a
+        # BATCH path with no human Accept gate, so it never auto-continues/stitches (a bad
+        # stitch would auto-save uncaught) — auto-continue lives only in the live engine.
+        cap = 3500
+        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            cap = min(cap * 2, 6000)
+            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
         if stop in _TRUNCATED:
             base["errors"] = ["maintain output truncated"]
             return base
-        revised, payload = _extract_maintain(_clean_wrapper_fence(_strip_fence(text)))
+        revised, payload = _extract_maintain(_strip_fence(text))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"maintain failed: {exc}"]
         return base
@@ -1112,8 +1083,8 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
                    .replace("{domain_guide}", wiki_guides.guide_text(domain)).replace("{domain}", domain)
                    .replace("{known_titles}", known_block).replace("{draft}", revised))
         try:
-            r2, _ = _extract_maintain(_clean_wrapper_fence(_strip_fence(
-                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600))))
+            r2, _ = _extract_maintain(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600)))
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_maintain revise failed for %s: %s", article_title, exc)
             break

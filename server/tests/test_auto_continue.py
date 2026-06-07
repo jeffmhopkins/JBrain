@@ -1,19 +1,26 @@
-"""Auto-continue a truncated draft instead of re-drafting / quarantining.
+"""Auto-continue a truncated draft — LIVE path only.
 
-When a draft is cut off at the token cap (TurnEnd.stop_reason / complete_with_meta finish
-reason == max_tokens|length), the engine RESUMES it in ONE follow-up turn and STITCHES the
-pieces, preserving the already-generated content. The critical hazard the design protects:
+Auto-continue is scoped to the LIVE, streaming rebuild engine, which has a human Accept gate:
+when a draft is cut off at the token cap (TurnEnd.stop_reason == max_tokens|length), the engine
+RESUMES it in ONE follow-up turn and STITCHES the pieces, then surfaces truncated/lint state so
+a human reviews and accepts before anything is saved. The critical hazard the design protects:
 the writer's trailing optional fences — a ```talk JSON block and the whole-body ```markdown
-wrapper — must never be split across the seam. The safe design (proven here): concatenate
-the RAW partial + RAW remainder and run _strip_fence / _extract_talk ONCE on the JOINED
-string; cap at ONE continuation; fall back to the existing re-draft (live) / quarantine
-(batch) if STILL truncated.
+wrapper — must never be split across the seam. The safe design (proven here): concatenate the
+RAW partial + RAW remainder and run _strip_fence / _clean_wrapper_fence / _extract_talk ONCE on
+the JOINED string; cap at ONE continuation; fall back to the user-approved re-draft if STILL
+truncated.
 
-Covers BOTH paths:
+The BATCH writers (wiki_build.write_one / maintain_one) AUTO-SAVE with no human gate, so they
+DELIBERATELY do NOT auto-continue: a still-truncated draft is retried once at a bigger cap, then
+QUARANTINED (write_one ok=False / maintain_one changed=False) — never stitched/auto-saved.
+
+Covers:
   * LIVE  (rebuild_engine._generate, streaming): a fake provider streams a partial with
-    stop_reason=max_tokens, then a remainder — exercising the in-stream join.
-  * BATCH (wiki_build.write_one / maintain_one, non-streaming): llm.complete_with_meta is
-    stubbed to return a truncated text then a remainder.
+    stop_reason=max_tokens, then a remainder — exercising the in-stream join + Accept-gate surfacing.
+  * BATCH (wiki_build.write_one / maintain_one, non-streaming): asserts the bigger-cap retry +
+    quarantine, and that NO continuation turn is ever issued.
+  * The seam heuristics the live path still uses — anchored so they can't silently delete
+    content (edge-anchored wrapper-fence cleanup; full-line-restatement-only overlap trim).
 
 Embeddings + the entity-embedding sync are monkeypatched so the suite runs without the model.
 """
@@ -257,75 +264,48 @@ def test_live_redraft_after_autocontinue_reasks_original_prompt(conn, monkeypatc
 # BATCH path (wiki_build.write_one / maintain_one, non-streaming)
 # =========================================================================================
 
-def test_write_one_autocontinues_after_persistent_truncation(conn, monkeypatch):
-    """complete_with_meta truncates on BOTH the first call and the bigger-cap retry, then the
-    auto-continue turn returns the remainder; the joined draft is saved (not quarantined)."""
+def test_write_one_quarantines_on_persistent_truncation_no_autocontinue(conn, monkeypatch):
+    """The BATCH writer has no human Accept gate, so it NEVER auto-continues/stitches: on a
+    draft still cut off after the bigger-cap retry it QUARANTINES (ok=False, nothing saved) —
+    exactly two completion calls (initial + bigger-cap retry), no continuation turn."""
     from app.services import wiki_build, llm
     src = _source_note(conn)
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
-
-    partial = f"# Ford Truck\n\n{_LEAD}[^s1]\n\n## Refe"
-    remainder = "rences\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n"
     calls = []
 
     def fake_cwm(messages, **kw):
         calls.append({"n": len(messages), "max_tokens": kw.get("max_tokens")})
-        if len(calls) <= 2:
-            return (partial, "max_tokens")             # initial + bigger-cap retry both cut off
-        return (remainder, None)                       # the continuation finishes it
+        return ("# Ford Truck\n\nA truck owned by Jeff and more and", "max_tokens")  # always cut off
     monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
 
     out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
-    assert len(calls) == 3                              # retry, then ONE continuation
-    # The continuation call carried the partial assistant turn + the CONTINUE prompt.
-    assert calls[2]["n"] == 3
-    assert out["ok"] is True
-    assert "## References" in out["content_md"]
-    assert out["content_md"].strip().endswith("2026-02-03")
-
-
-def test_write_one_talk_fence_split_recovers_clean_article(conn, monkeypatch):
-    from app.services import wiki_build, llm
-    src = _source_note(conn)
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
-    partial = (f"# Ford Truck\n\n{_LEAD}[^s1]\n\n"
-               "## References\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n\n"
-               "```talk\n[{\"kind\": \"note\", \"bo")
-    remainder = "dy\": \"From the entries.\"}]\n```\n"
-    calls = []
-
-    def fake_cwm(messages, **kw):
-        calls.append(1)
-        if len(calls) <= 2:
-            return (partial, "max_tokens")
-        return (remainder, None)
-    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
-
-    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
-    assert out["ok"] is True
-    assert "```talk" not in out["content_md"]          # no leaked fence/JSON
-    assert out["content_md"].strip().endswith("2026-02-03")
-    assert out["talk"] and out["talk"][0]["body"] == "From the entries."
-
-
-def test_write_one_quarantines_when_continuation_still_truncated(conn, monkeypatch):
-    """One-continuation cap: if the continuation is STILL truncated, fall back to the
-    existing quarantine — no infinite loop, nothing saved."""
-    from app.services import wiki_build, llm
-    src = _source_note(conn)
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
-    calls = []
-
-    def fake_cwm(messages, **kw):
-        calls.append(1)
-        return ("# X\n\nstill going", "max_tokens")     # always cut off
-    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
-
-    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
-    assert len(calls) == 3                              # initial + retry + ONE continuation
+    assert len(calls) == 2                              # initial + bigger-cap retry, NO continuation
+    assert all(c["n"] == 1 for c in calls)             # never appended an assistant/continue turn
+    assert calls[0]["max_tokens"] == 3000 and calls[1]["max_tokens"] == 6000
     assert out["ok"] is False
     assert out["content_md"] == ""
     assert "draft truncated at the token limit" in out["errors"]
+
+
+def test_write_one_saves_when_bigger_cap_retry_succeeds(conn, monkeypatch):
+    """The bigger-cap retry path still works: a first call cut off, the retry finishes cleanly,
+    and the article is saved (ok=True) — recovery without any auto-continue."""
+    from app.services import wiki_build, llm
+    src = _source_note(conn)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    calls = []
+
+    def fake_cwm(messages, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return ("# Ford Truck\n\ncut off", "max_tokens")
+        return (_FULL, None)                            # bigger-cap retry returns a full draft
+    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
+
+    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
+    assert len(calls) == 2                              # initial + bigger-cap retry, then done
+    assert out["ok"] is True
+    assert out["content_md"].strip().endswith("2026-02-03")
 
 
 def test_write_one_no_truncation_makes_one_call(conn, monkeypatch):
@@ -345,7 +325,9 @@ def test_write_one_no_truncation_makes_one_call(conn, monkeypatch):
     assert out["content_md"].strip().endswith("2026-02-03")
 
 
-def test_maintain_one_autocontinues_then_saves(conn, monkeypatch):
+def test_maintain_one_saves_when_bigger_cap_retry_succeeds(conn, monkeypatch):
+    """maintain's bigger-cap retry still recovers a first-call truncation: the retry returns a
+    complete two-fence reply, which is saved (changed=True) — no auto-continue involved."""
     from app.services import wiki_build, article_talk, llm, notes as notes_svc
     notes_svc.upsert_note(conn, "kb/Things/Ford Truck", _FULL, kind="kb", fire_events=False)
     conn.commit()
@@ -353,35 +335,45 @@ def test_maintain_one_autocontinues_then_saves(conn, monkeypatch):
     conn.commit()
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
 
-    partial = "```article\n# Ford Truck\n\nA truck bought in 2026 by Jeff.\n\n## Re"
-    remainder = "ferences\n\n(none)\n```\n```maintain\n{\"resolved\": [], \"new\": []}\n```\n"
+    full = ("```article\n# Ford Truck\n\nA truck bought in 2026 by Jeff.\n\n"
+            "## References\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n```\n"
+            "```maintain\n{\"resolved\": [], \"new\": []}\n```\n")
     calls = []
 
     def fake_cwm(messages, **kw):
         calls.append(1)
-        if len(calls) <= 2:
-            return (partial, "length")
-        return (remainder, None)
+        if len(calls) == 1:
+            return ("```article\n# Ford Truck\n\ncut", "length")
+        return (full, None)                             # bigger-cap retry returns a full reply
     monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
 
     out = wiki_build.maintain_one(conn, "kb/Things/Ford Truck", known_titles=[])
-    assert len(calls) == 3
+    assert len(calls) == 2                              # initial + bigger-cap retry, NO continuation
     assert out["ok"] is True
     assert "## References" in out["content_md"]
     assert "```article" not in out["content_md"]       # the article fence was stripped
 
 
-def test_maintain_one_quarantines_when_continuation_still_truncated(conn, monkeypatch):
+def test_maintain_one_quarantines_on_persistent_truncation_no_autocontinue(conn, monkeypatch):
+    """maintain is a BATCH path with no human Accept gate, so it never auto-continues: a reply
+    still truncated after the bigger-cap retry is QUARANTINED (changed=False, nothing saved) in
+    exactly two calls — never a continuation turn that could silently lose the maintain JSON."""
     from app.services import wiki_build, article_talk, llm, notes as notes_svc
     notes_svc.upsert_note(conn, "kb/Things/Ford Truck", _FULL, kind="kb", fire_events=False)
     conn.commit()
     article_talk.add(conn, "kb/Things/Ford Truck", "todo", "Add the year of purchase.")
     conn.commit()
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
-    monkeypatch.setattr(llm, "complete_with_meta",
-                        lambda messages, **kw: ("```article\n# Ford Truck\n\ncut", "length"))
+    calls = []
+
+    def fake_cwm(messages, **kw):
+        calls.append({"n": len(messages)})
+        return ("```article\n# Ford Truck\n\ncut", "length")   # always cut off
+    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
 
     out = wiki_build.maintain_one(conn, "kb/Things/Ford Truck", known_titles=[])
+    assert len(calls) == 2                              # initial + bigger-cap retry, NO continuation
+    assert all(c["n"] == 1 for c in calls)             # never appended an assistant/continue turn
     assert out["ok"] is False
     assert out["changed"] is False
     assert "maintain output truncated" in out["errors"]
@@ -402,18 +394,17 @@ def test_join_continuation_is_raw_concatenation():
 
 # ---- FIX 1: wrapper ```markdown fence artifacts must never leak into the SAVED article ----
 
-def test_clean_wrapper_fence_case_a_reopened_wrapper():
-    """Leak case (a): the continuation RE-OPENED the ```markdown wrapper after the partial
-    closed it, leaving an adjacent ```\\n```markdown pair mid-document. The anchored _FENCE_RE
-    can't strip it (closer no longer terminal); _clean_wrapper_fence collapses the artifact."""
+def test_clean_wrapper_fence_does_not_collapse_legit_adjacent_code_blocks():
+    """NEGATIVE (no silent deletion): a doc whose PROSE is about markdown fences can contain two
+    LEGITIMATE adjacent code blocks — here a ```text block immediately followed by a ```markdown
+    block. The old unanchored close-then-reopen collapse merged them (verified corruption). The
+    edge-anchored cleanup must NOT touch a mid-document close/reopen — both blocks survive."""
     from app.services.wiki_build import _strip_fence, _clean_wrapper_fence
-    leaked = ("```markdown\n# Ford Truck\n\nFirst half of the body.\n```\n"
-              "```markdown\nSecond half after the model re-opened the wrapper.\n```\n")
-    out = _clean_wrapper_fence(_strip_fence(leaked))
-    assert "```markdown" not in out
-    assert "```" not in out                                # no stray fence survives
-    assert out.startswith("# Ford Truck")
-    assert "First half of the body." in out and "Second half" in out
+    doc = "# Title\n\nIntro about fences.\n\n```text\n```\n```markdown\nhello\n```\n\nOutro.\n"
+    out = _clean_wrapper_fence(_strip_fence(doc))
+    # The two adjacent blocks are preserved verbatim — nothing was merged/dropped.
+    assert "```text\n```\n```markdown\nhello\n```" in out
+    assert "hello" in out and "Outro." in out
 
 
 def test_clean_wrapper_fence_case_b_unterminated_wrapper():
@@ -441,82 +432,6 @@ def test_clean_wrapper_fence_preserves_genuine_inner_code_block():
     assert out.count("```") == 2                           # the inner block's own pair, intact
 
 
-def test_write_one_wrapper_fence_split_does_not_leak(conn, monkeypatch):
-    """End-to-end batch: the model wraps the article in ```markdown, gets cut off, and the
-    continuation re-opens the wrapper. The SAVED article body must carry no stray fence."""
-    from app.services import wiki_build, llm
-    src = _source_note(conn)
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
-    partial = (f"```markdown\n# Ford Truck\n\n{_LEAD}[^s1]\n\n"
-               "## References\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n```\n")
-    remainder = "```markdown\nA durable extra paragraph the model added on resume.\n```\n"
-    calls = []
-
-    def fake_cwm(messages, **kw):
-        calls.append(1)
-        if len(calls) <= 2:
-            return (partial, "max_tokens")
-        return (remainder, None)
-    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
-
-    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
-    assert out["ok"] is True
-    assert "```markdown" not in out["content_md"]
-    assert "```" not in out["content_md"]                  # no fence artifact in the saved body
-    assert out["content_md"].startswith("# Ford Truck")
-    assert "extra paragraph" in out["content_md"]
-
-
-# ---- FIX 2: a truncated MAINTAIN continuation must preserve the ```maintain JSON ----
-
-def test_maintain_continuation_preserves_maintain_json(conn, monkeypatch):
-    """The maintain reply is a ```article fence + a ```maintain JSON block. On a truncated
-    maintain draft, the continuation must still finish the article fence AND emit ```maintain,
-    so resolved/new items are recovered (not silently lost with the article still saving ok)."""
-    from app.services import wiki_build, article_talk, llm, notes as notes_svc
-    notes_svc.upsert_note(conn, "kb/Things/Ford Truck", _FULL, kind="kb", fire_events=False)
-    conn.commit()
-    item_id = article_talk.add(conn, "kb/Things/Ford Truck", "question", "What year was it bought?")
-    conn.commit()
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
-
-    # Cut off INSIDE the article fence (before it's closed and before ```maintain).
-    partial = "```article\n# Ford Truck\n\nA truck bought in 2026 by Jeff.[^s1]\n\n## Refe"
-    # The continuation finishes the article, closes the fence, and emits the maintain block
-    # carrying the resolved item + a new note.
-    remainder = ("rences\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n```\n"
-                 "```maintain\n{\"resolved\": [{\"id\": %d, \"outcome\": \"answered\", "
-                 "\"how\": \"stated 2026\"}], \"new\": [{\"kind\": \"note\", "
-                 "\"body\": \"Cross-checked the purchase year.\"}]}\n```\n" % item_id)
-    calls = []
-
-    def fake_cwm(messages, **kw):
-        calls.append(1)
-        if len(calls) <= 2:
-            return (partial, "length")                     # initial + bigger-cap retry cut off
-        return (remainder, None)                           # continuation finishes both blocks
-    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
-
-    out = wiki_build.maintain_one(conn, "kb/Things/Ford Truck", known_titles=[])
-    assert len(calls) == 3
-    assert out["ok"] is True
-    assert "```article" not in out["content_md"] and "```maintain" not in out["content_md"]
-    assert "2026" in out["content_md"]
-    # The maintain JSON survived the seam — the resolved/new items were recovered, not lost.
-    assert any(r["id"] == item_id and r["outcome"] == "answered" for r in out["resolved"]), out["resolved"]
-    assert any(n["body"] == "Cross-checked the purchase year." for n in out["new"]), out["new"]
-
-
-def test_maintain_continue_prompt_names_the_two_fence_contract():
-    """The maintain resume prompt must name the ```article/```maintain contract so a real
-    model closes the article fence and still emits the maintain block (the generic article
-    CONTINUE_PROMPT does not mention either, which is the FIX 2 root cause)."""
-    from app.services import wiki_build
-    mp = wiki_build.MAINTAIN_CONTINUE_PROMPT
-    assert "```article" in mp and "```maintain" in mp
-    assert mp != wiki_build.CONTINUE_PROMPT
-
-
 # ---- FIX 3: a RESTATING continuation must not produce duplicated / garbled text ----
 
 def test_join_continuation_drops_duplicate_title_heading():
@@ -530,40 +445,59 @@ def test_join_continuation_drops_duplicate_title_heading():
     assert "and it is reliable." in out                    # the genuinely-new tail is kept
 
 
-def test_join_continuation_trims_restated_overlap():
+def test_trim_restated_overlap_keeps_coincidental_recurring_phrase():
+    """NEGATIVE (no silent deletion): a phrase that COINCIDENTALLY recurs across the seam as a
+    mid-line substring must NOT be trimmed. Verified corruption: the partial ends '…the city of
+    Washington' and the remainder genuinely continues 'the city of Washington remains…' — the
+    old any-suffix-overlap trim deleted the phrase. Because the overlap is a mid-line substring
+    (not a restatement of the partial's whole last line) the restricted trim leaves it intact."""
+    from app.services.wiki_build import _trim_restated_overlap, _join_continuation
+    partial = "The capital sits within the District of Columbia, the city of Washington"
+    remainder = "the city of Washington remains the seat of the federal government."
+    # The remainder is returned unchanged — the coincidental phrase is preserved (the human sees
+    # the harmless visible dup rather than us silently dropping real continuation text).
+    assert _trim_restated_overlap(partial, remainder) == remainder
+    joined = _join_continuation(partial, remainder)
+    assert "the city of Washington remains the seat" in joined
+
+
+def test_trim_restated_overlap_trims_edge_anchored_full_line_restatement():
+    """POSITIVE: a TRUE restatement — the remainder repeats the partial's last COMPLETE LINE
+    verbatim, then continues — IS trimmed (the model clearly re-emitted the whole line it had
+    just produced before resuming)."""
+    from app.services.wiki_build import _trim_restated_overlap
+    partial = "# Ford Truck\n\nIntro paragraph one.\nThe truck was purchased in early 2026."
+    # Remainder restarts the last whole line verbatim, then adds the genuinely-new tail.
+    remainder = "The truck was purchased in early 2026. It remains reliable today."
+    out = _trim_restated_overlap(partial, remainder)
+    assert out == " It remains reliable today."           # the restated whole line was dropped
+
+
+def test_join_continuation_trims_full_line_restatement_no_garble():
     from app.services.wiki_build import _join_continuation
-    partial = "The truck was purchased in early 2026 for the daily work commute"
-    remainder = "purchased in early 2026 for the daily work commute and remains reliable."
+    partial = "# Ford Truck\n\nIntro paragraph one.\nThe truck was purchased in early 2026."
+    remainder = "The truck was purchased in early 2026. It remains reliable today."
     out = _join_continuation(partial, remainder)
-    # The restated run appears once; the new tail follows it without garbling.
-    assert out.count("purchased in early 2026 for the daily work commute") == 1
-    assert out.endswith("and remains reliable.")
+    assert out.count("The truck was purchased in early 2026.") == 1   # not doubled
+    assert out.endswith("It remains reliable today.")
 
 
-def test_write_one_restating_continuation_not_duplicated(conn, monkeypatch):
-    """End-to-end: the continuation RESTATES the article (incl. the # heading) before adding
-    the rest. The saved body must not contain a doubled heading or a doubled lead."""
-    from app.services import wiki_build, llm
-    src = _source_note(conn)
-    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+def test_live_restating_continuation_not_duplicated(conn, monkeypatch):
+    """End-to-end LIVE: the continuation RESTATES the article (incl. the # heading) before
+    adding the rest. The stitched draft (the human reviews/accepts) must carry no doubled
+    heading — _drop_duplicate_title removes the repeated H1 at the seam."""
+    _source_note(conn)
     lead = "A Ford truck Jeff Hopkins bought in 2026 and drives daily for his work commute"
     partial = f"# Ford Truck\n\n{lead}"
     remainder = (f"# Ford Truck\n\n{lead}[^s1]\n\n## References\n\n"
                  "[^s1]: [[notes/2026/02/03]] — 2026-02-03\n")
-    calls = []
+    prov = _FakeProvider([(partial, "max_tokens"), (remainder, "end_turn")])
+    _install(monkeypatch, prov)
+    run = _run(conn)
 
-    def fake_cwm(messages, **kw):
-        calls.append(1)
-        if len(calls) <= 2:
-            return (partial, "max_tokens")
-        return (remainder, None)
-    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
-
-    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
-    assert out["ok"] is True
-    assert out["content_md"].count("# Ford Truck") == 1                # heading not doubled
-    assert out["content_md"].count("drives daily for his work commute") == 1   # lead not doubled
-    assert "## References" in out["content_md"]
+    _drive(run, conn)
+    assert run.draft.count("# Ford Truck") == 1                # heading not doubled
+    assert "## References" in run.draft
 
 
 # ---- FIX 4: stripped seam must not merge words / break a heading off start-of-line ----

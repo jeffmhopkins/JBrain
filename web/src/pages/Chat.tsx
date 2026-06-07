@@ -880,8 +880,9 @@ export default function Chat() {
           onChange={(e) => setInput(e.target.value)}
         />
         <div className="composer-row">
-          {/* All action buttons sit in one right-aligned group (CSS justify-content:flex-end);
-              send is always last so it stays flush-right regardless of which others show. */}
+          {/* Bottom row: the safety/scope hint sits LEFT (flex:1, ellipsis), the action buttons
+              are a group hard-RIGHT (send always last → bottom-right corner, aligned with the hint). */}
+          <span className="compose-safety"><span className="sdot" /><span className="safety-txt">{safetyText}</span></span>
           <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                  onChange={(e) => {
                    const picked = Array.from(e.target.files || []);
@@ -902,7 +903,6 @@ export default function Chat() {
           <button className="icon-btn send" title="Send" onClick={() => send()}
                   disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
         </div>
-        <div className="compose-safety"><span className="sdot" />{safetyText}</div>
       </div>
     </div>
   );

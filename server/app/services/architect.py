@@ -490,7 +490,8 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
     + its [[Title]] — so the model can answer with a real citation in a single call (no separate
     read_note round-trip). The passages are exactly what it should quote verbatim."""
     from . import search as search_svc
-    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)), entity_expand=True)
+    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)),
+                                   entity_expand=True, require_tool_access=True)
     if not rows:
         return "No matching notes."
     out = []
@@ -511,7 +512,7 @@ def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
     return the best articles each with a quotable passage + [[Title]]. The owner's trusted, curated
     sources — consulted before any external lookup. Read-only."""
     from . import search as search_svc
-    rows = search_svc.hybrid_notes(conn, query, 24)
+    rows = search_svc.hybrid_notes(conn, query, 24, require_tool_access=True)
     hits = [r for r in rows if (r["title"] or "").lower().startswith(_REFERENCE_PREFIX)][:max(1, min(int(limit or 6), 10))]
     if not hits:
         return _untrusted("reference", f"No reference articles found under kb/Reference for “{(query or '').strip()}”.")
@@ -531,7 +532,7 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
     # meaning. Each hit carries a query-relevant snippet so the model can judge
     # relevance without read_note'ing every result (titles alone — esp. dated daily
     # paths — gave no clue what the note was about).
-    rows = search_svc.hybrid_notes(conn, query, limit, entity_expand=True)
+    rows = search_svc.hybrid_notes(conn, query, limit, entity_expand=True, require_tool_access=True)
     if not rows:
         return "No matching notes."
     lines = []
@@ -636,7 +637,8 @@ def _tool_related_notes(conn, title: str, limit: int = 8) -> str:
 
     # Semantic neighbours: embed this note's own text, drop itself from the hits.
     try:
-        neigh = embeddings.semantic_search(conn, row["content_md"] or row["title"], limit + 1)
+        neigh = embeddings.semantic_search(conn, row["content_md"] or row["title"], limit + 1,
+                                           require_tool_access=True)
     except Exception:  # noqa: BLE001 — embeddings optional; links still useful
         neigh = []
     near_lines = []
@@ -1344,7 +1346,7 @@ def _tool_save_place(conn, name: str) -> str:
 
 
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
-    rows = embeddings.semantic_search_attachments(conn, query, limit)
+    rows = embeddings.semantic_search_attachments(conn, query, limit, require_tool_access=True)
     if not rows:
         return "No matching attachments."
     lines = []

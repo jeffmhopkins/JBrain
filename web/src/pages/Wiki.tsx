@@ -4,7 +4,7 @@ import { fireEvent, get } from "../api";
 import { Icon } from "../components/Icon";
 import LinkAuditPanel from "../components/LinkAuditPanel";
 
-interface NoteRow { id: number; title: string; slug: string; kind: string; updated_at: string; }
+interface NoteRow { id: number; title: string; slug: string; kind: string; updated_at: string; kb_ingest?: number; tool_access?: number; }
 type Filter = "" | "entry" | "kb" | "list" | "place";
 type TNode = { name: string; note?: NoteRow; children: Record<string, TNode> };
 
@@ -129,6 +129,12 @@ export default function Wiki() {
                       <Link to={`/note/${s.note.slug}`} className="tree-seg-link">
                         {s.name}
                         {KIND_BADGE[s.note.kind] && <span className="badge" style={{ marginLeft: 6 }}>{KIND_BADGE[s.note.kind]}</span>}
+                        {s.note.kb_ingest === 0 && s.note.tool_access === 0 && (
+                          <span className="badge muted" style={{ marginLeft: 6 }} title="Private — out of the Knowledge Base and assistant search">private</span>
+                        )}
+                        {s.note.kb_ingest === 0 && s.note.tool_access !== 0 && (
+                          <span className="badge muted" style={{ marginLeft: 6 }} title="Research-only — not in the Knowledge Base">not in KB</span>
+                        )}
                       </Link>
                     ) : (
                       <span className="tree-seg" onClick={() => kids.length && toggle(path)}>{s.name}</span>

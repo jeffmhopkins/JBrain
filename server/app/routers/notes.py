@@ -79,7 +79,7 @@ def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
         clauses.append(f"NOT {notes_svc.protected_title_sql('title')}")
     params.append(limit)
     rows = conn.execute(
-        "SELECT id, title, slug, kind, updated_at FROM notes "
+        "SELECT id, title, slug, kind, kb_ingest, tool_access, updated_at FROM notes "
         f"WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?",
         params,
     ).fetchall()
@@ -364,6 +364,43 @@ def set_note_tags(slug: str, body: TagsIn):
     tags = notes_svc.set_tags(conn, note["id"], body.tags)
     conn.commit()
     return {"tags": tags}
+
+
+class FlagsIn(BaseModel):
+    # PATCH semantics: omit a field to leave it unchanged (so a single checkbox toggles
+    # independently). Coherent states only — see set_note_flags.
+    kb_ingest: bool | None = None
+    tool_access: bool | None = None
+
+
+@router.put("/{slug}/flags")
+def set_note_flags(slug: str, body: FlagsIn):
+    """Set the per-note governance flags. `kb_ingest`: feed this entry to KB synthesis.
+    `tool_access`: surface it in the assistant's search/research tools. The owner editing
+    their own note directly. Only the three coherent states are allowed — Full (1/1),
+    Research-only (0/1), Private (0/0); kb_ingest=1 with tool_access=0 is rejected, since
+    the KB would otherwise cite a source the assistant is forbidden to read."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, kb_ingest, tool_access FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such note")
+    kb = row["kb_ingest"] if body.kb_ingest is None else int(body.kb_ingest)
+    tool = row["tool_access"] if body.tool_access is None else int(body.tool_access)
+    if kb == 1 and tool == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="A note kept in the Knowledge Base must stay readable by the assistant.")
+    conn.execute("UPDATE notes SET kb_ingest = ?, tool_access = ? WHERE id = ?",
+                 (kb, tool, row["id"]))
+    # Re-enabling KB ingestion (0→1) clears the per-entry 'already evaluated / promoted'
+    # markers so the next synthesis pass reconsiders this entry instead of skipping it.
+    if row["kb_ingest"] == 0 and kb == 1:
+        conn.execute("DELETE FROM meta WHERE key IN (?, ?)",
+                     (f"wiki_synth:evaluated:{row['id']}", f"chatter_promoted:{row['id']}"))
+    conn.commit()
+    return {"kb_ingest": bool(kb), "tool_access": bool(tool)}
 
 
 @entry_router.post("/entry")

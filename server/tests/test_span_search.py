@@ -423,7 +423,7 @@ def test_reference_lookup_does_not_span_expand(conn, monkeypatch):
     _mk(conn, "kb/Reference/Medicine/Asthma", "Asthma is a condition.", kind="kb")
     captured = {}
 
-    def fake_hybrid(c, q, limit=8, *, entity_expand=False):
+    def fake_hybrid(c, q, limit=8, *, entity_expand=False, **kwargs):
         captured["entity_expand"] = entity_expand
         return []
 
@@ -438,7 +438,7 @@ def test_search_notes_tool_enables_expansion(conn, monkeypatch):
     from app.services import architect, search
     captured = []
 
-    def fake_hybrid(c, q, limit=8, *, entity_expand=False):
+    def fake_hybrid(c, q, limit=8, *, entity_expand=False, **kwargs):
         captured.append(entity_expand)
         return []
 

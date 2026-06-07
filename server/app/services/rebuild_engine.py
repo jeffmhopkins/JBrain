@@ -136,7 +136,8 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
                     yield {"type": "tool_use", "tool": "search_notes", "query": qy}
                     # Offload the hybrid search — it runs fastembed ONNX inference (CPU-bound)
                     # which would otherwise block the single event loop for the whole rebuild.
-                    rows = await asyncio.to_thread(search.hybrid_notes, conn, qy, _GATHER_SEARCH_LIMIT)
+                    rows = await asyncio.to_thread(
+                        search.hybrid_notes, conn, qy, _GATHER_SEARCH_LIMIT, require_kb_ingest=True)
                     hits = [h for h in rows if not h["title"].lower().startswith("kb/")]
                     meta = _notes_meta(conn, [h["id"] for h in hits])
                     for m in meta:

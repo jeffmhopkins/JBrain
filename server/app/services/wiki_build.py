@@ -201,7 +201,7 @@ def corpus_digest(conn, limit: int = 3000) -> list[dict]:
     rows = conn.execute(
         "SELECT n.id, n.title, n.content_md, a.gist, a.domain, a.entities_json "
         "FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
-        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') "
+        "WHERE n.deleted_at IS NULL AND n.kind IN ('entry','daily') AND n.kb_ingest = 1 "
         "ORDER BY n.updated_at DESC LIMIT ?",
         (max(1, int(limit)),),
     ).fetchall()
@@ -2106,6 +2106,7 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
         "SELECT id, title, COALESCE(deleted_at, updated_at) AS changed_at, "
         "(deleted_at IS NOT NULL) AS deleted FROM notes WHERE "
         "(kind='daily' OR (kind='entry' AND title NOT LIKE 'notes/daily/%')) "
+        "AND kb_ingest = 1 "                          # opted-out entries don't drive incremental KB updates
         "AND COALESCE(deleted_at, updated_at) > ? ORDER BY changed_at LIMIT ?",
         (since, max(1, int(limit))),
     ).fetchall()

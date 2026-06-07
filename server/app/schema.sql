@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS notes (
   lat            REAL,
   lon            REAL,
   location_label TEXT,
+  kb_ingest      INTEGER NOT NULL DEFAULT 1,       -- 0 = keep this entry OUT of KB synthesis (still searchable)
+  tool_access    INTEGER NOT NULL DEFAULT 1,       -- 0 = hide from the assistant's search/research tools
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   deleted_at TEXT,

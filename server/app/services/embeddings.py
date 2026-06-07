@@ -302,9 +302,12 @@ def _expanded_snippet(conn, attachment_id: int, chunk_index, matched_text: str,
     return joined[:cap]
 
 
-def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]:
+def semantic_search_attachments(conn, query: str, limit: int = 10, *,
+                                require_tool_access: bool = False, require_kb_ingest: bool = False) -> list[dict]:
     """Semantic search over attachment chunks, collapsed to best chunk per attachment.
-    Each hit's snippet is neighbour-expanded (see _expanded_snippet) for context."""
+    Each hit's snippet is neighbour-expanded (see _expanded_snippet) for context. The
+    governance gates mirror semantic_search: an attachment hit credits its parent note,
+    so a parent the owner hid from the assistant must not surface here either."""
     qvec = embed(query)
     rows = conn.execute(
         """
@@ -316,6 +319,7 @@ def semantic_search_attachments(conn, query: str, limit: int = 10) -> list[dict]
         JOIN notes n ON n.id = c.note_id
         WHERE v.embedding MATCH ? AND k = ?
           AND n.deleted_at IS NULL
+        """ + _flag_gate(require_tool_access, require_kb_ingest) + """
         ORDER BY v.distance
         """,
         (sqlite_vec.serialize_float32(qvec), limit),
@@ -370,11 +374,27 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
     return [dict(r) for r in rows if r["distance"] <= max_distance]
 
 
-def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:
+def _flag_gate(require_tool_access: bool, require_kb_ingest: bool, alias: str = "n") -> str:
+    """SQL fragment to gate note rows by the per-note governance flags. Empty unless a
+    caller opts in, so owner-facing search/browse is unaffected by default."""
+    conds = []
+    if require_tool_access:
+        conds.append(f" AND {alias}.tool_access = 1")
+    if require_kb_ingest:
+        conds.append(f" AND {alias}.kb_ingest = 1")
+    return "".join(conds)
+
+
+def semantic_search(conn, query: str, limit: int = 10, *,
+                    require_tool_access: bool = False, require_kb_ingest: bool = False) -> list[dict]:
     """Return notes most similar in meaning to the query, collapsed to each note's
     BEST-matching chunk. Searching chunks (not the whole-note vector) means a long
     note surfaces on the part that matches, instead of being judged only by the
-    truncated head the embedder saw. Returns [{id, title, slug, distance}]."""
+    truncated head the embedder saw. Returns [{id, title, slug, distance}].
+
+    `require_tool_access` / `require_kb_ingest`: caller-aware governance gates — the
+    assistant's research tools pass tool_access; KB synthesis passes kb_ingest. Default
+    off so owner-facing search is unchanged."""
     qvec = embed(query)
     # Over-fetch chunks so several distinct notes survive even when one long note
     # contributes many near-neighbour chunks; then collapse to best-per-note.
@@ -387,6 +407,7 @@ def semantic_search(conn, query: str, limit: int = 10) -> list[dict]:
         JOIN notes n ON n.id = c.note_id
         WHERE v.embedding MATCH ? AND k = ?
           AND n.deleted_at IS NULL
+        """ + _flag_gate(require_tool_access, require_kb_ingest) + """
         ORDER BY v.distance
         """,
         (sqlite_vec.serialize_float32(qvec), k),

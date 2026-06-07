@@ -18,11 +18,12 @@ const linkKey = (id: number) => `jbrain_chat_link_${id}`;
 const storedLink = (id: number) => { try { return localStorage.getItem(linkKey(id)) || ""; } catch { return ""; } };
 
 export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; reload: () => void }) {
-  const { appTz } = useAuth();
+  const { appTz, brainName } = useAuth();
   const [open, setOpen] = useState(false);
   const [persist, setPersist] = useState(true);
   const [otp, setOtp] = useState(false);
   const [label, setLabel] = useState("");
+  const [displayName, setDisplayName] = useState(brainName || "");
   const [ttl, setTtl] = useState(7);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ url: string; otp: string } | null>(null);
@@ -47,7 +48,9 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
       const owner_wrap = await wrapKey(raw, ownerPassword(accessKey));
       const guest_wrap = await wrapKey(raw, guestPassword(secret, code || undefined));
       const r = await createChatShare({ owner_wrap, guest_wrap, persist, otp_required: otp,
-                                        label: label.trim() || undefined, ttl_days: ttl > 0 ? ttl : undefined });
+                                        label: label.trim() || undefined,
+                                        owner_name: displayName.trim() || brainName || undefined,
+                                        ttl_days: ttl > 0 ? ttl : undefined });
       const full = `${r.url}#s=${secret}`;
       try { localStorage.setItem(linkKey(r.link_id), full); } catch { /* private mode */ }
       setResult({ url: full, otp: code });
@@ -98,6 +101,8 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
             </div>
           ) : (
             <div>
+              <label className="share-field">Your display name (shown to the other person)
+                <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={brainName || "Your name"} /></label>
               <label className="share-field">Label (for your own reference)
                 <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Chat with Sarah" /></label>
               <div className="row" style={{ gap: 16, flexWrap: "wrap", marginTop: 8 }}>

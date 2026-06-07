@@ -4,7 +4,7 @@ import { ChannelKey, cryptoAvailable, guestPassword, unwrapKey } from "../crypto
 import EncryptedChat, { ChatTransport } from "./EncryptedChat";
 
 interface ChatLanding {
-  brain_name: string; otp_required?: boolean; persist?: boolean;
+  brain_name: string; owner_name?: string | null; otp_required?: boolean; persist?: boolean;
   requires_claim?: boolean; guest_wrap?: string; guest_name?: string | null;
 }
 
@@ -23,6 +23,7 @@ export default function ChatShareGuest({ token, landing }: { token: string; land
   const secret = useMemo(() => {
     try { return new URLSearchParams(location.hash.slice(1)).get("s") || ""; } catch { return ""; }
   }, []);
+  const ownerLabel = landing.owner_name || landing.brain_name;
 
   const transport: ChatTransport | null = channel && {
     auth: false,
@@ -62,7 +63,7 @@ export default function ChatShareGuest({ token, landing }: { token: string; land
   if (channel && transport) {
     return (
       <div className="share-page echat-page">
-        <EncryptedChat channel={channel} role="guest" meName={myName || "You"} peerName={landing.brain_name}
+        <EncryptedChat channel={channel} role="guest" meName={myName || "You"} peerName={ownerLabel}
                        brandName={landing.brain_name} persist={persist} transport={transport} />
       </div>
     );
@@ -76,7 +77,7 @@ export default function ChatShareGuest({ token, landing }: { token: string; land
       </div>
       <h2 style={{ marginTop: 12 }}>You've been invited to a private chat</h2>
       <p className="muted">
-        Messages and files are <strong>end-to-end encrypted</strong> — only you and {landing.brain_name} can read them.
+        Messages and files are <strong>end-to-end encrypted</strong> — only you and {ownerLabel} can read them.
         {landing.persist ? "" : " This chat is ephemeral: nothing is stored after it ends."}
       </p>
       {landing.requires_claim && (

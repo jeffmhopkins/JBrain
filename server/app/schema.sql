@@ -530,6 +530,7 @@ CREATE TABLE IF NOT EXISTS chat_channels (
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   saved_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,   -- set when the transcript is committed to the brain
   guest_name    TEXT,                            -- display name the recipient gave on joining
+  owner_name    TEXT,                            -- display name shown to the recipient (defaults to the brain name)
   last_guest_at TEXT,
   last_owner_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

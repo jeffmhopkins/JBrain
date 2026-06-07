@@ -633,6 +633,7 @@ class ChatCreateIn(BaseModel):
     persist: bool = True
     otp_required: bool = False
     label: str | None = Field(default=None, max_length=80)
+    owner_name: str | None = Field(default=None, max_length=80)   # display name shown to the recipient
     ttl_days: int | None = None
     single_use: bool = False
 
@@ -645,7 +646,8 @@ def chat_create(body: ChatCreateIn):
     token, link_id = chat_svc.create_channel(
         conn, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap,
         persist=body.persist, otp_required=body.otp_required,
-        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, single_use=body.single_use)
+        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, single_use=body.single_use,
+        owner_name=body.owner_name)
     conn.commit()
     return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
 

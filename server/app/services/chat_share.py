@@ -37,7 +37,8 @@ def _utcnow() -> str:
 # --- Owner: create -----------------------------------------------------------
 
 def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp_required: bool,
-                   label: str | None, ttl_days: int | None, single_use: bool) -> tuple[str, int]:
+                   label: str | None, ttl_days: int | None, single_use: bool,
+                   owner_name: str | None = None) -> tuple[str, int]:
     """Mint a chat link (always browser-bound — chat is strictly 1:1) and its channel
     row holding the wrapped keys. Returns (token, link_id). The raw channel key is never
     seen here: owner_wrap/guest_wrap are sealed client-side."""
@@ -50,9 +51,10 @@ def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp
     )
     link_id = cur.lastrowid
     conn.execute(
-        "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (link_id, 1 if persist else 0, 1 if otp_required else 0, owner_wrap, guest_wrap),
+        "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, owner_name) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (link_id, 1 if persist else 0, 1 if otp_required else 0, owner_wrap, guest_wrap,
+         (owner_name or "").strip()[:80] or None),
     )
     return token, link_id
 
@@ -244,6 +246,7 @@ def owner_detail(conn, link_id: int) -> dict:
         "otp_required": bool(ch["otp_required"]),
         "status": ch["status"],
         "guest_name": ch["guest_name"],
+        "owner_name": ch["owner_name"],
         "saved_note_slug": saved_slug,
         "expires_at": link["expires_at"] if link else None,
         "present": {"owner": owner_present, "guest": guest_present},

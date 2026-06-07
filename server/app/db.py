@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 
 
 def init_db() -> None:
@@ -764,6 +764,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # neither). schema.sql carries the identical block for fresh DBs.
         conn.executescript(_CHAT_SCHEMA_SQL)
 
+    if current < 53:
+        # The owner can set a display name shown to the recipient (defaults to the brain name).
+        _add_column(conn, "chat_channels", "owner_name", "TEXT")
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -978,6 +982,7 @@ CREATE TABLE IF NOT EXISTS chat_channels (
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   saved_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,   -- set when the transcript is committed to the brain
   guest_name    TEXT,                            -- display name the recipient gave on joining
+  owner_name    TEXT,                            -- display name shown to the recipient (defaults to the brain name)
   last_guest_at TEXT,
   last_owner_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

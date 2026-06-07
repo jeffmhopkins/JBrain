@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -69,6 +69,11 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   const sse = useRef<SSEHandle | null>(null);
   const sawContent = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // A STABLE onClose for Modal: its focus effect keys on the onClose identity, so passing a
+  // fresh requestClose each render re-ran it on every keystroke — stealing focus from the
+  // Guide textarea and dismissing the mobile keyboard. Route through a ref instead.
+  const closeRef = useRef<() => void>(() => {});
+  const stableClose = useCallback(() => closeRef.current(), []);
 
   // ---- gather (Stage 1) --------------------------------------------------------
   function handleGather(e: RebuildEvent) {
@@ -275,9 +280,10 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   })();
 
   const headerExtra = <span className="rb-base-chip">{/^kb\/(health|finance)\//i.test(note.title) && <span className="rb-lock">🔒</span>}{slug}</span>;
+  closeRef.current = requestClose;   // keep the stable wrapper pointing at the latest logic
 
   return (
-    <Modal title={title} onClose={requestClose} footer={footer} headerExtra={headerExtra}>
+    <Modal title={title} onClose={stableClose} footer={footer} headerExtra={headerExtra}>
       <div className="rb-panel" ref={bodyRef}>
         {/* progress pips */}
         <div className="rb-pips">

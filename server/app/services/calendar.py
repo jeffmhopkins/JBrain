@@ -424,12 +424,23 @@ def expand_rrule(rrule: str, start: str, window_from: str, window_to: str,
         wfrom, wto = isoparse(window_from), isoparse(window_to)
     except Exception:  # noqa: BLE001
         return []
+    # dtstart is naive; an RFC-canonical `UNTIL=...Z` (or any offset) parses as
+    # tz-aware and dateutil then can't compare it to the naive window — which would
+    # silently collapse the whole series to one occurrence. Strip the marker so the
+    # rule stays naive. Also refuse sub-daily frequencies (pathological expansion).
+    norm = re.sub(r"(UNTIL=\d{8}T\d{6})Z", r"\1", rrule or "", flags=re.IGNORECASE)
+    norm = re.sub(r"(UNTIL=\d{8}T\d{6})[+-]\d{4}", r"\1", norm, flags=re.IGNORECASE)
+    if re.search(r"FREQ=(SECONDLY|MINUTELY|HOURLY)", norm, re.IGNORECASE):
+        return [_fmt(dtstart)] if wfrom <= dtstart <= wto else []
     try:
-        rule = _rr.rrulestr(rrule if rrule.upper().startswith("RRULE") else f"RRULE:{rrule}",
+        rule = _rr.rrulestr(norm if norm.upper().startswith("RRULE") else f"RRULE:{norm}",
                             dtstart=dtstart)
         instances = list(rule.between(wfrom, wto, inc=True))
     except Exception:  # noqa: BLE001 — bad rule: degrade to the single start date
-        return [_fmt(dtstart)] if wfrom <= dtstart <= wto else []
+        try:
+            return [_fmt(dtstart)] if wfrom <= dtstart <= wto else []
+        except Exception:  # noqa: BLE001 — never raise, per the contract
+            return []
 
     ex = {(_norm_dt(d) or d) for d in (exdates or [])}
     out = [_fmt(d) for d in instances]

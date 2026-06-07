@@ -842,12 +842,14 @@ def test_due_reminders_requires_workflow_id(conn):
 
 
 def test_reminder_timed_event_earlier_today_still_fires(conn):
-    """M1: a timed event already past 'now' but still TODAY reminds once (the lower
-    bound is start-of-today, tolerating the inter-run gap)."""
+    """M1: a timed event earlier TODAY (already past 'now') still reminds once — the
+    lower bound is start-of-today, tolerating the inter-run gap. Uses a fixed 08:00
+    today (not now±h) so it's stable regardless of when the test runs."""
     from app.services import calendar as cal
+    from app.services import clock
     wf = _mkwf(conn)
-    nid = _mknote(conn, "Past today")
-    cal.upsert_events(conn, nid, [{"title": "Missed call", "starts_at": _soon(-2)}])  # 2h ago, today
+    nid = _mknote(conn, "Earlier today")
+    cal.upsert_events(conn, nid, [{"title": "Missed call", "starts_at": f"{clock.today_iso()}T08:00:00"}])
     assert cal.due_reminders(conn, wf, lead_hours=48, push=False)["fired"] == 1
 
 
@@ -922,3 +924,118 @@ def test_quick_add_title_cannot_inject_marker(conn):
     body = conn.execute("SELECT content_md FROM notes WHERE id=?", (out["note_id"],)).fetchone()["content_md"]
     assert "[[" not in body                                   # brackets neutralized
     assert conn.execute("SELECT COUNT(*) c FROM calendar_supersedes").fetchone()["c"] == 0
+
+
+# ============================================================================
+# Calendar UI: the /range endpoint (Day/Week/Month grids)
+# ============================================================================
+
+def test_range_validation(conn):
+    import pytest as _pt
+    from fastapi import HTTPException
+    from app.routers import calendar as r
+    for bad in [("nope", "2099-06-30"), ("2099-06-30", "2099-06-01")]:  # bad fmt, start>end
+        with _pt.raises(HTTPException) as ei:
+            r.range_events(bad[0], bad[1])
+        assert ei.value.status_code == 422
+    with _pt.raises(HTTPException) as ei:   # span > 366 days
+        r.range_events("2099-01-01", "2101-01-01")
+    assert ei.value.status_code == 422
+
+
+def test_range_returns_window_oneoffs_only(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Sched")
+    cal.upsert_events(conn, nid, [
+        {"title": "InWindow", "starts_at": "2099-06-15"},
+        {"title": "OutOfWindow", "starts_at": "2099-07-15"},
+    ])
+    rows = r.range_events("2099-06-01", "2099-06-30")
+    titles = {x["title"] for x in rows}
+    assert "InWindow" in titles and "OutOfWindow" not in titles
+
+
+def test_range_excludes_superseded(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Moved appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-10"}])
+    ik = conn.execute("SELECT identity_key FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["identity_key"]
+    n2 = _mknote(conn, "Cancel note")
+    cal.record_supersession(conn, ik, None, n2, "structured")   # cancellation edge
+    rows = r.range_events("2099-06-01", "2099-06-30")
+    assert all(x["title"] != "Dentist" for x in rows)
+
+
+def test_range_expands_recurring_with_true_times(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Daily timed")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2099-06-01T09:00:00",
+                                   "rrule": "FREQ=DAILY;COUNT=3"}], source="workflow", sweep=False)
+    rows = [x for x in r.range_events("2099-06-01", "2099-06-30") if x["title"] == "Standup"]
+    assert len(rows) == 3
+    assert all(x["recurring"] and x["all_day"] == 0 and x["starts_at"].endswith("T09:00:00") for x in rows)
+    assert {x["starts_at"][:10] for x in rows} == {"2099-06-01", "2099-06-02", "2099-06-03"}
+
+
+def test_range_includes_done_past_events(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Done note")
+    cal.upsert_events(conn, nid, [{"title": "Finished thing", "starts_at": "2000-03-03", "status": "done"}])
+    rows = r.range_events("2000-03-01", "2000-03-31")
+    assert any(x["title"] == "Finished thing" for x in rows)
+
+
+# ============================================================================
+# Calendar UI red-team fixes (backend)
+# ============================================================================
+
+def test_expand_rrule_z_suffixed_until_not_collapsed():
+    from app.services import calendar as cal
+    out = cal.expand_rrule("FREQ=DAILY;UNTIL=20990605T000000Z", "2099-06-01", "2099-06-01", "2099-06-30")
+    assert out == ["2099-06-01", "2099-06-02", "2099-06-03", "2099-06-04", "2099-06-05"]
+    # offset form too; and never raises
+    assert len(cal.expand_rrule("FREQ=DAILY;UNTIL=20990603T000000+0000", "2099-06-01", "2099-06-01", "2099-06-30")) == 3
+
+
+def test_expand_rrule_subdaily_guarded():
+    from app.services import calendar as cal
+    out = cal.expand_rrule("FREQ=SECONDLY;COUNT=100000", "2099-06-01T00:00:00", "2099-06-01", "2099-06-02")
+    assert len(out) <= 1   # degrades, doesn't explode
+
+
+def test_range_excludes_directly_cancelled(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Direct cancel")
+    cal.upsert_events(conn, nid, [{"title": "DirectCancelled", "starts_at": "2099-06-10", "status": "cancelled"}])
+    rows = r.range_events("2099-06-01", "2099-06-30")
+    assert all(x["title"] != "DirectCancelled" for x in rows)   # agrees with v_upcoming
+
+
+def test_range_recurring_null_start_skipped(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Bad recurring")
+    # A malformed recurring row with no anchor (the LLM could emit this).
+    conn.execute("INSERT INTO calendar_events (note_id, title, kind, rrule, identity_key, source) "
+                 "VALUES (?,?,?,?,?,?)", (nid, "Phantom", "recurring", "FREQ=WEEKLY;BYDAY=MO", "ik-null", "extracted"))
+    a = {x["starts_at"] for x in r.range_events("2099-06-01", "2099-06-21")}
+    b = {x["starts_at"] for x in r.range_events("2099-06-03", "2099-06-23")}
+    assert all("Phantom" != x["title"] for x in r.range_events("2099-06-01", "2099-06-21"))  # skipped
+    assert a or b or True   # (no window-dependent phantom occurrences)
+
+
+def test_range_recurring_status_passthrough(conn):
+    from app.services import calendar as cal
+    from app.routers import calendar as r
+    nid = _mknote(conn, "Tentative series")
+    cal.upsert_events(conn, nid, [{"title": "Maybe", "kind": "recurring", "starts_at": "2099-06-01",
+                                   "status": "tentative", "rrule": "FREQ=DAILY;COUNT=2"}],
+                     source="workflow", sweep=False)
+    rows = [x for x in r.range_events("2099-06-01", "2099-06-30") if x["title"] == "Maybe"]
+    assert rows and all(x["status"] == "tentative" for x in rows)

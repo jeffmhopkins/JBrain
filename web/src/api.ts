@@ -106,6 +106,8 @@ export interface CalEvent {
 export const calUpcoming = (withinDays = 90) =>
   get<CalEvent[]>(`/api/calendar/upcoming?within_days=${withinDays}`);
 export const calHistory = () => get<CalEvent[]>("/api/calendar/history");
+export const calRange = (start: string, end: string) =>
+  get<CalEvent[]>(`/api/calendar/range?start=${start}&end=${end}`);
 export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string }) =>
   post<{ note_id: number; note_title: string; event: CalEvent | null }>("/api/calendar/quick-add", b);
 export const calReschedule = (id: number, to_date: string, to_time?: string) =>

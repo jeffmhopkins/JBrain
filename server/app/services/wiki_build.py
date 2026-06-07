@@ -49,17 +49,112 @@ CONTINUE_PROMPT = (
     "```talk block if it was not yet emitted)."
 )
 
+# maintain_one's reply is shaped differently from a write: a ```article fence wrapping the
+# full revised article, then a ```maintain JSON block. A generic "finish the article" resume
+# would let the model forget to CLOSE ```article or emit ```maintain — _extract_maintain would
+# then return empty / lose the resolved+new items silently. So maintenance gets its OWN resume
+# prompt that re-states the exact two-fence contract it must still satisfy at the cutoff.
+MAINTAIN_CONTINUE_PROMPT = (
+    "Your previous message was cut off at the length limit before you finished. "
+    "Continue from EXACTLY where you stopped — resume mid-word/mid-line if that is where it "
+    "ended — and output ONLY the remaining text. Do NOT restate or repeat anything you "
+    "already wrote. Remember the required output is EXACTLY two fenced blocks and nothing "
+    "else: first a ```article block holding the full revised article (close it with a line of "
+    "three backticks), then a ```maintain block holding the JSON "
+    '{"resolved": [...], "new": [...]}. Finish whichever of those you had not yet completed — '
+    "if you were still inside the ```article block, finish the article and close the fence, "
+    "then emit the ```maintain block; if the article was already closed, emit the ```maintain "
+    "block. Do not wrap your continuation in any extra code fence."
+)
+
+
+_OVERLAP_WINDOW = 400          # max chars of partial-suffix / remainder-prefix we compare
+
+
+def _trim_restated_overlap(partial: str, remainder: str) -> str:
+    """If the continuation RESTATED tail of the partial instead of resuming after it, drop the
+    duplicated prefix from the remainder. We look for the LONGEST suffix of the partial (capped
+    at _OVERLAP_WINDOW chars) that the remainder begins with, and strip it. Conservative: the
+    overlap must be a reasonably long run (>= 12 chars) so an incidental short coincidence
+    ("the ", "\n\n") at the seam can't eat real continuation text — a genuine mid-word resume
+    has no such overlap and is left untouched."""
+    if not partial or not remainder:
+        return remainder
+    window = partial[-_OVERLAP_WINDOW:]
+    # Longest k such that remainder starts with window's last k chars.
+    for k in range(len(window), 11, -1):
+        if remainder.startswith(window[-k:]):
+            return remainder[k:]
+    return remainder
+
+
+_LEADING_H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _drop_duplicate_title(partial: str, remainder: str) -> str:
+    """If the partial already opened with an H1 ("# Title") and the remainder RESTARTS with the
+    same "# Title" heading (a model that re-introduced the article), drop that duplicate heading
+    line from the remainder. Only fires when the titles match, so a legitimate new "## Section"
+    or a different heading is never removed."""
+    pm = _LEADING_H1_RE.search(partial or "")
+    if not pm:
+        return remainder
+    rstrip = (remainder or "").lstrip("\n")
+    rm = re.match(r"#\s+(.+?)\s*(?:\n|$)", rstrip)
+    if rm and rm.group(1).strip() == pm.group(1).strip():
+        return rstrip[rm.end():]
+    return remainder
+
+
+_BLOCK_START_RE = re.compile(r"(?:#{1,6}\s|[-*>]\s|\d+\.\s|\||```)")
+
+
+def _seam_separator(partial: str, remainder: str) -> str:
+    """Pick the glue between partial and remainder. The model is told to resume EXACTLY at the
+    cutoff, so we glue with NOTHING by default — a mid-word/mid-fence seam ("Refe" + "rences")
+    MUST re-form, and that safe behaviour is what the whole design relies on. A provider that
+    .strip()s each segment (xAI does) can drop the whitespace that lived at the seam, but we can
+    only safely repair the ONE unambiguous case: the remainder begins a line-anchored markdown
+    BLOCK ("## References", "- item", "1. ", "> ", "|", a fenced block). A genuine mid-word
+    resume never starts with such a marker, so inserting a newline there is a zero-false-positive
+    fix that keeps a stripped "## References" heading on its own line.
+
+    We deliberately do NOT insert a SPACE for a plain word/word seam ("in" + "2026"): that case
+    is genuinely indistinguishable from a real mid-word resume ("Refe" + "rences"), so guessing a
+    space risks corrupting content. We fall back to the safe glue-raw behaviour — a rare cosmetic
+    "in2026" under xAI is preferable to splitting a word. Returns "" unless both sides touch
+    non-whitespace AND the remainder opens a markdown block, in which case "\n"."""
+    if not partial or not remainder:
+        return ""
+    if partial[-1].isspace() or remainder[0].isspace():
+        return ""
+    if _BLOCK_START_RE.match(remainder):
+        return "\n"
+    return ""
+
 
 def _join_continuation(partial: str, remainder: str) -> str:
-    """Stitch a truncated draft's RAW partial with its RAW continuation. We glue the two
-    text streams with no separator — the model is told to resume EXACTLY at the cutoff, so
-    inserting a newline could break a mid-word/mid-fence seam. Extraction (_strip_fence /
-    _extract_talk) is run by the CALLER on this joined string, ONCE, so a fence split across
-    the boundary re-forms before parsing."""
-    return (partial or "") + (remainder or "")
+    """Stitch a truncated draft's RAW partial with its RAW continuation. The model is told to
+    resume EXACTLY at the cutoff, so we glue with no separator by default — but we first guard
+    two real hazards:
+      * DUPLICATION — a model that RESTATES instead of resuming. _drop_duplicate_title removes a
+        repeated "# Title" heading; _trim_restated_overlap then drops the longest restated
+        run (capped at _OVERLAP_WINDOW) so the join isn't garbled/doubled.
+      * STRIPPED SEAM — a provider that .strip()s each segment (xAI) drops the whitespace that
+        lived at the cutoff; _seam_separator re-inserts a newline before a markdown block so a
+        stripped "## References" heading keeps its own line (a word/word seam is left raw — see
+        _seam_separator for why a space there would risk splitting a mid-word resume).
+    Extraction (_strip_fence / _extract_talk) still runs ONCE on this joined string in the
+    CALLER, so a fence split across the boundary re-forms before parsing."""
+    partial = partial or ""
+    remainder = remainder or ""
+    remainder = _drop_duplicate_title(partial, remainder)
+    remainder = _trim_restated_overlap(partial, remainder)
+    return partial + _seam_separator(partial, remainder) + remainder
 
 
-def _complete_with_continue(msgs: list[dict], cap: int, ceiling: int) -> tuple[str, str | None]:
+def _complete_with_continue(msgs: list[dict], cap: int, ceiling: int,
+                            continue_prompt: str = CONTINUE_PROMPT) -> tuple[str, str | None]:
     """Non-streaming completion with the batch truncation recovery ladder:
       1. complete at `cap`; if cut off, retry ONCE at min(cap*2, ceiling) (the existing
          bigger-cap retry — unchanged behaviour);
@@ -80,7 +175,7 @@ def _complete_with_continue(msgs: list[dict], cap: int, ceiling: int) -> tuple[s
     # the original prompt, the truncated assistant draft, then the resume instruction.
     cont_msgs = [*msgs,
                  {"role": "assistant", "content": text},
-                 {"role": "user", "content": CONTINUE_PROMPT}]
+                 {"role": "user", "content": continue_prompt}]
     remainder, stop2 = llm.complete_with_meta(cont_msgs, max_tokens=cap)
     return _join_continuation(text, remainder), stop2
 
@@ -299,6 +394,61 @@ def _sources_text(srcs: list[dict]) -> str:
 def _strip_fence(text: str) -> str:
     m = _FENCE_RE.match(text or "")
     return (m.group(1) if m else (text or "")).strip()
+
+
+_WRAPPER_OPEN_RE = re.compile(r"^\s*```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
+# A close-immediately-followed-by-reopen of the WHOLE-document wrapper: a bare ``` line
+# directly followed by a ```markdown/```md/``` opener. This is the seam artifact left when a
+# continuation re-opened the wrapper the partial had just closed. We collapse it (remove both
+# lines) — it can only occur where the model closed and re-opened the OUTER wrapper, never in
+# legitimate prose (a real inner code block opens with ```lang and is preceded by text).
+_WRAPPER_REOPEN_RE = re.compile(r"\n```[ \t]*\n```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
+
+
+def _clean_wrapper_fence(text: str) -> str:
+    """Conservative cleanup of ```markdown WRAPPER-fence artifacts left by an auto-continued
+    draft, run AFTER the single _strip_fence. Two verified leak cases the anchored _FENCE_RE
+    can't catch once a continuation is stitched in:
+      (a) the continuation RE-OPENED the wrapper after the partial closed it, leaving an
+          adjacent ```\n```markdown pair mid-document;
+      (b) the partial CLOSED the wrapper at the cap, and the appended remainder pushed text
+          PAST the trailing ```, so the closing fence is no longer terminal and _FENCE_RE
+          leaves the whole ```markdown opener (and its now-orphaned ``` closer) in the body.
+    Fixes, in order, touching ONLY wrapper artifacts (never a genuine inner ```lang code block,
+    which opens with a language tag preceded by prose and is balanced):
+      1. collapse any close-then-reopen wrapper pair (case a);
+      2. if the document STILL starts with a bare ```/```markdown opener (case b), drop that
+         opener line AND the matching orphaned closing ``` (the LAST bare ``` line) so the
+         wrapper doesn't half-survive.
+    A document that opens with a fenced *code* block (```python …) is untouched: we only strip
+    a bare ``` or ```markdown / ```md opener, and only at the document edge."""
+    if not text:
+        return text
+    # 1) close-then-reopen wrapper seam → collapse to a single newline.
+    text = _WRAPPER_REOPEN_RE.sub("\n", text)
+    # 2) a wrapper opener still leading the document (closer no longer terminal).
+    m = _WRAPPER_OPEN_RE.match(text)
+    if m:
+        rest = text[m.end():]
+        # Find the orphaned wrapper closer: the LAST line that is a bare ``` (the wrapper's
+        # own close). Only treat it as the wrapper closer when removing it leaves balanced
+        # fences in the remaining body (so we never break a real inner code block).
+        lines = rest.split("\n")
+        close_idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip() == "```":
+                close_idx = i
+                break
+        if close_idx is not None:
+            # Fences BEFORE the closer, excluding it: must be balanced (even) so the closer we
+            # drop is the wrapper's, not an inner block's open/close.
+            before = sum(1 for ln in lines[:close_idx] if ln.strip().startswith("```"))
+            after = sum(1 for ln in lines[close_idx + 1:] if ln.strip().startswith("```"))
+            if before % 2 == 0 and after == 0:
+                del lines[close_idx]
+                rest = "\n".join(lines)
+        text = rest
+    return text.strip()
 
 
 def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
@@ -552,7 +702,7 @@ def write_one(conn, art: dict, instructions: str | None = None,
         if stop in _TRUNCATED:
             base["errors"] = ["draft truncated at the token limit"]
             return base
-        draft, talk = _extract_talk(_strip_fence(text))
+        draft, talk = _extract_talk(_clean_wrapper_fence(_strip_fence(text)))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"write failed: {exc}"]
         return base
@@ -576,8 +726,8 @@ def write_one(conn, art: dict, instructions: str | None = None,
                    .replace("{domain_guide}", dguide).replace("{domain}", domain or "")
                    .replace("{known_titles}", known_block).replace("{draft}", draft))
         try:
-            revised, rtalk = _extract_talk(_strip_fence(
-                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200)))
+            revised, rtalk = _extract_talk(_clean_wrapper_fence(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2200))))
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_revise failed for %s: %s", title, exc)
             break
@@ -929,11 +1079,12 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
         # (changed=False → don't save) rather than persist a maintain output cut off at the
         # token limit. _extract_maintain runs ONCE on the joined raw text so a ```maintain/
         # ```article fence split across the cap re-forms before parsing.
-        text, stop = _complete_with_continue(msgs, cap=3500, ceiling=6000)
+        text, stop = _complete_with_continue(msgs, cap=3500, ceiling=6000,
+                                              continue_prompt=MAINTAIN_CONTINUE_PROMPT)
         if stop in _TRUNCATED:
             base["errors"] = ["maintain output truncated"]
             return base
-        revised, payload = _extract_maintain(_strip_fence(text))
+        revised, payload = _extract_maintain(_clean_wrapper_fence(_strip_fence(text)))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"maintain failed: {exc}"]
         return base
@@ -961,8 +1112,8 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
                    .replace("{domain_guide}", wiki_guides.guide_text(domain)).replace("{domain}", domain)
                    .replace("{known_titles}", known_block).replace("{draft}", revised))
         try:
-            r2, _ = _extract_maintain(_strip_fence(
-                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600)))
+            r2, _ = _extract_maintain(_clean_wrapper_fence(_strip_fence(
+                llm.complete([{"role": "user", "content": rprompt}], max_tokens=2600))))
         except Exception as exc:  # noqa: BLE001
             log.info("wiki_maintain revise failed for %s: %s", article_title, exc)
             break

@@ -394,3 +394,195 @@ def test_join_continuation_is_raw_concatenation():
     assert _join_continuation("```talk\n[{\"bo", "dy\":1}]\n```") == "```talk\n[{\"body\":1}]\n```"
     assert _join_continuation("", "x") == "x"
     assert _join_continuation("x", "") == "x"
+
+
+# =========================================================================================
+# RED-TEAM HAZARD FIXES — one block per fix.
+# =========================================================================================
+
+# ---- FIX 1: wrapper ```markdown fence artifacts must never leak into the SAVED article ----
+
+def test_clean_wrapper_fence_case_a_reopened_wrapper():
+    """Leak case (a): the continuation RE-OPENED the ```markdown wrapper after the partial
+    closed it, leaving an adjacent ```\\n```markdown pair mid-document. The anchored _FENCE_RE
+    can't strip it (closer no longer terminal); _clean_wrapper_fence collapses the artifact."""
+    from app.services.wiki_build import _strip_fence, _clean_wrapper_fence
+    leaked = ("```markdown\n# Ford Truck\n\nFirst half of the body.\n```\n"
+              "```markdown\nSecond half after the model re-opened the wrapper.\n```\n")
+    out = _clean_wrapper_fence(_strip_fence(leaked))
+    assert "```markdown" not in out
+    assert "```" not in out                                # no stray fence survives
+    assert out.startswith("# Ford Truck")
+    assert "First half of the body." in out and "Second half" in out
+
+
+def test_clean_wrapper_fence_case_b_unterminated_wrapper():
+    """Leak case (b): the partial CLOSED the wrapper at the cap, and appended remainder pushed
+    text past the trailing ```, so _FENCE_RE leaves the WHOLE ```markdown wrapper in the body.
+    _clean_wrapper_fence drops the leading opener AND the now-orphaned ``` closer."""
+    from app.services.wiki_build import _strip_fence, _clean_wrapper_fence
+    leaked = ("```markdown\n# Ford Truck\n\nThe article body.\n```\n"
+              "And a trailing sentence the continuation added after the close.\n")
+    out = _clean_wrapper_fence(_strip_fence(leaked))
+    assert "```markdown" not in out
+    assert "```" not in out
+    assert out.startswith("# Ford Truck")
+    assert "trailing sentence" in out
+
+
+def test_clean_wrapper_fence_preserves_genuine_inner_code_block():
+    """A real fenced CODE block inside prose (```python …) must survive untouched — the
+    cleanup only removes a bare/markdown wrapper at the document edge or a close-then-reopen."""
+    from app.services.wiki_build import _strip_fence, _clean_wrapper_fence
+    doc = "# Title\n\nIntro.\n\n```python\nprint('hi')\n```\n\nMore prose after the block.\n"
+    out = _clean_wrapper_fence(_strip_fence(doc))
+    assert "```python" in out
+    assert "print('hi')" in out
+    assert out.count("```") == 2                           # the inner block's own pair, intact
+
+
+def test_write_one_wrapper_fence_split_does_not_leak(conn, monkeypatch):
+    """End-to-end batch: the model wraps the article in ```markdown, gets cut off, and the
+    continuation re-opens the wrapper. The SAVED article body must carry no stray fence."""
+    from app.services import wiki_build, llm
+    src = _source_note(conn)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    partial = (f"```markdown\n# Ford Truck\n\n{_LEAD}[^s1]\n\n"
+               "## References\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n```\n")
+    remainder = "```markdown\nA durable extra paragraph the model added on resume.\n```\n"
+    calls = []
+
+    def fake_cwm(messages, **kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            return (partial, "max_tokens")
+        return (remainder, None)
+    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
+
+    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
+    assert out["ok"] is True
+    assert "```markdown" not in out["content_md"]
+    assert "```" not in out["content_md"]                  # no fence artifact in the saved body
+    assert out["content_md"].startswith("# Ford Truck")
+    assert "extra paragraph" in out["content_md"]
+
+
+# ---- FIX 2: a truncated MAINTAIN continuation must preserve the ```maintain JSON ----
+
+def test_maintain_continuation_preserves_maintain_json(conn, monkeypatch):
+    """The maintain reply is a ```article fence + a ```maintain JSON block. On a truncated
+    maintain draft, the continuation must still finish the article fence AND emit ```maintain,
+    so resolved/new items are recovered (not silently lost with the article still saving ok)."""
+    from app.services import wiki_build, article_talk, llm, notes as notes_svc
+    notes_svc.upsert_note(conn, "kb/Things/Ford Truck", _FULL, kind="kb", fire_events=False)
+    conn.commit()
+    item_id = article_talk.add(conn, "kb/Things/Ford Truck", "question", "What year was it bought?")
+    conn.commit()
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+
+    # Cut off INSIDE the article fence (before it's closed and before ```maintain).
+    partial = "```article\n# Ford Truck\n\nA truck bought in 2026 by Jeff.[^s1]\n\n## Refe"
+    # The continuation finishes the article, closes the fence, and emits the maintain block
+    # carrying the resolved item + a new note.
+    remainder = ("rences\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03\n```\n"
+                 "```maintain\n{\"resolved\": [{\"id\": %d, \"outcome\": \"answered\", "
+                 "\"how\": \"stated 2026\"}], \"new\": [{\"kind\": \"note\", "
+                 "\"body\": \"Cross-checked the purchase year.\"}]}\n```\n" % item_id)
+    calls = []
+
+    def fake_cwm(messages, **kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            return (partial, "length")                     # initial + bigger-cap retry cut off
+        return (remainder, None)                           # continuation finishes both blocks
+    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
+
+    out = wiki_build.maintain_one(conn, "kb/Things/Ford Truck", known_titles=[])
+    assert len(calls) == 3
+    assert out["ok"] is True
+    assert "```article" not in out["content_md"] and "```maintain" not in out["content_md"]
+    assert "2026" in out["content_md"]
+    # The maintain JSON survived the seam — the resolved/new items were recovered, not lost.
+    assert any(r["id"] == item_id and r["outcome"] == "answered" for r in out["resolved"]), out["resolved"]
+    assert any(n["body"] == "Cross-checked the purchase year." for n in out["new"]), out["new"]
+
+
+def test_maintain_continue_prompt_names_the_two_fence_contract():
+    """The maintain resume prompt must name the ```article/```maintain contract so a real
+    model closes the article fence and still emits the maintain block (the generic article
+    CONTINUE_PROMPT does not mention either, which is the FIX 2 root cause)."""
+    from app.services import wiki_build
+    mp = wiki_build.MAINTAIN_CONTINUE_PROMPT
+    assert "```article" in mp and "```maintain" in mp
+    assert mp != wiki_build.CONTINUE_PROMPT
+
+
+# ---- FIX 3: a RESTATING continuation must not produce duplicated / garbled text ----
+
+def test_join_continuation_drops_duplicate_title_heading():
+    from app.services.wiki_build import _join_continuation
+    partial = "# Ford Truck\n\nA truck Jeff bought, used for work and weekend trips around town"
+    # The model RESTATED the whole thing from the title instead of resuming.
+    remainder = ("# Ford Truck\n\nA truck Jeff bought, used for work and weekend trips around "
+                 "town, and it is reliable.")
+    out = _join_continuation(partial, remainder)
+    assert out.count("# Ford Truck") == 1                  # the duplicate H1 was dropped
+    assert "and it is reliable." in out                    # the genuinely-new tail is kept
+
+
+def test_join_continuation_trims_restated_overlap():
+    from app.services.wiki_build import _join_continuation
+    partial = "The truck was purchased in early 2026 for the daily work commute"
+    remainder = "purchased in early 2026 for the daily work commute and remains reliable."
+    out = _join_continuation(partial, remainder)
+    # The restated run appears once; the new tail follows it without garbling.
+    assert out.count("purchased in early 2026 for the daily work commute") == 1
+    assert out.endswith("and remains reliable.")
+
+
+def test_write_one_restating_continuation_not_duplicated(conn, monkeypatch):
+    """End-to-end: the continuation RESTATES the article (incl. the # heading) before adding
+    the rest. The saved body must not contain a doubled heading or a doubled lead."""
+    from app.services import wiki_build, llm
+    src = _source_note(conn)
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    lead = "A Ford truck Jeff Hopkins bought in 2026 and drives daily for his work commute"
+    partial = f"# Ford Truck\n\n{lead}"
+    remainder = (f"# Ford Truck\n\n{lead}[^s1]\n\n## References\n\n"
+                 "[^s1]: [[notes/2026/02/03]] — 2026-02-03\n")
+    calls = []
+
+    def fake_cwm(messages, **kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            return (partial, "max_tokens")
+        return (remainder, None)
+    monkeypatch.setattr(llm, "complete_with_meta", fake_cwm)
+
+    out = wiki_build.write_one(conn, _art(src["id"]), known_titles=[])
+    assert out["ok"] is True
+    assert out["content_md"].count("# Ford Truck") == 1                # heading not doubled
+    assert out["content_md"].count("drives daily for his work commute") == 1   # lead not doubled
+    assert "## References" in out["content_md"]
+
+
+# ---- FIX 4: stripped seam must not merge words / break a heading off start-of-line ----
+
+def test_seam_inserts_newline_before_markdown_block():
+    """A provider that .strip()s each segment (xAI) drops the newline before a "## References"
+    heading; the seam repair restores it so the heading stays a heading."""
+    from app.services.wiki_build import _join_continuation
+    partial = "…and that is the end of the prose."             # stripped: no trailing newline
+    remainder = "## References\n\n[^s1]: [[notes/2026/02/03]] — 2026-02-03"   # stripped: starts at heading
+    out = _join_continuation(partial, remainder)
+    assert "\n## References" in out                          # heading re-anchored to its own line
+    assert "prose.## References" not in out
+
+
+def test_seam_preserves_genuine_mid_word_resume():
+    """The core design relies on a mid-word resume gluing with NO separator. A word/word seam
+    is indistinguishable from a stripped space, so we conservatively glue raw rather than risk
+    splitting a word — 'Refe' + 'rences' must stay 'References'."""
+    from app.services.wiki_build import _join_continuation
+    assert _join_continuation("## Refe", "rences") == "## References"
+    assert _join_continuation("the comm", "itment") == "the commitment"

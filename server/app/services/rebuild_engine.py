@@ -232,10 +232,12 @@ async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[
     # the body remainder, no fresh reasoning budget) and is capped at ONE: if it's STILL
     # truncated, we fall through with truncated=True so the panel offers the user-approved
     # re-draft (run_redraft) exactly as before. Extraction runs ONCE on the joined raw text.
+    cont_start = None              # index into `parts` where the auto-continuation begins
     for continuation in range(2):    # pass 0 = initial draft, pass 1 = one auto-continue
         if continuation:
             run.messages.append({"role": "user", "content": wiki_build.CONTINUE_PROMPT})
             run.status = "streaming"
+            cont_start = len(parts)
         cont_thinking = use_thinking and not continuation
         produced = False
         truncated = False
@@ -284,8 +286,11 @@ async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[
 
     # Run extraction ONCE on the JOINED raw text (initial draft + any continuation), so a
     # ```talk or code fence split across the cap re-forms before _strip_fence/_extract_talk.
-    raw = "".join(parts)
-    draft, talk = wiki_build._extract_talk(wiki_build._strip_fence(raw))
+    if cont_start is not None and cont_start <= len(parts):
+        raw = wiki_build._join_continuation("".join(parts[:cont_start]), "".join(parts[cont_start:]))
+    else:
+        raw = "".join(parts)
+    draft, talk = wiki_build._extract_talk(wiki_build._clean_wrapper_fence(wiki_build._strip_fence(raw)))
     allowed = set(run.known) | {run.title}
     bad = wiki_build._bad_links(conn, draft, allowed)
     # Before deleting a "dead" citation, repair a writer typo: a footnote [[title]] that is a

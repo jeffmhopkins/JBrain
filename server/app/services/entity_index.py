@@ -555,6 +555,84 @@ def note_ids_for_name(conn, name: str) -> list[int]:
         "SELECT note_id FROM entity_mentions WHERE entity_id=?", (row["id"],)).fetchall()]
 
 
+# ---- Span-detection alias expansion (OWNER-CONTEXT ONLY) ---------------------------------
+
+def _span_surface_set(conn) -> set[str]:
+    """The normalized name-surfaces a SPAN inside a sentence query is allowed to expand on —
+    a dictionary, not NER. It is the conservative intersection of "resolvable by
+    note_ids_for_name" and "safe to fire on a mention buried in prose":
+
+      • every entity CANONICAL key (a real, deliberately-named entity);
+      • every MULTI-token alias (e.g. "jeff hopkins" — two+ tokens is collision-resistant);
+      • a SINGLE-token alias ONLY if the user explicitly decided it (entity_decisions 'alias').
+
+    The single-token gate mirrors alias_surface()'s drop-rule (iv): a bare heuristic first
+    name ("jeff" auto-merged onto "Jeffrey") is too collision-prone to fire mid-sentence, so —
+    unlike note_ids_for_name, which resolves ANY alias — we DROP it here unless the user backed
+    it. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must never
+    auto-expand. Built ONCE per call by the caller (three cheap indexed queries) then scanned
+    in-memory."""
+    from . import entity_decisions
+    surfaces: set[str] = set()
+    for r in conn.execute("SELECT normalized_key AS k FROM entities").fetchall():
+        if r["k"]:
+            surfaces.add(r["k"])
+    decided = {an for _canon, pairs in entity_decisions.load_aliases(conn).items()
+               for an, _disp in pairs}
+    for r in conn.execute(
+        "SELECT DISTINCT alias_norm AS a FROM entity_aliases WHERE alias_norm IS NOT NULL"
+    ).fetchall():
+        an = r["a"]
+        if an and (" " in an or an in decided):       # multi-token, or a user-decided single name
+            surfaces.add(an)
+    amb = {str(t.get("term", "")).lower() for t in ambiguous_terms(conn)}
+    return surfaces - amb
+
+
+def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 200) -> list[int]:
+    """Note ids reached by NAME SPANS mentioned INSIDE the query `q` (owner-context only).
+
+    Complements the whole-query expansion: a sentence like "what did jeff hopkins say about
+    taxes" never resolves AS A WHOLE to an entity, but it CONTAINS the known surface "jeff
+    hopkins". We scan the normalized query token stream LONGEST-MATCH-FIRST against the safe
+    surface set (so "jeff hopkins" wins over the bare "jeff" sub-span, and its tokens are then
+    consumed — no double count), then take the union of the matched entities' mention notes
+    (each resolved through note_ids_for_name, which carries its own key/alias resolution).
+
+    Bounded for the hot path and for ranking: at most `max_spans` distinct surfaces expand and
+    at most `max_notes` ids return, so a span hit can SURFACE a note but never floods the
+    fusion. Returns [] when nothing safe matches (the no-name-sentence case → byte-identical to
+    expansion off). Pure read; no LLM, no embeddings."""
+    toks = _NONWORD.sub(" ", (q or "").lower()).split()
+    if not toks:
+        return []
+    surfaces = _span_surface_set(conn)
+    if not surfaces:
+        return []
+    ids: list[int] = []
+    seen_ids: set[int] = set()
+    spans_used = 0
+    i, n = 0, len(toks)
+    # Longest-match scan: at each position try the longest window (≤4 tokens) that is a known
+    # surface, resolve it, then advance past the whole matched span (consume its tokens).
+    while i < n and spans_used < max_spans:
+        matched = 0
+        for size in range(min(n - i, 4), 0, -1):
+            cand = " ".join(toks[i:i + size])
+            if cand in surfaces:
+                for nid in note_ids_for_name(conn, cand):
+                    if nid not in seen_ids:
+                        seen_ids.add(nid)
+                        ids.append(nid)
+                        if len(ids) >= max_notes:
+                            return ids
+                spans_used += 1
+                matched = size
+                break
+        i += matched or 1
+    return ids
+
+
 def ambiguous_terms(conn) -> list[dict]:
     """Terms (canonical keys or aliases) that map to ≥2 distinct entities — disambiguation
     candidates. Returns [{term, entities:[{id,type,canonical_name,article_title}]}]."""

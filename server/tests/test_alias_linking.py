@@ -386,15 +386,20 @@ def test_hybrid_notes_entity_expand_reaches_alias_notes(conn):
     assert any(r["id"] == n1["id"] for r in exp)
 
 
-def test_hybrid_notes_entity_expand_ignores_sentence_query(conn):
+def test_hybrid_notes_entity_expand_span_reaches_name_in_sentence(conn):
+    # SPAN detection (added with span-detection search): a KNOWN multi-token name mentioned
+    # INSIDE a sentence now reaches that person's corpus — superseding the old whole-query-only
+    # behavior. ("jeff hopkins" is a safe multi-token alias surface; a bare "jeff" would not.)
     from app.services import search
-    n1 = _mk(conn, "notes/2026/01/11", "had lunch downtown today", kind="entry")
+    n1 = _mk(conn, "notes/2026/01/11", "zzqq unrelated body", kind="entry")  # no query token in body
     eid = _entity(conn, "Jeffrey Hopkins", aliases=["Jeff Hopkins"])
     conn.execute("INSERT INTO entity_mentions (entity_id, note_id) VALUES (?,?)", (eid, n1["id"]))
     conn.commit()
-    # The whole query isn't a bare name/alias → must NOT expand into the person's corpus.
     exp = search.hybrid_notes(conn, "what did jeff hopkins eat", 8, entity_expand=True)
-    assert all(r["id"] != n1["id"] for r in exp)
+    assert any(r["id"] == n1["id"] for r in exp), "span of a known name in a sentence should expand"
+    # A no-name sentence (no token resolves to an entity, none in n1's body) expands nothing.
+    none_exp = search.hybrid_notes(conn, "what did we eat for lunch", 8, entity_expand=True)
+    assert all(r["id"] != n1["id"] for r in none_exp), "no-name sentence must not expand the corpus"
 
 
 def test_hybrid_notes_entity_expand_skips_ambiguous_name(conn):

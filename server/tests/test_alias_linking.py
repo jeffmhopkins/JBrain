@@ -420,8 +420,8 @@ def test_write_one_prompt_has_no_leftover_alias_placeholder(conn, monkeypatch):
     seen = {}
     def fake_complete(messages, **kw):
         seen["prompt"] = messages[0]["content"]
-        return "# Ford Truck\n\nA truck owned by [[kb/People/Jeffrey Hopkins|Jeff Hopkins]].\n"
-    monkeypatch.setattr(llm, "complete", fake_complete)
+        return "# Ford Truck\n\nA truck owned by [[kb/People/Jeffrey Hopkins|Jeff Hopkins]].\n", None
+    monkeypatch.setattr(llm, "complete_with_meta", fake_complete)
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     art = {"title": "kb/Things/Ford Truck", "domain": "Things", "scope": "truck", "sources": [src["id"]]}
     wiki_build.write_one(conn, art, known_titles=["kb/People/Jeffrey Hopkins"])

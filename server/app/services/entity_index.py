@@ -296,6 +296,24 @@ def rebuild(conn, limit: int = 20000) -> int:
 
     _link_articles(conn)
     _apply_overrides(conn)            # owner source-of-truth names win over frequency
+
+    # Self-heal the owner's nickname aliases: an owner who set their name BEFORE the alias
+    # feature shipped never re-saved Owner settings, so their name/declared-aliases were never
+    # seeded as durable alias decisions. reconcile_owner is idempotent + split-gated and binds
+    # the owner to their kb/People article (needs the entity→article bindings above to exist),
+    # so re-running it on every rebuild backfills those decisions. Lazy import breaks the
+    # import cycle (wiki_build imports entity_index lazily too); reconcile_owner never calls
+    # rebuild, so there's no recursion. Best-effort — it must never break a rebuild. The seeded
+    # decisions are loaded by decided_aliases at the START of the NEXT rebuild, so they fold into
+    # entity_aliases one rebuild later (expected, acceptable eventual-consistency).
+    name = (people.owner_name(conn) or "").strip().lower()
+    if name and name not in ("me", "the owner"):
+        try:
+            from . import wiki_build
+            wiki_build.reconcile_owner(conn)
+        except Exception:
+            pass
+
     _sync_embeddings(conn)            # embed AFTER overrides so vectors use the corrected name
     conn.commit()
     return len(seen_keys)

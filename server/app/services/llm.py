@@ -97,6 +97,10 @@ class LLMProvider(Protocol):
     def complete(self, messages: list[Message], *, system: str | None = None,
                  model: str | None = None, max_tokens: int = 1024) -> str: ...
 
+    def complete_with_meta(self, messages: list[Message], *, system: str | None = None,
+                           model: str | None = None,
+                           max_tokens: int = 1024) -> tuple[str, str | None]: ...
+
     def complete_with_tools(self, messages: list[Message], *, system: str | None,
                             tools: list[ToolDef], model: str | None,
                             max_tokens: int) -> tuple[str, list[ToolCall], dict | None]: ...
@@ -123,6 +127,13 @@ class AnthropicProvider:
         return True
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
+        text, _ = self.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
+        return text
+
+    def complete_with_meta(self, messages, *, system=None, model=None, max_tokens=1024) -> tuple[str, str | None]:
+        """Like complete(), but also returns the provider's finish reason. "max_tokens"
+        means the body was cut off (the trailing ## References block is the first casualty)
+        — batch writers use this to fail rather than save a half-written article."""
         from anthropic import Anthropic
 
         client = Anthropic(api_key=get_settings().llm_api_key, timeout=_LLM_TIMEOUT)
@@ -131,7 +142,8 @@ class AnthropicProvider:
             kwargs["system"] = system
         msg = client.messages.create(**kwargs)
         _record_usage(kwargs["model"], getattr(msg, "usage", None), "action")
-        return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        return text, getattr(msg, "stop_reason", None)
 
     def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
         """One SYNCHRONOUS tool-capable turn (non-streaming). Appends the model's turn to
@@ -271,12 +283,18 @@ class XAIProvider:
         return out
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
+        text, _ = self.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
+        return text
+
+    def complete_with_meta(self, messages, *, system=None, model=None, max_tokens=1024) -> tuple[str, str | None]:
+        """Like complete(), but also returns the OpenAI-compatible finish reason. "length"
+        means the body was cut off — batch writers fail rather than save a half-written one."""
         client = self._client()
         resp = client.chat.completions.create(
             model=model or self.default_model(), max_tokens=max_tokens,
             messages=self._wire(messages, system))
         _record_openai_usage(model or self.default_model(), getattr(resp, "usage", None), "action")
-        return (resp.choices[0].message.content or "").strip()
+        return (resp.choices[0].message.content or "").strip(), getattr(resp.choices[0], "finish_reason", None)
 
     def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
         """Synchronous tool-capable turn (OpenAI-compatible). Mirrors the Anthropic adapter:
@@ -462,6 +480,15 @@ def has_credentials() -> bool:
 def complete(messages: list[Message], *, system: str | None = None,
              model: str | None = None, max_tokens: int = 1024) -> str:
     return get_provider(model).complete(messages, system=system, model=model, max_tokens=max_tokens)
+
+
+def complete_with_meta(messages: list[Message], *, system: str | None = None,
+                       model: str | None = None, max_tokens: int = 1024) -> tuple[str, str | None]:
+    """Non-streaming completion that ALSO surfaces the provider's finish reason. A
+    stop_reason of "max_tokens" (Anthropic) / "length" (xAI) means the output was cut off
+    at the token cap — batch writers (wiki_build) use this to retry-then-fail instead of
+    silently saving a truncated article. Mirrors the live engine's TurnEnd.stop_reason."""
+    return get_provider(model).complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
 
 
 def complete_with_tools(messages: list[Message], *, system: str | None = None, tools: list[ToolDef],

@@ -268,3 +268,77 @@ def test_reconcile_owner_seeds_alias_and_links_after_rebuild(conn):
     entity_index.rebuild(conn)                # materialize the seeded alias into entity_aliases
     new, _ = wiki_build.add_links_to_content(conn, "kb/Things/Ford Truck", "Jeff Hopkins owns this.")
     assert "[[kb/People/Jeffrey Hopkins|Jeff Hopkins]]" in new
+
+
+def test_reconcile_owner_seeds_before_any_rebuild(conn):
+    # The young-KB gap: no entity bound yet. reconcile must still record the alias decision,
+    # anchored on the article-leaf norm, so the next rebuild folds it.
+    from app.services import wiki_build, entity_decisions
+    _mk(conn, "kb/People/Jeffrey Hopkins")          # article exists; entity index NOT built
+    _set_owner(conn, "Jeff Hopkins")
+    res = wiki_build.reconcile_owner(conn)
+    assert res["linked"] == "kb/People/Jeffrey Hopkins" and res["aliases_seeded"] >= 1
+    aliases = entity_decisions.load_aliases(conn)
+    assert any(an == "jeff hopkins" for an, _ in aliases.get("jeffrey hopkins", []))
+
+
+def test_reconcile_owner_split_gated(conn):
+    from app.services import wiki_build, entity_decisions
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _set_owner(conn, "Jeff Hopkins")
+    entity_decisions.add(conn, kind="split", norm_a="Jeff Hopkins", norm_b="Jeffrey Hopkins")
+    conn.commit()
+    wiki_build.reconcile_owner(conn)
+    aliases = entity_decisions.load_aliases(conn)
+    assert not any(an == "jeff hopkins" for an, _ in aliases.get("jeffrey hopkins", []))
+
+
+def test_link_owner_binds_via_declared_alias(conn):
+    from app.services import wiki_build
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _set_owner(conn, "Boss", aliases="Jeffrey Hopkins")   # exact declared alias → strong match
+    assert wiki_build.link_owner(conn)["linked"] == "kb/People/Jeffrey Hopkins"
+
+
+def test_check_needed_links_alias_pass_auto(conn):
+    from app.services import wiki_build, notes as notes_svc
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    _mk(conn, "kb/Things/Truck", "Jeff Hopkins owns this truck.")
+    out = wiki_build.check_needed_links(conn, "kb/Things/Truck", mode="auto")
+    body = notes_svc.get_by_title(conn, "kb/Things/Truck")["content_md"]
+    assert "[[kb/People/Jeffrey Hopkins|Jeff Hopkins]]" in body
+    assert any(p["target"] == "kb/People/Jeffrey Hopkins"
+               for a in out["articles"] for p in a["proposals"])
+
+
+def test_check_needed_links_alias_skips_reference_target(conn):
+    from app.services import wiki_build
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    _mk(conn, "kb/Reference/Medicine/Conditions/Asthma", "Jeff Hopkins is unrelated.")
+    out = wiki_build.check_needed_links(conn, "kb/Reference/Medicine/Conditions/Asthma", mode="auto")
+    assert out["count"] == 0
+
+
+def test_multi_alias_same_target_links_once(conn):
+    from app.services import wiki_build, entity_decisions
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins", "Jeff M Hopkins"])
+    new, _ = wiki_build.add_links_to_content(
+        conn, "kb/Things/Truck", "Owned by Jeff Hopkins, also written Jeff M Hopkins.")
+    assert new.count("[[kb/People/Jeffrey Hopkins|") == 1   # one link per canonical target
+
+
+def test_linker_produced_alias_link_survives_hygiene(conn):
+    # True end-to-end no-oscillation: the LINKER produces the piped link (mixed case/spacing),
+    # then the hygiene sweep must leave it intact.
+    from app.services import wiki_build, wikilinks, notes as notes_svc
+    _mk(conn, "kb/People/Jeffrey Hopkins")
+    _entity(conn, "Jeffrey Hopkins", "kb/People/Jeffrey Hopkins", aliases=["Jeff Hopkins"])
+    new, _ = wiki_build.add_links_to_content(conn, "kb/Things/Truck", "Owned by JEFF  Hopkins today.")
+    notes_svc.upsert_note(conn, "kb/Things/Truck", new, kind="kb", fire_events=False)
+    conn.commit()
+    res = wikilinks.normalize_all_link_labels(conn)
+    body = notes_svc.get_by_title(conn, "kb/Things/Truck")["content_md"]
+    assert "[[kb/People/Jeffrey Hopkins|JEFF  Hopkins]]" in body and res["fixed"] == 0

@@ -341,8 +341,9 @@ def _alias_link_props(conn, body: str, title: str, surface_map: dict) -> list[di
     spans = _mask_spans(body)
     linked = {x.lower() for x in wikilinks.extract_links(body)}
     props: list[dict] = []
+    seen_targets: set[str] = set()           # one link per canonical target, even across aliases
     for alias_norm, (art, disp) in surface_map.items():
-        if not disp or art == title or art.lower() in linked:
+        if not disp or art == title or art.lower() in linked or art in seen_targets:
             continue
         pat = r"(?<!\w)" + r"\s+".join(re.escape(w) for w in disp.split()) + r"(?!\w)"
         for m in re.finditer(pat, body, re.IGNORECASE):
@@ -352,6 +353,7 @@ def _alias_link_props(conn, body: str, title: str, surface_map: dict) -> list[di
             if len(surface) < 4 or entity_index.normalize(surface) != alias_norm:
                 continue
             props.append({"target": art, "surface": surface, "at": m.start()})
+            seen_targets.add(art)
             break
     return props
 
@@ -657,10 +659,17 @@ def reconcile_owner(conn) -> dict:
         return {**res, "aliases_seeded": 0}
     o = people.owner(conn)
     name = (o["name"] or "").strip()
-    ent = conn.execute("SELECT normalized_key FROM entities WHERE article_title=?", (title,)).fetchone()
-    if not ent or not name:
+    if not name:
         return {**res, "aliases_seeded": 0}
-    canon = ent["normalized_key"]
+    # Anchor the alias decisions on the bound entity's key when one exists, else on the bound
+    # article's leaf norm (a People article's leaf IS the person's name, so this equals the
+    # entity's normalized_key). Leaf-norm anchoring means we record the decisions even before
+    # the entity index has built/bound the entity — they fold onto the canonical entity on the
+    # next rebuild — closing the "seeds nothing on a young KB and never retries" gap.
+    ent = conn.execute("SELECT normalized_key FROM entities WHERE article_title=?", (title,)).fetchone()
+    canon = ent["normalized_key"] if ent else entity_index.normalize(title.rsplit("/", 1)[-1])
+    if not canon:
+        return {**res, "aliases_seeded": 0}
     splits = entity_decisions.load_splits(conn)
     seeded = 0
     for form in [name, *[a.strip() for a in (o["aliases"] or "").split(",") if a.strip()]]:

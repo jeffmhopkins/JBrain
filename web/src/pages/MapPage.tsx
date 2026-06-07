@@ -6,10 +6,14 @@ import "leaflet.heat";
 import { getLocations, getLocatedNotes, getPlaces, addPlace, updatePlace, deletePlace, ensurePlaceNote, getPeople, LocPoint, LocatedNote, Place, Person } from "../api";
 
 type Mode = "trail" | "heat";
+// History range as a dropdown of hour windows (0 = all of time). Default is 24 h.
 const RANGES = [
-  { k: "7d", label: "7 days", days: 7 },
-  { k: "30d", label: "30 days", days: 30 },
-  { k: "all", label: "All", days: 0 },
+  { k: "1h", label: "1 hour", hours: 1 },
+  { k: "3h", label: "3 hours", hours: 3 },
+  { k: "12h", label: "12 hours", hours: 12 },
+  { k: "24h", label: "24 hours", hours: 24 },
+  { k: "1w", label: "1 week", hours: 168 },
+  { k: "all", label: "All", hours: 0 },
 ];
 const NOTES_HERE_M = 200;   // tap-the-map radius for "what notes are here"
 const LIVE_POLL_MS = 15000; // how often to pull newly-arrived fixes onto the live map
@@ -116,7 +120,7 @@ export default function MapPage() {
 
   const [mode, setMode] = useState<Mode>("trail");
   const [heatLevel, setHeatLevel] = useState(0.6);   // 0 = subtle … 1 = intense
-  const [rangeDays, setRangeDays] = useState(7);
+  const [rangeHours, setRangeHours] = useState(24);   // default to the last 24 h on load
   const [points, setPoints] = useState<LocPoint[]>([]);
   const [notes, setNotes] = useState<LocatedNote[]>([]);
   const [idx, setIdx] = useState(0);
@@ -260,11 +264,11 @@ export default function MapPage() {
     tsCache.current.clear();         // fresh range replaces all points → drop stale parses
     needFitRef.current = true;       // a fresh range → refit once
     followingRef.current = true;     // …and re-pin to the live edge
-    const since = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined;
+    const since = rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600000).toISOString() : undefined;
     Promise.all([getLocations(since).catch(() => []), getLocatedNotes(since).catch(() => [])])
       .then(([pts, ns]) => { setPoints(pts); setNotes(ns); setPlaying(false); })
       .finally(() => setLoading(false));
-  }, [rangeDays]);
+  }, [rangeHours]);
 
   // LIVE: poll for fixes newer than the last one we hold and append them (deduped by
   // id). The trail redraws and the head dot moves on its own as packets land.
@@ -275,7 +279,7 @@ export default function MapPage() {
       const lastTs = cur.length ? cur[cur.length - 1].recorded_at : null;
       const since = lastTs
         ? new Date(lastTs.replace(" ", "T") + "Z").toISOString()
-        : (rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : undefined);
+        : (rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600000).toISOString() : undefined);
       try {
         const fresh = await getLocations(since);
         if (!fresh?.length) return;
@@ -286,7 +290,7 @@ export default function MapPage() {
     };
     const id = window.setInterval(tick, LIVE_POLL_MS);
     return () => window.clearInterval(id);
-  }, [rangeDays]);
+  }, [rangeHours]);
 
   // The scrubber walks the UNION of fix-times and note-times, so notes still appear
   // (and play back) even on days the background trail wasn't running.
@@ -514,11 +518,11 @@ export default function MapPage() {
           </label>
         )}
         <span className="spacer" />
-        <div className="seg">
+        <select className="range-select" value={rangeHours} onChange={(e) => setRangeHours(+e.target.value)}>
           {RANGES.map((r) => (
-            <button key={r.k} className={rangeDays === r.days ? "on" : ""} onClick={() => setRangeDays(r.days)}>{r.label}</button>
+            <option key={r.k} value={r.hours}>{r.label}</option>
           ))}
-        </div>
+        </select>
         <div className="seg">
           <button className={showNotes ? "on" : ""} onClick={() => setShowNotes((s) => !s)}>Notes</button>
           <button className={showPlaces ? "on" : ""} onClick={() => setShowPlaces((s) => !s)}>Places</button>

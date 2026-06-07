@@ -474,6 +474,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .map-time { font-size: 12px; color: var(--text-dim); min-width: 130px; text-align: right; }
 .heat-slider { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
 .heat-slider input[type="range"] { width: 96px; accent-color: var(--accent); }
+.range-select { padding: 6px 10px; font-size: 13px; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg button { background: transparent; border: none; padding: 6px 12px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
 .seg button.on { background: var(--accent-soft); color: var(--text); }

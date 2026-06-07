@@ -792,6 +792,10 @@ export const regatherStream = (runId: string, hint: string, onEvent: (e: Rebuild
 export const draftStream = (runId: string, sourceIds: number[], onEvent: (e: RebuildEvent) => void): SSEHandle =>
   streamSSE(`/api/kb/rebuild/${runId}/draft`, { source_ids: sourceIds }, onEvent);
 
+// Re-run the last drafting turn at a larger, approved budget after a truncation.
+export const redraftStream = (runId: string, maxTokens: number, onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/redraft`, { max_tokens: maxTokens }, onEvent);
+
 export const guideStream = (runId: string, text: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
   streamSSE(`/api/kb/rebuild/${runId}/guide`, { text }, onEvent);
 

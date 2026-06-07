@@ -75,6 +75,7 @@ class ToolCallEvent:
 class TurnEnd:
     tool_calls: list[ToolCall]  # empty => the model is done (no tools requested)
     usage: dict | None = None   # {"input_tokens", "output_tokens"} if the provider reports it
+    stop_reason: str | None = None  # provider's finish reason; "max_tokens"/"length" => truncated
 
 
 StreamEvent = TextDelta | ThinkingDelta | ToolCallEvent | TurnEnd
@@ -204,7 +205,7 @@ class AnthropicProvider:
         _record_usage(model or self.default_model(), u, "agent")
         usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
                  "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
-        yield TurnEnd(calls, usage=usage)
+        yield TurnEnd(calls, usage=usage, stop_reason=getattr(final, "stop_reason", None))
 
     def append_tool_results(self, messages, results):
         messages.append({
@@ -377,7 +378,7 @@ class XAIProvider:
         _record_openai_usage(model or self.default_model(), usage, "agent")
         uu = {"input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
               "output_tokens": getattr(usage, "completion_tokens", 0) or 0} if usage else None
-        yield TurnEnd(calls, usage=uu)
+        yield TurnEnd(calls, usage=uu, stop_reason=finish)
 
     def append_tool_results(self, messages, results):
         for r in results:

@@ -39,6 +39,8 @@ _H1_RE = re.compile(r"(?m)^#\s.*$")
 _SECTION_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 _FIRST_SECTION_RE = re.compile(r"(?m)^##\s")
 _FN_MARK_RE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
+_FN_DEF_RE = re.compile(r"(?m)^[ \t]*\[\^([^\]\s]+)\]:")     # [^id]: definition line
+_REFS_HEAD_RE = re.compile(r"(?mi)^##\s+References\s*$")
 # Relative-time values that should be live @t[...] tokens, not frozen numbers. A
 # correctly-encoded age ("@t[age:1986-03-15] years old") has no digit before "years",
 # so it won't match — only literals like "40 years old" / "3 months ago" / "aged 40" do.
@@ -136,6 +138,17 @@ def _links(text: str) -> list[str]:
     return wikilinks.extract_links(text or "")
 
 
+def _references_slice(body: str) -> str:
+    """The text under the '## References' heading up to the next '## ' (or EOF). '' if the
+    article has no References section."""
+    m = _REFS_HEAD_RE.search(body or "")
+    if not m:
+        return ""
+    rest = body[m.end():]
+    nxt = _FIRST_SECTION_RE.search(rest)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def validate_structure(title: str, content_md: str) -> dict:
     """Lint one article against its domain guide's spec. Returns
     {ok, errors, warnings, stub, domain}. `errors` are blocking (an article with any
@@ -167,11 +180,21 @@ def validate_structure(title: str, content_md: str) -> dict:
         if s.lower() not in sec_lower:
             warnings.append(f'consider a "## {s}" section')
 
-    if _FN_MARK_RE.search(body):
+    has_markers = bool(_FN_MARK_RE.search(body))
+    has_defs = bool(_FN_DEF_RE.search(body))
+    # Validate citation integrity whenever the article carries markers OR definitions (a
+    # definition that lost its link / a duplicate id is a graph hazard either way) — but never
+    # on a stub, which is exempt from structure requirements.
+    if not is_stub and (has_markers or has_defs):
         from .pipeline import citation_issues
         errors.extend(citation_issues(body))
-        if spec.get("require_references_when_cited") and "references" not in sec_lower:
-            errors.append('has footnote markers but no "## References" section')
+    if has_markers and spec.get("require_references_when_cited") and "references" not in sec_lower:
+        errors.append('has footnote markers but no "## References" section')
+    # An EMPTY "## References" heading (no footnote definitions under it) — the signature of a
+    # truncated draft or an orphaned scaffold. Advisory (a warning): the bounded revise loop
+    # either supplies the citations or drops the heading; never a hard quarantine.
+    if "references" in sec_lower and not _FN_DEF_RE.search(_references_slice(body)):
+        warnings.append('"## References" section has no citations — add the footnote definitions or drop the heading')
 
     forbid = [p.lower() for p in (spec.get("forbid_link_prefixes") or [])]
     if forbid:

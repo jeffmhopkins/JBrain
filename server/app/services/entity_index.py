@@ -504,7 +504,7 @@ def index(conn, type: str | None = None, q: str | None = None, limit: int = 500)
 def notes_for(conn, entity_id: int) -> dict | None:
     """An entity plus the notes that mention it (for the browse view)."""
     e = conn.execute(
-        "SELECT id, type, canonical_name, note_count, article_title FROM entities WHERE id=?",
+        "SELECT id, type, canonical_name, normalized_key, note_count, article_title FROM entities WHERE id=?",
         (entity_id,),
     ).fetchone()
     if not e:

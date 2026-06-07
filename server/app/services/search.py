@@ -23,11 +23,19 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in toks) or '""'
 
 
-def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
+def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -> list[dict]:
     """Notes matching `q` by keyword AND meaning — across both the note body and its
     attachments (image-analysis sidecars, PDFs, transcripts) — reciprocal-rank fused,
     deduped, best-first. Returns [{id, title, slug}]. Degrades to whichever sources work
-    if others error (e.g. embeddings unavailable)."""
+    if others error (e.g. embeddings unavailable).
+
+    `entity_expand` (OWNER-CONTEXT ONLY — never a recipient/share path, which would leak
+    notes past their scope): when the WHOLE query resolves to a known entity OR one of its
+    ALIASES, blend that entity's mention notes into the fusion. This is what lets "Jeff"
+    reach notes filed under "Jeffrey" — the alias-blind FTS/vector halves can't. It is
+    deliberately whole-query (not span-detected), so a sentence query like "what did jeff
+    say about taxes" does NOT expand — only a bare name/alias does — which keeps it from
+    over-expanding common words into a person's whole corpus."""
     q = (q or "").strip()
     if not q:
         return []
@@ -77,5 +85,25 @@ def hybrid_notes(conn, q: str, limit: int = 8) -> list[dict]:
             bump(r["note_id"], r["title"], r["slug"], i)
     except Exception:  # noqa: BLE001
         pass
+
+    if entity_expand:  # alias-aware: blend the resolved entity's notes into the fusion
+        try:
+            from . import entity_index
+            # Don't expand an AMBIGUOUS name (maps to ≥2 entities) — we can't safely pick one,
+            # and blending a same-named person's corpus would be wrong. This mirrors the linker's
+            # ambiguity guard so the search channel and the linker agree on what an alias resolves to.
+            qn = entity_index.normalize(q)
+            ambiguous = {str(t.get("term", "")).lower() for t in entity_index.ambiguous_terms(conn)}
+            ids = [] if (not qn or qn in ambiguous) else entity_index.note_ids_for_name(conn, q)
+            if ids:
+                qmarks = ",".join("?" * len(ids))
+                rows = conn.execute(
+                    f"SELECT id, title, slug FROM notes WHERE id IN ({qmarks}) AND deleted_at IS NULL "
+                    f"ORDER BY created_at DESC LIMIT ?", [*ids, pool],
+                ).fetchall()
+                for r in rows:                       # modest fixed-rank bump → surfaces but doesn't dominate
+                    bump(r["id"], r["title"], r["slug"], 2)
+        except Exception:  # noqa: BLE001
+            pass
 
     return sorted(meta.values(), key=lambda m: scores[m["id"]], reverse=True)[:limit]

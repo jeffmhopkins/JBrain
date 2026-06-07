@@ -435,12 +435,14 @@ def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | No
     dguide = wiki_guides.guide_text(domain)
     others = scoped_known_titles(conn, title, known_titles, source_ids=art.get("sources"))
     known_block = "\n".join(others) if others else "(no other articles yet)"
+    alias_block = known_aliases_block(conn, others)
     guidance = f"\nADDITIONAL GUIDANCE — follow this too:\n{instructions.strip()}\n" if (instructions or "").strip() else ""
     return (prompts.get("actions.wiki_write", "")
             .replace("{owner}", owner)
             .replace("{general_guide}", general).replace("{domain_guide}", dguide)
             .replace("{domain}", domain or "").replace("{title}", title)
-            .replace("{known_titles}", known_block).replace("{instructions}", guidance)
+            .replace("{known_titles}", known_block).replace("{known_aliases}", alias_block)
+            .replace("{instructions}", guidance)
             .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
 
 
@@ -473,6 +475,7 @@ def write_one(conn, art: dict, instructions: str | None = None,
     # can't invent a dead [[kb/People/Someone]] link. Capped to bound prompt size.
     others = scoped_known_titles(conn, title, known_titles, source_ids=art.get("sources"))
     known_block = "\n".join(others) if others else "(no other articles yet)"
+    alias_block = known_aliases_block(conn, others)
     # Per-article guidance (e.g. open directives carried in by rebuild_article). Empty for
     # an ordinary build. Without the placeholder in the prompt this was silently ignored.
     guidance = f"\nADDITIONAL GUIDANCE — follow this too:\n{instructions.strip()}\n" if (instructions or "").strip() else ""
@@ -480,7 +483,8 @@ def write_one(conn, art: dict, instructions: str | None = None,
               .replace("{owner}", owner)
               .replace("{general_guide}", general).replace("{domain_guide}", dguide)
               .replace("{domain}", domain or "").replace("{title}", title)
-              .replace("{known_titles}", known_block).replace("{instructions}", guidance)
+              .replace("{known_titles}", known_block).replace("{known_aliases}", alias_block)
+              .replace("{instructions}", guidance)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
     try:
         draft, talk = _extract_talk(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200)))
@@ -843,6 +847,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     removed_block = "\n".join(f"- [[{t}]]" for t in removed_titles) or "(none)"
     others = scoped_known_titles(conn, article_title, known_titles)
     known_block = "\n".join(others) if others else "(no other articles)"
+    alias_block = known_aliases_block(conn, others)
 
     prompt = (prompts.get("actions.wiki_maintain", "")
               .replace("{owner}", people.owner_name(conn))
@@ -851,6 +856,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
               .replace("{title}", article_title).replace("{article}", content)
               .replace("{items}", items_text).replace("{new_sources}", new_block)
               .replace("{removed_sources}", removed_block).replace("{known_titles}", known_block)
+              .replace("{known_aliases}", alias_block)
               .replace("{sources}", _sources_text(srcs)))
     try:
         revised, payload = _extract_maintain(_strip_fence(
@@ -959,6 +965,29 @@ def _known_titles(conn) -> list[str]:
     return sorted({r["title"] for r in conn.execute(
         r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
         r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
+
+
+def known_aliases_block(conn, title_set) -> str:
+    """The `{known_aliases}` writer-prompt block: for each registered alias whose canonical
+    article is in `title_set` (the relevance-scoped known_titles offered to the writer), a line
+    'alias → article'. Advisory — it tells the model that prose using a nickname should link to
+    the canonical article keeping the nickname as display ([[article|alias]]); the deterministic
+    add_links_to_content pass still guarantees the link. Reuses the SAME entity_index.alias_surface
+    the linker and hygiene allow-list use, so the offered set never drifts from what's linkable."""
+    from . import entity_index
+    title_set = {t for t in (title_set or [])}
+    if not title_set:
+        return "(none)"
+    try:
+        surface = entity_index.alias_surface(conn)
+    except Exception:  # noqa: BLE001 — never let alias surfacing break prompt assembly
+        return "(none)"
+    by_art: dict[str, set] = {}
+    for _an, (art, disp) in surface.items():
+        if art in title_set and disp:
+            by_art.setdefault(art, set()).add(disp)
+    lines = [f'- "{disp}" → {art}' for art in sorted(by_art) for disp in sorted(by_art[art])]
+    return "\n".join(lines) if lines else "(none)"
 
 
 def scoped_known_titles(conn, title: str, all_titles, budget: int = 600,

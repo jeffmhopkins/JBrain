@@ -559,6 +559,29 @@ export const updatePlace = (id: number, body: { name?: string; radius_m?: number
 export const ensurePlaceNote = (id: number) => post<{ slug: string }>(`/api/places/${id}/note`);
 export const deletePlace = (id: number) => del(`/api/places/${id}`);
 
+// ── Entity index identity controls (merge / split / alias) ───────────────────
+export interface EntitySummary { id: number; type: string; canonical_name: string; note_count: number; article_title: string | null; }
+export interface EntityDecision {
+  id: number; kind: "merge" | "split" | "alias"; type: string;
+  norm_a: string; norm_b: string | null; display_a: string | null; display_b: string | null; canonical: string | null;
+}
+export interface EntityDetail extends EntitySummary {
+  normalized_key: string; aliases?: string[];
+  notes: { id: number; title: string; slug: string; created_at: string }[];
+}
+export const listEntities = (q = "", type = "") =>
+  get<EntitySummary[]>(`/api/entities?${new URLSearchParams({ ...(q ? { q } : {}), ...(type ? { type } : {}) })}`);
+export const getEntity = (id: number) => get<EntityDetail>(`/api/entities/${id}`);
+export const mergeEntities = (sourceId: number, intoId: number) =>
+  post<EntityDetail>("/api/entities/merge", { source_id: sourceId, into_id: intoId });
+export const splitEntities = (aId: number, bId: number) =>
+  post<{ ok: boolean }>("/api/entities/split", { a_id: aId, b_id: bId });
+export const addEntityAlias = (id: number, display: string) =>
+  post<EntityDetail>(`/api/entities/${id}/aliases`, { display });
+export const removeEntityAlias = (id: number, aliasNorm: string) =>
+  del<{ ok: boolean }>(`/api/entities/${id}/aliases/${encodeURIComponent(aliasNorm)}`);
+export const listEntityDecisions = (id: number) => get<EntityDecision[]>(`/api/entities/${id}/decisions`);
+
 export interface Person { id: number; name: string; color: string; is_default: boolean; aliases: string; note_slug: string | null; location_key: string | null; }
 export const getPeople = () => get<Person[]>("/api/people");
 export const generateLocationKey = (id: number) => post<{ location_key: string }>(`/api/people/${id}/location-key`, {});

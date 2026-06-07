@@ -489,7 +489,7 @@ def _tool_find(conn, query: str, limit: int = 6) -> str:
     + its [[Title]] — so the model can answer with a real citation in a single call (no separate
     read_note round-trip). The passages are exactly what it should quote verbatim."""
     from . import search as search_svc
-    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)))
+    rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)), entity_expand=True)
     if not rows:
         return "No matching notes."
     out = []
@@ -530,7 +530,7 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
     # meaning. Each hit carries a query-relevant snippet so the model can judge
     # relevance without read_note'ing every result (titles alone — esp. dated daily
     # paths — gave no clue what the note was about).
-    rows = search_svc.hybrid_notes(conn, query, limit)
+    rows = search_svc.hybrid_notes(conn, query, limit, entity_expand=True)
     if not rows:
         return "No matching notes."
     lines = []

@@ -28,6 +28,7 @@ import SystemPage from "./pages/SystemPage";
 import PromptsPanel from "./components/PromptsPanel";
 import SharePage from "./pages/SharePage";
 import SharesPage from "./pages/SharesPage";
+import OwnerChatPage from "./pages/OwnerChatPage";
 
 interface AuthState {
   authenticated: boolean;
@@ -134,6 +135,7 @@ export default function App() {
                 <Route path="/wiki" element={<Wiki />} />
                 <Route path="/lists" element={<ListsPage />} />
                 <Route path="/shares" element={<SharesPage />} />
+                <Route path="/shares/chat/:linkId" element={<OwnerChatPage />} />
                 <Route path="/note/:slug" element={<NotePage />} />
                 <Route path="/note/:slug/history" element={<NoteHistoryPage />} />
                 <Route path="/graph" element={<GraphPage />} />

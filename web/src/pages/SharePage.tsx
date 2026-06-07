@@ -9,6 +9,7 @@ import { fmtTs, expandTimeTokens } from "../time";
 import GuidedChat from "../components/GuidedChat";
 import ResearchChat from "../components/ResearchChat";
 import LabShareView from "../components/LabShareView";
+import ChatShareGuest from "../components/ChatShareGuest";
 import ListEditor from "../components/ListEditor";
 import { Parsed, parseList, serialize } from "../lists";
 
@@ -70,6 +71,11 @@ export default function SharePage() {
   // --- Research Q&A: scope-bounded question answering ----------------------
   if (data.kind === "research") {
     return <ResearchChat token={token} brainName={data.brain_name} intro={data.intro} hasLabs={data.has_labs} />;
+  }
+
+  // --- Encrypted chat: a real-time, E2EE 1:1 channel with the owner ---------
+  if (data.kind === "chat") {
+    return <ChatShareGuest token={token} landing={data as any} />;
   }
 
   // --- Lab share: scoped trend charts, viewed like the owner's Labs page ---

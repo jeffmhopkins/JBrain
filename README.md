@@ -67,6 +67,17 @@ and a graph.
   fixed **intervals**, or **cron** (`"0 7 * * *"`, in the server timezone). The
   Claude prompt for AI actions is set in the workflow's `config`. Runs are logged;
   writes are versioned and attributed `source='workflow'`.
+- **Encrypted chat (share-link)** — send someone a link and chat with them in real time.
+  It's **end-to-end encrypted**: the channel key is generated in your browser and rides the
+  link's `#fragment` (never sent to the server), so JBrain relays only opaque ciphertext —
+  messages **and attachments**. Optionally require a **one-time code** delivered out-of-band
+  (a leaked link alone then can't decrypt), and confirm an **emoji safety check** to rule out
+  a man-in-the-middle. Strictly **1:1** (the link locks to the first browser that joins). When
+  a recipient opens the link and you're not there, you get a **push notification** to join in
+  one tap. On close the conversation is **saved to your brain** as a normal note (your device
+  decrypts it) — searchable, graph-linked, and analyzable like any other entry. Per-chat
+  choice of **persisted** (encrypted backlog kept) or **ephemeral** (relay only). Create and
+  manage them under **Shares**.
 - **Review inbox** — workflows can post **review items** (title, message, link to
   an entry, dismiss) surfaced in a PWA **Review** tab with a count badge — e.g.
   daily-review messages — for easy visibility of what automations produced.

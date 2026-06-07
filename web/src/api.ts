@@ -216,6 +216,96 @@ export const guidedSetDetails = (linkId: number, body: Record<string, unknown>) 
 export const setLinkExpiry = (linkId: number, ttl_days: number) =>
   post(`/api/shares/${linkId}/expiry`, { ttl_days });
 
+// --- Encrypted chat (kind='chat') -------------------------------------------
+// The server is a blind relay: only opaque ciphertext + wrapped keys cross it. Encryption
+// lives entirely in web/src/crypto.ts; these helpers just move sealed bytes around.
+export interface ChatStreamEvent {
+  type: "message" | "presence" | "closed";
+  seq?: number; sender?: "owner" | "guest"; iv?: string; ct?: string; at?: string;
+  owner?: boolean; guest?: boolean;
+}
+
+// Open a long-lived SSE read. `auth` picks the owner (bearer) vs recipient (cookie) channel.
+// Returns close(); the caller handles reconnection (re-open with a higher ?after=).
+export function openChatStream(path: string, auth: boolean, onEvent: (e: ChatStreamEvent) => void): { close: () => void; done: Promise<void> } {
+  const ctrl = new AbortController();
+  const done = (async () => {
+    try {
+      const res = await fetch(u(path), {
+        headers: auth ? authHeaders() : {},
+        credentials: auth ? "same-origin" : "include",   // recipient: carry the bind cookie
+        signal: ctrl.signal,
+      });
+      if (!res.body) return;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        let r: ReadableStreamReadResult<Uint8Array>;
+        try { r = await reader.read(); } catch { break; }
+        if (r.done) break;
+        buf += dec.decode(r.value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const chunk of parts) {
+          const dl = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!dl) continue;
+          try { onEvent(JSON.parse(dl.slice(6)) as ChatStreamEvent); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* aborted / network drop — caller reconnects */ }
+  })();
+  return { close: () => ctrl.abort(), done };
+}
+
+// Owner side (authenticated).
+export const createChatShare = (body: { owner_wrap: string; guest_wrap: string; persist: boolean;
+    otp_required: boolean; label?: string | null; ttl_days?: number | null; single_use?: boolean }) =>
+  post<{ token: string; link_id: number; url: string }>("/api/shares/chat", body);
+export const chatDetail = <T = any>(linkId: number) => get<T>(`/api/shares/chat/${linkId}`);
+export const chatOwnerSend = (linkId: number, iv: string, ct: string) =>
+  post<{ ok: boolean; seq: number }>(`/api/shares/chat/${linkId}/send`, { iv, ct });
+export const chatOwnerClose = (linkId: number) => post(`/api/shares/chat/${linkId}/close`);
+export const chatOwnerSave = (linkId: number, body: { transcript_md: string; title?: string | null;
+    guest_name?: string | null; attachments: { name: string; mime: string; data: string }[] }) =>
+  post<{ ok: boolean; note_slug: string; already_saved: boolean }>(`/api/shares/chat/${linkId}/save`, body);
+export const chatOwnerStreamPath = (linkId: number, after = 0) => `/api/shares/chat/${linkId}/stream?after=${after}`;
+export async function chatOwnerUploadFile(linkId: number, iv: string, blob: Blob): Promise<number> {
+  const fd = new FormData();
+  fd.append("iv", iv); fd.append("file", blob, "blob");
+  // Multipart: send only Authorization — the browser sets Content-Type + boundary itself.
+  const headers: Record<string, string> = {};
+  if (accessKey) headers["Authorization"] = `Bearer ${accessKey}`;
+  const res = await fetch(u(`/api/shares/chat/${linkId}/file`), { method: "POST", headers, body: fd });
+  if (!res.ok) throw new ApiError("Upload failed", res.status);
+  return (await res.json()).file_id;
+}
+export async function chatOwnerFetchFile(linkId: number, fileId: number): Promise<{ iv: string; buf: ArrayBuffer }> {
+  const res = await fetch(u(`/api/shares/chat/${linkId}/file/${fileId}`), { headers: authHeaders() });
+  if (!res.ok) throw new ApiError("Fetch failed", res.status);
+  return { iv: res.headers.get("X-Chat-IV") || "", buf: await res.arrayBuffer() };
+}
+
+// Recipient side (public; cookie-bound after join).
+export const chatJoin = <T = any>(token: string, name?: string) =>
+  publicApi<T>(`/api/share/${encodeURIComponent(token)}/chat/join`, { method: "POST", body: JSON.stringify({ name }) });
+export const chatGuestSend = (token: string, iv: string, ct: string) =>
+  publicApi<{ ok: boolean; seq: number }>(`/api/share/${encodeURIComponent(token)}/chat/send`, { method: "POST", body: JSON.stringify({ iv, ct }) });
+export const chatGuestStreamPath = (token: string, after = 0) =>
+  `/api/share/${encodeURIComponent(token)}/chat/stream?after=${after}`;
+export async function chatGuestUploadFile(token: string, iv: string, blob: Blob): Promise<number> {
+  const fd = new FormData();
+  fd.append("iv", iv); fd.append("file", blob, "blob");
+  const res = await fetch(u(`/api/share/${encodeURIComponent(token)}/chat/file`), { method: "POST", credentials: "include", body: fd });
+  if (!res.ok) throw new ApiError("Upload failed", res.status);
+  return (await res.json()).file_id;
+}
+export async function chatGuestFetchFile(token: string, fileId: number): Promise<{ iv: string; buf: ArrayBuffer }> {
+  const res = await fetch(u(`/api/share/${encodeURIComponent(token)}/chat/file/${fileId}`), { credentials: "include" });
+  if (!res.ok) throw new ApiError("Fetch failed", res.status);
+  return { iv: res.headers.get("X-Chat-IV") || "", buf: await res.arrayBuffer() };
+}
+
 // Multipart upload: must NOT set Content-Type (browser sets the boundary), so
 // we call fetch directly with only the Authorization header.
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;

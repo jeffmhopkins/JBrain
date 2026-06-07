@@ -26,6 +26,11 @@ from . import llm, prompts, wiki_guides, wikilinks
 
 log = logging.getLogger("jbrain")
 
+# Provider finish reasons that mean the output was cut off at the token cap (Anthropic
+# "max_tokens", xAI "length"). The batch writers retry once at a bigger cap, then FAIL —
+# never save a half-written article whose trailing ## References was the first casualty.
+_TRUNCATED = ("max_tokens", "length")
+
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 _TALK_RE = re.compile(r"\n?```talk\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
@@ -486,8 +491,20 @@ def write_one(conn, art: dict, instructions: str | None = None,
               .replace("{known_titles}", known_block).replace("{known_aliases}", alias_block)
               .replace("{instructions}", guidance)
               .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
+    msgs = [{"role": "user", "content": prompt}]
     try:
-        draft, talk = _extract_talk(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=2200)))
+        # Surface the finish reason so a draft cut off at the token cap (its trailing
+        # ## References is the first casualty) is retried once at a bigger cap, then FAILED
+        # — never silently saved half-written. Mirrors the live engine's truncation guard.
+        cap = 3000
+        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            cap = min(cap * 2, 6000)
+            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            base["errors"] = ["draft truncated at the token limit"]
+            return base
+        draft, talk = _extract_talk(_strip_fence(text))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"write failed: {exc}"]
         return base
@@ -858,9 +875,19 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
               .replace("{removed_sources}", removed_block).replace("{known_titles}", known_block)
               .replace("{known_aliases}", alias_block)
               .replace("{sources}", _sources_text(srcs)))
+    msgs = [{"role": "user", "content": prompt}]
     try:
-        revised, payload = _extract_maintain(_strip_fence(
-            llm.complete([{"role": "user", "content": prompt}], max_tokens=2600)))
+        # Retry once at a bigger cap on truncation, then FAIL (changed=False → don't save)
+        # rather than persist a maintain output cut off at the token limit.
+        cap = 3500
+        text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            cap = min(cap * 2, 6000)
+            text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
+        if stop in _TRUNCATED:
+            base["errors"] = ["maintain output truncated"]
+            return base
+        revised, payload = _extract_maintain(_strip_fence(text))
     except Exception as exc:  # noqa: BLE001
         base["errors"] = [f"maintain failed: {exc}"]
         return base

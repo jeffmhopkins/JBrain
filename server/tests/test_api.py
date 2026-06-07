@@ -1618,6 +1618,7 @@ def test_write_one_never_saves_dead_link(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda *a, **k: (
         "# Allan\nAllan knows [[kb/People/Bob]] and [[kb/People/Ghost|his cousin]].[^s1]\n\n"
         "## References\n[^s1]: [[notes/src]] — 2026-06-01\n"))
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     out = wiki_build.write_one(conn, {"title": "kb/People/Allan", "domain": "People", "scope": "x",
                                       "sources": [sid]}, known_titles=["kb/People/Bob"])
     assert "[[kb/People/Ghost" not in out["content_md"]        # dead link gone
@@ -1711,6 +1712,7 @@ def test_article_talk(client, monkeypatch):
     monkeypatch.setattr(llm, "complete", lambda *a, **k: (
         "# Allan\nAllan lives in Portland.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n"
         '\n```talk\n[{"kind":"conflict","body":"Sources disagree on the move year."}]\n```\n'))
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     out = wiki_build.write_one(conn, {"title": "kb/People/Allan", "domain": "People", "scope": "x", "sources": [sid]})
     assert "```talk" not in out["content_md"]                      # block stripped from the article
     assert out["talk"] and out["talk"][0]["kind"] == "conflict"
@@ -1764,6 +1766,7 @@ def test_talk_replies_dismiss_and_fold(client, monkeypatch):
         return ("```article\n# Allan\nAllan lives in Portland.[^s1]\n\n## References\n"
                 '[^s1]: [[notes/src]] — 2026-06-01\n```\n```maintain\n{"resolved": [], "new": []}\n```\n')
     monkeypatch.setattr(llm, "complete", cap)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     did = article_talk.add(conn, "kb/People/Allan", "directive", "Keep it concise.", author="user")
     article_talk.reply(conn, did, "Especially trim the early-life section.")
     conn.commit()
@@ -1962,6 +1965,7 @@ def test_maintain_batch_lock_and_reply_fold(client, monkeypatch):
         return ("```article\n# E\nE is a person.[^s1]\n\n## References\n"
                 '[^s1]: [[notes/src]] — 2026-06-01\n```\n```maintain\n{"resolved": [], "new": []}\n```\n')
     monkeypatch.setattr(llm, "complete", cap)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     res = wiki_build.maintain_batch(conn)
     assert "skipped" not in res
     assert any("Drop the middle name." in p for p in seen)
@@ -2583,6 +2587,7 @@ def test_wiki_update_incremental(client, monkeypatch):
                 "## References\n[^s1]: [[notes/allan1]] — 2026-06-01\n[^s2]: [[notes/allan2]] — 2026-06-02\n"
                 "\n```maintain\n{}\n```\n")
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.update_batch(conn, limit=40)
     assert res["changed"] == 1                                   # the article was refreshed
@@ -2623,6 +2628,7 @@ def test_wiki_update_routes_deletions_by_title(client, monkeypatch):
         prompts.append(msgs[0]["content"])
         return "# Bob\nBob is a person noted in the journal.\n\n## References\n(none)\n\n```maintain\n{}\n```\n"
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     wiki_build.update_batch(conn, limit=40)
     # The deletion routed to Bob's article and drove a refresh (pre-fix: no targets → never called).
@@ -2701,6 +2707,7 @@ def test_wiki_write_honors_instructions(client, monkeypatch):
         prompts.append(msgs[0]["content"])
         return "# Zara\nZara is a botanist.[^s1]\n\n## References\n[^s1]: [[notes/z]] — 2026-06-01\n"
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     wiki_build.write_one(conn, {"title": "kb/People/Zara", "domain": "People", "sources": [sid]},
                          instructions="Mention her PhD if the sources support it.")
     # The write prompt (first call) carries the guidance; the revise prompt does not.
@@ -2773,6 +2780,7 @@ def test_merge_articles_folds_sources_and_rewrites_inbound(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k:
         "# Grover\nGrover is a cat who likes tuna.[^s1]\n\n## References\n[^s1]: [[notes/g1]] — 2026-06-01\n")
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     res = wiki_build.merge_articles(conn, ["kb/Things/GroverCat"], "kb/Things/Grover")
     assert res["ok"], res
     # Source is now a REDIRECT: still live (keeps its title slot), redirect_to → the merged
@@ -2800,6 +2808,7 @@ def test_split_article_spins_off_child(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k:
         "# Topic\nMarathon preparation centers on training volume, nutrition, and steady recovery.[^s1]\n\n## References\n[^s1]: [[notes/p1]] — 2026-06-01\n")
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     res = wiki_build.split_article(conn, "kb/Activities/Marathon", "kb/Activities/Marathon/Nutrition", ["notes/p2"])
     assert res["ok"], res
     assert conn.execute("SELECT 1 FROM notes WHERE title='kb/Activities/Marathon/Nutrition' AND kind='kb' AND deleted_at IS NULL").fetchone()
@@ -2868,6 +2877,7 @@ def test_write_one_bounded_revise_takes_second_pass_on_improvement(client, monke
         calls["n"] += 1
         return drafts[i]
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
     out = wiki_build.write_one(conn, {"title": "kb/People/Quinn", "domain": "People", "sources": [sid]},
                                known_titles=["kb/People/Quinn"])
     assert calls["n"] == 3                                   # write + TWO revise passes
@@ -2895,6 +2905,7 @@ def test_rebuild_article_regenerates_in_place(client, monkeypatch):
         seen.append(msgs[0]["content"])
         return "# Kate\nKate is a pilot who flies a Cessna.[^s1]\n\n## References\n[^s1]: [[notes/k]] — 2026-06-01\n"
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.rebuild_article(conn, "kb/People/Kate")
     assert res["ok"], res
@@ -2944,6 +2955,7 @@ def test_wiki_update_creates_new_subject_article(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k:
         "# Nadia\nNadia volunteers at the animal shelter.[^s1]\n\n## References\n[^s1]: [[notes/nv1]] — 2026-06-01\n")
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.update_batch(conn, limit=40)
     assert res["created"] >= 1
@@ -3002,6 +3014,7 @@ def test_wiki_maintain_addresses_open_talk(client, monkeypatch):
         "```\n"
         f'\n```maintain\n{{"resolved": [{{"id": {d1}, "outcome": "applied", '
         f'"how": "Added the 2019 move year from the source."}}]}}\n```\n'))
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.maintain_batch(conn, limit=10)
     assert res["changed"] == 1 and res["resolved"] == 1 and res["kept_open"] == 0
@@ -3041,6 +3054,7 @@ def test_wiki_maintain_keeps_unsettled_items_open(client, monkeypatch):
         "## References\n[^s1]: [[notes/src2]] — 2026-06-01\n"
         f'\n```maintain\n{{"resolved": [{{"id": {q1}, "outcome": "unresolvable", "how": "no source"}}, '
         f'{{"id": {q2}, "outcome": "answered", "how": "claimed but made no edit"}}]}}\n```\n'))
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.maintain_batch(conn, limit=10)
     assert res["resolved"] == 0 and res["examined"] == 2 and res["kept_open"] == 2
@@ -3077,6 +3091,7 @@ def test_wiki_maintain_change_gated(client, monkeypatch):
                 '\n```maintain\n{"resolved": []}\n```\n')
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", fake_complete)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     r1 = wiki_build.maintain_batch(conn, limit=10)           # first run: drains the backlog
     assert r1["articles"] == 1 and calls["n"] >= 1
@@ -3181,6 +3196,7 @@ def test_wiki_build(client, monkeypatch):
                     "[^s1]: [[notes/daily/2026/06/01]] — 2026-06-01\n")
         return "{}"   # note_analysis backfill etc. → empty signals, harmless
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     recipe = pipeline.get_action_def("wiki_build")
     pipeline.run_pipeline(conn, recipe, {"reset": True, "analyze_limit": 10, "review": True}, None, None)
@@ -3215,6 +3231,7 @@ def test_wiki_build_preserves_time_tokens(client, monkeypatch):
         return ("# Jeff\nJeff is @t[age:1986-03-15] years old.[^s1]\n\n"
                 "## References\n[^s1]: [[notes/jeff]] — 2026-06-03\n")
     monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     out = wiki_build.write_one(conn, {"title": "kb/People/Jeff", "domain": "People",
                                       "scope": "me", "sources": [jid]})

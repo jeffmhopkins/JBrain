@@ -16,19 +16,24 @@ and a graph.
 - **Conversational capture** — a curious, Socratic Claude agent that draws ideas
   out of you one concept at a time.
 - **Compose-centric UI** — the home screen is a single rounded compose box: type
-  and Send, with a **mode chip** (Entry / Assisted / Research) on the left and
-  **attach** + **voice dictation** on the right. A **lightning bolt** (top-right)
-  opens **Advanced** — a grouped nav (Browse · Automate · Data · Review). The
-  three capture modes:
-  - **Entry** — type a note; it's stored directly (no LLM) and runs the
-    `entry_created` hooks (auto-tag, etc.).
-  - **Assisted** — the Socratic architect talks a topic out, then proposes a note
-    to a **staging area** you confirm with **Apply**; it also handles quick
-    additive ops ("add milk to the shopping list", "log a 5k run") that apply
-    instantly with one-tap **Undo**. No destructive auto-apply — deletes/edits go
-    through staging.
+  and Send, with a **3-mode segmented control** (Entry · Research · Full Brain) on
+  its own row and **attach** + **voice dictation** below. A **lightning bolt**
+  (top-right) opens **Advanced** — a grouped nav (Browse · Automate · Data ·
+  Review). The three modes (a fresh launch defaults to **Entry**; your last mode is
+  remembered within a session):
+  - **Entry** — stored directly (no LLM), running the `entry_created` hooks
+    (auto-tag, etc.). A **sub-selector** picks where it files: **Generic** (the
+    dated tree), **Medical** (`notes/medical/<dest>/` + lab-PDF staging for review),
+    or **Financial** (`notes/financial/<dest>/`, folder-only filing).
   - **Research** — a **read-only** Q&A over your brain (semantic/keyword search +
-    a SELECT-only `query_sql`); it never modifies anything.
+    a SELECT-only `query_sql`); it never modifies anything. A **Deep** toggle
+    raises the budget for multi-step questions without loosening its strict,
+    facts-only posture.
+  - **Full Brain** — the Socratic architect with full tool access: talks a topic
+    out, then proposes a note to a **staging area** you confirm with **Apply**; it
+    also handles quick additive ops ("add milk to the shopping list", "log a 5k
+    run") that apply instantly with one-tap **Undo**, and can consult your curated
+    reference library. No destructive auto-apply — deletes/edits go through staging.
 - **Editable prompts** — every prompt (the architect modes and the workflow AI
   actions) lives in `prompts.yaml`, hot-reloaded on change, and is editable from
   the app (**Flows → Prompts**). In-app edits are stored in the DB (so they

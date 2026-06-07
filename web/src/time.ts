@@ -54,6 +54,19 @@ export function parseUtcMs(raw?: string | null): number {
   return new Date(raw.replace(" ", "T") + (hasZone ? "" : "Z")).getTime();
 }
 
+// Glance-grade relative time for the note header ("just now", "5 minutes ago",
+// "2 days ago"). For anything older than ~30 days a date reads better than
+// "47 days ago", so fall back to fmtTsShort. Returns "" for empty, raw for unparseable.
+export function fmtRel(raw: string, appTz?: string): string {
+  if (!raw) return "";
+  const ms = parseUtcMs(raw);
+  if (isNaN(ms)) return raw;
+  const deltaSec = (Date.now() - ms) / 1000;
+  if (deltaSec < 60) return "just now";
+  if (deltaSec > 30 * 86400) return fmtTsShort(raw, appTz);
+  return `${humanize(deltaSec)} ago`;
+}
+
 const TOKEN_RE = /@t\[(age|until|since):([^\]]+)\]/g;
 const UNITS: [string, number][] = [
   ["year", 31536000], ["month", 2592000], ["week", 604800],

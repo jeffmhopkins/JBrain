@@ -646,15 +646,18 @@ export const getPendingLabs = () =>
   get<{ pending: { attachment_id: number; note_id: number; note_slug: string; note_title: string }[] }>("/api/medical/labs/pending");
 
 export const createEntry = <T = any>(
-  text: string, title?: string, loc?: { lat: number; lon: number } | null, dest?: string,
+  text: string, title?: string, loc?: { lat: number; lon: number } | null, dest?: string, destRoot?: string,
 ) =>
-  post<T>("/api/notes/entry", { text, title: title || undefined, dest: dest || undefined, lat: loc?.lat, lon: loc?.lon });
+  post<T>("/api/notes/entry", { text, title: title || undefined, dest: dest || undefined, root: destRoot || undefined, lat: loc?.lat, lon: loc?.lon });
 
-// Medical-mode capture destinations (the picklist Medical mode offers; entries file
-// under notes/medical/<dest>/NN).
+// Entry sub-selector capture destinations (the picklists the Medical / Financial sub-types
+// offer; entries file under notes/<root>/<dest>/NN).
 export const getMedicalDests = () => get<{ names: string[] }>("/api/medical/destinations");
 export const setMedicalDests = (names: string[]) =>
   put<{ names: string[] }>("/api/medical/destinations", { names });
+export const getFinancialDests = () => get<{ names: string[] }>("/api/financial/destinations");
+export const setFinancialDests = (names: string[]) =>
+  put<{ names: string[] }>("/api/financial/destinations", { names });
 // Parse any lab-result PDF(s) on a note into the lab_results table (deterministic, no LLM).
 export const extractLabs = (slug: string) =>
   post<{ doc_type: string; staged: number; skipped: number; analytes: number }>(
@@ -665,11 +668,13 @@ export async function streamChat(
   text: string,
   onEvent: (e: ChatEvent) => void,
   location?: { lat: number; lon: number } | null,
-  mode: "assisted" | "research" | "analyze" = "assisted",
+  mode: "assisted" | "research" = "assisted",
   freshContext = false,
+  deep = false,
 ): Promise<void> {
   const body: any = { text, mode };
   if (freshContext) body.fresh_context = true;   // user left/returned/changed topic → re-ground fresh
+  if (deep) body.deep = true;   // read-only "Deep" opt-in: bigger budget, same strict posture
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const ctrl = new AbortController();
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {

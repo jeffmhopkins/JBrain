@@ -152,6 +152,53 @@ def test_medical_destinations_settings(client):
     assert client.get("/api/medical/destinations").json()["names"] == []
 
 
+def test_financial_entry_routes_to_financial_folder(client):
+    # Entry → Financial sub-type files under notes/financial/<dest>/NN (root="financial"),
+    # numbering per-destination — its own browsable tree, separate from medical.
+    a = client.post("/api/notes/entry", json={"text": "ACME statement", "dest": "Statements", "root": "financial"}).json()
+    assert a["title"] == "notes/financial/Statements/01", a["title"]
+    b = client.post("/api/notes/entry", json={"text": "receipt", "dest": "Statements", "root": "financial"}).json()
+    assert b["title"] == "notes/financial/Statements/02"
+    # A dest WITHOUT a root defaults to medical (back-compat with the original Medical capture).
+    m = client.post("/api/notes/entry", json={"text": "Na 140", "dest": "Labs"}).json()
+    assert m["title"] == "notes/medical/Labs/01", m["title"]
+    # An unknown root is clamped to medical — root is an enum, never spliced into a path.
+    u = client.post("/api/notes/entry", json={"text": "x", "dest": "Box", "root": "../evil"}).json()
+    assert u["title"] == "notes/medical/Box/01", u["title"]
+
+
+def test_financial_destinations_settings(client):
+    # Defaults offered until edited; PUT sanitizes + de-dupes (case-insensitive) + persists.
+    assert "Statements" in client.get("/api/financial/destinations").json()["names"]
+    saved = client.put("/api/financial/destinations",
+                       json={"names": ["  Brokerage  ", "brokerage", "", "2026 Taxes"]}).json()["names"]
+    assert saved == ["Brokerage", "2026 Taxes"]
+    assert client.get("/api/financial/destinations").json()["names"] == saved
+    # An explicit empty list sticks (no silent fallback to defaults).
+    assert client.put("/api/financial/destinations", json={"names": []}).json()["names"] == []
+
+
+def test_chat_mode_normalization_fails_closed(client):
+    # Unknown / retired wire modes must resolve to the READ-ONLY mode, never write-capable
+    # 'assisted' — a stale or forward-incompatible client can't silently gain write tools.
+    from app.routers.chat import normalize_mode
+    assert normalize_mode("assisted") == "assisted"
+    assert normalize_mode("research") == "research"
+    assert normalize_mode("analyze") == "research"          # retired → folded into research
+    for bad in ("", "medical", "full", "garbage"):
+        assert normalize_mode(bad) == "research", bad
+
+
+def test_full_brain_has_reference_tools_research_does_not(client):
+    # Full Brain (assisted) can consult the reference library; read-only Research cannot —
+    # the external, approval-gated MedlinePlus tool stays out of the default read mode.
+    from app.services import architect
+    assisted = {t.name for t in architect._tools_for("assisted")}
+    research = {t.name for t in architect._tools_for("research")}
+    assert "reference_lookup" in assisted and "medical_reference" in assisted
+    assert "reference_lookup" not in research and "medical_reference" not in research
+
+
 def test_labs_series_and_analytes(client):
     # The lab-chart read API: stepped reference band (ranges change over time), flag-
     # authoritative point status, censored values kept, same-day dup collapsed, a non-

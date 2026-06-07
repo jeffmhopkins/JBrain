@@ -64,6 +64,13 @@ const SUBS: { key: EntrySub; label: string; mclass: string; root?: string; place
   { key: "medical", label: "Medical", mclass: "m-medical", root: "medical", placeholder: "Log a lab, note, procedure…", safety: "Files to notes/medical/ · PDFs staged." },
   { key: "financial", label: "Financial", mclass: "m-financial", root: "financial", placeholder: "Log a statement, receipt, transaction…", safety: "Files to notes/financial/." },
 ];
+// The Entry "sub-picker" face of the top row: the same 3 slots, but Research/Full Brain become
+// Medical/Financial. Slot 1 stays "Entry" (= Generic / collapse).
+const SUB_SEGS: { key: EntrySub; label: string; icon: string; mclass: string }[] = [
+  { key: "generic", label: "Entry", icon: "plus", mclass: "m-entry" },
+  { key: "medical", label: "Medical", icon: "medical", mclass: "m-medical" },
+  { key: "financial", label: "Financial", icon: "list", mclass: "m-financial" },
+];
 // Per top-level mode placeholder/safety (Entry's come from the active sub-type instead).
 const MODE_PLACEHOLDER: Record<Mode, string> = {
   entry: "Write an entry…",
@@ -118,9 +125,9 @@ export default function Chat() {
   const [mode, setMode] = useState<Mode>(() => normalizeMode(sessionStorage.getItem("jbrain_mode")));
   // Entry sub-type. Sticky per device (mirrors the dest preference), defaulting to Generic.
   const [sub, setSub] = useState<EntrySub>(() => normalizeSub(localStorage.getItem("jbrain_entry_sub")));
-  // The Generic/Medical/Financial row is hidden by default; re-pressing the active Entry button
-  // toggles it. While hidden, Entry behaves as plain Generic (see `effSub` in the render body).
-  const [subOpen, setSubOpen] = useState(false);
+  // When Entry is active, re-pressing it EXPANDS this row in place (Research/Full Brain become
+  // Medical/Financial); collapsed = plain Generic. `effSub` derives the active sub from this.
+  const [subPicker, setSubPicker] = useState(false);
   // Read-only "Deep" opt-in (Research only): bigger budget, same strict facts-only posture.
   const [deep, setDeep] = useState(false);
   // Medical/Financial destination picklists (notes/<root>/<dest>/…), lazily loaded the first
@@ -289,34 +296,39 @@ export default function Chat() {
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
     // Re-run on mode/sub change too: the compensating min-height (sec-N class) changes, so the
     // textarea must recompute its resting height instead of keeping a stale inline height.
-  }, [input, mode, sub, subOpen]);
+  }, [input, mode, sub, subPicker]);
 
   function pick(m: Mode) {
     if (m === "entry" && mode === "entry") {
-      setSubOpen((o) => !o);   // re-press while Entry is active → show/hide the sub-type row
+      // Re-press the active Entry segment → EXPAND the row in place: Research/Full Brain
+      // become Medical/Financial (the sub-type picker). No extra row is added.
+      setSubPicker(true);
       return;
     }
     setMode(m); sessionStorage.setItem("jbrain_mode", m);
-    if (m === "entry") setSubOpen(false);   // entering Entry defaults to hidden (= plain Generic)
+    setSubPicker(false); setSub("generic");   // any mode switch collapses back to plain Generic
   }
-  function pickSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
+  // In the expanded sub-picker: tapping Medical/Financial selects that sub-type (stays expanded);
+  // tapping the Entry segment collapses back to the mode picker (= plain Generic entry).
+  function selectSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
+  function collapseSub() { setSubPicker(false); setSub("generic"); }
 
   // Load the Medical destinations the first time the Medical sub-type is entered.
   useEffect(() => {
-    if (!(mode === "entry" && subOpen && sub === "medical") || dests.length) return;
+    if (!(mode === "entry" && subPicker && sub === "medical") || dests.length) return;
     getMedicalDests().then(({ names }) => {
       setDests(names);
       setCurDest((c) => (c && names.includes(c) ? c : names[0] || ""));
     }).catch(() => { /* offline — keep an empty picker */ });
-  }, [mode, sub, subOpen, dests.length]);
+  }, [mode, sub, subPicker, dests.length]);
   // Load the Financial destinations the first time the Financial sub-type is entered.
   useEffect(() => {
-    if (!(mode === "entry" && subOpen && sub === "financial") || finDests.length) return;
+    if (!(mode === "entry" && subPicker && sub === "financial") || finDests.length) return;
     getFinancialDests().then(({ names }) => {
       setFinDests(names);
       setCurFinDest((c) => (c && names.includes(c) ? c : names[0] || ""));
     }).catch(() => { /* offline — keep an empty picker */ });
-  }, [mode, sub, subOpen, finDests.length]);
+  }, [mode, sub, subPicker, finDests.length]);
   function pickDest(d: string) { setCurDest(d); localStorage.setItem("jbrain_med_dest", d); }
   function pickFinDest(d: string) { setCurFinDest(d); localStorage.setItem("jbrain_fin_dest", d); }
   // Add a new destination inline (full management lives in Advanced).
@@ -348,7 +360,7 @@ export default function Chat() {
         const i = MODES.findIndex((x) => x.key === m);
         const next = MODES[(i + dir + MODES.length) % MODES.length].key;
         sessionStorage.setItem("jbrain_mode", next);
-        if (next === "entry") setSubOpen(false);   // cycling into Entry starts hidden (Generic)
+        setSubPicker(false); setSub("generic");   // cycling modes collapses to the mode picker
         return next;
       });
     }
@@ -491,8 +503,8 @@ export default function Chat() {
       if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
       return;
     }
-    if (mode === "entry" && subOpen && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
-    if (mode === "entry" && subOpen && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
+    if (mode === "entry" && subPicker && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
+    if (mode === "entry" && subPicker && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
     sendingRef.current = true;
     setProposals([]);   // a new turn supersedes any pending external-lookup chips
     // Both chat modes stream a spoken-able prose reply; entry captures don't.
@@ -517,7 +529,7 @@ export default function Chat() {
     if (mode === "entry") {
       // Snapshot the sub-type for THIS send so a mid-flight toggle (during upload/await) can't
       // redirect the destination or the lab-staging decision.
-      const curSub = subOpen ? sub : "generic";   // hidden row ⇒ plain Generic capture
+      const curSub = subPicker ? sub : "generic";   // hidden row ⇒ plain Generic capture
       // Optimistic capture bubble — the only immediate feedback Entry gets (no reply).
       const enId = ++entrySeq.current;
       setEntries((xs) => [...xs, { id: enId, text: bubble, title: "", slug: "", pending: true }]);
@@ -701,18 +713,22 @@ export default function Chat() {
   const cur = MODES.find((m) => m.key === mode)!;
   // Effective sub-type: while the row is hidden, Entry is plain Generic regardless of the
   // last-selected sub. Drives the accent, placeholder, safety line, empty-state copy, and routing.
-  const effSub: EntrySub = mode === "entry" && subOpen ? sub : "generic";
+  const effSub: EntrySub = mode === "entry" && subPicker ? sub : "generic";
   const curSubDef = SUBS.find((s) => s.key === effSub)!;
   // Accent class driving --mc for the compose-safety line: the sub-type's accent in Entry,
   // else the mode's. Placeholder/safety likewise come from the sub-type when in Entry.
   const accentClass = mode === "entry" ? curSubDef.mclass : `m-${mode}`;
   const composerPlaceholder = mode === "entry" ? curSubDef.placeholder : MODE_PLACEHOLDER[mode];
-  const safetyText = mode === "entry" ? curSubDef.safety : MODE_SAFETY[mode];
+  const safetyText = mode === "entry" ? curSubDef.safety
+    : mode === "research" && deep ? "Deep · read-only, bigger budget."
+    : MODE_SAFETY[mode];
   // Number of secondary control rows under the mode picker (0 = Research/Full, 1 = Entry/Generic
   // sub-seg, 2 = Entry/Medical|Financial sub-seg + dest). Drives a textarea min-height that grows
   // to fill the space those rows would take — so the box stays the SAME height in every mode
   // (no blank reserved band; the freed room becomes input area).
-  const secRows = mode === "entry" && subOpen ? (sub === "generic" ? 1 : 2) : 0;
+  // Only the dest picker (Medical/Financial) adds a row now — the sub-type choice lives in the
+  // morphed top row, which is always one line. So 0 extra rows except Medical/Financial.
+  const secRows = mode === "entry" && subPicker && (sub === "medical" || sub === "financial") ? 1 : 0;
 
   return (
     <div className="chat-wrap">
@@ -829,52 +845,58 @@ export default function Chat() {
 
       {/* Compose box (rounded). The accent class drives --mc for the safety line. */}
       <div className={`composer-box ${accentClass} sec-${secRows}`}>
-        {/* Top-level 3-mode segmented picker (its own row). */}
+        {/* One segmented row with two faces. Default: Entry · Research · Full Brain. Re-press the
+            active Entry segment to EXPAND in place → Entry · Medical · Financial (Research/Full
+            become the sub-types); the Entry segment then collapses back. No second row. */}
         <div className="seg mode-seg">
-          {MODES.map((m) => (
-            <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}`}
-                    title={m.key === "entry" && mode === "entry" ? "Tap again to show/hide Generic · Medical · Financial" : m.hint}
-                    onClick={() => pick(m.key)}>
-              <Icon name={m.icon} size={15} /> {m.label}
-              {m.key === "entry" && mode === "entry" && (
-                <Icon name="chevron" size={13} className={`sub-caret${subOpen ? " open" : ""}`} />
-              )}
-            </button>
-          ))}
+          {!(mode === "entry" && subPicker) ? (
+            MODES.map((m) => (
+              <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}`}
+                      title={m.key === "entry" && mode === "entry" ? "Tap again for Medical · Financial" : m.hint}
+                      onClick={() => pick(m.key)}>
+                <Icon name={m.icon} size={15} /> {m.label}
+                {m.key === "entry" && mode === "entry" && (
+                  <Icon name="chevron" size={13} className="sub-caret" />
+                )}
+              </button>
+            ))
+          ) : (
+            SUB_SEGS.map((s) => (
+              <button key={s.key} className={`${s.mclass}${sub === s.key ? " on" : ""}`}
+                      title={s.key === "generic" ? "Back to Research · Full Brain" : `File under notes/${s.key}/`}
+                      onClick={() => (s.key === "generic" ? collapseSub() : selectSub(s.key))}>
+                <Icon name={s.icon} size={15} /> {s.label}
+                {s.key === "generic" && <Icon name="chevron" size={13} className="sub-caret open" />}
+              </button>
+            ))
+          )}
         </div>
-        {/* Secondary controls (Entry only). They take their natural height; the textarea's
-            min-height (via the sec-N class) grows to compensate, so the box is the SAME height
-            in every mode without a blank reserved band. Attach chips stay OUTSIDE this block. */}
-        {mode === "entry" && subOpen && (
+        {/* Destination picker — the ONLY secondary row, shown for Medical/Financial. Its height is
+            offset by the textarea's sec-N min-height so the box stays the same height. */}
+        {mode === "entry" && subPicker && sub === "medical" && (
           <div className="composer-secondary">
-            <div className="seg sub-seg">
-              {SUBS.map((s) => (
-                <button key={s.key} className={`${s.mclass}${s.key === sub ? " on" : ""}`}
-                        onClick={() => pickSub(s.key)}>{s.label}</button>
-              ))}
+            <div className="med-dest-row">
+              <Icon name="medical" size={14} />
+              <span className="muted">notes/medical/</span>
+              <select className="med-dest-select" value={curDest} onChange={(e) => pickDest(e.target.value)}>
+                {dests.length === 0 && <option value="">(add a destination)</option>}
+                {dests.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
             </div>
-            {sub === "medical" && (
-              <div className="med-dest-row">
-                <Icon name="medical" size={14} />
-                <span className="muted">notes/medical/</span>
-                <select className="med-dest-select" value={curDest} onChange={(e) => pickDest(e.target.value)}>
-                  {dests.length === 0 && <option value="">(add a destination)</option>}
-                  {dests.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
-              </div>
-            )}
-            {sub === "financial" && (
-              <div className="med-dest-row fin-dest-row">
-                <Icon name="list" size={14} />
-                <span className="muted">notes/financial/</span>
-                <select className="med-dest-select" value={curFinDest} onChange={(e) => pickFinDest(e.target.value)}>
-                  {finDests.length === 0 && <option value="">(add a destination)</option>}
-                  {finDests.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addFinDest}>＋ New</button>
-              </div>
-            )}
+          </div>
+        )}
+        {mode === "entry" && subPicker && sub === "financial" && (
+          <div className="composer-secondary">
+            <div className="med-dest-row fin-dest-row">
+              <Icon name="list" size={14} />
+              <span className="muted">notes/financial/</span>
+              <select className="med-dest-select" value={curFinDest} onChange={(e) => pickFinDest(e.target.value)}>
+                {finDests.length === 0 && <option value="">(add a destination)</option>}
+                {finDests.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addFinDest}>＋ New</button>
+            </div>
           </div>
         )}
         {pendingFiles.map((f, i) => (

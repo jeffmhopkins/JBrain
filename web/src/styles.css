@@ -796,6 +796,14 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .rb-seechg:hover { border-color: var(--accent); color: var(--text); }
 .rb-draft-body { min-height: 40px; }
+.rb-rename { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; background: var(--bg-elev-2); }
+.rb-rename-tog { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.rb-rename-tog input { width: 18px; height: 18px; }
+.rb-rename-row { display: flex; align-items: center; gap: 4px; margin-top: 9px; }
+.rb-rename-prefix { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.rb-suggest { margin-top: 8px; background: transparent; border: 1px solid var(--border); color: var(--accent);
+  border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.rb-suggest:hover { border-color: var(--accent); }
 
 .rb-guide { display: flex; flex-direction: column; }
 .rb-thread { display: flex; flex-direction: column; gap: 9px; }

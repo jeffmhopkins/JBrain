@@ -36,6 +36,10 @@ class DraftIn(BaseModel):
     source_ids: list[int]
 
 
+class AcceptIn(BaseModel):
+    rename_to: str | None = None     # opt-in retitle (must stay under kb/); None = keep title
+
+
 def _sse(agen) -> StreamingResponse:
     """Bridge an async event-dict generator to a keepalive'd SSE response (mirrors chat.py)."""
     async def event_stream():
@@ -167,7 +171,7 @@ def guide(run_id: str, body: GuideIn):
 
 
 @router.post("/{run_id}/accept")
-def accept(run_id: str):
+def accept(run_id: str, body: AcceptIn):
     run = rebuild_runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
@@ -175,6 +179,13 @@ def accept(run_id: str):
         raise HTTPException(status_code=409, detail="This rebuild can't be accepted right now.")
     if not (run.draft or "").strip():
         raise HTTPException(status_code=409, detail="There's no draft to accept.")
+
+    # Opt-in rename (user-approved only). Keep it under kb/ so a rebuild can't move the page out.
+    rename_to = (body.rename_to or "").strip()
+    if rename_to and not rename_to.lower().startswith("kb/"):
+        raise HTTPException(status_code=400, detail="A rebuilt page must stay under kb/.")
+    if not rename_to or rename_to.lower() == run.title.lower():
+        rename_to = None
 
     # CAS-ish guard against a double-accept: claim the run before doing any DB work.
     run.status = "accepting"
@@ -193,12 +204,13 @@ def accept(run_id: str):
         if rebuild_runs.content_hash(current["content_md"] or "") != run.base_hash:
             run.status = "ready"
             raise HTTPException(status_code=409, detail="stale")
-        wiki_build.finalize_rebuild(conn, run.title, run.draft, run.talk, prior_note_id=current["id"])
+        wiki_build.finalize_rebuild(conn, run.title, run.draft, run.talk,
+                                    prior_note_id=current["id"], rename_to=rename_to)
         conn.commit()
     finally:
         wiki_build.kb_lock_release(conn)
 
-    row = notes_svc.get_by_title(conn, run.title)
+    row = notes_svc.get_by_title(conn, rename_to or run.title)
     run.status = "accepted"
     rebuild_runs.drop(run_id)
     return {"ok": True, "slug": row["slug"] if row else run.slug}

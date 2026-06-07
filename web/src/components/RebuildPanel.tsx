@@ -32,6 +32,8 @@ const leaf = (t: string) => t.split("/").pop() || t;
 // Two-stage live rebuild: gather (agent tool use) → curate (pick sources) → draft (write).
 export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props) {
   const navigate = useNavigate();
+  const currentLeaf = note.title.split("/").pop() || note.title;
+  const parent = note.title.includes("/") ? note.title.slice(0, note.title.lastIndexOf("/")) : "kb";
 
   const [stage, setStage] = useState<Stage>("gather");
   // gather
@@ -60,6 +62,8 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   const [thread, setThread] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [guideInput, setGuideInput] = useState("");
   const [accepting, setAccepting] = useState(false);
+  const [renameOn, setRenameOn] = useState(false);
+  const [renameLeaf, setRenameLeaf] = useState(currentLeaf);
 
   const runId = useRef<string | null>(null);
   const sse = useRef<SSEHandle | null>(null);
@@ -186,8 +190,10 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   async function doAccept() {
     if (!runId.current || accepting) return;
     setAccepting(true);
+    const nl = renameLeaf.trim();
+    const renameTo = renameOn && nl && nl !== currentLeaf ? `${parent}/${nl}` : undefined;
     try {
-      const r = await acceptRebuild(runId.current);
+      const r = await acceptRebuild(runId.current, renameTo);
       onAccepted(r.slug);
     } catch (err) {
       const e = err as ApiError;
@@ -405,6 +411,27 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
                     <button className="rb-seechg" onClick={() => setShowDiff((s) => !s)}>{showDiff ? "Hide changes" : "See changes"}</button>
                   </div>
                 )}
+                {(reviewish || guiding) && draft && (() => {
+                  const h1 = (draft.match(/^#\s+(.+?)\s*$/m)?.[1] || "").trim();
+                  return (
+                    <div className="rb-rename">
+                      <label className="rb-rename-tog">
+                        <input type="checkbox" checked={renameOn} onChange={(e) => setRenameOn(e.target.checked)} /> Rename page
+                      </label>
+                      {renameOn && (
+                        <>
+                          <div className="rb-rename-row">
+                            <span className="rb-rename-prefix">{parent}/</span>
+                            <input className="rb-ti" value={renameLeaf} onChange={(e) => setRenameLeaf(e.target.value)} />
+                          </div>
+                          {h1 && h1 !== currentLeaf && h1 !== renameLeaf.trim() && (
+                            <button className="rb-suggest" onClick={() => setRenameLeaf(h1)}>Use AI heading: “{h1}”</button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="rb-draft-body md">
                   {phase === "empty" ? <p className="muted">The model didn't produce a draft.</p>
                     : showDiff ? <MarkdownDiff before={note.content_md} after={draft} /> : draftMd}

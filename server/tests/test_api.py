@@ -956,6 +956,34 @@ def test_rename_refreshes_stale_echo_alias(client):
     assert "Jeff Hopkins" not in house["content_md"]
 
 
+def test_kb_rename_leaves_redirect_from_old_title(client):
+    # Renaming a KB article in the editor rewrites inbound [[links]] AND leaves a redirect
+    # from the old title, so a bookmarked/shared URL on the OLD slug still resolves.
+    client.post("/api/notes", json={"title": "kb/People/Jeff Hopkins", "content_md": "Jeff."})
+    client.post("/api/notes", json={
+        "title": "kb/Places/House", "content_md": "Owner: [[kb/People/Jeff Hopkins]]."})
+    jeff = client.get("/api/notes/kb-people-jeff-hopkins").json()
+    client.put(f"/api/notes/{jeff['slug']}",
+               json={"title": "kb/People/Jeffrey M. Hopkins", "content_md": "Jeff."})
+    # Inbound link rewritten to the new title.
+    assert "[[kb/People/Jeffrey M. Hopkins]]" in client.get("/api/notes/kb-places-house").json()["content_md"]
+    # The OLD slug still resolves — it's now a redirect forwarding to the new article.
+    old = client.get("/api/notes/kb-people-jeff-hopkins").json()
+    assert old["redirect_to"] == "kb/People/Jeffrey M. Hopkins"
+    assert old["redirect_to_slug"] == "kb-people-jeffrey-m-hopkins"
+    # The redirect stub is decluttered from the notes list (only the live article shows).
+    titles = [n["title"] for n in client.get("/api/notes").json()]
+    assert "kb/People/Jeffrey M. Hopkins" in titles and "kb/People/Jeff Hopkins" not in titles
+
+
+def test_non_kb_rename_leaves_no_redirect(client):
+    # A plain notes/ rename (or promoting an entry into kb/) must NOT litter a redirect stub:
+    # the old slug simply 404s, as before.
+    client.post("/api/notes/entry", json={"text": "body", "title": "Jeff"})
+    client.put("/api/notes/notes-jeff", json={"title": "kb/Jeff", "content_md": "body"})
+    assert client.get("/api/notes/notes-jeff").status_code == 404
+
+
 def test_architect_edits_attributed(client):
     import json as _json
     from app.db import get_conn

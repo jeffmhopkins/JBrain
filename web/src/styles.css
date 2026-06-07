@@ -298,6 +298,22 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   background: color-mix(in srgb, var(--mc) 18%, var(--bg-elev));
   border-color: var(--mc);
 }
+/* Kebab actions menu on the note/wiki page — same row grammar as .mode-menu,
+   but it drops DOWN from the trigger and right-aligns under the kebab. */
+.note-menu {
+  --mc: var(--m-assisted);
+  position: absolute; top: 100%; right: 0; margin-top: 6px; width: 280px; max-width: calc(100vw - 32px);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 14px;
+  padding: 6px; z-index: 60; box-shadow: 0 12px 30px rgba(0,0,0,.45);
+}
+.note-menu .mode-row { min-height: 48px; padding: 9px 12px; }
+.note-menu .mode-hint { font-size: 12px; }
+.note-menu .mode-row.accent { --mc: var(--accent); }
+.note-menu .mode-row.danger { --mc: var(--danger); color: var(--danger); }
+.note-menu-sep { height: 1px; background: var(--border); margin: 5px 8px; }
+/* The kebab dots read as faint at the shared 1.7 stroke — fatten just these. */
+.icon.kebab-dots { stroke-width: 2.8; }
+
 .icon-btn { background: transparent; border: none; color: var(--text-dim); padding: 7px; cursor: pointer; display: inline-flex; border-radius: 8px; }
 .icon-btn:hover { color: var(--text); }
 .icon-btn.active { color: var(--accent); }
@@ -736,6 +752,114 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   width: 100%; padding: 9px; background: var(--bg-elev); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius);
 }
+
+/* ---- Live "Rebuild page now" panel (mobile-first; hosted in Modal) ---- */
+.rb-base-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px;
+  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-lock { color: var(--accent); }
+.rb-panel { display: flex; flex-direction: column; }
+
+.rb-seg { display: flex; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 3px; margin-bottom: 10px; }
+.rb-seg button { flex: 1; background: transparent; border: none; color: var(--text-dim); padding: 8px;
+  border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.rb-seg button.on { background: var(--accent-soft); color: var(--text); }
+
+.rb-activity { border: 1px solid var(--border); border-radius: 11px; background: var(--bg-elev-2);
+  overflow: hidden; margin-bottom: 10px; flex: none; }
+.rb-act-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 10px 12px;
+  background: transparent; border: none; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.rb-caret { margin-left: auto; color: var(--text-dim); transition: transform .15s; }
+.rb-activity.open .rb-caret { transform: rotate(90deg); }
+.rb-act-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+.rb-act-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 12px 0 7px; }
+.rb-thoughts { border-left: 2px solid var(--border); padding-left: 10px; color: var(--text-dim);
+  font-style: italic; font-size: 13px; white-space: pre-wrap; }
+.rb-refs { display: flex; flex-wrap: wrap; gap: 5px; }
+.rb-chip { font-size: 11.5px; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 2px 8px; }
+
+.rb-status { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+.rb-dots { display: inline-flex; gap: 3px; }
+.rb-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-dim); animation: rb-bob 1s infinite; }
+.rb-dots i:nth-child(2) { animation-delay: .15s; }
+.rb-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes rb-bob { 0%, 60%, 100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+.rb-warn { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; padding: 8px 11px;
+  border-radius: 9px; font-size: 13px; background: color-mix(in srgb, var(--danger) 12%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border)); }
+
+.rb-draft-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.rb-phase { font-size: 12px; color: var(--text-dim); }
+.rb-seechg { margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.rb-seechg:hover { border-color: var(--accent); color: var(--text); }
+.rb-draft-body { min-height: 40px; }
+
+.rb-guide { display: flex; flex-direction: column; }
+.rb-thread { display: flex; flex-direction: column; gap: 9px; }
+.rb-msg { max-width: 88%; padding: 9px 12px; border-radius: 13px; font-size: 14px; }
+.rb-msg.ai { background: var(--bg-elev-2); border: 1px solid var(--border); align-self: flex-start; }
+.rb-msg.user { background: var(--accent-soft); align-self: flex-end; }
+.rb-ctx { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; font-size: 12px; }
+
+.rb-foot-btn { flex: 1; text-align: center; }
+.rb-composer { flex: 1; display: flex; gap: 8px; align-items: flex-end; }
+.rb-composer textarea { flex: 1; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  border-radius: 12px; padding: 10px 12px; resize: none; font: inherit; min-height: 42px; max-height: 120px; outline: none; }
+.rb-composer textarea:focus { border-color: var(--accent); }
+.rb-send { flex: none; background: var(--accent-soft); border: 1px solid var(--accent); color: var(--text);
+  border-radius: 12px; padding: 10px 13px; cursor: pointer; display: inline-flex; }
+.rb-send:disabled { opacity: .45; cursor: not-allowed; }
+
+/* progress pips */
+.rb-pips { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.rb-pip { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+.rb-pip.on { background: var(--accent); }
+.rb-pip.done { background: var(--ok, #7faa86); }
+.rb-pip-lbl { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+
+/* gather steps */
+.rb-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.rb-step { border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; background: var(--bg-elev-2); font-size: 13px; }
+.rb-step.run { border-left: 2px solid var(--accent); }
+.rb-step-lab { display: flex; align-items: center; gap: 8px; }
+
+/* curate */
+.rb-hint { background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 9px;
+  padding: 9px 11px; font-size: 12.5px; color: var(--text-dim); margin-bottom: 12px; }
+.rb-src { display: flex; gap: 11px; align-items: flex-start; padding: 11px; border: 1px solid var(--border);
+  border-radius: 11px; background: var(--bg-elev-2); margin-bottom: 8px; cursor: pointer; }
+.rb-src.off { opacity: .6; }
+.rb-cbx { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; background: var(--bg);
+  color: transparent; font-size: 14px; font-weight: 700; }
+.rb-src.on .rb-cbx { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.rb-src-main { min-width: 0; flex: 1; }
+.rb-src-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rb-src-meta { font-size: 11px; color: var(--text-dim); margin: 1px 0 4px; word-break: break-all; }
+.rb-src-reason { font-size: 12.5px; color: var(--text-dim); }
+.rb-pbadge { font-size: 10px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 5px; padding: 0 5px; font-weight: 500; }
+.rb-added { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 0 5px; font-weight: 500; }
+.rb-addbar { margin: 6px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.rb-addrow { display: flex; gap: 8px; }
+.rb-ti { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  border-radius: 9px; padding: 9px 11px; font: inherit; outline: none; }
+.rb-ti:focus { border-color: var(--accent); }
+.rb-mini { flex: none; background: var(--bg-elev-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 9px; padding: 9px 12px; font-size: 13px; font-weight: 600; }
+.rb-mini:hover { border-color: var(--accent); }
+.rb-mini:disabled { opacity: .5; }
+.rb-results { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; margin-top: 8px; }
+.rb-rrow { padding: 9px 11px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex;
+  justify-content: space-between; gap: 8px; align-items: center; }
+.rb-rrow:last-child { border-bottom: none; }
+.rb-radd { color: var(--accent); font-weight: 600; background: transparent; border: none; }
+.rb-disc { width: 100%; text-align: left; background: transparent; border: 1px dashed var(--border);
+  border-radius: 10px; padding: 10px 12px; color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+.rb-incl { color: var(--accent); font-weight: 600; font-size: 12px; border: none; background: transparent; flex: none; align-self: center; }
 
 /* Share links: owner panel + public standalone page. */
 .share-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin: 8px 0; background: var(--bg-elev); }

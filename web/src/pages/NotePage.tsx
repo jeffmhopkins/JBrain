@@ -14,6 +14,8 @@ import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
 import ListEditor from "../components/ListEditor";
+import NoteActionsMenu from "../components/NoteActionsMenu";
+import RebuildPanel from "../components/RebuildPanel";
 import ShareOptions from "../components/ShareOptions";
 import { Parsed, parseList, serialize } from "../lists";
 
@@ -65,6 +67,7 @@ export default function NotePage() {
   const [listModel, setListModel] = useState<Parsed | null>(null);   // card editor for list notes
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);   // live AI rebuild panel open
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
   const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
@@ -99,6 +102,16 @@ export default function NotePage() {
       try { await navigator.clipboard.writeText(r.url); } catch { /* ignore */ }
     } catch (e: any) { alert(e?.message || "Couldn't create link."); }
   }
+
+  async function tagAsPerson() {
+    if (!note) return;
+    try {
+      const r = await personFromNote(note.slug);
+      alert(`Tagged as person “${r.name}”. Set their colour/aliases in Advanced → People.`);
+    } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
+  }
+
+  function rebuildNow() { setRebuilding(true); }
 
   function startEdit() {
     if (!note) return;
@@ -239,22 +252,6 @@ export default function NotePage() {
           )}
         </div>
       )}
-      {editing === null && (
-        <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: "flex-end" }}>
-          {note.kind === "kb" && (
-            <button className="ghost" title="Make this KB page a Person (for trail attribution)"
-                    onClick={async () => {
-                      try {
-                        const r = await personFromNote(note.slug);
-                        alert(`Tagged as person “${r.name}”. Set their colour/aliases in Advanced → People.`);
-                      } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
-                    }}>Tag as person</button>
-          )}
-          <button className="ghost" onClick={() => setSharing((s) => !s)}>Share</button>
-          <button className="ghost" onClick={startEdit}>{note.kind === "list" ? "Edit list" : "Edit"}</button>
-          <button className="ghost danger-hover" onClick={remove}>Delete</button>
-        </div>
-      )}
       {sharing && (
         <div className="share-panel">
           {!minted ? (
@@ -320,14 +317,33 @@ export default function NotePage() {
           )}
         </div>
       )}
-      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div className="muted" style={{ fontSize: 12, margin: "8px 0", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <span>🕐 {fmtTs(note.created_at, appTz)}{fmtTs(note.updated_at, appTz) !== fmtTs(note.created_at, appTz) ? ` · updated ${fmtTs(note.updated_at, appTz)}` : ""}</span>
         {note.lat != null && note.lon != null && (
           <Link to={`/map?focus=${note.slug}`} title="View on map">
             <Icon name="pin" size={13} /> {note.location_label || `${note.lat}, ${note.lon}`}
           </Link>
         )}
+        {editing === null && (
+          <span style={{ marginLeft: "auto" }}>
+            <NoteActionsMenu items={[
+              ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
+                                          accent: true, hint: "AI rewrites it", onClick: rebuildNow }] : []),
+              { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
+              { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
+              ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",
+                                         hint: "Trail attribution", onClick: tagAsPerson }] : []),
+              { sep: true } as const,
+              { key: "delete", label: "Delete", icon: "trash", danger: true, onClick: remove },
+            ]} />
+          </span>
+        )}
       </div>
+      {rebuilding && (
+        <RebuildPanel slug={note.slug} note={{ title: note.title, content_md: note.content_md }}
+          onClose={() => setRebuilding(false)}
+          onAccepted={(s) => { setRebuilding(false); if (s !== note.slug) navigate(`/note/${s}`); else reload(); }} />
+      )}
       <div className="row tag-editor" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {note.tags.map((t) => (
           <span key={t} className="badge tag-edit">#{t}

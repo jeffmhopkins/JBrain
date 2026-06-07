@@ -19,7 +19,7 @@ and a graph.
   and Send, with a **3-mode segmented control** (Entry · Research · Full Brain) on
   its own row and **attach** + **voice dictation** below. A **lightning bolt**
   (top-right) opens **Advanced** — a grouped nav (Browse · Automate · Data ·
-  Review). The three modes (a fresh launch defaults to **Entry**; your last mode is
+  Review). The three modes (a fresh launch defaults to **Research**; your last mode is
   remembered within a session):
   - **Entry** — stored directly (no LLM), running the `entry_created` hooks
     (auto-tag, etc.). A **sub-selector** picks where it files: **Generic** (the

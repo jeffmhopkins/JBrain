@@ -219,8 +219,9 @@ def pending_ids(conn, limit: int = 60, force: bool = False) -> list[int]:
         # fold-back doesn't bump notes.updated_at, so n.updated_at > a.analyzed_at can't catch it.)
         where += (" AND (a.note_id IS NULL OR n.updated_at > a.analyzed_at"
                   " OR EXISTS (SELECT 1 FROM attachments att WHERE att.note_id = n.id"
-                  " AND att.analysis_md IS NOT NULL AND att.analysis_md != ''"
-                  " AND att.analyzed_at > a.analyzed_at))")
+                  " AND att.analysis_status = 'done'"   # only SETTLED enrichment — not an in-flight
+                  " AND att.analysis_md IS NOT NULL AND att.analysis_md != ''"  # pending re-analyze (its
+                  " AND att.analyzed_at > a.analyzed_at))")                     # analyzed_at is freshly stamped)
     rows = conn.execute(
         "SELECT n.id FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
         f"WHERE {where} ORDER BY n.updated_at DESC LIMIT ?",

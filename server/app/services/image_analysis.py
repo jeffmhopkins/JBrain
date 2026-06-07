@@ -380,7 +380,9 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
 # A 'pending' analysis older than this is presumed dead (a worker that hung without raising —
 # e.g. a wedged model load) and reaped to 'error' by the periodic watchdog. Comfortably above the
 # vision call's 120s LLM budget AND minutes-long CPU transcription, so a legitimately in-flight
-# analysis is never killed.
+# analysis is never killed. (Edge: a multi-hour recording on a slow CPU could legitimately exceed
+# this and be reaped mid-run — bounded impact: the row becomes retryable and the late worker
+# abandons via the guarded commit, so no corruption. Raise this if very long media is common.)
 STALE_PENDING_SECONDS = 1800   # 30 min
 
 

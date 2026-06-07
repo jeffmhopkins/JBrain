@@ -17,12 +17,11 @@ name: Build Android Tracker APK
 #   Secret    KEY_ALIAS
 #   Secret    KEY_PASSWORD
 
+# Manual-only: auto-build on push is disabled so APK artifacts don't accumulate
+# against the repo's artifact-storage quota. Run it on demand from the Actions tab
+# when you actually need a fresh APK.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'android/**'
-      - '.github/workflows/android-apk.yml'
 
 permissions:
   contents: read

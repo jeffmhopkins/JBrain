@@ -5,10 +5,10 @@ name: Deploy PWA to GitHub Pages
 # your self-hosted JBrain server (entered on first run). Enable Pages in repo
 # Settings → Pages → Source: GitHub Actions.
 
+# Manual-only: auto-deploy on push to main is disabled (the PWA is served from the
+# self-hosted server, so Pages is optional). Run it on demand from the Actions tab
+# if you want to refresh the GitHub Pages copy.
 on:
-  push:
-    branches: [main]
-    paths: ["web/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

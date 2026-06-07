@@ -118,6 +118,9 @@ export default function Chat() {
   const [mode, setMode] = useState<Mode>(() => normalizeMode(sessionStorage.getItem("jbrain_mode")));
   // Entry sub-type. Sticky per device (mirrors the dest preference), defaulting to Generic.
   const [sub, setSub] = useState<EntrySub>(() => normalizeSub(localStorage.getItem("jbrain_entry_sub")));
+  // The Generic/Medical/Financial row is hidden by default; re-pressing the active Entry button
+  // toggles it. While hidden, Entry behaves as plain Generic (see `effSub` in the render body).
+  const [subOpen, setSubOpen] = useState(false);
   // Read-only "Deep" opt-in (Research only): bigger budget, same strict facts-only posture.
   const [deep, setDeep] = useState(false);
   // Medical/Financial destination picklists (notes/<root>/<dest>/…), lazily loaded the first
@@ -286,27 +289,34 @@ export default function Chat() {
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
     // Re-run on mode/sub change too: the compensating min-height (sec-N class) changes, so the
     // textarea must recompute its resting height instead of keeping a stale inline height.
-  }, [input, mode, sub]);
+  }, [input, mode, sub, subOpen]);
 
-  function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); }
+  function pick(m: Mode) {
+    if (m === "entry" && mode === "entry") {
+      setSubOpen((o) => !o);   // re-press while Entry is active → show/hide the sub-type row
+      return;
+    }
+    setMode(m); sessionStorage.setItem("jbrain_mode", m);
+    if (m === "entry") setSubOpen(false);   // entering Entry defaults to hidden (= plain Generic)
+  }
   function pickSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
 
   // Load the Medical destinations the first time the Medical sub-type is entered.
   useEffect(() => {
-    if (!(mode === "entry" && sub === "medical") || dests.length) return;
+    if (!(mode === "entry" && subOpen && sub === "medical") || dests.length) return;
     getMedicalDests().then(({ names }) => {
       setDests(names);
       setCurDest((c) => (c && names.includes(c) ? c : names[0] || ""));
     }).catch(() => { /* offline — keep an empty picker */ });
-  }, [mode, sub, dests.length]);
+  }, [mode, sub, subOpen, dests.length]);
   // Load the Financial destinations the first time the Financial sub-type is entered.
   useEffect(() => {
-    if (!(mode === "entry" && sub === "financial") || finDests.length) return;
+    if (!(mode === "entry" && subOpen && sub === "financial") || finDests.length) return;
     getFinancialDests().then(({ names }) => {
       setFinDests(names);
       setCurFinDest((c) => (c && names.includes(c) ? c : names[0] || ""));
     }).catch(() => { /* offline — keep an empty picker */ });
-  }, [mode, sub, finDests.length]);
+  }, [mode, sub, subOpen, finDests.length]);
   function pickDest(d: string) { setCurDest(d); localStorage.setItem("jbrain_med_dest", d); }
   function pickFinDest(d: string) { setCurFinDest(d); localStorage.setItem("jbrain_fin_dest", d); }
   // Add a new destination inline (full management lives in Advanced).
@@ -338,6 +348,7 @@ export default function Chat() {
         const i = MODES.findIndex((x) => x.key === m);
         const next = MODES[(i + dir + MODES.length) % MODES.length].key;
         sessionStorage.setItem("jbrain_mode", next);
+        if (next === "entry") setSubOpen(false);   // cycling into Entry starts hidden (Generic)
         return next;
       });
     }
@@ -480,8 +491,8 @@ export default function Chat() {
       if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
       return;
     }
-    if (mode === "entry" && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
-    if (mode === "entry" && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
+    if (mode === "entry" && subOpen && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
+    if (mode === "entry" && subOpen && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
     sendingRef.current = true;
     setProposals([]);   // a new turn supersedes any pending external-lookup chips
     // Both chat modes stream a spoken-able prose reply; entry captures don't.
@@ -506,7 +517,7 @@ export default function Chat() {
     if (mode === "entry") {
       // Snapshot the sub-type for THIS send so a mid-flight toggle (during upload/await) can't
       // redirect the destination or the lab-staging decision.
-      const curSub = sub;
+      const curSub = subOpen ? sub : "generic";   // hidden row ⇒ plain Generic capture
       // Optimistic capture bubble — the only immediate feedback Entry gets (no reply).
       const enId = ++entrySeq.current;
       setEntries((xs) => [...xs, { id: enId, text: bubble, title: "", slug: "", pending: true }]);
@@ -688,7 +699,10 @@ export default function Chat() {
   }
 
   const cur = MODES.find((m) => m.key === mode)!;
-  const curSubDef = SUBS.find((s) => s.key === sub)!;
+  // Effective sub-type: while the row is hidden, Entry is plain Generic regardless of the
+  // last-selected sub. Drives the accent, placeholder, safety line, empty-state copy, and routing.
+  const effSub: EntrySub = mode === "entry" && subOpen ? sub : "generic";
+  const curSubDef = SUBS.find((s) => s.key === effSub)!;
   // Accent class driving --mc for the compose-safety line: the sub-type's accent in Entry,
   // else the mode's. Placeholder/safety likewise come from the sub-type when in Entry.
   const accentClass = mode === "entry" ? curSubDef.mclass : `m-${mode}`;
@@ -698,7 +712,7 @@ export default function Chat() {
   // sub-seg, 2 = Entry/Medical|Financial sub-seg + dest). Drives a textarea min-height that grows
   // to fill the space those rows would take — so the box stays the SAME height in every mode
   // (no blank reserved band; the freed room becomes input area).
-  const secRows = mode === "entry" ? (sub === "generic" ? 1 : 2) : 0;
+  const secRows = mode === "entry" && subOpen ? (sub === "generic" ? 1 : 2) : 0;
 
   return (
     <div className="chat-wrap">
@@ -713,9 +727,9 @@ export default function Chat() {
         {messages.length === 0 && entries.length === 0 && (
           <div className="msg assistant muted">
             {mode === "entry"
-              ? (sub === "medical"
+              ? (effSub === "medical"
                   ? "Log medical info — saved under notes/medical/<destination>. Pick or add a destination below."
-                  : sub === "financial"
+                  : effSub === "financial"
                   ? "Log financial info — saved under notes/financial/<destination>. Pick or add a destination below."
                   : "Type below and Send — it’s saved straight to your wiki (the AI isn’t involved).")
               : mode === "research"
@@ -819,15 +833,19 @@ export default function Chat() {
         <div className="seg mode-seg">
           {MODES.map((m) => (
             <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}`}
-                    title={m.hint} onClick={() => pick(m.key)}>
+                    title={m.key === "entry" && mode === "entry" ? "Tap again to show/hide Generic · Medical · Financial" : m.hint}
+                    onClick={() => pick(m.key)}>
               <Icon name={m.icon} size={15} /> {m.label}
+              {m.key === "entry" && mode === "entry" && (
+                <Icon name="chevron" size={13} className={`sub-caret${subOpen ? " open" : ""}`} />
+              )}
             </button>
           ))}
         </div>
         {/* Secondary controls (Entry only). They take their natural height; the textarea's
             min-height (via the sec-N class) grows to compensate, so the box is the SAME height
             in every mode without a blank reserved band. Attach chips stay OUTSIDE this block. */}
-        {mode === "entry" && (
+        {mode === "entry" && subOpen && (
           <div className="composer-secondary">
             <div className="seg sub-seg">
               {SUBS.map((s) => (

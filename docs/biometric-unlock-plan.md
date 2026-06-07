@@ -40,6 +40,10 @@ re-verifies the stored key on load).
 | Fallback when PRF unsupported | **PIN fallback** — PBKDF2 over a user PIN derives the encryption key; works on every browser |
 | Auto-lock policy | **Launch + idle timeout** — lock on cold start/reload AND after inactivity in the background |
 | Idle timeout length | **Configurable** (default 5 min) |
+| Strict "lock on every resume" | **Available as an option** — opt-in mode that re-locks whenever the app loses focus, ignoring the idle grace period |
+| PIN format | **Numeric, no minimum length** |
+| First-run lock offer | **Opt-in prompt** after first connect (dismissible) |
+| Cache encryption mechanism | **Page-side encrypted store** (key never leaves the page; not handed to the SW) |
 | Offline cache at rest | **Encrypt the cache** — cached API responses are encrypted with the same vault key; offline reading survives the lock |
 | Deliverable | **This design doc first**, for review before code |
 
@@ -130,13 +134,17 @@ older iOS. We must:
 
 ### 2.3 PIN path — PBKDF2
 
-- 6+ digit PIN (configurable min length; allow alphanumeric passphrase too).
+- **Numeric PIN, no length or complexity requirement** (owner decision). The UI is a
+  numeric keypad; the user picks however many digits they want.
 - `Kpin = PBKDF2-SHA256(pin, random 16-byte salt, ≥600k iterations)` →
   AES-GCM-wraps `MK`.
-- **Throttling:** track failed attempts in the vault metadata; exponential backoff
-  and, after N (e.g. 10) failures, offer "forget device" (wipe vault → re-enter full
-  access key). PIN brute-force is the weak point, so the iteration count + throttle
-  matter.
+- **Throttling carries the security here.** Because there's no minimum length, a short
+  PIN is brute-forceable offline if someone exfiltrates the vault blob — so the
+  defense is the high PBKDF2 cost *plus* an in-app attempt limiter: track failed
+  attempts in the vault metadata, exponential backoff, and after N (e.g. 10) failures
+  offer "forget device" (wipe vault → re-enter full access key). We will surface a
+  soft, dismissible hint ("longer PINs are harder to guess") but never enforce a
+  minimum.
 
 ### 2.4 Storage layout (IndexedDB, new `jbrain-vault` DB)
 
@@ -151,6 +159,7 @@ vault: {
   accessKey: { iv, ct },           // AESGCM(MK) -> access key
   pinFailCount, lockoutUntil,
   idleTimeoutMs,                   // configurable; default 300000
+  strictResume,                    // bool; opt-in lock-on-every-resume
 }
 ```
 
@@ -201,6 +210,11 @@ Add a lock state between "authed" and "show app":
   `visibilitychange`→hidden / `blur`; on expiry → `lock()`. Reset on
   `visibilitychange`→visible + user activity. Because SW-claimed reloads happen
   (`web/src/main.tsx:22-28`), a reload naturally re-locks too.
+- **Strict resume mode (opt-in):** when enabled, the controller skips the idle grace
+  period and calls `lock()` immediately on `visibilitychange`→hidden / `blur`, so
+  every return to the app requires biometric/PIN. This is a Settings toggle that
+  short-circuits the idle timer (the timeout selector is hidden/disabled while it's
+  on). Stored in the vault meta as `strictResume: bool`.
 - The timeout value is user-configurable (Settings, §5) and stored in the vault meta.
 
 ### 3.5 New UI
@@ -251,7 +265,9 @@ first, add §4 (cache encryption) second. Owner chose to include it in v1.
 ## 5. Settings & recovery UX
 
 - **Settings → App lock** (in `SystemPage.tsx`): toggle biometric, set/change/remove
-  PIN, **idle timeout** picker (1 / 5 / 15 min / Never), "Lock now".
+  PIN (numeric keypad, no minimum), **idle timeout** picker (1 / 5 / 15 min / Never),
+  a **"Lock on every resume"** strict toggle (disables the idle picker when on), and
+  "Lock now".
 - **Recovery:** losing the credential/PIN is non-fatal — "Forget this device" wipes
   the vault and returns to `KeyEntry` (`web/src/pages/KeyEntry.tsx`), where the user
   re-pastes the access key (still on the server at `/data/access-key.txt`) and
@@ -301,11 +317,19 @@ first, add §4 (cache encryption) second. Owner chose to include it in v1.
 `web/src/pages/SystemPage.tsx`, `web/src/pages/KeyEntry.tsx` (post-connect offer),
 `web/public/push-sw.js` + `web/vite.config.ts` (cache rework).
 
-## 9. Open questions for review
+## 9. Resolved (owner decisions)
 
-1. Cache encryption: confirm **Option 1 (page-side store)** over postMessage-to-SW.
-2. PIN policy: minimum length, allow alphanumeric passphrase, lockout threshold.
-3. Should the first-run lock offer be **opt-in prompt** or just live silently in
-   Settings?
-4. Do we want a "require biometric on every resume" strict mode as an option, beyond
-   the configurable idle timeout?
+1. **Cache encryption:** Option 1 — **page-side encrypted store**; the key never
+   leaves the page (no postMessage-to-SW).
+2. **PIN policy:** **numeric, no minimum length** or complexity. Security rests on the
+   PBKDF2 cost + attempt limiter/lockout (§2.3); soft hint only, never enforced.
+3. **First-run offer:** an **opt-in prompt** after first connect (dismissible), with
+   the controls also living in Settings.
+4. **Strict resume mode:** **yes** — ship a "Lock on every resume" toggle that
+   re-locks on every focus loss, alongside the configurable idle timeout (§3.4, §5).
+
+### Still open / to settle during build
+
+- Lockout threshold N and backoff curve for PIN attempts (proposed: 10 attempts,
+  exponential backoff).
+- Idle-timeout preset values (proposed: 1 / 5 / 15 min / Never; default 5).

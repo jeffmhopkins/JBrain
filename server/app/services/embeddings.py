@@ -234,12 +234,22 @@ def relevant_note_excerpt(conn, note_id: int, query: str, budget_chars: int) -> 
     return "\n\n".join(parts)
 
 
-def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, chunks: list[str]) -> None:
-    """Store one vector per chunk for an attachment (multi-vector)."""
+def embed_attachment_chunks(chunks: list[str]) -> list[list[float]]:
+    """Run the (slow, CPU-bound) embedding for an attachment's chunks WITHOUT touching the DB,
+    so a background worker can compute vectors BEFORE it opens its write transaction. Holding the
+    single WAL write lock across multi-second fastembed inference wedges every other writer within
+    busy_timeout (5s) — including the owner chat persisting its turn — so the embed must never run
+    under a lock. Pair with write_attachment_embeddings(), which does the fast row writes."""
+    return embed_many(chunks) if chunks else []
+
+
+def write_attachment_embeddings(conn, attachment_id: int, note_id: int | None,
+                                chunks: list[str], vectors: list[list[float]]) -> None:
+    """Pure-SQL write of PRE-COMPUTED attachment chunk vectors (fast; safe inside a write txn).
+    Replaces the attachment's chunk rows. Pair with embed_attachment_chunks() for the slow half."""
     delete_attachment_embeddings(conn, attachment_id)
     if not chunks:
         return
-    vectors = embed_many(chunks)
     for idx, (text, vec) in enumerate(zip(chunks, vectors)):
         cur = conn.execute(
             "INSERT INTO attachment_chunks (attachment_id, note_id, chunk_index, text) "
@@ -250,6 +260,14 @@ def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, 
             "INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?, ?)",
             (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
         )
+
+
+def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, chunks: list[str]) -> None:
+    """Compute-then-write in one call (multi-vector). Convenience wrapper for callers ALREADY
+    outside a hot write lock (backfills, the upload path); background workers that hold a write
+    txn should instead embed_attachment_chunks() before the lock and write_attachment_embeddings()
+    inside it, so the slow embed never holds the lock."""
+    write_attachment_embeddings(conn, attachment_id, note_id, chunks, embed_attachment_chunks(chunks))
 
 
 def delete_attachment_embeddings(conn, attachment_id: int) -> None:

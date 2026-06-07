@@ -34,6 +34,13 @@ def client(monkeypatch):
     monkeypatch.setattr(embeddings, "upsert_attachment_embeddings", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "delete_attachment_embeddings", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "semantic_search_attachments", lambda *a, **k: [])
+    # The image/audio workers now embed via the split helpers (embed_attachment_chunks +
+    # write_attachment_embeddings), bypassing the upsert stub above; stub those too — and
+    # embed_many defensively — so no test loads the real fastembed model.
+    monkeypatch.setattr(embeddings, "embed_attachment_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(embeddings, "write_attachment_embeddings", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "embed_many",
+                        lambda ts: [[0.0] * embeddings.EMBEDDING_DIM for _ in ts])
 
     import app.db as db
     db._initialized = False
@@ -5208,10 +5215,29 @@ def test_image_analysis_non_image_and_unsupported(client, monkeypatch):
 
 
 def _inline_threads(monkeypatch, ia):
-    """Run the analysis worker inline (no real thread) for deterministic tests."""
+    """Run the analysis/transcription worker inline (no real thread) for deterministic tests.
+    This patches the shared threading.Thread, so it MUST delegate everything that isn't the
+    analysis worker — notably asyncio's default ThreadPoolExecutor workers, which the upload
+    route now uses via asyncio.to_thread — to a genuine Thread, or the executor deadlocks."""
+    real_thread = ia.threading.Thread
+
     class _Inline:
-        def __init__(self, target, args=(), daemon=None): self._t, self._a = target, args
-        def start(self): self._t(*self._a)
+        def __init__(self, *a, target=None, args=(), **kw):
+            self._target, self._args, self._real = target, args, None
+            # Only the analysis/transcription worker runs inline; anything else gets a real thread.
+            if getattr(target, "__name__", "") not in ("analyze", "transcribe"):
+                self._real = real_thread(*a, target=target, args=args, **kw)
+
+        def start(self):
+            if self._real is not None:
+                self._real.start()
+            else:
+                self._target(*self._args)
+
+        def join(self, *a, **k):
+            if self._real is not None:
+                self._real.join(*a, **k)
+
     monkeypatch.setattr(ia.threading, "Thread", _Inline)
 
 

@@ -2517,12 +2517,19 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     messages = _assemble_history(conn, conversation_id, fresh_context)
     messages.append({"role": "user", "content": user_text})
     loc = location or {}
-    conn.execute(
-        "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
-        "VALUES (?, 'user', ?, ?, ?, ?)",
-        (conversation_id, user_text, loc.get("lat"), loc.get("lon"), loc.get("location_label")),
-    )
-    conn.commit()
+
+    def _persist_user_turn():
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
+            "VALUES (?, 'user', ?, ?, ?, ?)",
+            (conversation_id, user_text, loc.get("lat"), loc.get("lon"), loc.get("location_label")),
+        )
+        conn.commit()
+    # Offload the DB write off the single event loop. A background image/audio worker may briefly
+    # hold the WAL write lock; a synchronous commit here would block the loop (busy_timeout up to 5s
+    # under contention) and freeze EVERY other request/stream. Same serialized-conn rationale as the
+    # _run_tool dispatch below: we await before resuming, so this thread is the only one touching conn.
+    await asyncio.to_thread(_persist_user_turn)
 
     system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
@@ -2662,22 +2669,29 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             final_text, v_changed = _verify_values(final_text, corpus)
         if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
-        cur = conn.execute(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
-            (conversation_id, final_text),
-        )
-        message_id = cur.lastrowid
-        # Persist the tool-call history alongside the reply (full raw), so swiping/expanding
-        # this bubble later can show exactly how it was answered — which notes were read, what
-        # SQL ran, what was staged/applied. Wiped per-conversation on /clear.
-        for i, st in enumerate(steps):
-            conn.execute(
-                "INSERT INTO message_steps (conversation_id, message_id, step_index, tool_name, "
-                "args_json, result_text, is_error, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (conversation_id, message_id, i, st["tool"],
-                 json.dumps(st["args"], default=str), st["result"],
-                 1 if st["is_error"] else 0,
-                 json.dumps(st["event"], default=str) if st["event"] is not None else None),
+        def _persist_reply():
+            # The reply INSERT, the tool-step inserts, and the commit are ONE offloaded unit so the
+            # write lock is never held across an await (which would re-introduce the loop-freeze).
+            cur = conn.execute(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
+                (conversation_id, final_text),
             )
-        conn.commit()
+            mid = cur.lastrowid
+            # Persist the tool-call history alongside the reply (full raw), so swiping/expanding
+            # this bubble later can show exactly how it was answered — which notes were read, what
+            # SQL ran, what was staged/applied. Wiped per-conversation on /clear.
+            for i, st in enumerate(steps):
+                conn.execute(
+                    "INSERT INTO message_steps (conversation_id, message_id, step_index, tool_name, "
+                    "args_json, result_text, is_error, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (conversation_id, mid, i, st["tool"],
+                     json.dumps(st["args"], default=str), st["result"],
+                     1 if st["is_error"] else 0,
+                     json.dumps(st["event"], default=str) if st["event"] is not None else None),
+                )
+            conn.commit()
+            return mid
+        # Offload off the event loop (see _persist_user_turn above) — the lock-contention freeze
+        # otherwise surfaces exactly here, when the model finishes and the reply commits.
+        message_id = await asyncio.to_thread(_persist_reply)
     yield {"type": "done"}

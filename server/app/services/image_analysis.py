@@ -277,8 +277,23 @@ def analyze(att_id: int) -> None:
             _mark_error(conn, att_id, str(exc))
             return
 
+        # Embed the summary BEFORE opening the write txn. embed_attachment_chunks() is multi-second
+        # fastembed inference (and may trigger the one-time model load on a cold start); holding the
+        # BEGIN IMMEDIATE write lock across it would wedge every other writer within the 5s
+        # busy_timeout — including the owner chat persisting its turn on the event loop, the actual
+        # "all AI went unresponsive" failure. A failure here must NOT lose the summary: we fall
+        # through with empty vectors and commit the summary anyway; the startup
+        # reindex_missing_attachment_analysis backfill fills the missing vectors later.
+        from . import attachments as att_svc, embeddings
+        chunks = att_svc.chunk_text(body)
+        try:
+            vectors = embeddings.embed_attachment_chunks(chunks)
+        except Exception:  # noqa: BLE001 — embed is best-effort; the summary + FTS still land below
+            chunks, vectors = [], []
+
         # Store the summary on the ATTACHMENT (read-only sidecar) + flip status, atomically.
-        # No note write-back: the body is left untouched.
+        # No note write-back: the body is left untouched. Only FAST row writes happen inside the
+        # lock now — the slow embed already ran above, outside it.
         conn.execute("BEGIN IMMEDIATE")
         att = conn.execute(
             "SELECT note_id, filename FROM attachments WHERE id = ?", (att_id,)
@@ -290,9 +305,8 @@ def analyze(att_id: int) -> None:
         # Keep the vision summary (incl. transcribed in-image text) searchable now that
         # it's not in the note body: keyword via attachments_fts AND semantic via the
         # attachment chunk vectors, so search_notes' hybrid fusion finds it either way.
-        from . import attachments as att_svc, embeddings
         att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], body)
-        embeddings.upsert_attachment_embeddings(conn, att_id, att["note_id"], att_svc.chunk_text(body))
+        embeddings.write_attachment_embeddings(conn, att_id, att["note_id"], chunks, vectors)
         _set_status(conn, att_id, "done")
         conn.commit()
         # The summary changes the note's analyzable content — refresh its AI analysis so the

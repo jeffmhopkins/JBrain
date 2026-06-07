@@ -102,26 +102,6 @@ def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int)
                         version_note=f"link rename: {old_title} → {new_title}", fire_events=False)
 
 
-def _leave_rename_redirect(conn, old_title: str, new_title: str, source: str) -> None:
-    """When the OWNER renames a KB article in the editor, leave a redirect from the old
-    title to the new one. Inbound [[links]] are already rewritten by _rename_inbound_links;
-    this is the safety net for what that can't reach — a bookmarked/shared URL pointing at
-    the OLD slug, or a [[old]] link that resurfaces later (e.g. a soft-deleted note that's
-    restored). The old title slot is free now (the note was renamed away), so the redirect
-    reclaims the old slug and forwards it to the new article.
-
-    Scoped to owner edits of KB articles (source='user', old title under kb/): workflow /
-    rebuild / auto-title / rename-cascade writes, place renames, and dated-entry captures
-    must NOT litter redirect stubs. Best-effort — a redirect must never fail the rename."""
-    if source != "user" or not (old_title or "").lower().startswith("kb/"):
-        return
-    try:
-        from . import wiki_build  # lazy — wiki_build imports this module
-        wiki_build.create_redirect(conn, old_title, new_title)
-    except Exception:  # noqa: BLE001 — the rename itself already succeeded; the redirect is a bonus
-        pass
-
-
 def slugify(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     # Non-ASCII titles (emoji/CJK/RTL) collapse to empty — derive a stable,
@@ -438,7 +418,6 @@ def upsert_note(
                          (slug, title[4:][:80], old_slug))
         elif not is_loc:
             conn.execute("UPDATE places SET note_slug = NULL WHERE note_slug = ?", (old_slug,))
-        _leave_rename_redirect(conn, renamed_from, title, source)
 
     # "On every new entry" hook — fires for human-authored entry notes only (typed
     # `user`, dictated from the `watch`, or `architect`-created), not kb/workflow/

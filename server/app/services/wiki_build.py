@@ -34,6 +34,122 @@ _TRUNCATED = ("max_tokens", "length")
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 _TALK_RE = re.compile(r"\n?```talk\s*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
+# Auto-continue is LIVE-ONLY. When a draft is cut off at the token cap, the live, streaming
+# rebuild engine (rebuild_engine._generate) asks the model to RESUME exactly where it stopped,
+# stitches the RAW partial + RAW remainder with _join_continuation, and runs
+# _strip_fence/_extract_talk ONCE on the JOINED string. It is capped at ONE continuation and
+# surfaces truncated=True/lint ok=False, so a human reviews and ACCEPTS the stitched draft
+# before it is saved — a bad stitch is caught at the gate. The BATCH writers (write_one,
+# maintain_one) auto-save with no such gate, so they DELIBERATELY never auto-continue: they
+# retry once at a bigger cap, then quarantine (write_one ok=False / maintain_one changed=False).
+CONTINUE_PROMPT = (
+    "Your previous message was cut off at the length limit before you finished. "
+    "Continue the article from EXACTLY where you stopped — resume mid-word/mid-line if "
+    "that is where it ended — and output ONLY the remaining text. Do NOT restate, repeat, "
+    "or re-introduce anything you already wrote, and do NOT wrap your continuation in a code "
+    "fence. Pick up precisely at the cutoff and finish the article (including the trailing "
+    "```talk block if it was not yet emitted)."
+)
+
+
+_OVERLAP_WINDOW = 400          # max chars of partial-suffix / remainder-prefix we compare
+_OVERLAP_FLOOR = 12            # an overlap shorter than this is too coincidental to act on
+
+
+def _trim_restated_overlap(partial: str, remainder: str) -> str:
+    """If the continuation RESTATED the last complete unit it had already produced instead of
+    resuming after it, drop that duplicated prefix from the remainder. RESTRICTED to an
+    EDGE-ANCHORED EXACT restatement: the overlap must be one-or-more WHOLE trailing LINES of
+    the partial (a candidate suffix that begins exactly at a line boundary of the partial —
+    index 0 or just after a '\\n') that the remainder reproduces verbatim at its start. The
+    model clearly re-emitted the last complete line(s) it had written.
+
+    This is deliberately NOT a free mid-phrase substring trim. The previous version stripped
+    ANY >=12-char suffix overlap, which would silently DELETE a COINCIDENTALLY recurring phrase
+    across the seam (verified: '…the city of Washington' + 'the city of Washington remains…'
+    lost the phrase, because the shared run was a mid-line substring, not a restated whole line).
+    Anchoring to a line boundary means an incidental recurring phrase mid-line can't trigger a
+    trim — when in doubt we leave the text un-trimmed and the human sees the (visible) dup rather
+    than us silently dropping real content. A genuine mid-word resume has no line-anchored
+    overlap and is untouched."""
+    if not partial or not remainder:
+        return remainder
+    window = partial[-_OVERLAP_WINDOW:]
+    # Candidate overlaps: each WHOLE trailing line of the partial, i.e. the suffix of `window`
+    # starting at a line boundary (offset 0, or right after a '\n'). Longest first so a
+    # multi-line restatement is trimmed in one go.
+    starts = [0] + [i + 1 for i, ch in enumerate(window) if ch == "\n"]
+    for s in starts:                                   # ascending offset == descending length
+        cand = window[s:]
+        if len(cand) >= _OVERLAP_FLOOR and remainder.startswith(cand):
+            return remainder[len(cand):]
+    return remainder
+
+
+_LEADING_H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _drop_duplicate_title(partial: str, remainder: str) -> str:
+    """If the partial already opened with an H1 ("# Title") and the remainder RESTARTS with the
+    same "# Title" heading (a model that re-introduced the article), drop that duplicate heading
+    line from the remainder. Only fires when the titles match, so a legitimate new "## Section"
+    or a different heading is never removed."""
+    pm = _LEADING_H1_RE.search(partial or "")
+    if not pm:
+        return remainder
+    rstrip = (remainder or "").lstrip("\n")
+    rm = re.match(r"#\s+(.+?)\s*(?:\n|$)", rstrip)
+    if rm and rm.group(1).strip() == pm.group(1).strip():
+        return rstrip[rm.end():]
+    return remainder
+
+
+_BLOCK_START_RE = re.compile(r"(?:#{1,6}\s|[-*>]\s|\d+\.\s|\||```)")
+
+
+def _seam_separator(partial: str, remainder: str) -> str:
+    """Pick the glue between partial and remainder. The model is told to resume EXACTLY at the
+    cutoff, so we glue with NOTHING by default — a mid-word/mid-fence seam ("Refe" + "rences")
+    MUST re-form, and that safe behaviour is what the whole design relies on. A provider that
+    .strip()s each segment (xAI does) can drop the whitespace that lived at the seam, but we can
+    only safely repair the ONE unambiguous case: the remainder begins a line-anchored markdown
+    BLOCK ("## References", "- item", "1. ", "> ", "|", a fenced block). A genuine mid-word
+    resume never starts with such a marker, so inserting a newline there is a zero-false-positive
+    fix that keeps a stripped "## References" heading on its own line.
+
+    We deliberately do NOT insert a SPACE for a plain word/word seam ("in" + "2026"): that case
+    is genuinely indistinguishable from a real mid-word resume ("Refe" + "rences"), so guessing a
+    space risks corrupting content. We fall back to the safe glue-raw behaviour — a rare cosmetic
+    "in2026" under xAI is preferable to splitting a word. Returns "" unless both sides touch
+    non-whitespace AND the remainder opens a markdown block, in which case "\n"."""
+    if not partial or not remainder:
+        return ""
+    if partial[-1].isspace() or remainder[0].isspace():
+        return ""
+    if _BLOCK_START_RE.match(remainder):
+        return "\n"
+    return ""
+
+
+def _join_continuation(partial: str, remainder: str) -> str:
+    """Stitch a truncated draft's RAW partial with its RAW continuation. The model is told to
+    resume EXACTLY at the cutoff, so we glue with no separator by default — but we first guard
+    two real hazards:
+      * DUPLICATION — a model that RESTATES instead of resuming. _drop_duplicate_title removes a
+        repeated "# Title" heading; _trim_restated_overlap then drops the longest restated
+        run (capped at _OVERLAP_WINDOW) so the join isn't garbled/doubled.
+      * STRIPPED SEAM — a provider that .strip()s each segment (xAI) drops the whitespace that
+        lived at the cutoff; _seam_separator re-inserts a newline before a markdown block so a
+        stripped "## References" heading keeps its own line (a word/word seam is left raw — see
+        _seam_separator for why a space there would risk splitting a mid-word resume).
+    Extraction (_strip_fence / _extract_talk) still runs ONCE on this joined string in the
+    CALLER, so a fence split across the boundary re-forms before parsing."""
+    partial = partial or ""
+    remainder = remainder or ""
+    remainder = _drop_duplicate_title(partial, remainder)
+    remainder = _trim_restated_overlap(partial, remainder)
+    return partial + _seam_separator(partial, remainder) + remainder
+
 
 def _extract_talk(text: str):
     """Pull a trailing ```talk JSON block out of the writer's output. Returns
@@ -249,6 +365,54 @@ def _sources_text(srcs: list[dict]) -> str:
 def _strip_fence(text: str) -> str:
     m = _FENCE_RE.match(text or "")
     return (m.group(1) if m else (text or "")).strip()
+
+
+_WRAPPER_OPEN_RE = re.compile(r"^\s*```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
+
+
+def _clean_wrapper_fence(text: str) -> str:
+    """EDGE-ANCHORED cleanup of a ```markdown WRAPPER-fence artifact left by an auto-continued
+    LIVE draft, run AFTER the single _strip_fence. The only artifact we touch is the verified
+    leak case (b): the partial CLOSED the whole-document wrapper at the cap, the appended
+    remainder then pushed text PAST the trailing ```, so the closing fence is no longer terminal
+    and the anchored _FENCE_RE leaves the WHOLE wrapper (a leading ```/```markdown/```md opener
+    plus its now-orphaned ``` closer) in the body. We drop that leading opener line AND the
+    matching orphaned closer so the wrapper doesn't half-survive.
+
+    Deliberately conservative — anchored to the DOCUMENT EDGE only:
+      * We act ONLY when the document STARTS with a bare ```/```markdown/```md opener (the
+        wrapper's own edge), never on a close-then-reopen pair in mid-document prose. A
+        mid-document ```\n```markdown can be two LEGITIMATE adjacent code blocks in prose that
+        is ABOUT fences, so collapsing it could silently merge real content — we leave it for
+        the human to catch in live review instead.
+      * A document opening with a fenced *code* block (```python …) is untouched: we only match
+        a bare ``` or ```markdown / ```md opener (no language tag), and only at the edge.
+      * We drop the orphaned closer ONLY when the fences before it are balanced and none follow
+        it, so we never break a real inner code block; if we can't be sure, we leave it."""
+    if not text:
+        return text
+    m = _WRAPPER_OPEN_RE.match(text)
+    if not m:
+        return text.strip()                              # no wrapper opener at the edge → leave as-is
+    rest = text[m.end():]
+    # Find the orphaned wrapper closer: the LAST line that is a bare ``` (the wrapper's own
+    # close). Only treat it as the wrapper closer when removing it leaves balanced fences in
+    # the remaining body (so we never break a real inner code block).
+    lines = rest.split("\n")
+    close_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() == "```":
+            close_idx = i
+            break
+    if close_idx is not None:
+        # Fences BEFORE the closer, excluding it: must be balanced (even) so the closer we
+        # drop is the wrapper's, not an inner block's open/close.
+        before = sum(1 for ln in lines[:close_idx] if ln.strip().startswith("```"))
+        after = sum(1 for ln in lines[close_idx + 1:] if ln.strip().startswith("```"))
+        if before % 2 == 0 and after == 0:
+            del lines[close_idx]
+            rest = "\n".join(lines)
+    return rest.strip()
 
 
 def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
@@ -494,8 +658,10 @@ def write_one(conn, art: dict, instructions: str | None = None,
     msgs = [{"role": "user", "content": prompt}]
     try:
         # Surface the finish reason so a draft cut off at the token cap (its trailing
-        # ## References is the first casualty) is retried once at a bigger cap, then FAILED
-        # — never silently saved half-written. Mirrors the live engine's truncation guard.
+        # ## References is the first casualty) is retried once at a bigger cap, then
+        # QUARANTINED (ok=False) — never silently saved half-written. The batch path has NO
+        # human Accept gate, so it never auto-continues/stitches a truncated draft (a bad
+        # stitch would auto-save uncaught); auto-continue lives only in the live engine.
         cap = 3000
         text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
         if stop in _TRUNCATED:
@@ -878,7 +1044,9 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     msgs = [{"role": "user", "content": prompt}]
     try:
         # Retry once at a bigger cap on truncation, then FAIL (changed=False → don't save)
-        # rather than persist a maintain output cut off at the token limit.
+        # rather than persist a maintain output cut off at the token limit. maintain is a
+        # BATCH path with no human Accept gate, so it never auto-continues/stitches (a bad
+        # stitch would auto-save uncaught) — auto-continue lives only in the live engine.
         cap = 3500
         text, stop = llm.complete_with_meta(msgs, max_tokens=cap)
         if stop in _TRUNCATED:

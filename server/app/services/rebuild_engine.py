@@ -223,48 +223,77 @@ async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[
     provider = llm.get_provider(run.model)
     run.status = "streaming"
     run.draft = ""
-    parts: list[str] = []
-    produced = False
+    parts: list[str] = []          # RAW text deltas across BOTH the draft and its continuation
     truncated = False
     use_thinking = True
-    # Retry once without thinking if the thinking config is rejected before any output.
-    for attempt in range(2):
-        try:
-            async for ev in provider.stream_turn(run.messages, system=None, tools=[],
-                                                  model=run.model, max_tokens=budget, thinking=use_thinking):
-                if run.cancelled:
-                    return
-                if isinstance(ev, llm.ThinkingDelta):
-                    if ev.text:
+    # AUTO-CONTINUE: a draft cut off at the cap (TurnEnd.stop_reason) is resumed in ONE
+    # follow-up turn instead of forcing a full re-draft — cheaper, and it never loses a long
+    # good draft or its trailing "## References"/```talk. stream_turn appends the truncated
+    # assistant turn (verbatim, signed thinking included) to run.messages, so we just append a
+    # "resume where you stopped, output only the remainder" user turn and stream once more,
+    # accumulating into the SAME `parts`. The continuation runs WITHOUT thinking (we want only
+    # the body remainder, no fresh reasoning budget) and is capped at ONE: if it's STILL
+    # truncated, we fall through with truncated=True so the panel offers the user-approved
+    # re-draft (run_redraft) exactly as before. Extraction runs ONCE on the joined raw text.
+    cont_start = None              # index into `parts` where the auto-continuation begins
+    for continuation in range(2):    # pass 0 = initial draft, pass 1 = one auto-continue
+        if continuation:
+            run.messages.append({"role": "user", "content": wiki_build.CONTINUE_PROMPT})
+            run.status = "streaming"
+            cont_start = len(parts)
+        cont_thinking = use_thinking and not continuation
+        produced = False
+        truncated = False
+        # Retry once without thinking if the thinking config is rejected before any output.
+        for attempt in range(2):
+            try:
+                async for ev in provider.stream_turn(run.messages, system=None, tools=[],
+                                                      model=run.model, max_tokens=budget, thinking=cont_thinking):
+                    if run.cancelled:
+                        return
+                    if isinstance(ev, llm.ThinkingDelta):
+                        if ev.text:
+                            produced = True
+                            run.thoughts += ev.text
+                            yield {"type": "thinking_delta", "text": ev.text}
+                    elif isinstance(ev, llm.TextDelta):
                         produced = True
-                        run.thoughts += ev.text
-                        yield {"type": "thinking_delta", "text": ev.text}
-                elif isinstance(ev, llm.TextDelta):
-                    produced = True
-                    parts.append(ev.text)
-                    yield {"type": "content_delta", "text": ev.text}
-                elif isinstance(ev, llm.TurnEnd):
-                    # The provider's finish reason — "max_tokens" (Anthropic) / "length" (xAI)
-                    # means the body was cut off (the trailing ## References block is the first
-                    # casualty). Surfaced so the panel can offer a larger re-draft.
-                    truncated = ev.stop_reason in ("max_tokens", "length")
-            break
-        except Exception as exc:  # noqa: BLE001
-            if attempt == 0 and use_thinking and not produced:
-                log.warning("rebuild: retrying draft without extended thinking (%s)", exc)
-                use_thinking = False
-                parts = []
-                continue
-            log.exception("rebuild draft failed for %s", run.title)
-            run.status = "error"
-            run.error = str(exc)
-            yield {"type": "error", "message": "The rebuild failed while generating. Please try again."}
+                        parts.append(ev.text)
+                        yield {"type": "content_delta", "text": ev.text}
+                    elif isinstance(ev, llm.TurnEnd):
+                        # The provider's finish reason — "max_tokens" (Anthropic) / "length"
+                        # (xAI) means the body was cut off (the trailing ## References block is
+                        # the first casualty). One auto-continue tries to finish it; a still-
+                        # truncated continuation surfaces so the panel can offer a re-draft.
+                        truncated = ev.stop_reason in ("max_tokens", "length")
+                break
+            except Exception as exc:  # noqa: BLE001
+                # Only the pristine-thinking failure (no output yet, on the initial draft) is
+                # retried without thinking — a continuation already ran thinking-off. Don't
+                # clear `parts` here on a continuation: that would discard the kept draft.
+                if attempt == 0 and cont_thinking and not produced and not continuation:
+                    log.warning("rebuild: retrying draft without extended thinking (%s)", exc)
+                    use_thinking = False
+                    cont_thinking = False
+                    parts = []
+                    continue
+                log.exception("rebuild draft failed for %s", run.title)
+                run.status = "error"
+                run.error = str(exc)
+                yield {"type": "error", "message": "The rebuild failed while generating. Please try again."}
+                return
+        if run.cancelled:
             return
-    if run.cancelled:
-        return
+        if not truncated:
+            break                    # finished — no continuation needed
 
-    raw = "".join(parts)
-    draft, talk = wiki_build._extract_talk(wiki_build._strip_fence(raw))
+    # Run extraction ONCE on the JOINED raw text (initial draft + any continuation), so a
+    # ```talk or code fence split across the cap re-forms before _strip_fence/_extract_talk.
+    if cont_start is not None and cont_start <= len(parts):
+        raw = wiki_build._join_continuation("".join(parts[:cont_start]), "".join(parts[cont_start:]))
+    else:
+        raw = "".join(parts)
+    draft, talk = wiki_build._extract_talk(wiki_build._clean_wrapper_fence(wiki_build._strip_fence(raw)))
     allowed = set(run.known) | {run.title}
     bad = wiki_build._bad_links(conn, draft, allowed)
     # Before deleting a "dead" citation, repair a writer typo: a footnote [[title]] that is a
@@ -348,11 +377,13 @@ async def run_guide(run, instruction: str, max_tokens: int | None = None) -> Asy
 
 async def run_redraft(run, max_tokens: int | None) -> AsyncGenerator[dict, None]:
     """Re-run the last drafting turn at a larger (approved) budget after a truncation. Drops
-    the truncated assistant turn so the model answers the SAME prompt afresh — NOT an
-    auto-continue (no mid-stream re-stitching) — and works for both the initial draft and a
-    Guide revision, since either way run.messages ends with the right user prompt once the
-    truncated turn is removed."""
+    the truncated assistant turn — AND any auto-continue scaffolding (the appended
+    CONTINUE_PROMPT user turn + the partial assistant turn before it) — so the model answers
+    the SAME original prompt afresh, NOT the "resume where you stopped" turn. Works for both
+    the initial draft and a Guide revision, since either way run.messages ends with the right
+    user prompt once the truncated turn(s) are removed."""
     from ..db import get_conn
+    from . import wiki_build
 
     conn = get_conn()
     if not run.messages:
@@ -361,5 +392,14 @@ async def run_redraft(run, max_tokens: int | None) -> AsyncGenerator[dict, None]
         return
     if run.messages[-1].get("role") == "assistant":
         run.messages.pop()
+    # Unwind a prior auto-continue so a re-draft re-asks the ORIGINAL prompt, not "continue":
+    # a trailing [user=CONTINUE_PROMPT, assistant=partial] pair is the scaffolding _generate
+    # appended for its one continuation turn.
+    while (len(run.messages) >= 2
+           and run.messages[-1].get("role") == "user"
+           and run.messages[-1].get("content") == wiki_build.CONTINUE_PROMPT):
+        run.messages.pop()                       # the CONTINUE_PROMPT user turn
+        if run.messages[-1].get("role") == "assistant":
+            run.messages.pop()                   # the partial assistant draft before it
     async for ev in _generate(run, conn, max_tokens=max_tokens):
         yield ev

@@ -80,19 +80,45 @@ export default function EntitiesPage() {
   function watchRebuild(fromGen: number, keepId: number) {
     if (pollRef.current) clearInterval(pollRef.current);
     setRebuilding(true);
+    let attempts = 0;
+    const MAX_ATTEMPTS = 100; // ~2 min at 1.2s — defense-in-depth so the poll can never spin forever
+    const stop = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+    const refetch = () => {
+      getEntity(keepId).then((d) => {
+        setSel(d);
+        listEntityDecisions(d.id).then(setDecisions).catch(() => setDecisions([]));
+      }).catch(() => {});
+      refreshList();
+    };
     pollRef.current = setInterval(async () => {
+      attempts += 1;
       try {
         const s = await getEntityRebuildStatus();
         if (!s.rebuilding && s.generation > fromGen) {
-          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+          // Success: the rebuild we triggered reconciled past our captured generation.
+          stop();
           setRebuilding(false);
-          getEntity(keepId).then((d) => {
-            setSel(d);
-            listEntityDecisions(d.id).then(setDecisions).catch(() => setDecisions([]));
-          }).catch(() => {});
-          refreshList();
+          refetch();
+          return;
+        }
+        if (!s.rebuilding && s.status === "error" && s.generation <= fromGen) {
+          // Failure: the rebuild ended with an error and never advanced the generation. (While a
+          // fresh rebuild is owed/running, rebuilding stays true and we keep polling — a stale
+          // prior error isn't treated as our failure.) The decision is durable; surface a soft
+          // note and still re-fetch so the pre-fold state shows.
+          stop();
+          setRebuilding(false);
+          setErr(s.last_error || "The background rebuild failed — your change is saved and will reconcile on the next rebuild.");
+          refetch();
+          return;
         }
       } catch { /* transient; keep polling */ }
+      if (attempts >= MAX_ATTEMPTS) {
+        // Hard cap: stop polling, drop the badge, and re-fetch whatever the index reflects now.
+        stop();
+        setRebuilding(false);
+        refetch();
+      }
     }, 1200);
   }
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);

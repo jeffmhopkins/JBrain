@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JBrain · Modes Redesign — Hybrid Plan & Interactive Mockups</title>
+<style>
+  :root{
+    --bg:#0f1216; --bg-elev:#171c22; --bg-card:#1b2128; --border:#2a323c;
+    --text:#e7edf3; --text-dim:#93a1b0; --text-faint:#6b7785;
+    --m-entry:#8fb89c;     /* green  — save/capture (write) */
+    --m-research:#c4ad6e;  /* gold   — read-only */
+    --m-full:#8aacba;      /* blue   — full tools (write) */
+    --m-medical:#cf8d8d;   /* clinical red */
+    --m-financial:#b89cd6; /* violet — money */
+    --danger:#e0746b; --ok:#76c69a; --warn:#d9b25f;
+    --radius:14px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:var(--m-full)}
+  .wrap{max-width:1160px;margin:0 auto;padding:24px 20px 80px}
+  header.top{display:flex;flex-direction:column;gap:6px;padding:8px 0 18px;border-bottom:1px solid var(--border);margin-bottom:18px}
+  header.top h1{margin:0;font-size:24px;letter-spacing:.2px}
+  header.top .sub{color:var(--text-dim);font-size:14px}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text-dim)}
+  nav.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0 22px}
+  nav.tabs button{appearance:none;background:var(--bg-elev);color:var(--text-dim);border:1px solid var(--border);
+    padding:9px 14px;border-radius:999px;font-size:14px;font-weight:600;cursor:pointer;transition:.15s}
+  nav.tabs button:hover{color:var(--text)}
+  nav.tabs button.active{background:color-mix(in srgb,var(--m-full) 22%,var(--bg-elev));color:var(--text);border-color:var(--m-full)}
+  section.tab{display:none;animation:fade .25s ease}
+  section.tab.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h2{font-size:19px;margin:26px 0 10px}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--text)}
+  p{margin:8px 0}
+  .muted{color:var(--text-dim)}
+  .grid{display:grid;gap:14px}
+  .cols-2{grid-template-columns:1fr 1fr}
+  .cols-3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:860px){.cols-2,.cols-3{grid-template-columns:1fr}}
+  .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+  .card h3{margin-top:0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--text-dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  code{background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:12.5px;color:#cfe0ee}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;border:1px solid var(--border)}
+  .pill.read{color:var(--m-research);border-color:color-mix(in srgb,var(--m-research) 50%,var(--border))}
+  .pill.write{color:var(--m-entry);border-color:color-mix(in srgb,var(--m-entry) 50%,var(--border))}
+  .pill.full{color:var(--m-full);border-color:color-mix(in srgb,var(--m-full) 50%,var(--border))}
+  .callout{border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--bg-card));padding:12px 14px;border-radius:0 10px 10px 0;margin:12px 0}
+  .callout.crit{border-left-color:var(--danger);background:color-mix(in srgb,var(--danger) 9%,var(--bg-card))}
+  .callout.ok{border-left-color:var(--ok);background:color-mix(in srgb,var(--ok) 9%,var(--bg-card))}
+  .callout .lab{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-dim)}
+  ul.tight{margin:6px 0;padding-left:20px}
+  ul.tight li{margin:4px 0}
+  .ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--text-faint)}
+
+  /* ---------- Interactive mockup ---------- */
+  .lab-wrap{display:grid;grid-template-columns:330px 1fr;gap:26px;align-items:start}
+  @media(max-width:860px){.lab-wrap{grid-template-columns:1fr}}
+  .controls .ctl{margin-bottom:18px}
+  .controls label.h{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin-bottom:8px;font-weight:700}
+  .seg{display:flex;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:3px;gap:3px}
+  .seg button{flex:1;appearance:none;background:transparent;border:none;color:var(--text-dim);padding:8px 6px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer}
+  .seg button.on{background:var(--bg-card);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.3)}
+  .opt{display:flex;align-items:center;gap:8px;font-size:13.5px;padding:5px 0;cursor:pointer}
+  .opt input{accent-color:var(--m-full)}
+
+  /* phone */
+  .phone{width:330px;margin:0 auto;background:#0a0d11;border:10px solid #20262e;border-radius:38px;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);overflow:hidden}
+  .phone .scr{height:600px;background:var(--bg);display:flex;flex-direction:column}
+  .notch{height:26px;background:#0a0d11;display:flex;justify-content:center}
+  .notch::after{content:"";width:120px;height:18px;background:#20262e;border-radius:0 0 14px 14px}
+  .appbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .appbar .brand{font-weight:700;font-size:15px}
+  .appbar .brand small{color:var(--mc,var(--text-dim));font-weight:600}
+  .appbar .bolt{color:var(--text-dim);font-size:18px}
+  .thread{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .empty{margin:auto;text-align:center;color:var(--text-faint);font-size:13px;max-width:230px}
+  .empty .big{font-size:30px;margin-bottom:8px}
+  .bubble{max-width:85%;padding:9px 12px;border-radius:14px;font-size:13px}
+  .bubble.me{align-self:flex-end;background:color-mix(in srgb,var(--m-full) 22%,var(--bg-elev));border:1px solid var(--border)}
+  .bubble.ai{align-self:flex-start;background:var(--bg-elev);border:1px solid var(--border)}
+  .savedchip{align-self:flex-end;font-size:12px;color:var(--m-entry);border:1px solid color-mix(in srgb,var(--m-entry) 40%,var(--border));border-radius:999px;padding:4px 10px}
+
+  /* composer */
+  .composer{border-top:1px solid var(--border);padding:10px;background:var(--bg)}
+  .composer-box{background:var(--bg-elev);border:1px solid var(--border);border-radius:16px;padding:10px}
+  .subrow{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .subseg{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:3px;gap:2px;flex:1}
+  .subseg button{flex:1;appearance:none;background:transparent;border:none;color:var(--text-dim);padding:6px 4px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}
+  .subseg button.on{background:color-mix(in srgb,var(--sc) 20%,var(--bg-card));color:var(--text);border:1px solid color-mix(in srgb,var(--sc) 45%,var(--border))}
+  .destrow{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);margin-bottom:9px}
+  .destrow select,.fin input,.fin select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:5px 7px;font-size:12px}
+  .destrow .new{background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}
+  .fin{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px}
+  .fin .full{grid-column:1/3}
+  .fin label{font-size:10px;color:var(--text-faint);display:block;margin-bottom:2px;text-transform:uppercase;letter-spacing:.4px}
+  .fin input,.fin select{width:100%}
+  textarea.ta{width:100%;background:transparent;border:none;color:var(--text);resize:none;font-size:14px;font-family:inherit;min-height:24px}
+  textarea.ta:focus{outline:none}
+  textarea.ta::placeholder{color:var(--text-faint)}
+  .composer-row{display:flex;align-items:center;gap:6px;margin-top:8px}
+  .modechip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid color-mix(in srgb,var(--mc) 40%,var(--border));
+    color:var(--text);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer}
+  .modechip .dot{width:9px;height:9px;border-radius:50%;background:var(--mc)}
+  .topseg{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px;flex:1}
+  .topseg button{flex:1;appearance:none;background:transparent;border:none;color:var(--text-dim);padding:7px 4px;border-radius:7px;font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
+  .topseg button .dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.5}
+  .topseg button.on{background:color-mix(in srgb,var(--mc) 18%,var(--bg-card));color:var(--text);border:1px solid color-mix(in srgb,var(--mc) 45%,var(--border))}
+  .topseg button.on .dot{background:var(--mc);opacity:1}
+  .spacer{flex:1}
+  .iconbtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:var(--bg);color:var(--text-dim);cursor:pointer;font-size:15px}
+  .iconbtn.send{background:var(--mc);color:#0a0d11;border-color:var(--mc)}
+  .safety{font-size:11px;color:var(--text-dim);margin-top:8px;display:flex;align-items:center;gap:6px}
+  .safety .dot{width:7px;height:7px;border-radius:50%;background:var(--mc)}
+
+  /* popover */
+  .pop{position:relative}
+  .popmenu{position:absolute;bottom:44px;left:0;width:280px;background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:5}
+  .popmenu .row{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;cursor:pointer;border-left:3px solid transparent}
+  .popmenu .row:hover{background:var(--bg-elev)}
+  .popmenu .row.sel{border-left-color:var(--rc);background:color-mix(in srgb,var(--rc) 12%,transparent)}
+  .popmenu .tile{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:color-mix(in srgb,var(--rc) 16%,var(--bg-elev));border:1px solid color-mix(in srgb,var(--rc) 35%,var(--border));color:var(--rc);font-size:14px}
+  .popmenu .lbl{font-weight:600;font-size:14px}
+  .popmenu .hint{font-size:11.5px;color:var(--text-dim)}
+  .hide{display:none!important}
+  .flash{font-size:11px;color:var(--text-faint);text-align:center;margin-top:6px;min-height:14px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);margin-top:14px}
+  .legend .k{display:inline-flex;align-items:center;gap:6px}
+  .legend .sw{width:11px;height:11px;border-radius:3px}
+  .decision{border:1px solid var(--border);border-radius:12px;padding:14px;margin:12px 0;background:var(--bg-card)}
+  .decision .q{font-weight:600;margin-bottom:8px}
+  .rec{color:var(--ok);font-size:12px;font-weight:600}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--text-faint);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div><span class="badge">JBrain · design exploration</span></div>
+    <h1>Modes Redesign — 5 → 3, with an Entry sub-selector</h1>
+    <div class="sub">Hybrid plan synthesized from 4 brainstorm agents + 4 red teams. Today: <code>entry · medical · assisted · research · analyze</code>. Target: <b>Entry · Research · Full Brain</b>, with Entry → <b>Generic / Medical / Financial</b>.</div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="mock" class="active">🧪 Interactive mockup</button>
+    <button data-tab="plan">📐 Hybrid plan</button>
+    <button data-tab="brain">🧠 Brainstorm &amp; red teams</button>
+    <button data-tab="dec">🔀 Open decisions</button>
+  </nav>
+
+  <!-- =================== INTERACTIVE MOCKUP =================== -->
+  <section class="tab active" id="mock">
+    <p class="muted">Click the modes and sub-types. Toggle the two UX patterns the brainstorm produced and see how the composer behaves. Accent colors match the real app (<span class="ref">styles.css:13-16</span>).</p>
+    <div class="lab-wrap">
+      <div class="controls">
+        <div class="ctl">
+          <label class="h">Top-level mode picker pattern</label>
+          <div class="seg" id="patSeg">
+            <button data-pat="B" class="on">B · Segmented row <span class="rec">✓ rec</span></button>
+            <button data-pat="A">A · Chip + popover</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:8px">
+            <b>Pattern B</b> (recommended): a 3-segment control on its <i>own</i> row, leaving attach+send uncramped — Red&nbsp;Team&nbsp;A flagged that a segmented control + attach + send on one row crowds a phone. <b>Pattern A</b> keeps today's compact chip that opens a popover (zero width cost, two taps).
+          </p>
+        </div>
+
+        <div class="ctl">
+          <label class="h">Default mode on fresh launch</label>
+          <div class="seg" id="defSeg">
+            <button data-def="entry">Entry</button>
+            <button data-def="research" class="on">Research</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:8px">Today defaults to read-only <code>research</code> for safety (<span class="ref">Chat.tsx:86</span>). Red&nbsp;Team&nbsp;A argues Entry is the more common reflex. This only sets the demo's starting mode.</p>
+        </div>
+
+        <div class="ctl">
+          <label class="h">Financial sub-type scope</label>
+          <div class="seg" id="finSeg">
+            <button data-fin="form" class="on">v1 structured form <span class="rec">✓ rec</span></button>
+            <button data-fin="folder">v1 folder-only</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:8px">Red&nbsp;Team&nbsp;C: a "folder-only" Financial is a non-feature (just a folder rename). The <b>structured-form</b> v1 captures amount/date/payee/category so it earns its place; PDF statement parsing is deferred to v2 (it is <i>not</i> a clone of lab parsing).</p>
+        </div>
+
+        <div class="ctl">
+          <label class="h">Try the modes</label>
+          <p class="muted" style="font-size:12px">Tap segments in the phone ↓. In <b>Entry</b>, pick Generic / Medical / Financial. <b>Research</b> shows the read-only safety line and hides attach. <b>Full&nbsp;Brain</b> shows the write warning.</p>
+        </div>
+
+        <div class="legend">
+          <span class="k"><span class="sw" style="background:var(--m-entry)"></span>Entry (write)</span>
+          <span class="k"><span class="sw" style="background:var(--m-research)"></span>Research (read-only)</span>
+          <span class="k"><span class="sw" style="background:var(--m-full)"></span>Full Brain (write+tools)</span>
+        </div>
+      </div>
+
+      <!-- PHONE -->
+      <div class="phone" id="phone">
+        <div class="scr">
+          <div class="notch"></div>
+          <div class="appbar"><div class="brand">JBrain <small id="abMode">· Research</small></div><div class="bolt">⚡</div></div>
+          <div class="thread" id="thread">
+            <div class="empty" id="empty"><div class="big" id="emptyIcon">🔎</div><div id="emptyTxt">Ask your brain — read-only.</div></div>
+          </div>
+
+          <div class="composer">
+            <!-- Pattern B: top segmented row -->
+            <div id="topRow" class="subrow" style="margin-bottom:10px">
+              <div class="topseg" id="topseg">
+                <button data-mode="entry"><span class="dot"></span>Entry</button>
+                <button data-mode="research" class="on"><span class="dot"></span>Research</button>
+                <button data-mode="full"><span class="dot"></span>Full Brain</button>
+              </div>
+            </div>
+
+            <div class="composer-box">
+              <!-- Entry sub-selector (only in Entry) -->
+              <div id="entrySub" class="subrow hide">
+                <div class="subseg" id="subseg">
+                  <button data-sub="generic" class="on">Generic</button>
+                  <button data-sub="medical">Medical</button>
+                  <button data-sub="financial">Financial</button>
+                </div>
+              </div>
+
+              <!-- Medical destination -->
+              <div id="medDest" class="destrow hide">
+                <span>🩺 notes/medical/</span>
+                <select><option>Bloodwork</option><option>Visits</option><option>Procedures</option><option>Meds</option></select>
+                <button class="new">＋ New</button>
+              </div>
+
+              <!-- Financial: structured form (v1 rec) -->
+              <div id="finForm" class="fin hide">
+                <div class="full"><label>Folder · notes/financial/</label>
+                  <select><option>Statements</option><option>Receipts</option><option>Invoices</option><option>Taxes</option></select></div>
+                <div><label>Amount</label><input placeholder="$0.00" inputmode="decimal"></div>
+                <div><label>Date</label><input type="date"></div>
+                <div><label>Payee / source</label><input placeholder="e.g. Trader Joe's"></div>
+                <div><label>Category</label><select><option>Groceries</option><option>Utilities</option><option>Income</option><option>Health</option><option>Other</option></select></div>
+              </div>
+              <!-- Financial: folder-only variant -->
+              <div id="finFolder" class="destrow hide">
+                <span>💳 notes/financial/</span>
+                <select><option>Statements</option><option>Receipts</option><option>Invoices</option><option>Taxes</option></select>
+                <button class="new">＋ New</button>
+              </div>
+
+              <textarea class="ta" id="ta" rows="1" placeholder="Ask your brain… (read-only)"></textarea>
+
+              <div class="composer-row">
+                <!-- Pattern A: chip + popover -->
+                <div class="pop hide" id="chipWrap">
+                  <button class="modechip" id="chip"><span class="dot"></span><span id="chipLbl">Research</span> ▾</button>
+                  <div class="popmenu hide" id="popmenu"></div>
+                </div>
+                <span class="spacer"></span>
+                <button class="iconbtn" id="attach" title="Attach">📎</button>
+                <button class="iconbtn send" id="send" title="Send">➤</button>
+              </div>
+            </div>
+            <div class="safety" id="safety"><span class="dot"></span><span id="safetyTxt">Read-only · won't change anything in your brain.</span></div>
+            <div class="flash" id="flash">Tip: swipe ↕ on the composer to cycle the 3 modes (no horizontal swipe — it collides with the OS back-gesture).</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =================== HYBRID PLAN =================== -->
+  <section class="tab" id="plan">
+    <h2>The hybrid plan</h2>
+    <p class="muted">One read-only mode, two write modes. The design keeps the <b>strict</b> read-only safety posture (not the interpretation-permissive one), fails <b>closed</b> on the server, and ships in safe incremental slices. Every choice below traces to a red-team finding.</p>
+
+    <h3>Mode mapping (5 → 3)</h3>
+    <table>
+      <tr><th>New mode</th><th>Maps from</th><th>Wire string</th><th>Capability</th></tr>
+      <tr><td><b>Entry</b> <span class="pill write">write</span></td><td><code>entry</code> + <code>medical</code> (folded as sub-types) + new <code>financial</code></td><td>n/a — uses <code>/api/entry</code>, never hits the architect</td><td>Deterministic capture to your wiki. No LLM.</td></tr>
+      <tr><td><b>Research</b> <span class="pill read">read-only</span></td><td><code>research</code> + <code>analyze</code> collapse into one</td><td><code>research</code></td><td><b>Strict</b> grounded Q&amp;A. Keeps research's "facts-only, no clinical/financial interpretation" prompt; borrows a <i>moderately</i> raised budget. No external lookups by default.</td></tr>
+      <tr><td><b>Full Brain</b> <span class="pill full">write + tools</span></td><td><code>assisted</code></td><td><code>assisted</code></td><td>Full tool access. Socratic architect, staging, proposals. Gains deep interpretation + (optional) reference tools.</td></tr>
+    </table>
+
+    <div class="callout crit"><span class="lab">resolved — safety</span>
+      <b>The "single-turn" mode being removed is the shallow read mode; the deep one does NOT become the new default behavior.</b> Agent&nbsp;B proposed merging <code>research</code>+<code>analyze</code> and keeping <code>analyze</code>'s interpretation-permissive prompt. Red&nbsp;Teams&nbsp;B flagged this as a safety regression: <code>analyze</code> explicitly permits "interpret / compare / extrapolate" and a "(general knowledge)" escape hatch (<span class="ref">prompts.yaml:288,323</span>), while <code>research</code> is locked to "answer ONLY from retrieved facts… no diagnosis/advice" (<span class="ref">prompts.yaml:192,196</span>). <b>Hybrid:</b> the surviving Research keeps research's strict prompt; deep interpretation moves into Full Brain (or an explicit per-turn "deep" opt-in). Depth is conditional, never the floor for every lookup (avoids the cost regression Red&nbsp;Team&nbsp;B found in the 14-iter/120k budget).
+    </div>
+
+    <h3>Entry sub-selector</h3>
+    <table>
+      <tr><th>Sub-type</th><th>Destination</th><th>v1 behavior</th><th>Reuse / new</th></tr>
+      <tr><td>Generic</td><td><code>notes/YYYY/MM/DD/</code></td><td>Today's plain entry. No staging.</td><td>Zero new code.</td></tr>
+      <tr><td>Medical</td><td><code>notes/medical/&lt;dest&gt;/</code></td><td>Today's medical capture + lab-PDF staging (<span class="ref">Chat.tsx:463</span>).</td><td>Unchanged, reached via sub-selector.</td></tr>
+      <tr><td>Financial</td><td><code>notes/financial/&lt;dest&gt;/</code></td><td><b>Structured quick-capture</b>: amount · date · payee · category → a clean note. PDF parsing deferred to v2.</td><td>New dest endpoint + form; reuses the dest plumbing.</td></tr>
+    </table>
+    <div class="callout"><span class="lab">scope guard</span>
+      Red&nbsp;Team&nbsp;C: "Financial v1 with zero parsing is a folder rename masquerading as a feature," and <code>lab_parse.py</code> is welded to lab-report geometry (<span class="ref">lab_parse.py:1-16,38-62</span>) — receipts/statements are an open-vocabulary problem, likely needing an LLM (which would break the deterministic, no-LLM guarantee labs rely on). <b>Hybrid:</b> give Financial v1 a small structured form so it delivers real value without parsing; treat statement extraction as its own v2 epic, not a <code>lab_parse</code> clone.
+    </div>
+
+    <h3>Backend changes</h3>
+    <ul class="tight">
+      <li><b>Fail closed.</b> Change <span class="ref">chat.py:111</span> fallback from <code>else "assisted"</code> (write!) to <code>else "research"</code>, and make <code>MessageIn.mode</code> a validated <code>Literal</code>. This is the single most important fix — both Red&nbsp;Teams&nbsp;B and D rank it highest: an unknown mode string from a stale PWA currently grants <i>write</i> tools to what the user thinks is read-only.</li>
+      <li><b>Read-only is a tool-allowlist property</b> (<span class="ref">architect.py:2113-2116</span>), not a <code>mode in (...)</code> branch. Update <code>prompts.yaml</code> tool lists <i>and</i> <code>_DEFAULT_MODE_TOOLS</code> (<span class="ref">architect.py:40-69</span>) together, or a YAML-load failure silently restores old behavior.</li>
+      <li><b>Keep <code>medical_reference</code> out of the default read mode.</b> It's an external (MedlinePlus), approval-gated network call (<span class="ref">architect.py:504-543</span>). Only the local <code>reference_lookup</code> belongs in read-only. If Full Brain gains it, port analyze's "never diagnose / label general knowledge" clauses into the assisted prompt.</li>
+      <li><b>Generalize dest routing as an enum.</b> Parametrize <code>next_medical_title</code> → <code>next_capture_title(root, dest)</code> and update <code>sanitize_dest</code>'s strip-set (<span class="ref">notes.py:199-224</span>) <i>in lockstep</i> with <code>_MED_ROOT</code>. Treat <code>root</code> as a server-side enum (<code>medical|financial</code>), never free-text in a path (traversal). Default root <code>medical</code> to keep <code>test_medical_mode_routes_to_dest_folder</code> green.</li>
+      <li><b>Rename via aliases, don't orphan.</b> Use the existing <code>_KEY_ALIASES</code> mechanism (<span class="ref">prompts.py:76</span>) so a user's saved <code>modes.*.system</code> override survives. Only string-prompt overrides orphan; tool/budget keys read YAML only.</li>
+      <li><b>Derive the mode list from YAML</b> in <code>validate_agent_config</code> instead of the hard-coded tuple (<span class="ref">architect.py:379</span>). It only warns at startup, but <code>test_api.py:692</code> asserts it's empty.</li>
+    </ul>
+
+    <div class="callout ok"><span class="lab">de-risked</span>
+      <b>No DB migration.</b> All four teams confirmed <code>mode</code> is request-scoped and never persisted — no column on <code>conversations</code>/<code>messages</code> (<span class="ref">schema.sql:60-82</span>). The lookalike <code>messages.mode_meta_json</code> stores tool-call steps, not the mode string. So the wire vocabulary can change freely.
+    </div>
+
+    <h3>Rollout — incremental, not atomic (PWA caching makes lockstep impossible)</h3>
+    <table>
+      <tr><th>PR</th><th>What</th><th>Why safe alone</th></tr>
+      <tr><td>1</td><td>Client mode <b>normalizer</b> on read (single chokepoint): <code>medical→entry</code>, dropped read mode→survivor, unknown→default.</td><td>Stops the white-screen crash from the blind cast at <span class="ref">Chat.tsx:86,626</span>. Inert until PR-3.</td></tr>
+      <tr><td>2</td><td>Backend: <b>fail-closed fallback</b> + accept legacy strings as read→read / write→write aliases.</td><td>Backend leads the rename; old clients keep working; unknowns degrade to read-only.</td></tr>
+      <tr><td>3</td><td>Frontend 5→3 redesign + Entry sub-selector (one atomic typed change: <code>Mode</code> union, <code>PLACEHOLDER</code>, <code>speakable</code>, wire-mode expr, empty-state copy, <code>--m-*</code>/<code>.m-*</code> accents).</td><td>Backend already speaks the new vocabulary; normalizer covers stale storage.</td></tr>
+      <tr><td>4</td><td>Cleanup after the PWA cache window drains: drop legacy aliases, purge orphaned <code>prompt_overrides</code>, finish docs.</td><td>Gated on telemetry, not a release count.</td></tr>
+    </table>
+  </section>
+
+  <!-- =================== BRAINSTORM + RED TEAMS =================== -->
+  <section class="tab" id="brain">
+    <h2>What the agents found</h2>
+    <p class="muted">Four brainstorm agents proposed; four red teams attacked (one each). Verified findings below.</p>
+    <div class="grid cols-2">
+      <div class="card"><h3>A · UX / IA</h3>
+        <p><b>Proposed:</b> 3-segment control replacing the chip; Entry sub-panel; two-axis swipe.</p>
+        <p class="muted"><b>Red Team A killed:</b> two-axis swipe — horizontal swipe was <i>deliberately removed</i> (collides with OS back-gesture, <span class="ref">Shell.tsx:188, swipeGesture.ts</span>). Also: "Full Brain is the only write mode" is false — Entry writes too. And a 3-seg control + attach + send won't fit one phone row.</p>
+        <p class="rec">✓ Kept: segmented control on its own row; vertical-only swipe for 3 modes; tap for sub-type.</p>
+      </div>
+      <div class="card"><h3>B · Backend / prompts</h3>
+        <p><b>Proposed:</b> merge research+analyze keeping analyze's behavior; add reference tools to Full Brain; financial routing-only.</p>
+        <p class="muted"><b>Red Team B caught:</b> P0 safety regression (interpretation-permissive read default); P1 cost regression (14-iter/120k floor); the real read-only guard is the <i>tool allowlist</i> (<span class="ref">architect.py:2113</span>), not a mode branch; <code>medical_reference</code> is an external call.</p>
+        <p class="rec">✓ Kept: strict research prompt survives; depth conditional; fail-closed fallback.</p>
+      </div>
+      <div class="card"><h3>C · Entry sub-selector</h3>
+        <p><b>Proposed:</b> fold entry+medical; Financial v1 = "medical without labs"; <code>dest_root="medical"</code> default.</p>
+        <p class="muted"><b>Red Team C caught:</b> folder-only Financial is a non-feature; <code>lab_parse</code> isn't reusable for statements; <code>dest_root="medical"</code> is a footgun that only "works" because it accidentally satisfies a test.</p>
+        <p class="rec">✓ Kept: structured Financial v1; enum root with generic-safe handling; parsing deferred.</p>
+      </div>
+      <div class="card"><h3>D · Migration / rollout</h3>
+        <p><b>Proposed:</b> no DB migration; client normalizer; 4-PR incremental rollout.</p>
+        <p class="muted"><b>Red Team D confirmed &amp; hardened:</b> mode-not-in-DB ✓; but fail-open coercion is a privilege risk (fail <i>closed</i>); PWA cache prolongs skew; <code>prompt_overrides</code> + <code>_KEY_ALIASES</code> matter; broaden the grep (<code>api.ts</code>, <code>PLACEHOLDER</code>, CSS accents).</p>
+        <p class="rec">✓ Kept: all of it, plus fail-closed and alias-based override survival.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- =================== OPEN DECISIONS =================== -->
+  <section class="tab" id="dec">
+    <h2>Decisions for you</h2>
+    <p class="muted">The brainstorm resolved most things. These are genuine product calls where I have a recommendation but want your steer before implementation.</p>
+
+    <div class="decision"><div class="q">1. Surviving read-only mode — name &amp; depth</div>
+      <p class="muted">All teams agree the <b>strict, no-interpretation</b> posture should win as the default. Open: do we (a) keep it strictly shallow-but-broad, or (b) add an explicit per-turn "Deep analysis" opt-in inside Research for multi-step questions?</p>
+      <p><span class="rec">Recommendation:</span> Name it <b>Research</b>; keep strict posture; add a small "Deep" opt-in toggle later. Interpretation lives in Full Brain.</p>
+    </div>
+    <div class="decision"><div class="q">2. Default mode on launch</div>
+      <p class="muted">Today: Research (safe). Red Team A: Entry is the more common action.</p>
+      <p><span class="rec">Recommendation:</span> Keep <b>Research</b> as default (read-only is the safe landing); revisit with usage telemetry.</p>
+    </div>
+    <div class="decision"><div class="q">3. Financial v1 scope</div>
+      <p class="muted">Structured form (amount/date/payee/category) vs folder-only vs full PDF parsing now.</p>
+      <p><span class="rec">Recommendation:</span> <b>Structured form v1</b>; defer statement/receipt parsing to a dedicated v2 epic.</p>
+    </div>
+    <div class="decision"><div class="q">4. Should Full Brain gain the reference tools?</div>
+      <p class="muted">Adds <code>reference_lookup</code> (local) and optionally <code>medical_reference</code> (external, gated).</p>
+      <p><span class="rec">Recommendation:</span> Add local <code>reference_lookup</code> to Full Brain; keep <code>medical_reference</code> behind its existing approval gate; both stay out of read-only Research.</p>
+    </div>
+  </section>
+
+  <div class="foot">Generated as a design artifact for branch <code>claude/modes-interface-redesign-UKURM</code>. Self-contained — no external assets. Accent colors and line references taken from the live codebase.</div>
+</div>
+
+<script>
+(function(){
+  // ----- tabs -----
+  document.querySelectorAll('nav.tabs button').forEach(b=>{
+    b.onclick=()=>{
+      document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.remove('active'));
+      document.querySelectorAll('section.tab').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      document.getElementById(b.dataset.tab).classList.add('active');
+    };
+  });
+
+  // ----- state -----
+  const S={pattern:'B', mode:'research', sub:'generic', fin:'form', def:'research'};
+  const MODE={
+    entry:{lbl:'Entry', acc:'var(--m-entry)', icon:'✎', ph:'Write an entry…', empty:['✎','Saved straight to your wiki.'], safety:'Saves to your wiki — deterministic, no AI.', attach:true},
+    research:{lbl:'Research', acc:'var(--m-research)', icon:'🔎', ph:'Ask your brain… (read-only)', empty:['🔎','Ask your brain — read-only.'], safety:"Read-only · won't change anything in your brain.", attach:false},
+    full:{lbl:'Full Brain', acc:'var(--m-full)', icon:'🧠', ph:'Talk it out — full tool access…', empty:['🧠','Full tool access — can propose, edit & organize.'], safety:'⚠ Can edit your brain (via staging & one-tap undo).', attach:true},
+  };
+  const SUB={
+    generic:{acc:'var(--m-entry)', ph:'Write an entry…'},
+    medical:{acc:'var(--m-medical)', ph:'Log a lab, note, procedure…'},
+    financial:{acc:'var(--m-financial)', ph:'Log a transaction or statement…'},
+  };
+
+  const phone=document.getElementById('phone');
+  const topRow=document.getElementById('topRow'), chipWrap=document.getElementById('chipWrap');
+  const entrySub=document.getElementById('entrySub'), medDest=document.getElementById('medDest');
+  const finForm=document.getElementById('finForm'), finFolder=document.getElementById('finFolder');
+  const ta=document.getElementById('ta'), safety=document.getElementById('safety'), safetyTxt=document.getElementById('safetyTxt');
+  const empty=document.getElementById('empty'), emptyIcon=document.getElementById('emptyIcon'), emptyTxt=document.getElementById('emptyTxt');
+  const abMode=document.getElementById('abMode'), attach=document.getElementById('attach');
+  const flash=document.getElementById('flash');
+
+  function render(){
+    const m=MODE[S.mode];
+    const acc = S.mode==='entry' ? SUB[S.sub].acc : m.acc;
+    phone.style.setProperty('--mc', acc);
+    document.querySelector('.appbar .brand').style.setProperty('--mc', acc);
+    abMode.textContent='· '+m.lbl;
+    // placeholder
+    ta.placeholder = S.mode==='entry' ? SUB[S.sub].ph : m.ph;
+    // empty state
+    emptyIcon.textContent = m.empty[0]; emptyTxt.textContent = m.empty[1];
+    // safety line
+    safetyTxt.textContent = m.safety;
+    safety.style.setProperty('--mc', acc);
+    // attach visibility (hidden in read-only Research)
+    attach.classList.toggle('hide', !m.attach);
+
+    // pattern A/B
+    const A = S.pattern==='A';
+    topRow.classList.toggle('hide', A);
+    chipWrap.classList.toggle('hide', !A);
+
+    // top segmented active
+    document.querySelectorAll('#topseg button').forEach(b=>b.classList.toggle('on', b.dataset.mode===S.mode));
+
+    // chip (pattern A)
+    if(A){
+      document.getElementById('chip').style.setProperty('--mc', acc);
+      document.querySelector('#chip .dot').style.background=acc;
+      document.getElementById('chipLbl').textContent=m.lbl;
+    }
+
+    // entry sub-row
+    const isEntry = S.mode==='entry';
+    entrySub.classList.toggle('hide', !isEntry);
+    document.querySelectorAll('#subseg button').forEach(b=>{
+      b.classList.toggle('on', b.dataset.sub===S.sub);
+      b.style.setProperty('--sc', SUB[b.dataset.sub].acc);
+    });
+    // sub panels
+    medDest.classList.toggle('hide', !(isEntry && S.sub==='medical'));
+    const showFinForm = isEntry && S.sub==='financial' && S.fin==='form';
+    const showFinFolder = isEntry && S.sub==='financial' && S.fin==='folder';
+    finForm.classList.toggle('hide', !showFinForm);
+    finFolder.classList.toggle('hide', !showFinFolder);
+
+    // flash hint
+    flash.textContent = A
+      ? 'Pattern A: compact chip, tap to open the mode menu (two taps, zero width cost).'
+      : 'Pattern B: 3 modes always visible. Swipe ↕ to cycle them (no horizontal swipe — OS back-gesture).';
+  }
+
+  // top segmented
+  document.querySelectorAll('#topseg button').forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode; render();});
+  // sub segmented
+  document.querySelectorAll('#subseg button').forEach(b=>b.onclick=()=>{S.sub=b.dataset.sub; render();});
+
+  // pattern toggle
+  document.querySelectorAll('#patSeg button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#patSeg button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+    S.pattern=b.dataset.pat; buildPop(); render();
+  });
+  // default toggle
+  document.querySelectorAll('#defSeg button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#defSeg button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+    S.def=b.dataset.def; S.mode=b.dataset.def; render();
+  });
+  // financial scope toggle
+  document.querySelectorAll('#finSeg button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#finSeg button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+    S.fin=b.dataset.fin;
+    if(S.mode!=='entry'||S.sub!=='financial'){S.mode='entry';S.sub='financial';}
+    render();
+  });
+
+  // popover (pattern A)
+  const popmenu=document.getElementById('popmenu');
+  function buildPop(){
+    popmenu.innerHTML='';
+    [['entry','✎','Straight to your wiki · no AI'],
+     ['research','🔎','Read-only · ask your brain'],
+     ['full','🧠','Full tool access · proposes & edits']].forEach(([k,ic,hint])=>{
+      const row=document.createElement('div');
+      row.className='row'+(k===S.mode?' sel':'');
+      row.style.setProperty('--rc', MODE[k].acc);
+      row.innerHTML=`<span class="tile">${ic}</span><div><div class="lbl">${MODE[k].lbl}</div><div class="hint">${hint}</div></div>`;
+      row.onclick=()=>{S.mode=k; popmenu.classList.add('hide'); render();};
+      popmenu.appendChild(row);
+    });
+  }
+  document.getElementById('chip').onclick=()=>popmenu.classList.toggle('hide');
+  buildPop();
+
+  // send → demo bubble
+  document.getElementById('send').onclick=()=>{
+    const txt=ta.value.trim(); if(!txt) return;
+    empty.classList.add('hide');
+    const thread=document.getElementById('thread');
+    if(S.mode==='entry'){
+      const c=document.createElement('div'); c.className='savedchip';
+      const where = S.sub==='medical' ? 'notes/medical/Bloodwork' : S.sub==='financial' ? 'notes/financial/Statements' : 'notes/2026/06/07';
+      c.textContent='✓ Saved → '+where; thread.appendChild(c);
+    }else{
+      const me=document.createElement('div'); me.className='bubble me'; me.textContent=txt; thread.appendChild(me);
+      const ai=document.createElement('div'); ai.className='bubble ai';
+      ai.textContent = S.mode==='research'
+        ? '(read-only) From your notes: …  — grounded, no interpretation.'
+        : '(full brain) Here’s a proposed note + 2 staged edits. Apply?';
+      setTimeout(()=>thread.appendChild(ai),250);
+    }
+    ta.value=''; thread.scrollTop=thread.scrollHeight;
+  };
+  ta.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('send').click();}});
+
+  // vertical swipe to cycle (pattern-agnostic demo)
+  let sy=null;
+  phone.addEventListener('touchstart',e=>sy=e.touches[0].clientY,{passive:true});
+  phone.addEventListener('touchend',e=>{
+    if(sy==null)return; const dy=e.changedTouches[0].clientY-sy; sy=null;
+    if(Math.abs(dy)<40)return;
+    const order=['entry','research','full']; let i=order.indexOf(S.mode);
+    i=(i+(dy<0?1:-1)+3)%3; S.mode=order[i]; render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

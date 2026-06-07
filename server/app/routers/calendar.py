@@ -74,14 +74,15 @@ def upcoming(within_days: int = 90, limit: int = 100):
         "SELECT e.id, e.title, e.kind, e.starts_at, e.all_day, e.rrule, e.exdate_json, e.note_id, "
         "n.title AS note_title, n.slug AS note_slug FROM calendar_events e "
         "LEFT JOIN notes n ON n.id = e.note_id "
-        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.status NOT IN ('cancelled','done') "
+        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.starts_at IS NOT NULL "
+        "AND e.status NOT IN ('cancelled','done') "
         "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key)"
     ).fetchall():
         try:
             ex = _json.loads(r["exdate_json"] or "[]")
         except Exception:  # noqa: BLE001
             ex = []
-        occ = cal.expand_rrule(r["rrule"], r["starts_at"] or today, today, horizon, exdates=ex)
+        occ = cal.expand_rrule(r["rrule"], r["starts_at"], today, horizon, exdates=ex)
         if occ:
             out.append({"id": r["id"], "title": r["title"], "kind": "recurring",
                         "starts_at": occ[0], "all_day": r["all_day"], "rrule": r["rrule"],
@@ -103,6 +104,7 @@ def history(limit: int = 100):
 
 
 _MAX_RANGE_DAYS = 366
+_MAX_RANGE_RESULTS = 2000   # bound the payload even with many recurring series
 
 
 @router.get("/range")
@@ -124,11 +126,16 @@ def range_events(start: str, end: str):
 
     conn = get_conn()
     out: list[dict] = []
+    # One-offs windowed by start date. Excludes superseded/rescheduled-away rows (the
+    # edge) AND directly status='cancelled' rows, so the grid agrees with the live List
+    # view (v_upcoming); keeps 'done'/'tentative' so a past month shows what happened.
+    # NOTE (v1 limitation, per the hybrid plan): multi-day events are windowed by their
+    # START day only — spanning bars across days are deferred.
     for r in conn.execute(
         "SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day, e.status, "
         "e.location_label, e.note_id, n.title AS note_title, n.slug AS note_slug "
         "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
-        "WHERE e.kind != 'recurring' AND e.starts_at IS NOT NULL "
+        "WHERE e.kind != 'recurring' AND e.starts_at IS NOT NULL AND e.status != 'cancelled' "
         "AND date(e.starts_at) BETWEEN ? AND ? "
         "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key) "
         "ORDER BY e.starts_at",
@@ -140,24 +147,25 @@ def range_events(start: str, end: str):
 
     import json as _json
     for r in conn.execute(
-        "SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day, e.rrule, e.exdate_json, "
-        "e.location_label, e.note_id, n.title AS note_title, n.slug AS note_slug "
+        "SELECT e.id, e.title, e.kind, e.starts_at, e.ends_at, e.all_day, e.status, e.rrule, "
+        "e.exdate_json, e.location_label, e.note_id, n.title AS note_title, n.slug AS note_slug "
         "FROM calendar_events e LEFT JOIN notes n ON n.id = e.note_id "
-        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.status NOT IN ('cancelled','done') "
+        "WHERE e.kind='recurring' AND e.rrule IS NOT NULL AND e.starts_at IS NOT NULL "
+        "AND e.status NOT IN ('cancelled','done') "
         "AND NOT EXISTS (SELECT 1 FROM calendar_supersedes s WHERE s.old_identity_key = e.identity_key)"
     ).fetchall():
         try:
             ex = _json.loads(r["exdate_json"] or "[]")
         except Exception:  # noqa: BLE001
             ex = []
-        for occ in cal.expand_rrule(r["rrule"], r["starts_at"] or start, start, end, exdates=ex):
+        for occ in cal.expand_rrule(r["rrule"], r["starts_at"], start, end, exdates=ex):
             out.append({"id": r["id"], "title": r["title"], "kind": "recurring",
                         "starts_at": occ, "ends_at": None, "all_day": r["all_day"],
-                        "status": "confirmed", "location_label": r["location_label"],
+                        "status": r["status"] or "confirmed", "location_label": r["location_label"],
                         "note_id": r["note_id"], "note_title": r["note_title"],
                         "note_slug": r["note_slug"], "recurring": True})
     out.sort(key=lambda d: d.get("starts_at") or "9999")
-    return out
+    return out[:_MAX_RANGE_RESULTS]
 
 
 class QuickAddIn(BaseModel):

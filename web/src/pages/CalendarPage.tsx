@@ -4,6 +4,7 @@ import {
   calUpcoming, calHistory, calRange, calQuickAdd, calReschedule, calCancel, CalEvent,
 } from "../api";
 import { useAuth } from "../App";
+import Modal from "../components/Modal";
 
 type View = "list" | "day" | "week" | "month";
 const LS_VIEW = "jbrain_cal_view";
@@ -21,9 +22,8 @@ function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.
 function addMonths(d: Date, n: number): Date { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
 const startOfWeek = (d: Date) => addDays(d, -d.getDay());                 // Sunday
 const startOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
-const sameYmd = (a: Date, b: string) => ymd(a) === b;
 
-// Owner-local "today"/now via the app timezone (falls back to the browser).
+const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return "UTC"; } };
 function todayIso(tz: string): string {
   try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date()); }
   catch { return ymd(new Date()); }
@@ -47,66 +47,68 @@ function minutesOf(s: string | null | undefined): number {
   const [h, m] = s.slice(11, 16).split(":").map(Number); return h * 60 + (m || 0);
 }
 function kindTag(e: CalEvent): string | null {
-  if (e.recurring) return null;                       // recurring shown via the ↻ glyph
+  if (e.recurring) return null;
   return e.kind && e.kind !== "event" ? e.kind : null;
 }
+const isCancelled = (e: CalEvent) => e.status === "cancelled";
 function sortEvents(a: CalEvent, b: CalEvent): number {
   const at = isTimed(a), bt = isTimed(b);
-  if (at !== bt) return at ? 1 : -1;                  // all-day first
+  if (at !== bt) return at ? 1 : -1;
   if (at && bt) return minutesOf(a.starts_at) - minutesOf(b.starts_at);
   return a.title.localeCompare(b.title);
 }
-
 function bucket(events: CalEvent[]): Map<string, CalEvent[]> {
   const m = new Map<string, CalEvent[]>();
   for (const e of events) {
     const k = dayKey(e); if (!k) continue;
-    (m.get(k) || m.set(k, []).get(k)!).push(e);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k)!.push(e);
   }
   for (const v of m.values()) v.sort(sortEvents);
   return m;
 }
+const evKey = (e: CalEvent) => `${e.id}-${e.starts_at}`;
 
 export default function CalendarPage() {
   const { appTz } = useAuth();
-  const tz = appTz || "UTC";
+  const tz = appTz || browserTz();
   const [view, setView] = useState<View>(() => (localStorage.getItem(LS_VIEW) as View) || "list");
-  const [cursor, setCursor] = useState<Date>(() => parseYmd(todayIso(appTz || "UTC")));
-  const [selDay, setSelDay] = useState<string>(() => todayIso(appTz || "UTC"));
+  const [cursor, setCursor] = useState<Date>(() => parseYmd(todayIso(appTz || browserTz())));
+  const [selDay, setSelDay] = useState<string>(() => todayIso(appTz || browserTz()));
   const [listTab, setListTab] = useState<"upcoming" | "history">("upcoming");
   const [events, setEvents] = useState<CalEvent[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);            // start true so the empty-state never flashes
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState<{ ev?: CalEvent; addDate?: string; addTime?: string } | null>(null);
+  const [, setTick] = useState(0);                          // 60s tick to keep the now-line live
   const cache = useRef<Map<string, CalEvent[]>>(new Map());
   const today = todayIso(tz);
+
+  useEffect(() => { const id = setInterval(() => setTick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
 
   function rangeFor(v: View, c: Date): [string, string] {
     if (v === "day") return [ymd(c), ymd(c)];
     if (v === "week") { const s = startOfWeek(c); return [ymd(s), ymd(addDays(s, 6))]; }
-    const s = startOfWeek(startOfMonth(c)); return [ymd(s), ymd(addDays(s, 41))]; // month: 6 weeks
+    const s = startOfWeek(startOfMonth(c)); return [ymd(s), ymd(addDays(s, 41))];
   }
-
   function reload() { cache.current.clear(); load(); }
-
-  function load() {
+  function load(): () => void {
     setLoading(true); setErr("");
     let ignore = false;
-    const finish = (d: CalEvent[]) => { if (!ignore) { setEvents(d); setLoading(false); } };
+    const ok = (d: CalEvent[]) => { if (!ignore) { setEvents(d); setLoading(false); } };
     const fail = (e: any) => { if (!ignore) { setErr(String(e?.message || e)); setLoading(false); } };
     if (view === "list") {
-      (listTab === "upcoming" ? calUpcoming(365) : calHistory()).then(finish).catch(fail);
+      (listTab === "upcoming" ? calUpcoming(365) : calHistory()).then(ok).catch(fail);
     } else {
       const [from, to] = rangeFor(view, cursor);
       const key = `${from}..${to}`;
       const hit = cache.current.get(key);
       if (hit) { setEvents(hit); setLoading(false); }
-      else calRange(from, to).then((d) => { cache.current.set(key, d); finish(d); }).catch(fail);
+      else calRange(from, to).then((d) => { if (ignore) return; cache.current.set(key, d); ok(d); }).catch(fail);
     }
     return () => { ignore = true; };
   }
-  // Re-fetch on every view/cursor/tab change (stale-guarded via the returned cleanup).
-  useEffect(() => load(), [view, listTab, view === "list" ? 0 : +cursor]);  // eslint-disable-line
+  useEffect(() => load(), [view, listTab, view === "list" ? 0 : +cursor]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   function switchView(v: View) { setView(v); localStorage.setItem(LS_VIEW, v); }
   function step(dir: number) {
@@ -115,52 +117,44 @@ export default function CalendarPage() {
   function goToday() { const t = parseYmd(today); setCursor(t); setSelDay(today); }
 
   const byDay = useMemo(() => bucket(events), [events]);
-
   const periodLabel = useMemo(() => {
     if (view === "month") return `${MON[cursor.getMonth()]} ${cursor.getFullYear()}`;
     if (view === "week") { const s = startOfWeek(cursor), e = addDays(s, 6);
-      return `${MON[s.getMonth()]} ${s.getDate()} – ${s.getMonth() === e.getMonth() ? "" : MON[e.getMonth()] + " "}${e.getDate()}`; }
+      const yr = s.getFullYear() !== e.getFullYear() ? ` ${e.getFullYear()}` : "";
+      return `${MON[s.getMonth()]} ${s.getDate()} – ${s.getMonth() === e.getMonth() ? "" : MON[e.getMonth()] + " "}${e.getDate()}${yr}`; }
     if (view === "day") return `${DOW[cursor.getDay()]} ${MON[cursor.getMonth()]} ${cursor.getDate()}`;
-    return listTab === "upcoming" ? "Upcoming" : "Past";
-  }, [view, cursor, listTab]);
+    return "";
+  }, [view, cursor]);
 
-  // --- actions ---
-  async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string }) {
-    await calQuickAdd(b); setSheet(null); reload();
-  }
-  async function doReschedule(ev: CalEvent, to_date: string, to_time?: string) {
-    await calReschedule(ev.id, to_date, to_time); setSheet(null); reload();
-  }
-  async function doCancel(ev: CalEvent) {
-    await calCancel(ev.id); setSheet(null); reload();
-  }
+  async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string }) { await calQuickAdd(b); setSheet(null); reload(); }
+  async function doReschedule(ev: CalEvent, to_date: string, to_time?: string) { await calReschedule(ev.id, to_date, to_time); setSheet(null); reload(); }
+  async function doCancel(ev: CalEvent) { await calCancel(ev.id); setSheet(null); reload(); }
 
   return (
     <div className="tool-body cal">
       <div className="cal-bar">
-        <div className="seg" role="tablist" aria-label="Calendar view">
+        <div className="seg" role="group" aria-label="Calendar view">
           {(["Day", "Week", "Month", "List"] as const).map((s) => {
             const v = s.toLowerCase() as View;
-            return <button key={v} className={view === v ? "on" : ""} role="tab"
-              aria-selected={view === v} onClick={() => switchView(v)}>{s}</button>;
+            return <button key={v} className={view === v ? "on" : ""} aria-pressed={view === v}
+              onClick={() => switchView(v)}>{s}</button>;
           })}
         </div>
         <div className="cal-nav">
-          {view !== "list" && <>
-            <button className="icon-btn" aria-label="Previous" onClick={() => step(-1)}>‹</button>
-            <span className="cal-period">{periodLabel}</span>
-            <button className="icon-btn" aria-label="Next" onClick={() => step(1)}>›</button>
-            <span className="spacer" />
-            <button className="cal-today" onClick={goToday}>Today</button>
-          </>}
-          {view === "list" && <>
-            <div className="seg cal-sub" role="tablist" aria-label="List scope">
-              <button className={listTab === "upcoming" ? "on" : ""} aria-selected={listTab === "upcoming"}
-                onClick={() => setListTab("upcoming")}>Upcoming</button>
-              <button className={listTab === "history" ? "on" : ""} aria-selected={listTab === "history"}
-                onClick={() => setListTab("history")}>Past</button>
-            </div>
-          </>}
+          {view !== "list"
+            ? <>
+                <button className="icon-btn" aria-label="Previous period" onClick={() => step(-1)}>‹</button>
+                <span className="cal-period">{periodLabel}</span>
+                <button className="icon-btn" aria-label="Next period" onClick={() => step(1)}>›</button>
+                <span className="spacer" />
+                <button className="cal-today" onClick={goToday}>Today</button>
+              </>
+            : <div className="seg cal-sub" role="group" aria-label="List scope">
+                <button className={listTab === "upcoming" ? "on" : ""} aria-pressed={listTab === "upcoming"}
+                  onClick={() => setListTab("upcoming")}>Upcoming</button>
+                <button className={listTab === "history" ? "on" : ""} aria-pressed={listTab === "history"}
+                  onClick={() => setListTab("history")}>Past</button>
+              </div>}
         </div>
       </div>
 
@@ -183,34 +177,31 @@ export default function CalendarPage() {
       )}
 
       {sheet && (sheet.ev
-        ? <EventSheet ev={sheet.ev} onClose={() => setSheet(null)}
-            onReschedule={doReschedule} onCancel={doCancel} />
+        ? <EventSheet ev={sheet.ev} onClose={() => setSheet(null)} onReschedule={doReschedule} onCancel={doCancel} />
         : <QuickAddSheet date={sheet.addDate!} time={sheet.addTime} onClose={() => setSheet(null)} onAdd={doQuickAdd} />)}
     </div>
   );
 }
 
-// ---------- shared event row ----------
+// ---------- shared event row (a real <button> for keyboard + Space) ----------
 function Row({ e, onPick, chevron = true }: { e: CalEvent; onPick: (e: CalEvent) => void; chevron?: boolean }) {
   const tag = kindTag(e);
   return (
-    <div className={"cal-row" + (e.status === "cancelled" ? " cancelled" : "")} role="button" tabIndex={0}
-      onClick={() => onPick(e)} onKeyDown={(ev) => { if (ev.key === "Enter") onPick(e); }}>
+    <button className={"cal-row" + (isCancelled(e) ? " cancelled" : "")} onClick={() => onPick(e)}>
       <span className="when">{timeLabel(e)}</span>
       <span className={"ttl" + (e.kind === "deadline" ? " deadline" : "")}>{e.title}</span>
       <span className="meta">
-        {e.recurring && <span title="recurring">↻</span>}
+        {e.recurring && <span aria-label="recurring" title="recurring">↻</span>}
         {tag && <span>{tag}</span>}
-        {chevron && <span style={{ color: "var(--text-dim)" }}>›</span>}
+        {chevron && <span aria-hidden="true" style={{ color: "var(--text-dim)" }}>›</span>}
       </span>
-    </div>
+    </button>
   );
 }
 
 function groupHeader(k: string, today: string): string {
   if (k === today) return "TODAY · " + fmtDate(k);
-  const t = parseYmd(today), d = parseYmd(k);
-  if (ymd(addDays(t, 1)) === k) return "TOMORROW · " + fmtDate(k);
+  if (ymd(addDays(parseYmd(today), 1)) === k) return "TOMORROW · " + fmtDate(k);
   return fmtDate(k).toUpperCase();
 }
 function fmtDate(k: string): string { const d = parseYmd(k); return `${DOW[d.getDay()]}, ${MON[d.getMonth()]} ${d.getDate()}`; }
@@ -222,7 +213,7 @@ function ListView({ byDay, today, onPick }: { byDay: Map<string, CalEvent[]>; to
   return <>{days.map((k) => (
     <div key={k}>
       <div className="cal-grp">{groupHeader(k, today)}</div>
-      <div className="cal-card">{byDay.get(k)!.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} />)}</div>
+      <div className="cal-card">{byDay.get(k)!.map((e) => <Row key={evKey(e)} e={e} onPick={onPick} />)}</div>
     </div>
   ))}</>;
 }
@@ -237,17 +228,19 @@ function MonthView({ cursor, byDay, today, sel, onDay, onAdd, onPick, onOpenDay 
   const mo = cursor.getMonth();
   const selEvents = byDay.get(sel) || [];
   return <>
-    <div className="cal-wd">{WD.map((d, i) => <span key={i}>{d}</span>)}</div>
-    <div className="cal-month" role="grid">
+    <div className="cal-wd" aria-hidden="true">{WD.map((d, i) => <span key={i}>{d}</span>)}</div>
+    <div className="cal-month">
       {cells.map((d) => {
         const k = ymd(d); const evs = byDay.get(k) || [];
-        const cls = "cal-cell" + (d.getMonth() !== mo ? " dim" : "") + (k === sel ? " sel" : "") + (k === today ? " today" : "");
+        const isToday = k === today, isSel = k === sel;
+        const cls = "cal-cell" + (d.getMonth() !== mo ? " dim" : "") + (isSel ? " sel" : "") + (isToday ? " today" : "");
+        const lbl = `${fmtDate(k)}, ${evs.length} event${evs.length === 1 ? "" : "s"}` + (isToday ? ", today" : "") + (isSel ? ", selected" : "");
+        const act = () => (evs.length ? onDay(k) : onAdd(k));
         return (
-          <div key={k} className={cls} role="gridcell"
-            aria-label={`${fmtDate(k)}, ${evs.length} event${evs.length === 1 ? "" : "s"}`}
-            onClick={() => (evs.length ? onDay(k) : onAdd(k))}>
+          <div key={k} className={cls} role="button" tabIndex={0} aria-label={lbl} aria-pressed={isSel}
+            onClick={act} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); } }}>
             <span className="num">{d.getDate()}</span>
-            <span className="cal-dots">
+            <span className="cal-dots" aria-hidden="true">
               {evs.slice(0, 3).map((_, i) => <i key={i} />)}
               {evs.length > 3 && <span className="more">+{evs.length - 3}</span>}
             </span>
@@ -256,10 +249,11 @@ function MonthView({ cursor, byDay, today, sel, onDay, onAdd, onPick, onOpenDay 
       })}
     </div>
     <div className="cal-grp">{fmtDate(sel).toUpperCase()}
-      <span className="open-day" onClick={() => onOpenDay(sel)}>Open day →</span></div>
+      <button className="open-day" onClick={() => onAdd(sel)}>+ Add</button>
+      <button className="open-day" onClick={() => onOpenDay(sel)}>Open day →</button></div>
     {selEvents.length === 0
-      ? <p className="cal-empty" onClick={() => onAdd(sel)}>Nothing scheduled — tap to add.</p>
-      : <div className="cal-card">{selEvents.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} chevron={false} />)}</div>}
+      ? <p className="cal-empty"><button className="linkish" onClick={() => onAdd(sel)}>Nothing scheduled — tap to add.</button></p>
+      : <div className="cal-card">{selEvents.map((e) => <Row key={evKey(e)} e={e} onPick={onPick} chevron={false} />)}</div>}
   </>;
 }
 
@@ -275,11 +269,12 @@ function WeekView({ cursor, byDay, today, onAdd, onPick }: {
       <div key={k}>
         <div className={"cal-dhdr" + (k === today ? " today" : "")}>
           <span>{DOW[d.getDay()].toUpperCase()} {MON[d.getMonth()]} {d.getDate()}{k === today ? " · today" : ""}</span>
-          <span className="rule" />
+          <span className="rule" aria-hidden="true" />
+          <button className="open-day" onClick={() => onAdd(k)} aria-label={`Add event on ${fmtDate(k)}`}>+</button>
         </div>
         {evs.length === 0
-          ? <p className="cal-empty" onClick={() => onAdd(k)}>—</p>
-          : <div className="cal-card">{evs.map((e) => <Row key={e.id + "-" + e.starts_at} e={e} onPick={onPick} />)}</div>}
+          ? <button className="cal-empty linkish" onClick={() => onAdd(k)}>—</button>
+          : <div className="cal-card">{evs.map((e) => <Row key={evKey(e)} e={e} onPick={onPick} />)}</div>}
       </div>
     );
   })}</>;
@@ -288,7 +283,6 @@ function WeekView({ cursor, byDay, today, onAdd, onPick }: {
 // ---------- Day (time-axis grid) ----------
 interface Laid { e: CalEvent; top: number; height: number; col: number; cols: number; }
 function layoutDay(timed: CalEvent[], loMin: number): Laid[] {
-  // Greedy column packing within overlap clusters.
   const items = timed.map((e) => {
     const s = minutesOf(e.starts_at);
     const en = e.ends_at && e.ends_at.includes("T") ? minutesOf(e.ends_at) : s + 60;
@@ -300,8 +294,7 @@ function layoutDay(timed: CalEvent[], loMin: number): Laid[] {
     let j = i, clusterEnd = items[i].en;
     while (j + 1 < items.length && items[j + 1].s < clusterEnd) { j++; clusterEnd = Math.max(clusterEnd, items[j].en); }
     const cluster = items.slice(i, j + 1);
-    const colEnds: number[] = [];
-    const cols: number[] = [];
+    const colEnds: number[] = [], cols: number[] = [];
     for (const it of cluster) {
       let c = colEnds.findIndex((end) => end <= it.s);
       if (c === -1) { c = colEnds.length; colEnds.push(it.en); } else colEnds[c] = it.en;
@@ -309,8 +302,8 @@ function layoutDay(timed: CalEvent[], loMin: number): Laid[] {
     }
     const ncols = colEnds.length;
     cluster.forEach((it, idx) => out.push({
-      e: it.e, top: (it.s - loMin) / 60 * ROWH, height: Math.max((it.en - it.s) / 60 * ROWH - 2, 16),
-      col: cols[idx], cols: ncols,
+      e: it.e, top: Math.max(0, (it.s - loMin) / 60 * ROWH),
+      height: Math.max((it.en - it.s) / 60 * ROWH - 2, 16), col: cols[idx], cols: ncols,
     }));
     i = j + 1;
   }
@@ -325,58 +318,54 @@ function DayView({ cursor, byDay, today, nowMin, onAdd, onPick }: {
   const allDay = all.filter((e) => !isTimed(e));
   const timed = all.filter(isTimed);
   let lo = 7, hi = 19;
-  for (const e of timed) { lo = Math.min(lo, Math.floor(minutesOf(e.starts_at) / 60));
+  for (const e of timed) {
+    lo = Math.min(lo, Math.floor(minutesOf(e.starts_at) / 60));
     const en = e.ends_at && e.ends_at.includes("T") ? minutesOf(e.ends_at) : minutesOf(e.starts_at) + 60;
-    hi = Math.max(hi, Math.ceil(en / 60)); }
+    hi = Math.max(hi, Math.ceil(en / 60));
+  }
   const hours = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
   const laid = layoutDay(timed, lo * 60);
   const showNow = k === today && nowMin >= lo * 60 && nowMin <= hi * 60;
+  const hlabel = (h: number) => h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
   return <>
+    <div className="row" style={{ justifyContent: "flex-end", marginBottom: 6 }}>
+      <button className="cal-today" onClick={() => onAdd(k)}>+ Add event</button>
+    </div>
     <div className="cal-allday">
       <span className="lbl">ALL DAY</span>
       <div className="lane">
         {allDay.length === 0 ? <span className="muted" style={{ fontSize: 12 }}>—</span>
-          : allDay.map((e) => <span key={e.id + "-" + e.starts_at} className="cal-pill" onClick={() => onPick(e)}>
-              {e.recurring ? "↻ " : ""}{e.title}</span>)}
+          : allDay.map((e) => <button key={evKey(e)} className={"cal-pill" + (isCancelled(e) ? " cancelled" : "")}
+              onClick={() => onPick(e)}>{e.recurring ? "↻ " : ""}{e.title}</button>)}
       </div>
     </div>
     <div className="cal-tg">
       {hours.map((h) => (
         <div className="cal-hour" key={h}>
-          <span className="hl">{h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}</span>
+          <span className="hl" aria-hidden="true">{hlabel(h)}</span>
           <span className="slot" onClick={() => onAdd(k, `${pad(h)}:00`)} />
         </div>
       ))}
       <div className="cal-blocks">
         {laid.map((l) => (
-          <div key={l.e.id + "-" + l.e.starts_at} className="cal-block" onClick={() => onPick(l.e)}
+          <button key={evKey(l.e)} className={"cal-block" + (isCancelled(l.e) ? " cancelled" : "")} onClick={() => onPick(l.e)}
             style={{ top: l.top, height: l.height, left: `${(l.col / l.cols) * 100}%`, width: `calc(${100 / l.cols}% - 3px)` }}>
-            <div className="bt">{l.e.recurring ? "↻ " : ""}{l.e.title}</div>
-            <div className="bs">{timeLabel(l.e)}{kindTag(l.e) ? ` · ${kindTag(l.e)}` : ""}</div>
-          </div>
+            <span className="bt">{l.e.recurring ? "↻ " : ""}{l.e.title}</span>
+            <span className="bs">{timeLabel(l.e)}{kindTag(l.e) ? ` · ${kindTag(l.e)}` : ""}</span>
+          </button>
         ))}
       </div>
-      {showNow && <div className="cal-now" style={{ top: (nowMin - lo * 60) / 60 * ROWH }} />}
+      {showNow && <div className="cal-now" aria-hidden="true" style={{ top: (nowMin - lo * 60) / 60 * ROWH }} />}
     </div>
   </>;
 }
 
-// ---------- sheets ----------
-function Backdrop({ children, onClose }: { children: any; onClose: () => void }) {
-  return (
-    <div className="modal-backdrop compact" onClick={onClose}>
-      <div className="modal-compact" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-        {children}
-      </div>
-    </div>
-  );
-}
-
+// ---------- sheets (use the app's Modal: Esc / focus / portal / scroll-lock) ----------
 function EventSheet({ ev, onClose, onReschedule, onCancel }: {
   ev: CalEvent; onClose: () => void;
   onReschedule: (e: CalEvent, d: string, t?: string) => Promise<void>; onCancel: (e: CalEvent) => Promise<void>;
 }) {
-  const [mode, setMode] = useState<"view" | "resched">("view");
+  const [mode, setMode] = useState<"view" | "resched" | "confirm">("view");
   const [date, setDate] = useState((ev.starts_at || "").slice(0, 10));
   const [time, setTime] = useState(isTimed(ev) ? ev.starts_at!.slice(11, 16) : "");
   const [busy, setBusy] = useState(false);
@@ -385,41 +374,42 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
     setBusy(true); setErr("");
     try { await fn(); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
   }
+  const footer = ev.recurring
+    ? <span className="cal-recnote">Recurring — edit the source note to change the pattern.</span>
+    : mode === "view"
+      ? <>
+          <button className="ghost" onClick={() => setMode("resched")} disabled={busy}>Reschedule</button>
+          <button className="ghost" style={{ color: "var(--danger)" }} onClick={() => setMode("confirm")} disabled={busy}>Cancel event</button>
+        </>
+      : mode === "confirm"
+        ? <>
+            <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Keep</button>
+            <button className="primary" style={{ background: "var(--danger)", borderColor: "var(--danger)" }}
+              disabled={busy} onClick={() => run(() => onCancel(ev))}>Confirm cancel</button>
+          </>
+        : <>
+            <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Back</button>
+            <button className="primary" disabled={busy || !date}
+              onClick={() => run(() => onReschedule(ev, date, time || undefined))}>Save</button>
+          </>;
   return (
-    <Backdrop onClose={onClose}>
-      <div className="modal-head"><span className="modal-title">{ev.title}</span></div>
-      <div className="modal-body">
-        <p className="muted" style={{ margin: "0 0 6px" }}>
-          {timeLabel(ev) === "all-day" ? fmtDate(dayKey(ev)) : `${fmtDate(dayKey(ev))} · ${timeLabel(ev)}`}
-          {ev.kind !== "event" ? ` · ${ev.kind}` : ""}{ev.recurring ? " · recurring" : ""}
-        </p>
-        {ev.location_label && <p className="muted" style={{ margin: "0 0 6px" }}>◇ {ev.location_label}</p>}
-        {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
-        {mode === "resched" && <>
-          <div className="cal-field"><label>NEW DATE</label>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-          <div className="cal-field"><label>NEW TIME (blank = all-day)</label>
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
-        </>}
-        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          {ev.note_slug && <Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link>}
-          {ev.recurring
-            ? <span className="cal-recnote">Recurring — edit the source note to change the pattern.</span>
-            : mode === "view"
-              ? <>
-                  <button className="ghost" onClick={() => setMode("resched")} disabled={busy}>Reschedule</button>
-                  <button className="ghost" style={{ color: "var(--danger)" }} disabled={busy}
-                    onClick={() => run(() => onCancel(ev))}>Cancel event</button>
-                </>
-              : <>
-                  <button className="primary" disabled={busy || !date}
-                    onClick={() => run(() => onReschedule(ev, date, time || undefined))}>Save</button>
-                  <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Back</button>
-                </>}
-        </div>
-        <p className="cal-recnote">Edits write a note — the calendar re-derives.</p>
-      </div>
-    </Backdrop>
+    <Modal title={ev.title} size="compact" onClose={onClose} footer={footer}>
+      <p className="muted" style={{ margin: "0 0 6px" }}>
+        {timeLabel(ev) === "all-day" ? fmtDate(dayKey(ev)) : `${fmtDate(dayKey(ev))} · ${timeLabel(ev)}`}
+        {ev.kind !== "event" ? ` · ${ev.kind}` : ""}{ev.recurring ? " · recurring" : ""}{isCancelled(ev) ? " · cancelled" : ""}
+      </p>
+      {ev.location_label && <p className="muted" style={{ margin: "0 0 6px" }}>◇ {ev.location_label}</p>}
+      {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
+      {mode === "confirm" && <p style={{ fontSize: 13 }}>Cancel “{ev.title}”? This writes a cancellation note.</p>}
+      {mode === "resched" && <>
+        <div className="cal-field"><label>NEW DATE</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+        <div className="cal-field"><label>NEW TIME (blank = all-day)</label>
+          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
+      </>}
+      {ev.note_slug && <p style={{ marginTop: 8 }}><Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link></p>}
+      <p className="cal-recnote">Edits write a note — the calendar re-derives.</p>
+    </Modal>
   );
 }
 
@@ -440,25 +430,22 @@ function QuickAddSheet({ date, time, onClose, onAdd }: {
     catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
   }
   return (
-    <Backdrop onClose={onClose}>
-      <div className="modal-head"><span className="modal-title">New event</span></div>
-      <div className="modal-body">
-        {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
-        <div className="cal-field"><label>TITLE</label>
-          <input autoFocus placeholder="What…" value={title} onChange={(e) => setTitle(e.target.value)} /></div>
-        <div className="row" style={{ gap: 8 }}>
-          <div className="cal-field" style={{ flex: 1 }}><label>DATE</label>
-            <input type="date" value={d} onChange={(e) => setD(e.target.value)} /></div>
-          <div className="cal-field" style={{ flex: 1 }}><label>TIME</label>
-            <input type="time" value={t} onChange={(e) => setT(e.target.value)} /></div>
-        </div>
-        <div className="cal-field"><label>KIND</label>
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select></div>
-        <button className="primary" disabled={busy || !title.trim() || !d} onClick={add}>Add</button>
-        <p className="cal-recnote">Writes a dated note — your notes stay the source of truth.</p>
+    <Modal title="New event" size="compact" onClose={onClose}
+      footer={<button className="primary" disabled={busy || !title.trim() || !d} onClick={add}>Add</button>}>
+      {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
+      <div className="cal-field"><label>TITLE</label>
+        <input autoFocus placeholder="What…" value={title} onChange={(e) => setTitle(e.target.value)} /></div>
+      <div className="row" style={{ gap: 8 }}>
+        <div className="cal-field" style={{ flex: 1 }}><label>DATE</label>
+          <input type="date" value={d} onChange={(e) => setD(e.target.value)} /></div>
+        <div className="cal-field" style={{ flex: 1 }}><label>TIME</label>
+          <input type="time" value={t} onChange={(e) => setT(e.target.value)} /></div>
       </div>
-    </Backdrop>
+      <div className="cal-field"><label>KIND</label>
+        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+          {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+        </select></div>
+      <p className="cal-recnote">Writes a dated note — your notes stay the source of truth.</p>
+    </Modal>
   );
 }

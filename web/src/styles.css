@@ -1173,3 +1173,19 @@ table.sql-result th { background: var(--bg-elev-2); }
 .cal-recnote { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
 .cal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .cal-field label { font-size: 10px; font-weight: 600; color: var(--text-dim); }
+
+/* Calendar: button-element resets so rows/blocks read as their styled boxes */
+button.cal-row { width: 100%; font: inherit; color: inherit; background: transparent; }
+button.cal-block, button.cal-pill { font: inherit; }
+button.cal-pill { border: none; color: var(--text); }
+.cal-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cal-grp .open-day { background: transparent; border: none; font: inherit; font-weight: 400;
+  color: var(--accent); cursor: pointer; padding: 0 2px; }
+.cal-grp .open-day:first-of-type { margin-left: auto; }
+.cal-dhdr .open-day { background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 6px; cursor: pointer; line-height: 1; padding: 2px 8px; margin-left: 4px; }
+.linkish { background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  font: inherit; padding: 4px 8px; text-align: left; }
+.cal-block.cancelled, .cal-pill.cancelled { opacity: .5; }
+.cal-block.cancelled .bt { text-decoration: line-through; }
+.cal-pill.cancelled { text-decoration: line-through; }

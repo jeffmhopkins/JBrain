@@ -720,10 +720,19 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     subject = f"{article_title.rsplit('/', 1)[-1]} {content.splitlines()[0].lstrip('# ') if content.strip() else ''}".strip()
     srcs = _load_sources(conn, ids, query=subject)
     new_srcs = _load_sources(conn, extra_source_ids, query=subject)
-    items_text = "\n".join(
-        f"[{it['id']}] ({'correction — SOURCE OF TRUTH, authoritative' if it.get('is_correction') else it['kind']}, "
-        f"by {it['author']}) {it['body']}"
-        for it in open_items) or "(none)"
+    # Fold the owner's replies under their item — the maintenance conversation. A reply is
+    # the latest, authoritative steer on that item (see the wiki_maintain prompt).
+    reps = article_talk.replies_for(conn, [it["id"] for it in open_items])
+
+    def _item_line(it: dict) -> str:
+        head = (f"[{it['id']}] ("
+                f"{'correction — SOURCE OF TRUTH, authoritative' if it.get('is_correction') else it['kind']}, "
+                f"by {it['author']}) {it['body']}")
+        for rp in reps.get(it["id"], []):
+            head += f"\n    ↳ reply ({rp['author']}): {rp['body']}"
+        return head
+
+    items_text = "\n".join(_item_line(it) for it in open_items) or "(none)"
     new_block = _sources_text(new_srcs) or "(none)"
     removed_block = "\n".join(f"- [[{t}]]" for t in removed_titles) or "(none)"
     others = scoped_known_titles(conn, article_title, known_titles)
@@ -1046,6 +1055,38 @@ def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
         article_talk.add(conn, title, "todo", f"Rebuild quarantined ({reason}) — manual review.")
         conn.commit()
         return {"ok": False, "title": title, "quarantined": True, "reason": reason}
+    finally:
+        kb_lock_release(conn)
+
+
+def maintain_now(conn, title: str) -> dict:
+    """Owner-triggered SURGICAL maintenance of ONE article right now — the on-demand twin of
+    the maintain_batch loop body, so an owner reply / new directive doesn't have to wait for
+    the nightly pass. Folds in the article's open items + their owner replies, integrates any
+    promoted source-of-truth corrections, and runs under the KB write lock so it can't
+    interleave with the batch. This is NOT a full rebuild (rebuild_article) — it edits in
+    place from the open items, exactly like the scheduled pass. Returns {ok, title, ...}."""
+    from . import notes as notes_svc
+    title = (title or "").strip()
+    note = notes_svc.get_by_title(conn, title)
+    if not note or note["kind"] != "kb":
+        return {"ok": False, "title": title, "reason": "no such kb article"}
+    if not kb_lock_acquire(conn):
+        return {"ok": False, "title": title,
+                "reason": "KB is busy (another build/maintain is running) — try again shortly"}
+    try:
+        # Feed promoted source-of-truth correction notes in as NEW sources (same as the batch).
+        corr_ids = [r["source_note_id"] for r in conn.execute(
+            "SELECT source_note_id FROM article_talk WHERE article_title=? AND kind='correction' "
+            "AND resolved_at IS NULL AND source_note_id IS NOT NULL", (title,)).fetchall()]
+        out = maintain_one(conn, title, _known_titles(conn), extra_source_ids=corr_ids or None)
+        if not out["ok"]:
+            return {"ok": False, "title": title,
+                    "reason": "; ".join(out.get("errors") or []) or "maintenance failed"}
+        did_change, n_closed = _apply_maintain(conn, out, "maintenance (on-demand)")
+        conn.commit()
+        return {"ok": True, "title": title, "changed": did_change, "resolved": n_closed,
+                "examined": len(out["resolved"]), "kept_open": len(out["resolved"]) - n_closed}
     finally:
         kb_lock_release(conn)
 
@@ -1586,63 +1627,72 @@ def maintain_batch(conn, limit: int = 20) -> dict:
         return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0,
                 "kept_open": 0, "failed": 0, "skipped": "no LLM credentials"}
 
-    # Open items raised at/after the watermark second (oldest first), each tied to a live kb
-    # article. `>=` (with a second-precision watermark) is at-least-once: an item created in
-    # the watermark's own second is re-examined rather than risk being skipped.
-    items = conn.execute(
-        "SELECT t.id, t.created_at, t.article_title AS title FROM article_talk t "
-        "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive','correction') "
-        "AND t.created_at >= ? "
-        "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
-        "ORDER BY t.created_at, t.id",
-        (since,)).fetchall()
-    if not items:
-        # Quiet night (no new items): no LLM spent — just advance the clock so it keeps moving.
-        set_meta(conn, _MAINT_WATERMARK, _now_sec(conn)); conn.commit()
-        return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0, "kept_open": 0, "failed": 0}
+    # Take the KB write lock so the batch and an on-demand maintain_now / rebuild can't
+    # mutate the same article (across separate connections) at once. If it's held, skip this
+    # tick WITHOUT advancing the watermark — the next scheduled run retries from here.
+    if not kb_lock_acquire(conn):
+        return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0,
+                "kept_open": 0, "failed": 0, "skipped": "KB busy"}
+    try:
+        # Open items raised at/after the watermark second (oldest first), each tied to a live kb
+        # article. `>=` (with a second-precision watermark) is at-least-once: an item created in
+        # the watermark's own second is re-examined rather than risk being skipped.
+        items = conn.execute(
+            "SELECT t.id, t.created_at, t.article_title AS title FROM article_talk t "
+            "WHERE t.resolved_at IS NULL AND t.kind IN ('conflict','question','todo','directive','correction') "
+            "AND t.created_at >= ? "
+            "AND EXISTS (SELECT 1 FROM notes n WHERE n.title=t.article_title AND n.kind='kb' AND n.deleted_at IS NULL) "
+            "ORDER BY t.created_at, t.id",
+            (since,)).fetchall()
+        if not items:
+            # Quiet night (no new items): no LLM spent — just advance the clock so it keeps moving.
+            set_meta(conn, _MAINT_WATERMARK, _now_sec(conn)); conn.commit()
+            return {"articles": 0, "changed": 0, "resolved": 0, "examined": 0, "kept_open": 0, "failed": 0}
 
-    # Distinct articles in item-creation order, capped at `limit`; the rest are deferred and
-    # (like failures) hold the watermark so they're picked up next run.
-    seen, ordered = set(), []
-    for it in items:
-        if it["title"] not in seen:
-            seen.add(it["title"]); ordered.append(it["title"])
-    deferred = set(ordered[int(limit):])
-    work = ordered[:int(limit)]
+        # Distinct articles in item-creation order, capped at `limit`; the rest are deferred and
+        # (like failures) hold the watermark so they're picked up next run.
+        seen, ordered = set(), []
+        for it in items:
+            if it["title"] not in seen:
+                seen.add(it["title"]); ordered.append(it["title"])
+        deferred = set(ordered[int(limit):])
+        work = ordered[:int(limit)]
 
-    known = _known_titles(conn)
-    changed = resolved = examined = failed = 0
-    bad = set(deferred)
-    for title in work:
-        # Feed in any promoted source-of-truth correction notes for this article as NEW
-        # sources (the [[wikilink]] alone does NOT route them — _articles_citing is
-        # reverse-direction), so the SUPERSEDE-by-recency rule rewrites the article from them.
-        corr_ids = [r["source_note_id"] for r in conn.execute(
-            "SELECT source_note_id FROM article_talk WHERE article_title=? AND kind='correction' "
-            "AND resolved_at IS NULL AND source_note_id IS NOT NULL", (title,)).fetchall()]
-        out = maintain_one(conn, title, known, extra_source_ids=corr_ids or None)
-        if not out["ok"]:
-            failed += 1
-            bad.add(title)
-            continue
-        did_change, n_closed = _apply_maintain(conn, out, "maintenance pass")
-        changed += 1 if did_change else 0
-        resolved += n_closed
-        examined += len(out["resolved"])
+        known = _known_titles(conn)
+        changed = resolved = examined = failed = 0
+        bad = set(deferred)
+        for title in work:
+            # Feed in any promoted source-of-truth correction notes for this article as NEW
+            # sources (the [[wikilink]] alone does NOT route them — _articles_citing is
+            # reverse-direction), so the SUPERSEDE-by-recency rule rewrites the article from them.
+            corr_ids = [r["source_note_id"] for r in conn.execute(
+                "SELECT source_note_id FROM article_talk WHERE article_title=? AND kind='correction' "
+                "AND resolved_at IS NULL AND source_note_id IS NOT NULL", (title,)).fetchall()]
+            out = maintain_one(conn, title, known, extra_source_ids=corr_ids or None)
+            if not out["ok"]:
+                failed += 1
+                bad.add(title)
+                continue
+            did_change, n_closed = _apply_maintain(conn, out, "maintenance pass")
+            changed += 1 if did_change else 0
+            resolved += n_closed
+            examined += len(out["resolved"])
 
-    # Advance over the leading run of items whose article succeeded; stop at the first item
-    # belonging to a failed/deferred article so it (and everything after) is retried. On a
-    # fully-clean run, jump to now so old processed items don't re-qualify next pass.
-    new_wm = _now_sec(conn)
-    for it in items:
-        if it["title"] in bad:
-            new_wm = it["created_at"]
-            break
-    set_meta(conn, _MAINT_WATERMARK, new_wm)
-    conn.commit()
-    return {"articles": len(work), "changed": changed, "resolved": resolved,
-            "examined": examined, "kept_open": examined - resolved,
-            "failed": failed, "deferred": len(deferred)}
+        # Advance over the leading run of items whose article succeeded; stop at the first item
+        # belonging to a failed/deferred article so it (and everything after) is retried. On a
+        # fully-clean run, jump to now so old processed items don't re-qualify next pass.
+        new_wm = _now_sec(conn)
+        for it in items:
+            if it["title"] in bad:
+                new_wm = it["created_at"]
+                break
+        set_meta(conn, _MAINT_WATERMARK, new_wm)
+        conn.commit()
+        return {"articles": len(work), "changed": changed, "resolved": resolved,
+                "examined": examined, "kept_open": examined - resolved,
+                "failed": failed, "deferred": len(deferred)}
+    finally:
+        kb_lock_release(conn)
 
 
 def _articles_citing(conn, note_id: int) -> set[str]:

@@ -219,6 +219,18 @@ CREATE INDEX IF NOT EXISTS idx_article_talk_title ON article_talk(article_title)
 CREATE INDEX IF NOT EXISTS idx_article_talk_source_note
   ON article_talk(source_note_id) WHERE source_note_id IS NOT NULL;
 
+-- Threaded replies on a talk item — the owner↔AI maintenance conversation. Depth-1
+-- (a reply always points at a root article_talk row, never another reply). The owner
+-- replies to steer the next pass; the loop reads replies as additional instructions.
+CREATE TABLE IF NOT EXISTS article_talk_reply (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  talk_id    INTEGER NOT NULL REFERENCES article_talk(id) ON DELETE CASCADE,
+  author     TEXT NOT NULL DEFAULT 'user',   -- user | ai
+  body       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_article_talk_reply_talk ON article_talk_reply(talk_id);
+
 -- Owner source-of-truth name overrides for the (derived) entity index. Keyed by the kb
 -- article the entity backs — a STABLE key that survives the normalize() fork (diacritics /
 -- spellings produce different normalized_keys, so a frequency-derived display name can't be

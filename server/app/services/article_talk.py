@@ -88,10 +88,13 @@ def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
 def _cap_notes(conn, article_title: str) -> None:
     """Bound clutter: keep only the newest _NOTE_CAP OPEN, ai-authored 'note' rows per article
     (they're informational logs, not actionable). NEVER touches actionable kinds, owner
-    directives, user-authored rows, or resolved history."""
+    directives, user-authored rows, resolved history, or any note the owner has REPLIED to
+    (a reply would cascade-delete with the row — owner words are never dropped)."""
     ids = [r["id"] for r in conn.execute(
         "SELECT id FROM article_talk WHERE article_title=? AND kind='note' AND author='ai' "
-        "AND resolved_at IS NULL ORDER BY created_at DESC, id DESC", (article_title,)).fetchall()]
+        "AND resolved_at IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM article_talk_reply r WHERE r.talk_id = article_talk.id) "
+        "ORDER BY created_at DESC, id DESC", (article_title,)).fetchall()]
     extra = ids[_NOTE_CAP:]
     if extra:
         conn.execute(f"DELETE FROM article_talk WHERE id IN ({','.join('?' * len(extra))})", extra)
@@ -124,9 +127,41 @@ def demote_stub_notes(conn, article_title: str | None = None) -> int:
     return n
 
 
+def reply(conn, talk_id: int, body: str, author: str = "user") -> int | None:
+    """Add a reply to a talk item — the owner↔AI maintenance conversation. Replies are
+    deliberate utterances and bypass record()'s dedup entirely. Returns the new reply id,
+    or None for an empty body / unknown parent."""
+    body = (body or "").strip()
+    if not body:
+        return None
+    if conn.execute("SELECT 1 FROM article_talk WHERE id=?", (talk_id,)).fetchone() is None:
+        return None
+    author = "ai" if author == "ai" else "user"
+    cur = conn.execute(
+        "INSERT INTO article_talk_reply (talk_id, author, body) VALUES (?,?,?)",
+        (talk_id, author, body[:2000]))
+    return cur.lastrowid
+
+
+def replies_for(conn, talk_ids: list[int]) -> dict[int, list[dict]]:
+    """Replies for a set of talk-item ids, oldest-first, grouped by talk_id. One query —
+    used by both list_for (UI) and maintain_one (fold into the writer prompt)."""
+    ids = [int(i) for i in (talk_ids or [])]
+    if not ids:
+        return {}
+    rows = conn.execute(
+        f"SELECT id, talk_id, author, body, created_at FROM article_talk_reply "
+        f"WHERE talk_id IN ({','.join('?' * len(ids))}) ORDER BY created_at, id", ids).fetchall()
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["talk_id"], []).append(dict(r))
+    return out
+
+
 def list_for(conn, article_title: str) -> list[dict]:
     """All talk for an article — open items first, then most-recent. A promoted correction
-    carries source_note_slug (the truth note it spawned), or NULL if that note was deleted."""
+    carries source_note_slug (the truth note it spawned), or NULL if that note was deleted.
+    Each item carries its `replies` (the owner↔AI conversation), oldest-first."""
     rows = conn.execute(
         "SELECT t.id, t.kind, t.body, t.author, t.created_at, t.resolved_at, t.resolution, "
         "t.is_correction, t.source_note_id, n.slug AS source_note_slug "
@@ -135,7 +170,11 @@ def list_for(conn, article_title: str) -> list[dict]:
         "WHERE t.article_title=? ORDER BY (t.resolved_at IS NULL) DESC, t.created_at DESC",
         (article_title,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    items = [dict(r) for r in rows]
+    reps = replies_for(conn, [it["id"] for it in items])
+    for it in items:
+        it["replies"] = reps.get(it["id"], [])
+    return items
 
 
 def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
@@ -143,6 +182,21 @@ def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
     conn.execute(
         "UPDATE article_talk SET resolved_at=datetime('now'), resolution=? WHERE id=? AND resolved_at IS NULL",
         ((how or "").strip()[:500] or None, talk_id))
+
+
+def dismiss(conn, talk_id: int, reason: str | None = None) -> bool:
+    """Owner terminal close — the same DB state as a maintenance resolution (resolved_at +
+    resolution) but LABELLED 'dismissed by owner' so the audit trail distinguishes owner
+    judgement from work the loop actually did. Guarded on resolved_at IS NULL (a harmless
+    no-op against a concurrent maintenance resolve). Returns whether a row was closed.
+    The caller must refuse this on 'correction' items (their truth note still heals the
+    article next pass, so hiding the row would mislead)."""
+    reason = (reason or "").strip()
+    label = "dismissed by owner" + (f": {reason}" if reason else "")
+    cur = conn.execute(
+        "UPDATE article_talk SET resolved_at=datetime('now'), resolution=? "
+        "WHERE id=? AND resolved_at IS NULL", (label[:500], talk_id))
+    return cur.rowcount > 0
 
 
 def open_for(conn, article_title: str) -> list[dict]:

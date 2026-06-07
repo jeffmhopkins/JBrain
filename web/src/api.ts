@@ -361,6 +361,18 @@ export const getNotePreview = (slug: string) =>
 export const refreshNoteAnalysis = (slug: string) =>
   post<any>(`/api/notes/${encodeURIComponent(slug)}/analysis`);
 
+// --- Article talk (KB maintenance conversation) -----------------------------
+// Reply to a talk item; dismiss one (owner judgement — refused on 'correction'); or run the
+// surgical maintenance pass on this article on demand (consumes open items + replies now).
+export const talkReply = (slug: string, talkId: number, body: string) =>
+  post<{ id: number }>(`/api/notes/${encodeURIComponent(slug)}/talk/${talkId}/reply`, { body });
+export const talkDismiss = (slug: string, talkId: number, reason = "") =>
+  post<{ ok: boolean }>(`/api/notes/${encodeURIComponent(slug)}/talk/${talkId}/dismiss`, { reason });
+export const talkMaintainNow = (slug: string) =>
+  post<{ ok: boolean; title: string; changed?: boolean; resolved?: number;
+         examined?: number; kept_open?: number; reason?: string }>(
+    `/api/notes/${encodeURIComponent(slug)}/talk/maintain-now`);
+
 // Attachments need the auth header, so a plain <a>/<img> won't work — fetch+blob.
 async function attachmentBlob(id: number): Promise<Blob> {
   const headers: Record<string, string> = {};

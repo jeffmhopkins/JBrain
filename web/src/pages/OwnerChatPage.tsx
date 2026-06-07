@@ -8,7 +8,7 @@ import { useAuth } from "../App";
 interface ChatDetail {
   link_id: number; token: string; url: string; owner_wrap: string; persist: boolean;
   otp_required: boolean; status: "active" | "closed"; guest_name: string | null;
-  saved_note_slug: string | null; expires_at: string | null;
+  owner_name: string | null; saved_note_slug: string | null; expires_at: string | null;
   present: { owner: boolean; guest: boolean };
 }
 
@@ -96,7 +96,7 @@ export default function OwnerChatPage() {
   return (
     <div className="content echat-content">
       <EncryptedChat ref={chatRef} channel={channel} role="owner"
-                     meName={brainName} peerName={detail.guest_name || "Guest"}
+                     meName={detail.owner_name || brainName} peerName={detail.guest_name || "Guest"}
                      brandName={brainName} persist={detail.persist} initialClosed={closed}
                      transport={transport} onClosed={onClosed}
                      headerExtra={

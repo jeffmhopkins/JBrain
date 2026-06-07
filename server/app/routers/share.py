@@ -540,6 +540,7 @@ def _chat_landing(conn, link, request: Request) -> dict:
     if st == "locked":
         raise HTTPException(status_code=403, detail="This chat is already open in another browser.")
     base = {"kind": "chat", "brain_name": get_settings().brain_name,
+            "owner_name": ch["owner_name"] or get_settings().brain_name,
             "otp_required": bool(ch["otp_required"]), "persist": bool(ch["persist"])}
     if st == "unclaimed":
         return {**base, "requires_claim": True}

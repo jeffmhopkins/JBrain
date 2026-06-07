@@ -525,11 +525,13 @@ CREATE TABLE IF NOT EXISTS chat_channels (
   share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
   persist       INTEGER NOT NULL DEFAULT 1,      -- 1 = keep the encrypted backlog; 0 = ephemeral (relay only)
   otp_required  INTEGER NOT NULL DEFAULT 0,      -- 1 = recipient must enter an out-of-band code (mixed into key derivation; NEVER stored)
+  pending_setup INTEGER NOT NULL DEFAULT 0,      -- 1 = AI-drafted; awaiting the owner's browser to mint the key (wraps empty until then)
   owner_wrap    TEXT NOT NULL,                   -- channel key sealed under a key derived from the access key {salt,iv,ct}
   guest_wrap    TEXT NOT NULL,                   -- channel key sealed under the link-fragment secret [+ OTP] {salt,iv,ct}
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   saved_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,   -- set when the transcript is committed to the brain
   guest_name    TEXT,                            -- display name the recipient gave on joining
+  owner_name    TEXT,                            -- display name shown to the recipient (defaults to the brain name)
   last_guest_at TEXT,
   last_owner_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

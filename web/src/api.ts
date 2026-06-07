@@ -260,7 +260,8 @@ export function openChatStream(path: string, auth: boolean, onEvent: (e: ChatStr
 
 // Owner side (authenticated).
 export const createChatShare = (body: { owner_wrap: string; guest_wrap: string; persist: boolean;
-    otp_required: boolean; label?: string | null; ttl_days?: number | null; single_use?: boolean }) =>
+    otp_required: boolean; label?: string | null; owner_name?: string | null;
+    ttl_days?: number | null; single_use?: boolean }) =>
   post<{ token: string; link_id: number; url: string }>("/api/shares/chat", body);
 export const chatDetail = <T = any>(linkId: number) => get<T>(`/api/shares/chat/${linkId}`);
 export const chatOwnerSend = (linkId: number, iv: string, ct: string) =>

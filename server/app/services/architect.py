@@ -47,7 +47,7 @@ _DEFAULT_MODE_TOOLS = {
                  "list_abnormal_labs", "show_lab_chart", "lab_stat", "lab_value_at", "list_upcoming", "event_history", "list_trips", "trip_detail", "add_list_item", "read_list",
                  "set_item_checked", "set_item_priority", "add_sublist", "log_entry",
                  "set_tags", "save_place", "create_share_link", "create_guided_share",
-                 "create_research_share",
+                 "create_research_share", "create_chat_share",
                  "list_share_links", "revoke_share_link", "kb_coverage_check",
                  "kb_citation_cleanup", "kb_audit", "kb_promote_recurrences",
                  "kb_taxonomy_health", "kb_titles", "kb_needed_links", "kb_research_links",
@@ -257,6 +257,12 @@ _TOOL_SCHEMAS = {
         "ttl_days": {"type": "integer", "default": 0},
         "bind": {"type": "boolean", "default": False, "description": "Lock to the first device that opens it."},
         "single_use": {"type": "boolean", "default": False, "description": "Allow only one recipient session."}}},
+    "create_chat_share": {"type": "object", "properties": {
+        "label": {"type": "string", "description": "Short label for the owner's reference, e.g. 'Chat with Sarah'."},
+        "owner_name": {"type": "string", "description": "Display name the recipient sees (defaults to the brain name)."},
+        "persist": {"type": "boolean", "default": True, "description": "Keep an encrypted backlog; false = ephemeral (relay only)."},
+        "otp_required": {"type": "boolean", "default": False, "description": "Require a one-time code delivered out-of-band (stronger; a leaked link alone can't decrypt)."},
+        "ttl_days": {"type": "integer", "default": 0, "description": "Expiry in days; 0 = never."}}},
     "list_share_links": {"type": "object", "properties": {}},
     "revoke_share_link": {"type": "object", "properties": {
         "token": {"type": "string"},
@@ -2066,6 +2072,37 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
     return f"applied: {display}", _record_applied(conn, conversation_id, "RESEARCH_SHARE", display, undo)
 
 
+def _tool_create_chat_share(conn, conversation_id, label=None, owner_name=None, persist=True,
+                            otp_required=False, ttl_days=0):
+    """Mint a DRAFT end-to-end-encrypted chat link. Because the channel key is generated in the
+    owner's browser (the server never sees it), the AI can only set it up — the owner FINALIZES
+    it in one tap under Advanced → Shares, which mints the key and reveals the link (+ one-time
+    code, if required) to send."""
+    from . import chat_share as chat_svc
+    token, link_id = chat_svc.create_pending_channel(
+        conn, persist=bool(persist), otp_required=bool(otp_required),
+        label=(label or "").strip()[:80] or None, owner_name=(owner_name or "").strip()[:80] or None,
+        ttl_days=ttl_days or None)
+    opts = []
+    opts.append("keeps history" if persist else "ephemeral (no history kept)")
+    if otp_required:
+        opts.append("needs a one-time code")
+    if ttl_days:
+        opts.append(f"expires in {int(ttl_days)} day(s)")
+    display = (f"Set up an encrypted chat “{label or owner_name or 'chat'}” ({', '.join(opts)}). "
+               f"It's a DRAFT — open Advanced → Shares and tap “Finalize & get link” to mint the "
+               f"encryption key (only your browser can) and copy the link to send.")
+    # No usable URL exists until the owner finalizes (the fragment key is browser-only), so the
+    # push points at Shares rather than a half-baked link.
+    try:
+        from . import push
+        push.notify("Encrypted chat ready to finalize", "Open Shares to mint the key and copy the link.", "/shares")
+    except Exception:  # noqa: BLE001
+        pass
+    undo = {"op": "revoke_share", "token": token}
+    return f"applied: {display}", _record_applied(conn, conversation_id, "CHAT_SHARE", display, undo)
+
+
 def _tool_list_share_links(conn):
     from . import share as share_svc
     rows = conn.execute(
@@ -2226,6 +2263,10 @@ def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assiste
                                            args.get("bind", False), args.get("single_use", False))
     if name == "list_share_links":
         return _tool_list_share_links(conn), None
+    if name == "create_chat_share":
+        return _tool_create_chat_share(conn, conversation_id, args.get("label"), args.get("owner_name"),
+                                       args.get("persist", True), args.get("otp_required", False),
+                                       args.get("ttl_days", 0))
     if name == "revoke_share_link":
         return _tool_revoke_share_link(conn, conversation_id, args.get("token"), args.get("title"))
     if name == "log_entry":

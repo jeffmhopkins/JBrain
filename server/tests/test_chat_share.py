@@ -115,6 +115,26 @@ def test_append_to_closed_channel_rejected(conn):
         cs.append_message(conn, link_id, "guest", "i", "c")
 
 
+def test_pending_chat_is_inert_until_finalized(conn):
+    """An AI-drafted chat link has no key yet (wraps empty, pending_setup=1) and is
+    unreachable by a recipient until the owner finalizes it in the browser."""
+    from fastapi import HTTPException
+    token, link_id = cs.create_pending_channel(
+        conn, persist=True, otp_required=True, label="Chat with Sarah", owner_name="Jeff", ttl_days=0)
+    conn.commit()
+    ch = cs.get_channel(conn, link_id)
+    assert ch["pending_setup"] == 1 and ch["owner_wrap"] == "" and ch["guest_wrap"] == ""
+    assert cs.owner_detail(conn, link_id)["pending_setup"] is True
+    link = share_svc.resolve_active_link(conn, token)
+    with pytest.raises(HTTPException):                       # recipient can't open a keyless draft
+        cs.channel_for_link(conn, link)
+    # Owner's browser mints the key and supplies the wraps.
+    cs.finalize_channel(conn, link_id, owner_wrap="OW", guest_wrap="GW")
+    conn.commit()
+    assert cs.owner_detail(conn, link_id)["pending_setup"] is False
+    assert cs.channel_for_link(conn, link)["guest_wrap"] == "GW"
+
+
 def test_save_to_brain_is_idempotent(conn):
     """A second auto-save (e.g. from another owner device) returns the existing note
     instead of writing a duplicate. Exercised via the saved_note_id short-circuit so the

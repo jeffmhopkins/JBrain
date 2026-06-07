@@ -633,6 +633,7 @@ class ChatCreateIn(BaseModel):
     persist: bool = True
     otp_required: bool = False
     label: str | None = Field(default=None, max_length=80)
+    owner_name: str | None = Field(default=None, max_length=80)   # display name shown to the recipient
     ttl_days: int | None = None
     single_use: bool = False
 
@@ -645,7 +646,8 @@ def chat_create(body: ChatCreateIn):
     token, link_id = chat_svc.create_channel(
         conn, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap,
         persist=body.persist, otp_required=body.otp_required,
-        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, single_use=body.single_use)
+        label=(body.label or "").strip()[:80] or None, ttl_days=body.ttl_days, single_use=body.single_use,
+        owner_name=body.owner_name)
     conn.commit()
     return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
 
@@ -653,6 +655,21 @@ def chat_create(body: ChatCreateIn):
 @router.get("/chat/{link_id}")
 def chat_detail(link_id: int):
     return chat_svc.owner_detail(get_conn(), link_id)
+
+
+class ChatFinalizeIn(BaseModel):
+    owner_wrap: str = Field(max_length=4000)
+    guest_wrap: str = Field(max_length=4000)
+
+
+@router.post("/chat/{link_id}/finalize")
+def chat_finalize(link_id: int, body: ChatFinalizeIn):
+    """Complete an AI-drafted chat link: the owner's browser minted the key and supplies the
+    two wraps, which makes the link usable. The raw key still never reaches the server."""
+    conn = get_conn()
+    chat_svc.finalize_channel(conn, link_id, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap)
+    conn.commit()
+    return {"ok": True, "url": chat_svc.owner_detail(conn, link_id)["url"]}
 
 
 @router.get("/chat/{link_id}/stream")

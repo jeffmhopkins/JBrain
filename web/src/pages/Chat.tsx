@@ -128,6 +128,15 @@ export default function Chat() {
   // When Entry is active, re-pressing it EXPANDS this row in place (Research/Full Brain become
   // Medical/Financial); collapsed = plain Generic. `effSub` derives the active sub from this.
   const [subPicker, setSubPicker] = useState(false);
+  // Briefly flash the two cells that changed (slots 2 & 3) when the row morphs between
+  // Research/Full Brain and Medical/Financial, so the swap is visually obvious.
+  const [flashCells, setFlashCells] = useState(false);
+  const morphFlashTimer = useRef<number>();
+  function flashMorph() {
+    setFlashCells(true);
+    clearTimeout(morphFlashTimer.current);
+    morphFlashTimer.current = window.setTimeout(() => setFlashCells(false), 420);
+  }
   // Read-only "Deep" opt-in (Research only): bigger budget, same strict facts-only posture.
   const [deep, setDeep] = useState(false);
   // Medical/Financial destination picklists (notes/<root>/<dest>/…), lazily loaded the first
@@ -302,7 +311,7 @@ export default function Chat() {
     if (m === "entry" && mode === "entry") {
       // Re-press the active Entry segment → EXPAND the row in place: Research/Full Brain
       // become Medical/Financial (the sub-type picker). No extra row is added.
-      setSubPicker(true);
+      setSubPicker(true); flashMorph();
       return;
     }
     setMode(m); sessionStorage.setItem("jbrain_mode", m);
@@ -311,7 +320,7 @@ export default function Chat() {
   // In the expanded sub-picker: tapping Medical/Financial selects that sub-type (stays expanded);
   // tapping the Entry segment collapses back to the mode picker (= plain Generic entry).
   function selectSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
-  function collapseSub() { setSubPicker(false); setSub("generic"); }
+  function collapseSub() { setSubPicker(false); setSub("generic"); flashMorph(); }
 
   // Load the Medical destinations the first time the Medical sub-type is entered.
   useEffect(() => {
@@ -851,22 +860,18 @@ export default function Chat() {
         <div className="seg mode-seg">
           {!(mode === "entry" && subPicker) ? (
             MODES.map((m) => (
-              <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}`}
+              <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}${m.key !== "entry" && flashCells ? " cell-flash" : ""}`}
                       title={m.key === "entry" && mode === "entry" ? "Tap again for Medical · Financial" : m.hint}
                       onClick={() => pick(m.key)}>
                 <Icon name={m.icon} size={15} /> {m.label}
-                {m.key === "entry" && mode === "entry" && (
-                  <Icon name="chevron" size={13} className="sub-caret" />
-                )}
               </button>
             ))
           ) : (
             SUB_SEGS.map((s) => (
-              <button key={s.key} className={`${s.mclass}${sub === s.key ? " on" : ""}`}
+              <button key={s.key} className={`${s.mclass}${sub === s.key ? " on" : ""}${s.key !== "generic" && flashCells ? " cell-flash" : ""}`}
                       title={s.key === "generic" ? "Back to Research · Full Brain" : `File under notes/${s.key}/`}
                       onClick={() => (s.key === "generic" ? collapseSub() : selectSub(s.key))}>
                 <Icon name={s.icon} size={15} /> {s.label}
-                {s.key === "generic" && <Icon name="chevron" size={13} className="sub-caret open" />}
               </button>
             ))
           )}

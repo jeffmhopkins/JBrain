@@ -866,25 +866,33 @@ def rebuild_sources(conn, title: str, instructions: str | None = None):
     return art, instr, prior
 
 
-def finalize_rebuild(conn, title: str, content_md: str, talk=None, *, prior_note_id: int | None = None) -> None:
+def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
+                     prior_note_id: int | None = None, rename_to: str | None = None) -> None:
     """Persist a rebuilt article body and re-link it into the KB: upsert (revive-in-place,
     keeping slug + version history), reconnect inbound links, record talk, rebuild the entity
     index + disambiguation pages, and sweep dead links. The caller must hold the KB write lock
     and commit afterwards. Shared by the nightly rebuild_article and the live Accept path so
-    they can't drift."""
+    they can't drift.
+
+    `rename_to` (live Accept only, with the user's explicit approval) retitles the article in
+    place: an id-targeted write changes the slug and rewrites inbound [[links]], exactly as the
+    notes rename (PUT) path does."""
     from . import entity_index, article_talk, notes as notes_svc
-    notes_svc.upsert_note(conn, title, content_md, kind="kb",
-                          source="rebuild", version_note="rebuilt from sources")
+    new_title = (rename_to or "").strip() or title
+    if new_title.lower() != title.lower() and prior_note_id is not None:
+        notes_svc.upsert_note(conn, new_title, content_md, note_id=prior_note_id, kind="kb",
+                              source="rebuild", version_note="rebuilt from sources (renamed)")
+    else:
+        notes_svc.upsert_note(conn, new_title, content_md, kind="kb",
+                              source="rebuild", version_note="rebuilt from sources")
     # soft_delete (nightly path) nulled inbound links' target_note_id; re-point them at the
-    # revived row so other articles' [[links]] to this one reconnect (as restore() does).
-    nid = prior_note_id
-    if nid is None:
-        row = notes_svc.get_by_title(conn, title)
-        nid = row["id"] if row else None
+    # revived/renamed row so other articles' [[links]] to this one reconnect (as restore() does).
+    row = notes_svc.get_by_title(conn, new_title)
+    nid = row["id"] if row else prior_note_id
     if nid is not None:
-        wikilinks.resolve_dangling_links(conn, nid, title)
+        wikilinks.resolve_dangling_links(conn, nid, new_title)
     if talk:
-        article_talk.record(conn, title, talk)
+        article_talk.record(conn, new_title, talk)
     entity_index.rebuild(conn)                 # relink entity → fresh article
     entity_index.write_disambiguation_pages(conn)
     flag_dead_links(conn)                      # sweep any dangling cross-links

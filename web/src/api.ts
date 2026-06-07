@@ -704,8 +704,8 @@ export const searchRebuildSources = (runId: string, q: string) =>
   get<{ note_id: number; title: string; date: string }[]>(
     `/api/kb/rebuild/${runId}/search?q=${encodeURIComponent(q)}`);
 
-export const acceptRebuild = (runId: string) =>
-  post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`);
+export const acceptRebuild = (runId: string, renameTo?: string) =>
+  post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`, { rename_to: renameTo ?? null });
 
 export const rejectRebuild = (runId: string) =>
   post<{ ok: boolean }>(`/api/kb/rebuild/${runId}/reject`);

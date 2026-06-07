@@ -21,7 +21,10 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 class MessageIn(BaseModel):
     text: str
-    mode: str = "assisted"          # 'assisted' | 'research' | 'analyze'
+    mode: str = "assisted"          # 'assisted' (Full Brain) | 'research' (read-only)
+    # Read-only "Deep" opt-in: raise the research budget for a multi-step question. Ignored
+    # for write modes (Full Brain already reasons deeply).
+    deep: bool = False
     lat: float | None = None
     lon: float | None = None
     location_label: str | None = None
@@ -37,7 +40,11 @@ _CANONICAL_MODES = ("assisted", "research", "analyze")
 # Legacy / forward-incompatible wire strings mapped to a canonical mode. The invariant:
 # read-only strings MUST map to a read-only mode and write strings to a write mode — never
 # cross the boundary. (Populated when a mode is retired, e.g. "analyze" -> "research".)
-_MODE_ALIASES: dict[str, str] = {}
+_MODE_ALIASES: dict[str, str] = {
+    # The old read-only "analyze" mode folded into "research" (strict prompt + a per-turn
+    # "deep" budget opt-in). A stale client sending "analyze" lands read-only, never write.
+    "analyze": "research",
+}
 
 
 def normalize_mode(raw: str) -> str:
@@ -141,7 +148,7 @@ def send_message(conversation_id: int, body: MessageIn):
         async def pump():
             try:
                 async for event in architect.run(conversation_id, body.text, location, mode,
-                                                 fresh_context=body.fresh_context):
+                                                 fresh_context=body.fresh_context, deep=body.deep):
                     await queue.put(("event", event))
             except Exception:  # don't hang the client; log detail server-side, not to the user
                 logging.getLogger("jbrain").exception("chat stream failed")

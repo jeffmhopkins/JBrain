@@ -14,6 +14,7 @@
   --m-medical: #cf8d8d;         /* clinical red */
   --m-assisted: #8aacba;        /* the house accent */
   --m-research: #c4ad6e;        /* muted gold — read-only */
+  --m-financial: #b89cd6;       /* violet — money (Entry → Financial sub-type) */
   --danger: #c08585;
   --ok: #84a591;
   /* Semantic tones reused across diff/approval/status surfaces. Kept as tokens so
@@ -47,6 +48,7 @@
   --m-medical: #c0504e;
   --m-assisted: #2f7d97;
   --m-research: #9a7b1f;
+  --m-financial: #7a4fb0;
   --danger: #b3403f;
   --ok: #2f8f5b;
   --good: #1f9d54;
@@ -67,6 +69,7 @@
   --m-medical: #962826;
   --m-assisted: #0f5870;
   --m-research: #6f5400;
+  --m-financial: #5b2d9c;
   --danger: #962826;
   --ok: #0f6a3c;
   --good: #0f6a3c;
@@ -1210,3 +1213,30 @@ button.cal-pill { border: none; color: var(--text); }
 .cal-snack span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cal-snack-undo { background: none; border: none; color: var(--accent);
   font-weight: 600; font-size: 13px; cursor: pointer; padding: 0; flex: none; }
+
+/* ---- Modes redesign: 3-mode segmented picker + Entry sub-selector ---------
+   Appended last so the per-mode accents win over the base .seg button.on rule. */
+.m-full { --mc: var(--m-assisted); }          /* Full Brain reuses the house accent */
+.m-financial { --mc: var(--m-financial); }    /* Financial Entry sub-type */
+
+/* Top-level 3-mode picker — reuses .seg, on its own row above the textarea. */
+.mode-seg { width: 100%; margin-bottom: 10px; }
+.mode-seg button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 6px; font-size: 13px; font-weight: 600;
+}
+.mode-seg button .icon { color: currentColor; }
+.mode-seg button.on { background: color-mix(in srgb, var(--mc) 18%, transparent); color: var(--text); }
+.mode-seg button.on .icon { color: var(--mc); }
+
+/* Entry sub-selector (Generic / Medical / Financial) — a smaller .seg, accent per sub-type. */
+.sub-seg { width: 100%; margin-bottom: 8px; }
+.sub-seg button { flex: 1; padding: 6px 4px; font-size: 12px; font-weight: 600; }
+.sub-seg button.on { background: color-mix(in srgb, var(--mc) 18%, transparent); color: var(--text); }
+
+/* Financial destination row reuses the .med-dest-row layout with a violet leading icon. */
+.fin-dest-row .icon { color: var(--m-financial); }
+
+/* Compose safety / scope line under the composer; dot tinted by the current mode/sub accent. */
+.compose-safety { display: flex; align-items: center; gap: 7px; margin-top: 8px; font-size: 11.5px; color: var(--text-dim); }
+.compose-safety .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--mc, var(--text-dim)); flex: none; }

@@ -194,13 +194,16 @@ def next_dated_title(conn, day) -> str:
 
 
 _MED_ROOT = "medical"
+# Capture roots the Entry sub-selector can file into (notes/<root>/<dest>/NN). An enum —
+# never free text spliced into a path; the entry router clamps anything else to medical.
+CAPTURE_ROOTS = ("medical", "financial")
 
 
-def sanitize_dest(dest: str) -> str:
-    """A safe folder path under notes/medical/ from a user-supplied destination name.
+def sanitize_dest(dest: str, root: str = _MED_ROOT) -> str:
+    """A safe folder path under notes/<root>/ from a user-supplied destination name.
 
     Collapses whitespace, drops empty/'.'/'..' segments (no path traversal), caps each
-    segment and the whole path, and strips a leading 'notes'/'medical' the caller may
+    segment and the whole path, and strips a leading 'notes'/'<root>' the caller may
     have included. Nested names ('Cardiology/Visits') are preserved. '' if nothing safe
     remains."""
     raw = (dest or "").strip().strip("/")
@@ -210,18 +213,25 @@ def sanitize_dest(dest: str) -> str:
         if not s or s in (".", ".."):
             continue
         segs.append(s[:60])
-    while segs and segs[0].lower() in ("notes", _MED_ROOT):
+    while segs and segs[0].lower() in ("notes", root):
         segs.pop(0)
     return "/".join(segs)[:160]
 
 
-def next_medical_title(conn, dest: str) -> str:
-    """Next medical-capture slot: notes/medical/<dest>/NN (dest sanitized; falls back to
-    notes/medical/General when empty). Reuses the dated-tree per-folder numbering, so a
-    destination's captures sort .../01, .../02, … and never collide with a deleted one."""
-    d = sanitize_dest(dest) or "General"
-    folder = f"{_MED_ROOT}/{d}"
+def next_capture_title(conn, root: str, dest: str) -> str:
+    """Next capture slot under an Entry sub-selector root: notes/<root>/<dest>/NN (dest
+    sanitized; falls back to notes/<root>/General when empty). `root` is clamped to a known
+    capture root. Reuses the dated-tree per-folder numbering, so a destination's captures
+    sort .../01, .../02, … and never collide with a deleted one."""
+    r = root if root in CAPTURE_ROOTS else _MED_ROOT
+    d = sanitize_dest(dest, r) or "General"
+    folder = f"{r}/{d}"
     return f"notes/{folder}/{max_dated_n(conn, folder) + 1:02d}"
+
+
+def next_medical_title(conn, dest: str) -> str:
+    """Back-compat wrapper for medical capture: notes/medical/<dest>/NN."""
+    return next_capture_title(conn, _MED_ROOT, dest)
 
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:

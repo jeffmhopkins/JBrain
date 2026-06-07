@@ -1,7 +1,7 @@
 import { FormEvent, TouchEvent as ReactTouchEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { approveExternalLookup, createEntry, denyExternalLookup, extractLabs, get, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setMedicalDests, streamChat, uploadAttachment } from "../api";
+import { approveExternalLookup, createEntry, denyExternalLookup, extractLabs, get, getFinancialDests, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setFinancialDests, setMedicalDests, streamChat, uploadAttachment } from "../api";
 import { useGeo, useOnline, useTts, useTtsEnabled } from "../hooks";
 import StagingPanel from "../components/StagingPanel";
 import LabChartCard from "../components/LabChartCard";
@@ -21,7 +21,11 @@ import { shouldOpenHistoryOnSwipe } from "../swipeGesture";
 // `dbId` is the persisted message row id (used to fetch its tool-call history); `stepCount`
 // is how many tools that reply ran (drives the history pill). Both arrive from loadMessages.
 interface Msg { role: "user" | "assistant" | "event"; content: string; id?: number; dbId?: number; stepCount?: number; }
-type Mode = "entry" | "medical" | "assisted" | "research" | "analyze";
+// Three top-level modes. Entry (write, no AI) carries a sub-type selector below;
+// Research is read-only; Full Brain has full tool access.
+type Mode = "entry" | "research" | "full";
+// Entry sub-types — each files capture into a different tree (folder-only).
+type EntrySub = "generic" | "medical" | "financial";
 
 // Render an applied-action summary with any URL made clickable (so a freshly-minted
 // share link is tappable right on the card).
@@ -50,17 +54,26 @@ function speechText(md: string): string {
 
 const MODES: { key: Mode; label: string; icon: string; hint: string }[] = [
   { key: "entry", label: "Entry", icon: "plus", hint: "Straight to your wiki · no AI" },
-  { key: "medical", label: "Medical", icon: "medical", hint: "Labs, notes & procedures" },
-  { key: "assisted", label: "Assisted", icon: "robot", hint: "Talk it out — AI proposes notes" },
   { key: "research", label: "Research", icon: "search", hint: "Read-only · ask your brain" },
-  { key: "analyze", label: "Analyze", icon: "robot", hint: "Read-only · reason over your brain" },
+  { key: "full", label: "Full Brain", icon: "robot", hint: "Full tool access · proposes & edits" },
 ];
-const PLACEHOLDER: Record<Mode, string> = {
+// Entry sub-types. `mclass` drives the per-sub accent (--mc) via styles.css; `root` is the
+// capture tree the note files into (Generic = the dated tree, no dest).
+const SUBS: { key: EntrySub; label: string; mclass: string; root?: string; placeholder: string; safety: string }[] = [
+  { key: "generic", label: "Generic", mclass: "m-entry", placeholder: "Write an entry…", safety: "Saved straight to your wiki — no AI." },
+  { key: "medical", label: "Medical", mclass: "m-medical", root: "medical", placeholder: "Log a lab, note, procedure…", safety: "Filed to notes/medical/ — lab PDFs get staged for review." },
+  { key: "financial", label: "Financial", mclass: "m-financial", root: "financial", placeholder: "Log a statement, receipt, transaction…", safety: "Filed to notes/financial/ — folder-only." },
+];
+// Per top-level mode placeholder/safety (Entry's come from the active sub-type instead).
+const MODE_PLACEHOLDER: Record<Mode, string> = {
   entry: "Write an entry…",
-  medical: "Log a lab, note, procedure…",
-  assisted: "Talk it out…",
   research: "Ask your brain… (read-only)",
-  analyze: "Ask an in-depth question… (read-only)",
+  full: "Talk it out — full tool access…",
+};
+const MODE_SAFETY: Record<Mode, string> = {
+  entry: "",   // Entry uses the sub-type's safety line
+  research: "Read-only · won’t change anything in your brain.",
+  full: "Full tools — can edit your brain (staging + one-tap undo).",
 };
 // Modes a stored session value is allowed to resolve to. A blind cast of a stale or unknown
 // sessionStorage value would crash the composer (`MODES.find(...)!` → undefined → throw), so
@@ -68,8 +81,17 @@ const PLACEHOLDER: Record<Mode, string> = {
 // Unknown / retired values fall back to the launch default rather than crashing.
 const VALID_MODES: Mode[] = MODES.map((m) => m.key);
 const DEFAULT_MODE: Mode = "entry";   // fresh launch lands on Entry (the most common quick action)
+// Remap retired mode strings a returning session may still hold: medical→entry (now an Entry
+// sub-type), assisted→full, analyze→research (read stays read). Unknown → the launch default.
+const LEGACY_MODE: Record<string, Mode> = { medical: "entry", assisted: "full", analyze: "research" };
 function normalizeMode(raw: string | null): Mode {
-  return raw && (VALID_MODES as string[]).includes(raw) ? (raw as Mode) : DEFAULT_MODE;
+  if (raw && (VALID_MODES as string[]).includes(raw)) return raw as Mode;
+  if (raw && LEGACY_MODE[raw]) return LEGACY_MODE[raw];
+  return DEFAULT_MODE;
+}
+const VALID_SUBS: EntrySub[] = SUBS.map((s) => s.key);
+function normalizeSub(raw: string | null): EntrySub {
+  return raw && (VALID_SUBS as string[]).includes(raw) ? (raw as EntrySub) : "generic";
 }
 // Friendly tool labels (the "Searching your notes…" status, and the per-reply tool-call
 // history) live in ../toolLabels so the streaming status and the history view never drift.
@@ -94,11 +116,17 @@ export default function Chat() {
   // but a fresh PWA launch starts a new session → empty → defaults to Entry mode.
   // normalizeMode() also guards against a stale/retired persisted value crashing the composer.
   const [mode, setMode] = useState<Mode>(() => normalizeMode(sessionStorage.getItem("jbrain_mode")));
+  // Entry sub-type. Sticky per device (mirrors the dest preference), defaulting to Generic.
+  const [sub, setSub] = useState<EntrySub>(() => normalizeSub(localStorage.getItem("jbrain_entry_sub")));
+  // Read-only "Deep" opt-in (Research only): bigger budget, same strict facts-only posture.
+  const [deep, setDeep] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  // Medical-mode destination picklist (notes/medical/<dest>/…), lazily loaded the first
-  // time Medical mode is used; the chosen destination persists per device.
+  // Medical/Financial destination picklists (notes/<root>/<dest>/…), lazily loaded the first
+  // time each sub-type is used; the chosen destination persists per device.
   const [dests, setDests] = useState<string[]>([]);
   const [curDest, setCurDest] = useState<string>(() => localStorage.getItem("jbrain_med_dest") || "");
+  const [finDests, setFinDests] = useState<string[]>([]);
+  const [curFinDest, setCurFinDest] = useState<string>(() => localStorage.getItem("jbrain_fin_dest") || "");
 
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -260,17 +288,27 @@ export default function Chat() {
   }, [input]);
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); setMenuOpen(false); }
+  function pickSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
 
-  // Load the medical destinations the first time Medical mode is entered.
+  // Load the Medical destinations the first time the Medical sub-type is entered.
   useEffect(() => {
-    if (mode !== "medical" || dests.length) return;
+    if (!(mode === "entry" && sub === "medical") || dests.length) return;
     getMedicalDests().then(({ names }) => {
       setDests(names);
       setCurDest((c) => (c && names.includes(c) ? c : names[0] || ""));
     }).catch(() => { /* offline — keep an empty picker */ });
-  }, [mode, dests.length]);
+  }, [mode, sub, dests.length]);
+  // Load the Financial destinations the first time the Financial sub-type is entered.
+  useEffect(() => {
+    if (!(mode === "entry" && sub === "financial") || finDests.length) return;
+    getFinancialDests().then(({ names }) => {
+      setFinDests(names);
+      setCurFinDest((c) => (c && names.includes(c) ? c : names[0] || ""));
+    }).catch(() => { /* offline — keep an empty picker */ });
+  }, [mode, sub, finDests.length]);
   function pickDest(d: string) { setCurDest(d); localStorage.setItem("jbrain_med_dest", d); }
-  // Add a new destination inline (full management lives in Advanced → Medical).
+  function pickFinDest(d: string) { setCurFinDest(d); localStorage.setItem("jbrain_fin_dest", d); }
+  // Add a new destination inline (full management lives in Advanced).
   async function addDest() {
     const name = window.prompt("New medical destination (e.g. “2026-03 Admission”)")?.trim();
     if (!name) return;
@@ -278,6 +316,15 @@ export default function Chat() {
       const { names } = await setMedicalDests([...dests, name]);
       setDests(names);
       pickDest(names.find((n) => n.toLowerCase() === name.toLowerCase()) || names[names.length - 1] || name);
+    } catch { alert("Couldn’t save that destination — please try again."); }
+  }
+  async function addFinDest() {
+    const name = window.prompt("New financial destination (e.g. “2026 Brokerage”)")?.trim();
+    if (!name) return;
+    try {
+      const { names } = await setFinancialDests([...finDests, name]);
+      setFinDests(names);
+      pickFinDest(names.find((n) => n.toLowerCase() === name.toLowerCase()) || names[names.length - 1] || name);
     } catch { alert("Couldn’t save that destination — please try again."); }
   }
 
@@ -432,11 +479,12 @@ export default function Chat() {
       if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
       return;
     }
-    if (mode === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
+    if (mode === "entry" && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
+    if (mode === "entry" && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
     sendingRef.current = true;
     setProposals([]);   // a new turn supersedes any pending external-lookup chips
-    // Both chat modes stream a spoken-able prose reply; entry/medical don't.
-    const speakable = mode === "assisted" || mode === "research" || mode === "analyze";
+    // Both chat modes stream a spoken-able prose reply; entry captures don't.
+    const speakable = mode === "research" || mode === "full";
     // Unlock speech NOW, inside the tap's user gesture, so reading the reply aloud
     // later (from an async callback) isn't blocked by mobile autoplay policies.
     if (speakable && ttsOn.enabled) tts.prime();
@@ -454,23 +502,28 @@ export default function Chat() {
     // post fires un-stamped rather than freezing; awaited just before each network call.
     const coordsP = geo.getCoords(GEO_MAX_WAIT);
 
-    if (mode === "entry" || mode === "medical") {
-      // Optimistic capture bubble — the only immediate feedback these modes get (no reply).
+    if (mode === "entry") {
+      // Snapshot the sub-type for THIS send so a mid-flight toggle (during upload/await) can't
+      // redirect the destination or the lab-staging decision.
+      const curSub = sub;
+      // Optimistic capture bubble — the only immediate feedback Entry gets (no reply).
       const enId = ++entrySeq.current;
       setEntries((xs) => [...xs, { id: enId, text: bubble, title: "", slug: "", pending: true }]);
       setBusy(true);
       try {
-        const dest = mode === "medical" ? (curDest || undefined) : undefined;
+        const dest = curSub === "medical" ? (curDest || undefined)
+                   : curSub === "financial" ? (curFinDest || undefined) : undefined;
+        const destRoot = curSub === "medical" ? "medical" : curSub === "financial" ? "financial" : undefined;
         const coords = await coordsP;
-        const r = await createEntry(text || (files.length ? files[0].name : "Untitled"), undefined, coords, dest);
+        const r = await createEntry(text || (files.length ? files[0].name : "Untitled"), undefined, coords, dest, destRoot);
         let labMsg = "";
         if (files.length) {
           // Images auto-analyze server-side (analyze defaults to true).
           const errs = await uploadAll(r.slug, files, true);
           if (errs.length) labMsg += ` · ${errs.length} file(s) couldn't attach`;
-          // Medical mode: if any upload was a lab PDF, STAGE its values for review. extractLabs
+          // Medical sub-type: if any upload was a lab PDF, STAGE its values for review. extractLabs
           // is note-level — it stages every PDF on the note — so call it once after the batch.
-          if (mode === "medical" && files.some((f) => /\.pdf$/i.test(f.name))) {
+          if (curSub === "medical" && files.some((f) => /\.pdf$/i.test(f.name))) {
             try {
               const lab = await extractLabs(r.slug);
               if (lab.staged) labMsg += ` · ${lab.staged} lab results extracted — open the note to review & approve`;
@@ -515,7 +568,7 @@ export default function Chat() {
     try {
       cid = await ensureConversation();
       let extra = "";
-      if (mode === "assisted" && files.length) {
+      if (mode === "full" && files.length) {
         // One carrier note PER file (each file gets its own titled note + wikilink) so
         // there's something to attach each to. Skip auto-analysis on images: these carrier
         // notes have no real content to inform it (audio still auto-transcribes, server-side).
@@ -578,7 +631,7 @@ export default function Chat() {
           bufRef.current = ""; shownRef.current = 0; streamActiveRef.current = false;
           setMessages((m) => m.map((x) => x.id === asstId ? { ...x, content: `⚠️ ${ev.message}` } : x));
         }
-      }, coords, mode === "assisted" ? "assisted" : mode, freshCtx);
+      }, coords, mode === "full" ? "assisted" : "research", freshCtx, mode === "research" && deep);
       // Read the finished reply aloud when the top-bar toggle is on (Assisted + Research).
       if (speakable && !errored && ttsOn.enabled) tts.speak(speechText(bufRef.current));
       // Stream finished delivering: let the typewriter reveal the remaining buffered
@@ -634,6 +687,12 @@ export default function Chat() {
   }
 
   const cur = MODES.find((m) => m.key === mode)!;
+  const curSubDef = SUBS.find((s) => s.key === sub)!;
+  // Accent class driving --mc for the compose-safety line: the sub-type's accent in Entry,
+  // else the mode's. Placeholder/safety likewise come from the sub-type when in Entry.
+  const accentClass = mode === "entry" ? curSubDef.mclass : `m-${mode}`;
+  const composerPlaceholder = mode === "entry" ? curSubDef.placeholder : MODE_PLACEHOLDER[mode];
+  const safetyText = mode === "entry" ? curSubDef.safety : MODE_SAFETY[mode];
 
   return (
     <div className="chat-wrap">
@@ -648,9 +707,11 @@ export default function Chat() {
         {messages.length === 0 && entries.length === 0 && (
           <div className="msg assistant muted">
             {mode === "entry"
-              ? "Type below and Send — it’s saved straight to your wiki (the AI isn’t involved)."
-              : mode === "medical"
-              ? "Log medical info — it’s saved under notes/medical/<destination>. Pick or add a destination below."
+              ? (sub === "medical"
+                  ? "Log medical info — saved under notes/medical/<destination>. Pick or add a destination below."
+                  : sub === "financial"
+                  ? "Log financial info — saved under notes/financial/<destination>. Pick or add a destination below."
+                  : "Type below and Send — it’s saved straight to your wiki (the AI isn’t involved).")
               : mode === "research"
               ? "Ask anything about your notes — I only read; I won’t change anything."
               : "Tell me what you want to capture. I’ll ask questions, then propose a note to confirm."}
@@ -746,8 +807,26 @@ export default function Chat() {
         <div ref={endRef} />
       </div>
 
-      {/* Compose box (rounded), shared across modes. */}
-      <div className="composer-box">
+      {/* Compose box (rounded). The accent class drives --mc for the safety line. */}
+      <div className={`composer-box ${accentClass}`}>
+        {/* Top-level 3-mode segmented picker (its own row). */}
+        <div className="seg mode-seg">
+          {MODES.map((m) => (
+            <button key={m.key} className={`m-${m.key}${m.key === mode ? " on" : ""}`}
+                    title={m.hint} onClick={() => pick(m.key)}>
+              <Icon name={m.icon} size={15} /> {m.label}
+            </button>
+          ))}
+        </div>
+        {/* Entry sub-selector — only in Entry. */}
+        {mode === "entry" && (
+          <div className="seg sub-seg">
+            {SUBS.map((s) => (
+              <button key={s.key} className={`${s.mclass}${s.key === sub ? " on" : ""}`}
+                      onClick={() => pickSub(s.key)}>{s.label}</button>
+            ))}
+          </div>
+        )}
         {pendingFiles.map((f, i) => (
           <div key={`${f.name}-${i}`} className="attach-chip">
             <Icon name="clip" size={14} /> {f.name}
@@ -761,7 +840,7 @@ export default function Chat() {
             {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
           </div>
         )}
-        {mode === "medical" && (
+        {mode === "entry" && sub === "medical" && (
           <div className="med-dest-row">
             <Icon name="medical" size={14} />
             <span className="muted">notes/medical/</span>
@@ -772,33 +851,32 @@ export default function Chat() {
             <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
           </div>
         )}
+        {mode === "entry" && sub === "financial" && (
+          <div className="med-dest-row fin-dest-row">
+            <Icon name="list" size={14} />
+            <span className="muted">notes/financial/</span>
+            <select className="med-dest-select" value={curFinDest} onChange={(e) => pickFinDest(e.target.value)}>
+              {finDests.length === 0 && <option value="">(add a destination)</option>}
+              {finDests.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addFinDest}>＋ New</button>
+          </div>
+        )}
         <textarea
           ref={taRef}
           rows={1}
-          placeholder={online ? PLACEHOLDER[mode] : "Offline — reconnect to continue"}
+          placeholder={online ? composerPlaceholder : "Offline — reconnect to continue"}
           value={input} disabled={!online}
           onChange={(e) => setInput(e.target.value)}
         />
         <div className="composer-row">
-          <span className="mode-wrap">
-            <button className={`mode-chip m-${mode}`} onClick={() => setMenuOpen((o) => !o)}>
-              <Icon name={cur.icon} size={18} /> {cur.label}
-            </button>
-            {menuOpen && (
-              <div className="mode-menu">
-                {MODES.map((m) => (
-                  <button key={m.key} className={`mode-row m-${m.key}${m.key === mode ? " sel" : ""}`}
-                          onClick={() => pick(m.key)}>
-                    <span className="mode-tile"><Icon name={m.icon} size={18} /></span>
-                    <span className="mode-label">{m.label}</span>
-                    <span className="mode-hint">{m.hint}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </span>
+          {/* Research "Deep" opt-in: bigger budget, same strict read-only posture. */}
+          {mode === "research" && (
+            <button className={`icon-btn${deep ? " active" : ""}`} title="Deep analysis — a bigger budget for multi-step questions (still read-only)"
+                    onClick={() => setDeep((d) => !d)}><Icon name="bolt" size={18} /></button>
+          )}
           <span className="spacer" />
-          {mode !== "research" && mode !== "analyze" && (
+          {mode !== "research" && (
             <>
               <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                      onChange={(e) => {
@@ -815,6 +893,7 @@ export default function Chat() {
           <button className="icon-btn send" title="Send" onClick={() => send()}
                   disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" /></button>
         </div>
+        <div className="compose-safety"><span className="sdot" />{safetyText}</div>
       </div>
     </div>
   );

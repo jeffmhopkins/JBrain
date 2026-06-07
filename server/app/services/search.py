@@ -106,7 +106,8 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False) -
             # only fires on the safe surface set (real keys / multi-token or user-decided
             # aliases, ambiguous dropped), so common words and bare heuristic first names don't
             # expand. Union with the whole-query ids; bump() dedups so no note is double-counted.
-            span_ids = entity_index.span_entity_note_ids(conn, q)
+            # Thread the already-computed `ambiguous` set in so it isn't recomputed inside.
+            span_ids = entity_index.span_entity_note_ids(conn, q, ambiguous=ambiguous)
             seen = set(ids)
             ids = ids + [i for i in span_ids if not (i in seen or seen.add(i))]
             if ids:

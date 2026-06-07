@@ -279,6 +279,93 @@ def test_span_note_cap_respected(conn):
     assert len(ids) <= 3, "blended note ids must be capped by max_notes"
 
 
+# ---- J. single-token common-word / short keys are gated (red-team FIX 1) ----------------
+
+def test_common_word_entity_key_does_not_expand(conn):
+    """An entity literally named "Home" (canonical key "home") must NOT expand on a sentence
+    that merely contains the word "home" — the single-token key is a common stop-word, so the
+    span gate drops it (mirrors the linker's _STOP_LEAVES leaf gate). Without the gate the key
+    fired on any sentence containing that token."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/01", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Home")  # canonical key "home" — a common stop-word
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "what should i cook at home tonight", 8, entity_expand=True)
+    assert all(r["id"] != n["id"] for r in exp), '"Home" entity must not span-expand on "home"'
+
+
+def test_short_entity_key_does_not_expand_midsentence(conn):
+    """A 2-3 char single-token key is too short to be a distinctive name (len<4), so it never
+    fires mid-sentence even when it's not a stop-word."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/02", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Avi", etype="person")  # 3-char single-token key "avi"
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "we drove the avi route to the lake", 8, entity_expand=True)
+    assert all(r["id"] != n["id"] for r in exp), "a 2-3 char key must not span-expand"
+
+
+def test_distinctive_single_token_name_still_expands(conn):
+    """A distinctive single-token name (len>=4, not a stop-word) — e.g. "Madonna" — still
+    expands, consistent with the linker. The gate only drops short/common-word surfaces."""
+    from app.services import entity_index
+    n = _mk(conn, "notes/2026/04/03", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Madonna", etype="person")
+    _mention(conn, eid, n["id"])
+    ids = entity_index.span_entity_note_ids(conn, "did madonna release a new album")
+    assert n["id"] in ids, "a distinctive single-token name should still span-expand"
+
+
+def test_distinctive_multi_token_name_still_expands(conn):
+    """A distinctive multi-token name still expands (the common case), unaffected by the
+    single-token gate."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/04", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Gregory Fontaine", etype="person")
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "what did gregory fontaine decide about the lease", 8, entity_expand=True)
+    assert any(r["id"] == n["id"] for r in exp), "a distinctive multi-token name should expand"
+
+
+# ---- K. span flooding must not evict a partial-match FTS hit (red-team FIX 2) -----------
+
+def test_partial_match_fts_hit_not_evicted_by_span_flood(conn):
+    """A note that genuinely matches the query via FTS must stay in the top results and not be
+    crowded out by a flood of span-only mention notes. The span note cap (max_notes=15) keeps
+    span hits augmenting rather than flooding the fusion."""
+    from app.services import search
+    # A note that matches the query on its distinctive tokens (FTS hit, no entity mention).
+    q = "did jordan rivera enjoy kayaking last summer"
+    partial = _mk(conn, "notes/partial", q + " on the river with friends", kind="entry")
+    # Jordan Rivera is mentioned in MANY notes (a prolific span entity) — without a low cap these
+    # would flood the fusion and could evict the partial-match note.
+    eid = _entity(conn, "Jordan Rivera", etype="person")
+    span_notes = []
+    for k in range(40):
+        sn = _mk(conn, f"notes/flood/{k}", "zzqq unrelated", kind="entry")
+        _mention(conn, eid, sn["id"])
+        span_notes.append(sn["id"])
+    exp = search.hybrid_notes(conn, q, 8, entity_expand=True)
+    ids = [r["id"] for r in exp]
+    if _fts_has(conn, q):
+        assert partial["id"] in ids, f"partial-match FTS note must survive the span flood, got {ids}"
+    # And the number of span-only notes that surface is bounded by the lowered cap.
+    surfaced_span = [i for i in ids if i in set(span_notes)]
+    assert len(surfaced_span) <= 15, "span-only notes blended must be bounded by max_notes=15"
+
+
+def test_span_note_cap_default_is_low(conn):
+    """The default span note cap is the lowered value (~15), so a single prolific person can't
+    flood the fusion even when the caller passes no explicit max_notes."""
+    from app.services import entity_index
+    eid = _entity(conn, "Prolific Person")
+    for k in range(40):
+        nk = _mk(conn, f"notes/lots/{k}", "zzqq", kind="entry")
+        _mention(conn, eid, nk["id"])
+    ids = entity_index.span_entity_note_ids(conn, "what did prolific person do")
+    assert len(ids) <= 15, "default max_notes must cap blended ids at ~15"
+
+
 # ---- I. negative scope: default path & reference_lookup never span-expand ---------------
 
 def test_default_path_does_not_span_expand(conn):

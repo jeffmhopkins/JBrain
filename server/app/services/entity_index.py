@@ -557,26 +557,48 @@ def note_ids_for_name(conn, name: str) -> list[int]:
 
 # ---- Span-detection alias expansion (OWNER-CONTEXT ONLY) ---------------------------------
 
-def _span_surface_set(conn) -> set[str]:
+def _span_admit_single(surface: str) -> bool:
+    """Gate for a SINGLE-token span surface (key OR alias): admit only a distinctive token —
+    len>=4 AND not a common stop-word — mirroring the linker's leaf gate (check_needed_links:
+    `len(leaf) < 4` or in `_STOP_LEAVES`). A short/common token ("home", "gym", a 1-2 char
+    key) is too collision-prone to fire on a mention buried in prose, so an entity literally
+    named "Home"/"Work"/"Gym" never expands every sentence containing that word. A distinctive
+    single-token name ("Madonna") still passes — acceptable and consistent with the linker.
+    Reuses the linker's exact stop set via a lazy import (avoids the wiki_build↔entity_index
+    import cycle)."""
+    from .wiki_build import _STOP_LEAVES
+    return len(surface) >= 4 and surface not in _STOP_LEAVES
+
+
+def _span_surface_set(conn, ambiguous: set[str] | None = None) -> set[str]:
     """The normalized name-surfaces a SPAN inside a sentence query is allowed to expand on —
     a dictionary, not NER. It is the conservative intersection of "resolvable by
     note_ids_for_name" and "safe to fire on a mention buried in prose":
 
-      • every entity CANONICAL key (a real, deliberately-named entity);
+      • every MULTI-token entity CANONICAL key (a real, deliberately-named entity);
+      • a SINGLE-token key only when distinctive (len>=4, not a stop-word) — so an entity
+        named "Home"/"Work"/"Gym" or a 1-2 char key never fires on any sentence with that token;
       • every MULTI-token alias (e.g. "jeff hopkins" — two+ tokens is collision-resistant);
       • a SINGLE-token alias ONLY if the user explicitly decided it (entity_decisions 'alias').
 
-    The single-token gate mirrors alias_surface()'s drop-rule (iv): a bare heuristic first
-    name ("jeff" auto-merged onto "Jeffrey") is too collision-prone to fire mid-sentence, so —
-    unlike note_ids_for_name, which resolves ANY alias — we DROP it here unless the user backed
-    it. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must never
-    auto-expand. Built ONCE per call by the caller (three cheap indexed queries) then scanned
-    in-memory."""
+    The single-token KEY gate mirrors the linker's leaf gate (check_needed_links: `len(leaf)<4`
+    or in `_STOP_LEAVES`): an unconditional single-token key let an entity literally named
+    "Home"/"Work" fire on every sentence with that word, so a common-word / short key is dropped.
+    The single-token ALIAS gate is the stricter alias_surface() rule (iv): a bare heuristic first
+    name ("jeff" auto-merged onto "Jeffrey") is too collision-prone, so a single alias fires only
+    when the user decided it — unlike note_ids_for_name, which resolves ANY key/alias. A
+    distinctive single-token NAME ("Madonna") still matches as a key — acceptable and consistent
+    with the linker. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must
+    never auto-expand. `ambiguous` is the pre-computed lower-cased set of ambiguous terms
+    (search.py computes it ONCE for the whole-query guard and threads it in); when None we compute
+    it here so the helper stays standalone-callable. Built ONCE per call by the caller (a few
+    cheap indexed queries) then scanned in-memory."""
     from . import entity_decisions
     surfaces: set[str] = set()
     for r in conn.execute("SELECT normalized_key AS k FROM entities").fetchall():
-        if r["k"]:
-            surfaces.add(r["k"])
+        k = r["k"]
+        if k and (" " in k or _span_admit_single(k)):  # multi-token, or a distinctive single key
+            surfaces.add(k)
     decided = {an for _canon, pairs in entity_decisions.load_aliases(conn).items()
                for an, _disp in pairs}
     for r in conn.execute(
@@ -585,11 +607,13 @@ def _span_surface_set(conn) -> set[str]:
         an = r["a"]
         if an and (" " in an or an in decided):       # multi-token, or a user-decided single name
             surfaces.add(an)
-    amb = {str(t.get("term", "")).lower() for t in ambiguous_terms(conn)}
-    return surfaces - amb
+    if ambiguous is None:
+        ambiguous = {str(t.get("term", "")).lower() for t in ambiguous_terms(conn)}
+    return surfaces - ambiguous
 
 
-def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 200) -> list[int]:
+def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 15,
+                         ambiguous: set[str] | None = None) -> list[int]:
     """Note ids reached by NAME SPANS mentioned INSIDE the query `q` (owner-context only).
 
     Complements the whole-query expansion: a sentence like "what did jeff hopkins say about
@@ -600,13 +624,16 @@ def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 2
     (each resolved through note_ids_for_name, which carries its own key/alias resolution).
 
     Bounded for the hot path and for ranking: at most `max_spans` distinct surfaces expand and
-    at most `max_notes` ids return, so a span hit can SURFACE a note but never floods the
-    fusion. Returns [] when nothing safe matches (the no-name-sentence case → byte-identical to
-    expansion off). Pure read; no LLM, no embeddings."""
+    at most `max_notes` (default 15) ids return, so a span hit can AUGMENT the fusion but never
+    floods it — a low cap keeps span-only mentions from crowding genuinely-relevant partial-match
+    FTS hits out of the top results. `ambiguous` is threaded through to `_span_surface_set`
+    (computed once by the caller; None → computed there). Returns [] when nothing safe matches
+    (the no-name-sentence case → byte-identical to expansion off). Pure read; no LLM, no
+    embeddings."""
     toks = _NONWORD.sub(" ", (q or "").lower()).split()
     if not toks:
         return []
-    surfaces = _span_surface_set(conn)
+    surfaces = _span_surface_set(conn, ambiguous)
     if not surfaces:
         return []
     ids: list[int] = []

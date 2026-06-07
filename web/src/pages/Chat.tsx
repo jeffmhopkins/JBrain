@@ -60,9 +60,9 @@ const MODES: { key: Mode; label: string; icon: string; hint: string }[] = [
 // Entry sub-types. `mclass` drives the per-sub accent (--mc) via styles.css; `root` is the
 // capture tree the note files into (Generic = the dated tree, no dest).
 const SUBS: { key: EntrySub; label: string; mclass: string; root?: string; placeholder: string; safety: string }[] = [
-  { key: "generic", label: "Generic", mclass: "m-entry", placeholder: "Write an entry…", safety: "Saved straight to your wiki — no AI." },
-  { key: "medical", label: "Medical", mclass: "m-medical", root: "medical", placeholder: "Log a lab, note, procedure…", safety: "Filed to notes/medical/ — lab PDFs get staged for review." },
-  { key: "financial", label: "Financial", mclass: "m-financial", root: "financial", placeholder: "Log a statement, receipt, transaction…", safety: "Filed to notes/financial/ — folder-only." },
+  { key: "generic", label: "Generic", mclass: "m-entry", placeholder: "Write an entry…", safety: "Saved to your wiki · no AI." },
+  { key: "medical", label: "Medical", mclass: "m-medical", root: "medical", placeholder: "Log a lab, note, procedure…", safety: "Files to notes/medical/ · PDFs staged." },
+  { key: "financial", label: "Financial", mclass: "m-financial", root: "financial", placeholder: "Log a statement, receipt, transaction…", safety: "Files to notes/financial/." },
 ];
 // Per top-level mode placeholder/safety (Entry's come from the active sub-type instead).
 const MODE_PLACEHOLDER: Record<Mode, string> = {
@@ -72,8 +72,8 @@ const MODE_PLACEHOLDER: Record<Mode, string> = {
 };
 const MODE_SAFETY: Record<Mode, string> = {
   entry: "",   // Entry uses the sub-type's safety line
-  research: "Read-only · won’t change anything in your brain.",
-  full: "Full tools — can edit your brain (staging + one-tap undo).",
+  research: "Read-only · changes nothing.",
+  full: "Full tools · staged, undoable.",
 };
 // Modes a stored session value is allowed to resolve to. A blind cast of a stale or unknown
 // sessionStorage value would crash the composer (`MODES.find(...)!` → undefined → throw), so
@@ -281,10 +281,12 @@ export default function Chat() {
     const el = taRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const max = Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.5);
+    const max = Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.45);
     el.style.height = Math.min(el.scrollHeight, max) + "px";
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
-  }, [input]);
+    // Re-run on mode/sub change too: the compensating min-height (sec-N class) changes, so the
+    // textarea must recompute its resting height instead of keeping a stale inline height.
+  }, [input, mode, sub]);
 
   function pick(m: Mode) { setMode(m); sessionStorage.setItem("jbrain_mode", m); }
   function pickSub(s: EntrySub) { setSub(s); localStorage.setItem("jbrain_entry_sub", s); }
@@ -692,6 +694,11 @@ export default function Chat() {
   const accentClass = mode === "entry" ? curSubDef.mclass : `m-${mode}`;
   const composerPlaceholder = mode === "entry" ? curSubDef.placeholder : MODE_PLACEHOLDER[mode];
   const safetyText = mode === "entry" ? curSubDef.safety : MODE_SAFETY[mode];
+  // Number of secondary control rows under the mode picker (0 = Research/Full, 1 = Entry/Generic
+  // sub-seg, 2 = Entry/Medical|Financial sub-seg + dest). Drives a textarea min-height that grows
+  // to fill the space those rows would take — so the box stays the SAME height in every mode
+  // (no blank reserved band; the freed room becomes input area).
+  const secRows = mode === "entry" ? (sub === "generic" ? 1 : 2) : 0;
 
   return (
     <div className="chat-wrap">
@@ -807,7 +814,7 @@ export default function Chat() {
       </div>
 
       {/* Compose box (rounded). The accent class drives --mc for the safety line. */}
-      <div className={`composer-box ${accentClass}`}>
+      <div className={`composer-box ${accentClass} sec-${secRows}`}>
         {/* Top-level 3-mode segmented picker (its own row). */}
         <div className="seg mode-seg">
           {MODES.map((m) => (
@@ -817,13 +824,39 @@ export default function Chat() {
             </button>
           ))}
         </div>
-        {/* Entry sub-selector — only in Entry. */}
+        {/* Secondary controls (Entry only). They take their natural height; the textarea's
+            min-height (via the sec-N class) grows to compensate, so the box is the SAME height
+            in every mode without a blank reserved band. Attach chips stay OUTSIDE this block. */}
         {mode === "entry" && (
-          <div className="seg sub-seg">
-            {SUBS.map((s) => (
-              <button key={s.key} className={`${s.mclass}${s.key === sub ? " on" : ""}`}
-                      onClick={() => pickSub(s.key)}>{s.label}</button>
-            ))}
+          <div className="composer-secondary">
+            <div className="seg sub-seg">
+              {SUBS.map((s) => (
+                <button key={s.key} className={`${s.mclass}${s.key === sub ? " on" : ""}`}
+                        onClick={() => pickSub(s.key)}>{s.label}</button>
+              ))}
+            </div>
+            {sub === "medical" && (
+              <div className="med-dest-row">
+                <Icon name="medical" size={14} />
+                <span className="muted">notes/medical/</span>
+                <select className="med-dest-select" value={curDest} onChange={(e) => pickDest(e.target.value)}>
+                  {dests.length === 0 && <option value="">(add a destination)</option>}
+                  {dests.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
+              </div>
+            )}
+            {sub === "financial" && (
+              <div className="med-dest-row fin-dest-row">
+                <Icon name="list" size={14} />
+                <span className="muted">notes/financial/</span>
+                <select className="med-dest-select" value={curFinDest} onChange={(e) => pickFinDest(e.target.value)}>
+                  {finDests.length === 0 && <option value="">(add a destination)</option>}
+                  {finDests.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addFinDest}>＋ New</button>
+              </div>
+            )}
           </div>
         )}
         {pendingFiles.map((f, i) => (
@@ -839,28 +872,6 @@ export default function Chat() {
             {uploadPct >= 100 ? "Processing attachment…" : `Uploading… ${uploadPct}%`}
           </div>
         )}
-        {mode === "entry" && sub === "medical" && (
-          <div className="med-dest-row">
-            <Icon name="medical" size={14} />
-            <span className="muted">notes/medical/</span>
-            <select className="med-dest-select" value={curDest} onChange={(e) => pickDest(e.target.value)}>
-              {dests.length === 0 && <option value="">(add a destination)</option>}
-              {dests.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-            <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addDest}>＋ New</button>
-          </div>
-        )}
-        {mode === "entry" && sub === "financial" && (
-          <div className="med-dest-row fin-dest-row">
-            <Icon name="list" size={14} />
-            <span className="muted">notes/financial/</span>
-            <select className="med-dest-select" value={curFinDest} onChange={(e) => pickFinDest(e.target.value)}>
-              {finDests.length === 0 && <option value="">(add a destination)</option>}
-              {finDests.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-            <button type="button" className="ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={addFinDest}>＋ New</button>
-          </div>
-        )}
         <textarea
           ref={taRef}
           rows={1}
@@ -869,28 +880,27 @@ export default function Chat() {
           onChange={(e) => setInput(e.target.value)}
         />
         <div className="composer-row">
-          {/* Research "Deep" opt-in: bigger budget, same strict read-only posture. */}
+          {/* All action buttons sit in one right-aligned group (CSS justify-content:flex-end);
+              send is always last so it stays flush-right regardless of which others show. */}
+          <input ref={fileRef} type="file" multiple style={{ display: "none" }}
+                 onChange={(e) => {
+                   const picked = Array.from(e.target.files || []);
+                   const tooBig = picked.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
+                   const ok = picked.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
+                   if (tooBig.length) alert(`Over 100 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
+                   if (ok.length) setPendingFiles((xs) => [...xs, ...ok]);
+                   e.currentTarget.value = "";
+                 }} />
+          {/* Research "Deep" opt-in: bigger budget, same strict read-only posture. Filled when on. */}
           {mode === "research" && (
-            <button className={`icon-btn${deep ? " active" : ""}`} title="Deep analysis — a bigger budget for multi-step questions (still read-only)"
-                    onClick={() => setDeep((d) => !d)}><Icon name="bolt" size={18} /></button>
+            <button className={`icon-btn deep-toggle${deep ? " on" : ""}`} title="Deep — a bigger budget for multi-step questions (still read-only)"
+                    onClick={() => setDeep((d) => !d)}><Icon name="bolt" size={22} /></button>
           )}
-          <span className="spacer" />
           {mode !== "research" && (
-            <>
-              <input ref={fileRef} type="file" multiple style={{ display: "none" }}
-                     onChange={(e) => {
-                       const picked = Array.from(e.target.files || []);
-                       const tooBig = picked.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
-                       const ok = picked.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
-                       if (tooBig.length) alert(`Over 100 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
-                       if (ok.length) setPendingFiles((xs) => [...xs, ...ok]);
-                       e.currentTarget.value = "";
-                     }} />
-              <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" /></button>
-            </>
+            <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" size={22} /></button>
           )}
           <button className="icon-btn send" title="Send" onClick={() => send()}
-                  disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" /></button>
+                  disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
         </div>
         <div className="compose-safety"><span className="sdot" />{safetyText}</div>
       </div>

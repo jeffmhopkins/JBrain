@@ -258,7 +258,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 }
 .composer-box textarea:focus { outline: none; border: none; }
 .composer-box textarea::placeholder { color: var(--text-dim); }
-.composer-row { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.composer-row { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 8px; }
 .mode-wrap { position: relative; }
 .mode-chip {
   display: inline-flex; align-items: center; gap: 6px; background: transparent; border: none;
@@ -1438,3 +1438,18 @@ button.cal-pill { border: none; color: var(--text); }
 /* Compose safety / scope line under the composer; dot tinted by the current mode/sub accent. */
 .compose-safety { display: flex; align-items: center; gap: 7px; margin-top: 8px; font-size: 11.5px; color: var(--text-dim); }
 .compose-safety .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--mc, var(--text-dim)); flex: none; }
+
+/* Secondary controls (Entry only) take their natural height; the textarea's min-height
+   (the .sec-N rules below) grows to compensate so the box is the SAME height in every mode —
+   no blank reserved band, the freed room becomes input area instead. */
+.composer-secondary { margin-bottom: 8px; }
+.composer-secondary .med-dest-row { margin-bottom: 0; }
+/* Compensating textarea min-heights: 0 secondary rows (Research/Full) → tallest input;
+   1 row (Entry/Generic) → medium; 2 rows (Entry/Medical-Financial) → base. Keeps total constant. */
+.composer-box.sec-0 textarea { min-height: 120px; }
+.composer-box.sec-1 textarea { min-height: 76px; }
+.composer-box.sec-2 textarea { min-height: 52px; }
+/* Action buttons are a right-aligned group with 44px tap targets; send is always rightmost. */
+.composer-row .icon-btn { min-width: 44px; min-height: 44px; padding: 0; align-items: center; justify-content: center; }
+/* Research "Deep" toggle — obvious filled ON state (accent pill), not just a tint. */
+.deep-toggle.on { background: var(--accent-soft); color: var(--accent); border-radius: 999px; }

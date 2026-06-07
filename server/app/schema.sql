@@ -1024,10 +1024,35 @@ CREATE INDEX IF NOT EXISTS idx_cal_supersedes_old ON calendar_supersedes(old_ide
 -- Created now (Phase 1); populated by the reminder workflow in Phase 3.
 CREATE TABLE IF NOT EXISTS calendar_fired (
   workflow_id INTEGER NOT NULL,
-  kind        TEXT NOT NULL,            -- 'upcoming' | 'recurring' | ...
-  marker      TEXT NOT NULL,            -- identity_key|instance_date (per-instance)
+  kind        TEXT NOT NULL,            -- 'upcoming' | 'recurring' | 'alarm' | ...
+  marker      TEXT NOT NULL,            -- identity_key|instance_date[|offset] (per-instance/offset)
   fired_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (workflow_id, kind, marker)
+);
+
+-- Per-event reminders the owner sets ("30m before", "1d before"). CONFIG (like places/
+-- people), not note prose — keyed by the stable identity_key so it survives re-derivation
+-- and follows a reschedule (re-pointed along the calendar_supersedes edge). One row per
+-- (event, offset); anchor 'start' = minutes before a timed start, 'day_of' = a clock-anchor
+-- offset (in minutes) for all-day events. Kept identical to _CALENDAR_SCHEMA_SQL in db.py.
+CREATE TABLE IF NOT EXISTS calendar_reminders (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity_key   TEXT NOT NULL,
+  offset_minutes INTEGER NOT NULL,
+  anchor         TEXT NOT NULL DEFAULT 'start' CHECK (anchor IN ('start','day_of')),
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(identity_key, offset_minutes, anchor)
+);
+CREATE INDEX IF NOT EXISTS idx_calreminders_ik ON calendar_reminders(identity_key);
+
+-- Owner-revoked auto-extracted events: the in-calendar review's "Revoke" adds the event's
+-- identity_key here, which REMOVES the row AND makes extraction skip re-creating it (the note
+-- text is never touched). Undo = delete the row. Keyed by the stable identity_key.
+CREATE TABLE IF NOT EXISTS calendar_dismissed (
+  identity_key TEXT PRIMARY KEY,
+  payload_json TEXT,                       -- snapshot of the revoked row, so Undo restores it instantly
+  dismissed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Read VIEWS: the low-overhead query API (SQL console / Research-mode query_sql).

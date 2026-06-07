@@ -19,8 +19,10 @@ mobile-first, and faithful to "notes are the source of truth".
   `calUpcoming` / `calHistory`.
 - State = `viewMode` + `cursor` → derived `[from,to]`; range cache; stale-response
   guard keyed on the range; `localStorage` view persistence.
-- All edits go through quick-add / reschedule / cancel (which write notes); recurring
-  events hide reschedule/cancel (removed from DOM; server already 422s them).
+- The calendar's only edit actions are Add (quick-add, which writes a note) and Remove
+  (a note-free dismissal, reversible via an Undo snackbar). Reschedule/cancel are done by
+  editing the note itself. *(An earlier revision exposed reschedule/cancel controls here;
+  they were later removed in favor of editing notes directly.)*
 
 ## Adjudicated decisions (the hybrid)
 1. **Day = time-axis grid** (hour rows, all-day lane, "now" line, overlap columns).
@@ -69,7 +71,9 @@ mobile-first, and faithful to "notes are the source of truth".
    prev/next/Today; localStorage).
 5. **Month** view (monochrome grid; tap → agenda strip) — proves the range path.
 6. Monochrome kind treatment across List/Month.
-7. Recurring hides reschedule/cancel; `window.prompt` reschedule → `.modal-compact` form.
+7. Detail sheet → `.modal-compact` with reminder chips + a single "Remove from calendar"
+   action (note-free dismissal; Undo snackbar). *(Originally a reschedule/cancel form;
+   simplified to Remove-only — reschedule/cancel are done by editing the note.)*
 
 **v1.1 (fast follow):** 8. **Day** time-axis grid (now-line, overlap columns, scroll-to-now).
 9. **Week** stacked day-sections (reuses the List renderer) + week swipe.

@@ -108,11 +108,20 @@ export const calUpcoming = (withinDays = 90) =>
 export const calHistory = () => get<CalEvent[]>("/api/calendar/history");
 export const calRange = (start: string, end: string) =>
   get<CalEvent[]>(`/api/calendar/range?start=${start}&end=${end}`);
-export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string }) =>
+export interface Reminder { offset_minutes: number; anchor?: string }
+export interface AddedEvent {
+  id: number; identity_key: string; title: string; kind: string;
+  starts_at: string | null; all_day: number; source: string; note_slug: string | null; note_title?: string;
+}
+export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string; reminders?: Reminder[] }) =>
   post<{ note_id: number; note_title: string; event: CalEvent | null }>("/api/calendar/quick-add", b);
-export const calReschedule = (id: number, to_date: string, to_time?: string) =>
-  post(`/api/calendar/events/${id}/reschedule`, { to_date, to_time });
-export const calCancel = (id: number) => post(`/api/calendar/events/${id}/cancel`, {});
+export const calGetReminders = (id: number) => get<{ reminders: Reminder[] }>(`/api/calendar/events/${id}/reminders`);
+export const calSetReminders = (id: number, reminders: Reminder[]) =>
+  post<{ count: number }>(`/api/calendar/events/${id}/reminders`, { reminders });
+export const calRecentlyAdded = () => get<{ since: string; events: AddedEvent[] }>("/api/calendar/recently-added");
+export const calMarkReviewed = () => post("/api/calendar/reviewed", {});
+export const calDismiss = (id: number) => post<{ identity_key: string }>(`/api/calendar/events/${id}/dismiss`, {});
+export const calUndismiss = (identity_key: string) => post("/api/calendar/undismiss", { identity_key });
 
 // Public, UNAUTHENTICATED share endpoints — no bearer key (a recipient has none).
 // Uses default same-origin credentials so the bind cookie rides along (recipients

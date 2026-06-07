@@ -74,7 +74,7 @@ def test_schema_objects_exist_and_version(conn):
     )}
     assert names == {"calendar_events", "calendar_supersedes", "calendar_fired",
                      "v_upcoming", "v_event_history"}
-    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 50
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 51
 
 
 def test_migration_recreates_calendar_from_prior_version(conn):
@@ -796,24 +796,6 @@ def test_quick_add_writes_note_and_manual_row_and_skips_llm(conn):
     assert all(p["id"] != out["note_id"] for p in cal.pending_notes(conn, "", 100))
 
 
-def test_reschedule_supersedes_old_and_adds_new(conn):
-    from app.routers import calendar as r
-    added = r.quick_add(r.QuickAddIn(title="Dentist", date="2099-06-14"))
-    old_id = added["event"]["id"]
-    r.reschedule(old_id, r.RescheduleIn(to_date="2099-06-21"))
-    up = {(row["title"], row["starts_at"]) for row in conn.execute("SELECT title, starts_at FROM v_upcoming")}
-    assert ("Dentist", "2099-06-21") in up
-    assert ("Dentist", "2099-06-14") not in up   # old occurrence superseded
-
-
-def test_cancel_removes_from_upcoming(conn):
-    from app.routers import calendar as r
-    added = r.quick_add(r.QuickAddIn(title="Lunch", date="2099-07-01"))
-    r.cancel(added["event"]["id"])
-    up = [row["title"] for row in conn.execute("SELECT title FROM v_upcoming")]
-    assert "Lunch" not in up
-
-
 def test_upcoming_endpoint_merges_oneoff_and_recurring(conn):
     from app.routers import calendar as r
     from app.services import calendar as cal
@@ -879,34 +861,6 @@ def test_views_timed_today_boundary(conn):
     hist = {r["title"] for r in conn.execute("SELECT title FROM v_event_history WHERE note_id=?", (nid,))}
     assert "Later" in up and "Earlier" not in up
     assert "Earlier" in hist
-
-
-def test_reschedule_recurring_is_rejected(conn):
-    import pytest as _pt
-    from fastapi import HTTPException
-    from app.routers import calendar as r
-    from app.services import calendar as cal
-    nid = _mknote(conn, "Series")
-    cal.upsert_events(conn, nid, [{"title": "Gym", "kind": "recurring", "starts_at": "2020-01-06",
-                                   "all_day": True, "rrule": "FREQ=WEEKLY;BYDAY=MO"}],
-                     source="workflow", sweep=False)
-    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
-    with _pt.raises(HTTPException) as ei:
-        r.reschedule(ev_id, r.RescheduleIn(to_date="2099-01-01"))
-    assert ei.value.status_code == 422
-
-
-def test_cancel_works_when_source_note_title_has_brackets(conn):
-    """B2: the edge is recorded by identity_key, so an old note whose title contains
-    ']]' is still retired (the marker round-trip can't break it)."""
-    from app.routers import calendar as r
-    from app.services import calendar as cal
-    nid = _mknote(conn, "Weird ]] title")
-    cal.upsert_events(conn, nid, [{"title": "Checkup", "starts_at": "2099-04-04"}])
-    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
-    r.cancel(ev_id)
-    up = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))]
-    assert "Checkup" not in up
 
 
 def test_quick_add_rejects_bad_time(conn):
@@ -1039,3 +993,231 @@ def test_range_recurring_status_passthrough(conn):
                      source="workflow", sweep=False)
     rows = [x for x in r.range_events("2099-06-01", "2099-06-30") if x["title"] == "Maybe"]
     assert rows and all(x["status"] == "tentative" for x in rows)
+
+
+# ============================================================================
+# Per-event reminders + in-calendar revoke (settable reminders)
+# ============================================================================
+
+def _set_now(monkeypatch, y, mo, d, h, mi):
+    from datetime import datetime, timezone
+    from app.services import clock as clockmod
+    monkeypatch.setattr(clockmod, "now_local", lambda: datetime(y, mo, d, h, mi, tzinfo=timezone.utc))
+
+
+def test_reminder_schema_v51(conn):
+    from app.db import SCHEMA_VERSION, get_meta
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE name IN ('calendar_reminders','calendar_dismissed')")}
+    assert names == {"calendar_reminders", "calendar_dismissed"}
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 51
+
+
+def test_set_get_reminders(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "kind": "appointment", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Dentist", "appointment", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}, {"offset_minutes": 1440}])
+    offs = sorted(r["offset_minutes"] for r in cal.get_reminders(conn, ik))
+    assert offs == [30, 1440]
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])   # replace set
+    assert [r["offset_minutes"] for r in cal.get_reminders(conn, ik)] == [30]
+
+
+def test_alarm_fires_once_within_window(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "kind": "appointment", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Dentist", "appointment", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])
+    _set_now(monkeypatch, 2099, 6, 15, 13, 0)                 # before the 13:30 fire time
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0
+    _set_now(monkeypatch, 2099, 6, 15, 13, 45)                # within [13:30, 14:00)
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0   # dedup
+    assert any("Dentist" in r["title"] for r in conn.execute("SELECT title FROM review_items"))
+
+
+def test_alarm_not_after_event_start(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Past")
+    cal.upsert_events(conn, nid, [{"title": "Missed", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Missed", "event", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])
+    _set_now(monkeypatch, 2099, 6, 15, 14, 30)                # event already started
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0
+
+
+def test_alarm_noop_without_reminders(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "No reminder")
+    cal.upsert_events(conn, nid, [{"title": "Plain", "starts_at": "2099-06-15T14:00:00"}])
+    _set_now(monkeypatch, 2099, 6, 15, 13, 45)
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0   # default None
+
+
+def test_alarm_all_day_anchor(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Holiday")
+    cal.upsert_events(conn, nid, [{"title": "Anniversary", "starts_at": "2099-06-15", "all_day": True}])
+    ik = cal.identity_key(nid, "Anniversary", "event", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 0, "anchor": "day_of"}])   # morning of (9am)
+    _set_now(monkeypatch, 2099, 6, 15, 8, 0)                  # before 9am anchor
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0
+    _set_now(monkeypatch, 2099, 6, 15, 9, 30)                 # after 9am, same day
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1
+
+
+def test_alarm_recurring_per_occurrence(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Standup series")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2099-06-01T09:00:00", "rrule": "FREQ=DAILY"}],
+                     source="workflow", sweep=False)
+    ik = cal.identity_key(nid, "Standup", "recurring", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 10}])
+    _set_now(monkeypatch, 2099, 6, 15, 8, 52)                 # 8 min before the 9:00 occurrence
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1
+    _set_now(monkeypatch, 2099, 6, 16, 8, 52)                 # next day's occurrence
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1
+
+
+def test_alarm_skips_superseded_and_dismissed(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Will move")
+    cal.upsert_events(conn, nid, [{"title": "Checkup", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Checkup", "event", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])
+    n2 = _mknote(conn, "moved")
+    cal.record_supersession(conn, ik, None, n2, "structured")  # cancelled
+    _set_now(monkeypatch, 2099, 6, 15, 13, 45)
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 0
+
+
+def test_reminder_follows_reschedule(conn):
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "A")
+    cal.upsert_events(conn, n1, [{"title": "Dentist", "starts_at": "2099-06-15"}])
+    ik_old = cal.identity_key(n1, "Dentist", "event", 0)
+    cal.set_reminders(conn, ik_old, [{"offset_minutes": 30}])
+    n2 = _mknote(conn, "B")
+    cal.upsert_events(conn, n2, [{"title": "Dentist", "starts_at": "2099-06-22"}])
+    ik_new = cal.identity_key(n2, "Dentist", "event", 0)
+    cal.record_supersession(conn, ik_old, ik_new, n2, "structured")
+    assert cal.get_reminders(conn, ik_old) == []                    # moved off the old
+    assert [r["offset_minutes"] for r in cal.get_reminders(conn, ik_new)] == [30]
+
+
+def test_dismiss_revoke_stops_reextraction_and_undo_restores(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Extracted")
+    cal.upsert_events(conn, nid, [{"title": "Bogus appt", "starts_at": "2099-06-15"}])
+    ik = cal.identity_key(nid, "Bogus appt", "event", 0)
+    cal.dismiss_event(conn, ik)
+    assert _count(conn, nid) == 0 and cal.is_dismissed(conn, ik)
+    cal.upsert_events(conn, nid, [{"title": "Bogus appt", "starts_at": "2099-06-15"}])   # re-extraction
+    assert _count(conn, nid) == 0                                   # stays gone
+    cal.undismiss_event(conn, ik)
+    assert _count(conn, nid) == 1 and not cal.is_dismissed(conn, ik)   # restored
+
+
+def test_remove_from_calendar_is_note_free_and_undoable(conn):
+    """The UI's only edit actions: Add (quick-add) then Remove (dismiss) — note-free,
+    reversible, and writes NO superseding/cancellation note."""
+    from app.routers import calendar as r
+    from app.services import calendar as cal
+    notes_before = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    added = r.quick_add(r.QuickAddIn(title="Haircut", date="2099-09-09"))
+    ev_id = added["event"]["id"]
+    out = r.dismiss_event_route(ev_id)
+    ik = out["identity_key"]
+    up = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming")]
+    assert "Haircut" not in up                      # gone from the calendar
+    body = conn.execute("SELECT content_md FROM notes WHERE id=?", (added["note_id"],)).fetchone()["content_md"]
+    assert not cal.parse_supersession_markers(body)  # no cancellation marker was written
+    # Remove added exactly one note (the quick-add), none for the removal itself.
+    assert conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == notes_before + 1
+    r.undismiss_event_route(r.UndismissIn(identity_key=ik))
+    up2 = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming")]
+    assert "Haircut" in up2                          # restored
+
+
+def test_recently_added_excludes_manual_and_dismissed(conn):
+    from app.services import calendar as cal
+    n1 = _mknote(conn, "auto")
+    cal.upsert_events(conn, n1, [{"title": "Extracted ev", "starts_at": "2099-06-15"}], source="extracted")
+    n2 = _mknote(conn, "mine")
+    cal.upsert_events(conn, n2, [{"title": "Manual ev", "starts_at": "2099-06-16"}], source="manual")
+    titles = {x["title"] for x in cal.recently_added(conn, "")}
+    assert "Extracted ev" in titles and "Manual ev" not in titles
+    cal.dismiss_event(conn, cal.identity_key(n1, "Extracted ev", "event", 0))
+    assert all(x["title"] != "Extracted ev" for x in cal.recently_added(conn, ""))
+
+
+# --- reminders red-team fixes ---
+
+def test_reminder_offsets_clamped_and_anchor_normalized(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-15T14:00:00"}])
+    ik = cal.identity_key(nid, "Dentist", "event", 0)
+    # huge (storm risk) and negative offsets are rejected; a valid one is kept; anchor
+    # normalized to 'start' for a timed event even if client says 'day_of'.
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30, "anchor": "day_of"},
+                                 {"offset_minutes": 5256000}, {"offset_minutes": -60}])
+    rems = cal.get_reminders(conn, ik)
+    assert [r["offset_minutes"] for r in rems] == [30]
+    assert rems[0]["anchor"] == "start"
+    # all-day event -> anchor normalized to day_of
+    n2 = _mknote(conn, "Holiday")
+    cal.upsert_events(conn, n2, [{"title": "Anniv", "starts_at": "2099-06-15", "all_day": True}])
+    ik2 = cal.identity_key(n2, "Anniv", "event", 0)
+    cal.set_reminders(conn, ik2, [{"offset_minutes": 0, "anchor": "start"}])
+    assert cal.get_reminders(conn, ik2)[0]["anchor"] == "day_of"
+
+
+def test_huge_offset_no_storm(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Daily")
+    cal.upsert_events(conn, nid, [{"title": "Standup", "kind": "recurring",
+                                   "starts_at": "2099-06-01T09:00:00", "rrule": "FREQ=DAILY"}],
+                     source="workflow", sweep=False)
+    ik = cal.identity_key(nid, "Standup", "recurring", 0)
+    # Force an out-of-band offset directly (bypassing the clamp) to prove the horizon cap
+    # + per-tick backstop bound the firing.
+    conn.execute("INSERT INTO calendar_reminders (identity_key, offset_minutes, anchor) VALUES (?,?,?)",
+                 (ik, 5256000, "start"))
+    _set_now(monkeypatch, 2099, 6, 15, 8, 52)
+    out = cal.due_event_alarms(conn, wf, push=False)
+    assert out["fired"] <= 500   # bounded, not 3650+
+
+
+def test_cancel_removes_reminders(conn):
+    from app.services import calendar as cal
+    nid = _mknote(conn, "Appt")
+    cal.upsert_events(conn, nid, [{"title": "Dentist", "starts_at": "2099-06-15"}])
+    ik = cal.identity_key(nid, "Dentist", "event", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 30}])
+    n2 = _mknote(conn, "cancel note")
+    cal.record_supersession(conn, ik, None, n2, "structured")   # pure cancel
+    assert cal.get_reminders(conn, ik) == []
+
+
+def test_alarm_all_day_recurring_day_of(conn, monkeypatch):
+    from app.services import calendar as cal
+    wf = _mkwf(conn)
+    nid = _mknote(conn, "Monthly bill")
+    cal.upsert_events(conn, nid, [{"title": "Rent", "kind": "recurring", "starts_at": "2099-01-15",
+                                   "all_day": True, "rrule": "FREQ=MONTHLY"}], source="workflow", sweep=False)
+    ik = cal.identity_key(nid, "Rent", "recurring", 0)
+    cal.set_reminders(conn, ik, [{"offset_minutes": 0, "anchor": "day_of"}])   # morning of
+    _set_now(monkeypatch, 2099, 6, 15, 9, 30)                  # 9:30am on a recurrence day
+    assert cal.due_event_alarms(conn, wf, push=False)["fired"] == 1

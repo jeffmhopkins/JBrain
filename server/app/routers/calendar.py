@@ -1,13 +1,15 @@
-"""Calendar API: read the upcoming/history projection, and the WRITE PATHS the
-calendar UI uses — which always write NOTES (the source of truth), never edit the
-sidecar directly.
+"""Calendar API: read the upcoming/history projection, plus the two write actions the
+calendar UI exposes — Add to calendar and Remove from calendar.
 
-- quick-add writes a dated note AND deterministically projects its structured event
-  (source='manual'); the LLM extractor skips manual-projected notes, so there's no
-  duplicate derivation.
-- reschedule / cancel write a SUPERSEDING note carrying the structured
-  `supersedes/cancels [[old note]] <date>` marker, then consolidate — exactly the
-  re-derivation path the nightly workflow uses.
+- Add (quick-add) writes a dated note AND deterministically projects its structured
+  event (source='manual'); the LLM extractor skips manual-projected notes, so there's
+  no duplicate derivation.
+- Remove (dismiss) revokes an event from the calendar WITHOUT writing a note — it hides
+  the row and stops re-derivation from re-creating it. Reversible via /undismiss.
+
+Rescheduling and cancelling are deliberately NOT calendar actions: those are changes to
+the record, so the owner makes them in the notes themselves (write a superseding/cancel
+note + consolidation), and the nightly re-derivation reflects them here.
 """
 from datetime import timedelta
 
@@ -15,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, get_meta, set_meta
 from ..services import calendar as cal
 from ..services import clock
 from ..services import notes as notes_svc
@@ -174,12 +176,14 @@ class QuickAddIn(BaseModel):
     time: str | None = None         # HH:MM (optional)
     kind: str = "event"
     detail: str | None = None
+    reminders: list[dict] | None = None     # [{offset_minutes, anchor}] — optional
 
 
 @router.post("/quick-add")
 def quick_add(body: QuickAddIn):
     """Write a dated note for the event AND project its structured row (source='manual').
-    The note is the durable record; the row is its (deterministic) projection."""
+    The note is the durable record; the row is its (deterministic) projection. Optional
+    per-event reminders are attached to the projected event's identity_key."""
     title = _sanitize_title(body.title)
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
@@ -195,6 +199,9 @@ def quick_add(body: QuickAddIn):
             "title": title, "kind": body.kind, "starts_at": starts_at,
             "all_day": bool(all_day), "detail": detail,
         }], source="manual")
+        if body.reminders:
+            ik = cal.identity_key(note_id, title, body.kind, 0)
+            cal.set_reminders(conn, ik, body.reminders)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -206,73 +213,87 @@ def quick_add(body: QuickAddIn):
     return {"note_id": note_id, "note_title": note_title, "event": dict(ev) if ev else None}
 
 
-def _load_event(conn, event_id: int) -> dict:
-    row = conn.execute(
-        "SELECT e.id, e.title, e.kind, e.starts_at, e.all_day, e.identity_key, e.note_id, "
-        "n.title AS note_title FROM calendar_events e JOIN notes n ON n.id = e.note_id WHERE e.id = ?",
-        (event_id,),
-    ).fetchone()
-    if not row:
+_REVIEW_WATERMARK = "calendar.review:seen"
+
+
+def _event_ik(conn, event_id: int) -> str:
+    """The stable identity_key for an event row id (any kind), or 404."""
+    row = conn.execute("SELECT identity_key FROM calendar_events WHERE id=?", (event_id,)).fetchone()
+    if not row or not row["identity_key"]:
         raise HTTPException(status_code=404, detail="Event not found")
-    if not row["starts_at"]:
-        raise HTTPException(status_code=422, detail="Event has no date to supersede")
-    if row["kind"] == "recurring":
-        # A recurring series can't have a single occurrence rescheduled/cancelled yet
-        # (would need per-instance EXDATE handling); retiring it would kill the series.
-        raise HTTPException(status_code=422,
-                            detail="Can't reschedule/cancel one occurrence of a recurring series yet")
-    return dict(row)
+    return row["identity_key"]
 
 
-class RescheduleIn(BaseModel):
-    to_date: str
-    to_time: str | None = None
+class RemindersIn(BaseModel):
+    reminders: list[dict] = []          # [{offset_minutes:int, anchor:'start'|'day_of'}]
 
 
-@router.post("/events/{event_id}/reschedule")
-def reschedule(event_id: int, body: RescheduleIn):
-    """Write a SUPERSEDING note (marker + the new occurrence) and consolidate — the old
-    event is retired and the new one becomes live, all via notes."""
+@router.get("/events/{event_id}/reminders")
+def get_event_reminders(event_id: int):
     conn = get_conn()
-    ev = _load_event(conn, event_id)
-    old_date = ev["starts_at"][:10]
-    new_starts, new_all_day = _compose_starts(body.to_date, body.to_time)
-    # Human-readable record in the note (best-effort marker); the edge below is recorded
-    # DIRECTLY by identity_key so it's robust even if the old note's title is unusual.
-    marker = f"supersedes [[{_sanitize_title(ev['note_title'])}]] {old_date}"
-    body_md = f"Rescheduled {_sanitize_title(ev['title'])} from {old_date} to {new_starts.replace('T', ' ')}.\n\n{marker}"
+    return {"reminders": cal.get_reminders(conn, _event_ik(conn, event_id))}
+
+
+@router.post("/events/{event_id}/reminders")
+def set_event_reminders(event_id: int, body: RemindersIn):
+    """Replace an event's reminders (config keyed by the stable identity_key)."""
+    conn = get_conn()
+    ik = _event_ik(conn, event_id)
     try:
-        note_title = notes_svc.next_dated_title(conn, clock.today_local())
-        new_note_id = notes_svc.upsert_note(conn, note_title, body_md, source="user", fire_events=False)
-        cal.upsert_events(conn, new_note_id, [{
-            "title": ev["title"], "kind": ev["kind"], "starts_at": new_starts,
-            "all_day": bool(new_all_day),
-        }], source="manual", sweep=False)
-        new_ik = cal.identity_key(new_note_id, ev["title"], ev["kind"], 0)
-        cal.record_supersession(conn, ev["identity_key"], new_ik, new_note_id, "structured")
+        out = cal.set_reminders(conn, ik, body.reminders)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return {"note_id": new_note_id, "superseded_event_id": event_id, "new_starts_at": new_starts}
+    return out
 
 
-@router.post("/events/{event_id}/cancel")
-def cancel(event_id: int):
-    """Write a SUPERSEDING (cancellation) note and consolidate — the event leaves the
-    upcoming view, its history preserved."""
+@router.get("/recently-added")
+def recently_added():
+    """Auto-created events added since the last review — feeds the in-calendar review banner."""
     conn = get_conn()
-    ev = _load_event(conn, event_id)
-    old_date = ev["starts_at"][:10]
-    marker = f"cancels [[{_sanitize_title(ev['note_title'])}]] {old_date}"
-    body_md = f"Cancelled {_sanitize_title(ev['title'])} on {old_date}.\n\n{marker}"
+    since = get_meta(_REVIEW_WATERMARK, "", conn=conn) or ""
+    return {"since": since, "events": cal.recently_added(conn, since)}
+
+
+@router.post("/reviewed")
+def mark_reviewed():
+    """Advance the review watermark to now — clears the 'recently added' banner."""
+    conn = get_conn()
+    now = conn.execute("SELECT datetime('now')").fetchone()[0]
+    set_meta(conn, _REVIEW_WATERMARK, now)
+    conn.commit()
+    return {"ok": True}
+
+
+@router.post("/events/{event_id}/dismiss")
+def dismiss_event_route(event_id: int):
+    """Remove an event from the calendar WITHOUT writing a note: hide the row and stop
+    re-derivation from re-creating it. Reversible via /undismiss with the returned
+    identity_key."""
+    conn = get_conn()
+    ik = _event_ik(conn, event_id)
     try:
-        note_title = notes_svc.next_dated_title(conn, clock.today_local())
-        new_note_id = notes_svc.upsert_note(conn, note_title, body_md, source="user", fire_events=False)
-        # Direct edge (no replacement = cancellation), robust to the old note's title.
-        cal.record_supersession(conn, ev["identity_key"], None, new_note_id, "structured")
+        out = cal.dismiss_event(conn, ik)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return {"note_id": new_note_id, "cancelled_event_id": event_id}
+    return out
+
+
+class UndismissIn(BaseModel):
+    identity_key: str
+
+
+@router.post("/undismiss")
+def undismiss_event_route(body: UndismissIn):
+    """Undo a revoke — restore the snapshotted event and let extraction treat it normally."""
+    conn = get_conn()
+    try:
+        out = cal.undismiss_event(conn, body.identity_key)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out

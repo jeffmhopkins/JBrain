@@ -59,6 +59,39 @@ def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp
     return token, link_id
 
 
+def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: str | None,
+                           owner_name: str | None, ttl_days: int | None) -> tuple[str, int]:
+    """Mint a DRAFT chat link the AI set up. The channel key can only be generated in the
+    owner's browser (zero-knowledge), so the wraps are left empty and pending_setup=1 until
+    the owner FINALIZES it in Shares (one tap) — mirroring guided/research's draft→activate.
+    A pending link is inert to recipients (no key exists yet)."""
+    token = share_svc.mint_token()
+    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+    cur = conn.execute(
+        "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
+        "VALUES (?, NULL, 'view', 'chat', ?, 1, " + ("datetime('now', ?))" if exp else "NULL)"),
+        (token, label) + ((exp,) if exp else ()),
+    )
+    link_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, "
+        "owner_name, pending_setup) VALUES (?, ?, ?, '', '', ?, 1)",
+        (link_id, 1 if persist else 0, 1 if otp_required else 0, (owner_name or "").strip()[:80] or None),
+    )
+    return token, link_id
+
+
+def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) -> None:
+    """Complete a draft chat link: store the browser-generated wrapped keys and clear the
+    pending flag, so the link becomes usable. No-op-safe if already finalized."""
+    ch = get_channel(conn, link_id)
+    if ch is None:
+        raise HTTPException(status_code=404, detail="Chat not found.")
+    conn.execute(
+        "UPDATE chat_channels SET owner_wrap=?, guest_wrap=?, pending_setup=0 WHERE share_link_id=?",
+        (owner_wrap, guest_wrap, link_id))
+
+
 def get_channel(conn, link_id: int):
     return conn.execute("SELECT * FROM chat_channels WHERE share_link_id = ?", (link_id,)).fetchone()
 
@@ -67,7 +100,7 @@ def channel_for_link(conn, link) -> dict:
     """The recipient-facing channel descriptor (no secrets the fragment can't already
     unlock). guest_wrap is opaque without the link fragment, so it's safe to expose."""
     ch = get_channel(conn, link["id"])
-    if ch is None or ch["status"] != "active":
+    if ch is None or ch["status"] != "active" or ch["pending_setup"]:
         raise HTTPException(status_code=404, detail="This link isn't available.")
     return {
         "kind": "chat",
@@ -244,6 +277,7 @@ def owner_detail(conn, link_id: int) -> dict:
         "owner_wrap": ch["owner_wrap"],
         "persist": bool(ch["persist"]),
         "otp_required": bool(ch["otp_required"]),
+        "pending_setup": bool(ch["pending_setup"]),
         "status": ch["status"],
         "guest_name": ch["guest_name"],
         "owner_name": ch["owner_name"],
@@ -256,8 +290,8 @@ def owner_detail(conn, link_id: int) -> dict:
 def list_channels(conn) -> list[dict]:
     """Owner-side list of chat channels (active + closed) for the Shares page."""
     rows = conn.execute(
-        "SELECT c.share_link_id AS link_id, c.persist, c.otp_required, c.status, c.guest_name, "
-        "       c.created_at, c.closed_at, c.last_guest_at, c.last_owner_at, "
+        "SELECT c.share_link_id AS link_id, c.persist, c.otp_required, c.pending_setup, c.status, "
+        "       c.guest_name, c.owner_name, c.created_at, c.closed_at, c.last_guest_at, c.last_owner_at, "
         "       sl.token, sl.label, sl.expires_at, "
         "       n.slug AS saved_note_slug "
         "FROM chat_channels c JOIN share_links sl ON sl.id = c.share_link_id "
@@ -269,6 +303,7 @@ def list_channels(conn) -> list[dict]:
         d = dict(r)
         d["persist"] = bool(d["persist"])
         d["otp_required"] = bool(d["otp_required"])
+        d["pending_setup"] = bool(d["pending_setup"])
         d["url"] = share_svc.share_url(r["token"])
         out.append(d)
     return out

@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 53
+SCHEMA_VERSION = 54
 
 
 def init_db() -> None:
@@ -768,6 +768,11 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # The owner can set a display name shown to the recipient (defaults to the brain name).
         _add_column(conn, "chat_channels", "owner_name", "TEXT")
 
+    if current < 54:
+        # AI-drafted chat links: created with empty wraps + pending_setup=1; the owner FINALIZES
+        # in the browser (which mints the zero-knowledge key) before the link works.
+        _add_column(conn, "chat_channels", "pending_setup", "INTEGER NOT NULL DEFAULT 0")
+
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.
 _LABSHARE_SCHEMA_SQL = """
@@ -977,6 +982,7 @@ CREATE TABLE IF NOT EXISTS chat_channels (
   share_link_id INTEGER NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
   persist       INTEGER NOT NULL DEFAULT 1,      -- 1 = keep the encrypted backlog; 0 = ephemeral (relay only)
   otp_required  INTEGER NOT NULL DEFAULT 0,      -- 1 = recipient must enter an out-of-band code (mixed into key derivation; NEVER stored)
+  pending_setup INTEGER NOT NULL DEFAULT 0,      -- 1 = AI-drafted; awaiting the owner's browser to mint the key (wraps empty until then)
   owner_wrap    TEXT NOT NULL,                   -- channel key sealed under a key derived from the access key {salt,iv,ct}
   guest_wrap    TEXT NOT NULL,                   -- channel key sealed under the link-fragment secret [+ OTP] {salt,iv,ct}
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),

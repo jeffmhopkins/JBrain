@@ -6,8 +6,8 @@ import { fmtTs } from "../time";
 import { useAuth } from "../App";
 
 export interface ChatLink {
-  link_id: number; persist: boolean; otp_required: boolean; status: "active" | "closed";
-  guest_name: string | null; created_at: string; closed_at: string | null;
+  link_id: number; persist: boolean; otp_required: boolean; pending_setup: boolean; status: "active" | "closed";
+  guest_name: string | null; owner_name: string | null; created_at: string; closed_at: string | null;
   last_guest_at: string | null; last_owner_at: string | null;
   url: string; token: string; label: string | null; expires_at: string | null; saved_note_slug: string | null;
 }
@@ -58,6 +58,34 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
       reload();
     } catch (e: any) { alert(e?.message || "Couldn't create the chat link."); }
     finally { setBusy(false); }
+  }
+
+  // Finalize an AI-drafted chat: mint the key in THIS browser (the server can't), store the
+  // two wraps, and reveal the link (+ code) to send. Mirrors create(), just patching an
+  // existing draft instead of minting a new link.
+  async function finalize(l: ChatLink) {
+    if (!cryptoAvailable()) { alert("This browser can't generate the encryption key here (needs a secure https connection)."); return; }
+    const accessKey = getAccessKey();
+    if (!accessKey) { alert("No access key on this device."); return; }
+    try {
+      const { raw } = await generateChannelKey();
+      const secret = newFragmentSecret();
+      const code = l.otp_required ? newOtp() : "";
+      const owner_wrap = await wrapKey(raw, ownerPassword(accessKey));
+      const guest_wrap = await wrapKey(raw, guestPassword(secret, code || undefined));
+      await post(`/api/shares/chat/${l.link_id}/finalize`, { owner_wrap, guest_wrap });
+      const full = `${l.url}#s=${secret}`;
+      try { localStorage.setItem(linkKey(l.link_id), full); } catch { /* private mode */ }
+      setResult({ url: full, otp: code });
+      setOpen(true);
+      reload();
+    } catch (e: any) { alert(e?.message || "Couldn't finalize the chat link."); }
+  }
+
+  async function discardDraft(l: ChatLink) {
+    if (!confirm("Delete this draft chat link?")) return;
+    try { await post(`/api/shares/${l.link_id}/revoke`); } catch { /* ignore */ }
+    reload();
   }
 
   async function endChat(l: ChatLink) {
@@ -130,6 +158,26 @@ export default function ChatShareLinks({ links, reload }: { links: ChatLink[]; r
 
       {/* Active chats only — ended ones move to the Shares History section. */}
       {links.filter((l) => l.status === "active").map((l) => {
+        // AI-drafted link the owner hasn't minted the key for yet.
+        if (l.pending_setup) return (
+          <div className="card" key={"chat" + l.link_id}>
+            <div className="row">
+              <strong>{l.label || l.owner_name || "Encrypted chat"}</strong>
+              <span className="badge tag-delete">draft — finalize to get link</span>
+              <span className="badge">{l.persist ? "history" : "ephemeral"}</span>
+              {l.otp_required ? <span className="badge" title="Requires a one-time code">🔑 code</span> : null}
+              <span className="spacer" />
+              <span className="muted" style={{ fontSize: 12 }}>{fmtTs(l.created_at, appTz)}</span>
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Set up by the assistant. Tap to mint the encryption key in this browser and get the link to send.
+            </p>
+            <div className="row" style={{ marginTop: 6, gap: 6 }}>
+              <button className="primary" onClick={() => finalize(l)}>Finalize &amp; get link</button>
+              <button className="ghost danger-hover" onClick={() => discardDraft(l)}>Delete</button>
+            </div>
+          </div>
+        );
         const waiting = !!l.last_guest_at && l.status === "active";
         const cached = storedLink(l.link_id);
         return (

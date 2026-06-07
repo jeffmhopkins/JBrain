@@ -98,6 +98,27 @@ def get_query_conn() -> sqlite3.Connection:
     return conn
 
 
+def has_conn() -> bool:
+    """True if this thread already holds a cached connection. A short-lived worker uses this
+    to tell whether IT created the connection (fresh worker thread → close it on exit) or is
+    running inline on a thread that already had one (tests / the request handler → leave it)."""
+    return getattr(_local, "conn", None) is not None
+
+
+def close_conn() -> None:
+    """Close and forget this thread's cached connection(s). Call from short-lived worker
+    threads (per-attachment image analysis, audio transcription) whose thread-local
+    connection would otherwise leak its sqlite handle / file descriptor until GC reaps it."""
+    for attr in ("conn", "query_conn"):
+        c = getattr(_local, attr, None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+            setattr(_local, attr, None)
+
+
 def _embedding_dim() -> int:
     # bge-small-en-v1.5 = 384. Keep in meta so we never mismatch the vec table.
     from .services.embeddings import EMBEDDING_DIM

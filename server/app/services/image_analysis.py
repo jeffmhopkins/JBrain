@@ -237,6 +237,8 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
 
 def analyze(att_id: int) -> None:
     """Background worker (own thread → own thread-local connection)."""
+    from ..db import close_conn, has_conn
+    owns_conn = not has_conn()   # fresh worker thread created it → we close it; inline call → leave it
     conn = get_conn()
     try:
         row = conn.execute(
@@ -311,6 +313,12 @@ def analyze(att_id: int) -> None:
         except Exception:
             pass
         _mark_error(conn, att_id, str(exc)[:500])
+    finally:
+        # One-shot worker thread: release the connection IT created so the sqlite handle / FD
+        # doesn't linger until GC reaps the dead thread. Skip when running inline (tests / the
+        # request handler) on a thread whose shared connection is still in use.
+        if owns_conn:
+            close_conn()
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:

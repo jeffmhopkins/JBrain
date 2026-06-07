@@ -15,6 +15,7 @@ means the draft/Guide resume has no tool_use blocks to preserve — trivially sa
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import AsyncGenerator
 
@@ -133,8 +134,10 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
                 if call.name == "search_notes":
                     qy = str(call.args.get("query") or "").strip()
                     yield {"type": "tool_use", "tool": "search_notes", "query": qy}
-                    hits = [h for h in search.hybrid_notes(conn, qy, _GATHER_SEARCH_LIMIT)
-                            if not h["title"].lower().startswith("kb/")]
+                    # Offload the hybrid search — it runs fastembed ONNX inference (CPU-bound)
+                    # which would otherwise block the single event loop for the whole rebuild.
+                    rows = await asyncio.to_thread(search.hybrid_notes, conn, qy, _GATHER_SEARCH_LIMIT)
+                    hits = [h for h in rows if not h["title"].lower().startswith("kb/")]
                     meta = _notes_meta(conn, [h["id"] for h in hits])
                     for m in meta:
                         pool[m["title"].lower()] = m

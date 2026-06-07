@@ -579,6 +579,15 @@ actions:
         loans/debts, net worth — also do NOT live here. They live in the firewalled kb/Finance
         vault. Don't put financial figures in this article and never link kb/Finance from here.
       - Cross-link the groups they belong to, things they own, places tied to them.
+      - SAME NAME, TWO PEOPLE — disambiguate by FULL NAME, not by a parenthetical, a lone
+        middle initial, or a folder. The PRIMARY person (the one your notes are mostly about;
+        the owner is ALWAYS primary for their own name) keeps the bare leaf kb/People/<Name>.
+        Each OTHER person who shares that name gets their fullest known name as the leaf —
+        kb/People/Allan Smith vs the bare kb/People/Allan — so the title matches how the brain
+        already tells them apart. This is only for DIFFERENT people who share a name; the SAME
+        person under a nickname/spelling is ONE article (the other forms become redirects/
+        aliases, never a second page). If an article for that person already exists, reuse its
+        title — don't re-mint a differently-named twin.
       - Cite every fact to the note it came from.
 
       ```spec
@@ -798,7 +807,9 @@ actions:
     whenever THREE OR MORE articles share a parent subject, group them under a subcategory
     kb/<Domain>/<Subcategory>/<Name>, and nest further when it still helps. Examples:
     - 3+ facilities in one health system → kb/Places/Health First/<Facility>
-    - 3+ doctors at one practice → kb/People/<Practice>/<Doctor>
+    - 3+ doctors at one practice → kb/People/<Practice>/<Doctor> (foldering groups an org's
+      DISTINCT members; it is NOT how to tell two same-NAMED people apart — for that, use the
+      full-name rule in the People guide)
     - 3+ vehicles → kb/Things/Vehicles/<Vehicle>; financial accounts → kb/Finance/Accounts/<Name> (foldered, firewalled — see Finance)
     - Reference always: kb/Reference/Medicine/Conditions/..., .../Medications/..., kb/
       Reference/Finance/..., kb/Reference/Technology/...
@@ -821,8 +832,19 @@ actions:
     an address) to that one article. NEVER fork a second, differently-named Places article
     for a place that already has a saved name.
 
+    NAME COLLISIONS — DISAMBIGUATE BY FULL NAME: when 2+ DIFFERENT people in the roster would
+    land on the same kb/People/<Name>, the PRIMARY one (most note-heavy; the owner is always
+    primary for their own name) keeps the bare kb/People/<Name>; each OTHER gets their fullest
+    known name as the leaf (kb/People/Allan Smith). Do NOT disambiguate with a parenthetical, a
+    lone middle initial, or by foldering — the full name matches how entities are keyed, so the
+    article binds (and a disambiguation page can list both). If either person already has an
+    article, keep its current leaf — don't reshuffle which one is bare. This is separate from
+    foldering (which groups an org's distinct members) and from merging a nickname (the SAME
+    person stays ONE article). See the People guide.
+
     Return ONLY a JSON array; each element:
     {"title": "kb/People/Allan", "domain": "People", "scope": "one line on what this article covers", "sources": [<note ids>]}
+    {"title": "kb/People/Allan Smith", "domain": "People", "scope": "a second, different Allan — full name disambiguates the shared first name", "sources": [<note ids>]}
     {"title": "kb/Health/Allan", "domain": "Health", "scope": "Allan's personal medical history", "sources": [<his medical note ids>]}
     {"title": "kb/Finance/Accounts/Chase", "domain": "Finance", "scope": "owner's checking/savings at Chase — balances, account numbers", "sources": [<account/statement note ids>]}
     {instructions}

@@ -1,4 +1,5 @@
 """Notes REST API: list, read, create/update, delete, backlinks, history."""
+import logging
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -369,8 +370,18 @@ def delete_note(slug: str):
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")
-    notes_svc.soft_delete(conn, row["id"])
-    conn.commit()
+    try:
+        notes_svc.soft_delete(conn, row["id"])
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 — surface the REAL reason, don't return an opaque 500
+        conn.rollback()
+        logging.getLogger("jbrain").exception("delete_note failed for %s", slug)
+        msg = str(exc) or exc.__class__.__name__
+        # A transient write-lock (e.g. background note-analysis is mid-write) is retryable —
+        # say so instead of a bare 500 the UI shows as "Internal Server Error".
+        if "locked" in msg.lower() or "busy" in msg.lower():
+            raise HTTPException(status_code=503, detail="The database was busy (something is being processed in the background). Try deleting again in a moment.")
+        raise HTTPException(status_code=500, detail=f"Couldn't delete this note: {msg}")
     return {"ok": True}
 
 

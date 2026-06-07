@@ -157,36 +157,17 @@
 
   <!-- =================== INTERACTIVE MOCKUP =================== -->
   <section class="tab active" id="mock">
-    <p class="muted">Click the modes and sub-types. Toggle the two UX patterns the brainstorm produced and see how the composer behaves. Accent colors match the real app (<span class="ref">styles.css:13-16</span>).</p>
+    <p class="muted">This is the <b>locked design</b>: segmented row, default Entry, folder-only sub-types. Tap the modes and the Entry sub-types in the phone to see the composer behave. Accent colors match the real app (<span class="ref">styles.css:13-16</span>).</p>
     <div class="lab-wrap">
       <div class="controls">
         <div class="ctl">
-          <label class="h">Top-level mode picker pattern</label>
-          <div class="seg" id="patSeg">
-            <button data-pat="B" class="on">B · Segmented row <span class="rec">✓ rec</span></button>
-            <button data-pat="A">A · Chip + popover</button>
+          <label class="h">✓ Locked decisions</label>
+          <div class="card" style="padding:12px">
+            <p style="margin:4px 0"><b>Mode picker:</b> Segmented row — 3 modes always visible.</p>
+            <p style="margin:4px 0"><b>Default mode:</b> <b>Entry</b> on a fresh program launch only. Within a session it remembers your last-selected mode; relaunch resets to Entry.</p>
+            <p style="margin:4px 0"><b>Sub-type scope:</b> <b>Folder-only.</b> Generic / Medical / Financial each route a note to a folder. Medical keeps lab-PDF staging; Financial is filing only (no form, no parsing).</p>
           </div>
-          <p class="muted" style="font-size:12px;margin-top:8px">
-            <b>Pattern B</b> (recommended): a 3-segment control on its <i>own</i> row, leaving attach+send uncramped — Red&nbsp;Team&nbsp;A flagged that a segmented control + attach + send on one row crowds a phone. <b>Pattern A</b> keeps today's compact chip that opens a popover (zero width cost, two taps).
-          </p>
-        </div>
-
-        <div class="ctl">
-          <label class="h">Default mode on fresh launch</label>
-          <div class="seg" id="defSeg">
-            <button data-def="entry">Entry</button>
-            <button data-def="research" class="on">Research</button>
-          </div>
-          <p class="muted" style="font-size:12px;margin-top:8px">Today defaults to read-only <code>research</code> for safety (<span class="ref">Chat.tsx:86</span>). Red&nbsp;Team&nbsp;A argues Entry is the more common reflex. This only sets the demo's starting mode.</p>
-        </div>
-
-        <div class="ctl">
-          <label class="h">Financial sub-type scope</label>
-          <div class="seg" id="finSeg">
-            <button data-fin="form" class="on">v1 structured form <span class="rec">✓ rec</span></button>
-            <button data-fin="folder">v1 folder-only</button>
-          </div>
-          <p class="muted" style="font-size:12px;margin-top:8px">Red&nbsp;Team&nbsp;C: a "folder-only" Financial is a non-feature (just a folder rename). The <b>structured-form</b> v1 captures amount/date/payee/category so it earns its place; PDF statement parsing is deferred to v2 (it is <i>not</i> a clone of lab parsing).</p>
+          <p class="muted" style="font-size:11.5px;margin-top:8px">Noted &amp; overridden: Red&nbsp;Team&nbsp;C considered folder-only Financial thin — accepted as v1 scope; a structured form / parsing can be added later without reworking the mode.</p>
         </div>
 
         <div class="ctl">
@@ -296,10 +277,10 @@
       <tr><th>Sub-type</th><th>Destination</th><th>v1 behavior</th><th>Reuse / new</th></tr>
       <tr><td>Generic</td><td><code>notes/YYYY/MM/DD/</code></td><td>Today's plain entry. No staging.</td><td>Zero new code.</td></tr>
       <tr><td>Medical</td><td><code>notes/medical/&lt;dest&gt;/</code></td><td>Today's medical capture + lab-PDF staging (<span class="ref">Chat.tsx:463</span>).</td><td>Unchanged, reached via sub-selector.</td></tr>
-      <tr><td>Financial</td><td><code>notes/financial/&lt;dest&gt;/</code></td><td><b>Structured quick-capture</b>: amount · date · payee · category → a clean note. PDF parsing deferred to v2.</td><td>New dest endpoint + form; reuses the dest plumbing.</td></tr>
+      <tr><td>Financial</td><td><code>notes/financial/&lt;dest&gt;/</code></td><td><b>Folder-only filing.</b> Routes the note (and any attachments) to a financial folder. No form, no parsing in v1.</td><td>New dest endpoint; reuses the dest plumbing.</td></tr>
     </table>
-    <div class="callout"><span class="lab">scope guard</span>
-      Red&nbsp;Team&nbsp;C: "Financial v1 with zero parsing is a folder rename masquerading as a feature," and <code>lab_parse.py</code> is welded to lab-report geometry (<span class="ref">lab_parse.py:1-16,38-62</span>) — receipts/statements are an open-vocabulary problem, likely needing an LLM (which would break the deterministic, no-LLM guarantee labs rely on). <b>Hybrid:</b> give Financial v1 a small structured form so it delivers real value without parsing; treat statement extraction as its own v2 epic, not a <code>lab_parse</code> clone.
+    <div class="callout"><span class="lab">decision · folder-only v1</span>
+      Folder-only chosen for all sub-types. Red&nbsp;Team&nbsp;C's caveat is accepted, not ignored: <code>lab_parse.py</code> is welded to lab-report geometry (<span class="ref">lab_parse.py:1-16,38-62</span>) and receipts/statements are an open-vocabulary problem (likely LLM, which would break labs' deterministic guarantee), so parsing is explicitly <b>out of scope for v1</b>. Financial v1 = routing + filing only; a structured form or parsing can come later without reworking the mode.
     </div>
 
     <h3>Backend changes</h3>
@@ -363,13 +344,11 @@
       <p class="muted">All teams agree the <b>strict, no-interpretation</b> posture should win as the default. Open: do we (a) keep it strictly shallow-but-broad, or (b) add an explicit per-turn "Deep analysis" opt-in inside Research for multi-step questions?</p>
       <p><span class="rec">Recommendation:</span> Name it <b>Research</b>; keep strict posture; add a small "Deep" opt-in toggle later. Interpretation lives in Full Brain.</p>
     </div>
-    <div class="decision"><div class="q">2. Default mode on launch</div>
-      <p class="muted">Today: Research (safe). Red Team A: Entry is the more common action.</p>
-      <p><span class="rec">Recommendation:</span> Keep <b>Research</b> as default (read-only is the safe landing); revisit with usage telemetry.</p>
+    <div class="decision"><div class="q">2. Default mode on launch — ✓ DECIDED</div>
+      <p class="muted">Decided: <b>Entry on a fresh launch</b>; remember last-selected within a session; relaunch resets to Entry. Implementation: switch the fresh-launch fallback at <span class="ref">Chat.tsx:86</span> from <code>research</code> → <code>entry</code> (sessionStorage already handles in-session memory + relaunch reset).</p>
     </div>
-    <div class="decision"><div class="q">3. Financial v1 scope</div>
-      <p class="muted">Structured form (amount/date/payee/category) vs folder-only vs full PDF parsing now.</p>
-      <p><span class="rec">Recommendation:</span> <b>Structured form v1</b>; defer statement/receipt parsing to a dedicated v2 epic.</p>
+    <div class="decision"><div class="q">3. Sub-type scope — ✓ DECIDED</div>
+      <p class="muted">Decided: <b>Folder-only</b> for all three. Medical retains lab-PDF staging; Financial is filing only (no form, no parsing). Structured capture / parsing deferred indefinitely.</p>
     </div>
     <div class="decision"><div class="q">4. Should Full Brain gain the reference tools?</div>
       <p class="muted">Adds <code>reference_lookup</code> (local) and optionally <code>medical_reference</code> (external, gated).</p>
@@ -393,7 +372,7 @@
   });
 
   // ----- state -----
-  const S={pattern:'B', mode:'research', sub:'generic', fin:'form', def:'research'};
+  const S={pattern:'B', mode:'entry', sub:'generic', fin:'folder', def:'entry'};
   const MODE={
     entry:{lbl:'Entry', acc:'var(--m-entry)', icon:'✎', ph:'Write an entry…', empty:['✎','Saved straight to your wiki.'], safety:'Saves to your wiki — deterministic, no AI.', attach:true},
     research:{lbl:'Research', acc:'var(--m-research)', icon:'🔎', ph:'Ask your brain… (read-only)', empty:['🔎','Ask your brain — read-only.'], safety:"Read-only · won't change anything in your brain.", attach:false},

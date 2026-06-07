@@ -15,6 +15,7 @@ import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../comp
 import { Icon } from "../components/Icon";
 import ListEditor from "../components/ListEditor";
 import NoteActionsMenu from "../components/NoteActionsMenu";
+import RebuildPanel from "../components/RebuildPanel";
 import ShareOptions from "../components/ShareOptions";
 import { Parsed, parseList, serialize } from "../lists";
 
@@ -66,6 +67,7 @@ export default function NotePage() {
   const [listModel, setListModel] = useState<Parsed | null>(null);   // card editor for list notes
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);   // live AI rebuild panel open
   const [shareTtl, setShareTtl] = useState(0);   // link expiry in days; 0 = never
   const [shareBind, setShareBind] = useState(false);   // lock to first device
   const [shareEditable, setShareEditable] = useState(false);   // recipients can propose edits
@@ -109,11 +111,7 @@ export default function NotePage() {
     } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
   }
 
-  function rebuildNow() {
-    // TODO(Phase 2): open the live rebuild panel — stream the AI's thoughts/tool-uses
-    // and the page being rewritten in realtime, then offer Accept / Reject / Guide.
-    alert("Live AI rebuild is coming next — this will open the rebuild panel.");
-  }
+  function rebuildNow() { setRebuilding(true); }
 
   function startEdit() {
     if (!note) return;
@@ -341,6 +339,11 @@ export default function NotePage() {
           </span>
         )}
       </div>
+      {rebuilding && (
+        <RebuildPanel slug={note.slug} note={{ title: note.title, content_md: note.content_md }}
+          onClose={() => setRebuilding(false)}
+          onAccepted={(s) => { setRebuilding(false); if (s !== note.slug) navigate(`/note/${s}`); else reload(); }} />
+      )}
       <div className="row tag-editor" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {note.tags.map((t) => (
           <span key={t} className="badge tag-edit">#{t}

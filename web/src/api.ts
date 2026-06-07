@@ -611,3 +611,68 @@ export async function streamChat(
     if (idle) clearTimeout(idle);
   }
 }
+
+// --- Live page rebuild (KB-only) -------------------------------------------------
+// SSE events from the rebuild engine — same wire envelope as streamChat.
+export type RebuildEvent =
+  | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string }
+  | { type: "sources"; items: { title: string }[] }
+  | { type: "thinking_delta"; text: string }
+  | { type: "content_delta"; text: string }
+  | { type: "lint"; ok: boolean; message: string }
+  | { type: "done"; draft: string; truncated?: boolean;
+      lint?: { ok: boolean; errors: string[]; warnings: string[]; stub: boolean } }
+  | { type: "error"; message: string };
+
+export interface SSEHandle { done: Promise<void>; abort: () => void; }
+
+// Open a POST SSE stream and dispatch parsed events. Returns an abort() so closing the
+// rebuild panel cancels the run server-side (lean in-session: close/refresh = cancel).
+function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => void): SSEHandle {
+  const ctrl = new AbortController();
+  const done = (async () => {
+    const res = await fetch(u(path), {
+      method: "POST", headers: authHeaders(),
+      body: JSON.stringify(body ?? {}), signal: ctrl.signal,
+    });
+    if (!res.body) throw new ApiError("No response stream", 500);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let idle: number | undefined;
+    const STALL_MS = 90000;
+    const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => ctrl.abort(), STALL_MS); };
+    arm();
+    try {
+      for (;;) {
+        let r: ReadableStreamReadResult<Uint8Array>;
+        try { r = await reader.read(); } catch { break; }
+        if (r.done) break;
+        arm();
+        buffer += decoder.decode(r.value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          try { onEvent(JSON.parse(dataLine.slice(6)) as RebuildEvent); } catch { /* ignore */ }
+        }
+      }
+    } finally {
+      if (idle) clearTimeout(idle);
+    }
+  })();
+  return { done, abort: () => ctrl.abort() };
+}
+
+export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}`, {}, onEvent);
+
+export const guideStream = (runId: string, text: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/guide`, { text }, onEvent);
+
+export const acceptRebuild = (runId: string) =>
+  post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`);
+
+export const rejectRebuild = (runId: string) =>
+  post<{ ok: boolean }>(`/api/kb/rebuild/${runId}/reject`);

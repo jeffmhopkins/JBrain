@@ -1811,6 +1811,165 @@ def test_talk_maintain_now(client, monkeypatch):
     assert did not in [t["id"] for t in article_talk.open_for(conn, "kb/People/Bo")]
 
 
+def _mk_kb(conn, title, body="# X\nBody.\n"):
+    from app.services import notes as ns
+    ns.upsert_note(conn, title, body, kind="kb"); conn.commit()
+    return conn.execute("SELECT slug FROM notes WHERE title=?", (title,)).fetchone()["slug"]
+
+
+def test_talk_reply_validation_and_persistence(client):
+    """Reply endpoint: empty body → 400, unknown id → 404, cross-article id → 404; the
+    service stores author verbatim-but-clamped, bypasses dedup, and orders oldest-first."""
+    from app.db import get_conn
+    from app.services import article_talk
+    conn = get_conn()
+    a = _mk_kb(conn, "kb/People/A"); b = _mk_kb(conn, "kb/People/B")
+    tid = article_talk.add(conn, "kb/People/A", "question", "Open Q?"); conn.commit()
+
+    # Empty / whitespace body → 400 (the row exists, so it's past the 404 guard).
+    assert client.post(f"/api/notes/{a}/talk/{tid}/reply", json={"body": "   "}).status_code == 400
+    # Unknown talk id → 404.
+    assert client.post(f"/api/notes/{a}/talk/999999/reply", json={"body": "hi"}).status_code == 404
+    # Cross-article: A's item id posted under B's slug → 404 (no cross-article writes).
+    assert client.post(f"/api/notes/{b}/talk/{tid}/reply", json={"body": "hi"}).status_code == 404
+
+    # Valid reply via endpoint is authored 'user'; service can author 'ai'; a junk author
+    # normalises to 'user'; identical replies are both kept (no dedup).
+    assert client.post(f"/api/notes/{a}/talk/{tid}/reply", json={"body": "first"}).status_code == 200
+    article_talk.reply(conn, tid, "second", author="ai")
+    article_talk.reply(conn, tid, "second", author="ai")           # duplicate kept
+    article_talk.reply(conn, tid, "third", author="weird")         # → user
+    conn.commit()
+    reps = article_talk.replies_for(conn, [tid])[tid]
+    assert [r["body"] for r in reps] == ["first", "second", "second", "third"]   # oldest-first
+    assert [r["author"] for r in reps] == ["user", "ai", "ai", "user"]
+
+
+def test_talk_dismiss_semantics(client):
+    """Dismiss: labels the close 'dismissed by owner' (+reason), refuses a correction (409),
+    404s unknown/cross-article ids, and is a no-op against an already-resolved row."""
+    from app.db import get_conn
+    from app.services import article_talk
+    conn = get_conn()
+    a = _mk_kb(conn, "kb/People/A"); b = _mk_kb(conn, "kb/People/B")
+    todo = article_talk.add(conn, "kb/People/A", "todo", "Do a thing")
+    corr = article_talk.add(conn, "kb/People/A", "correction", "Fact fix", author="user")
+    done = article_talk.add(conn, "kb/People/A", "todo", "Already handled")
+    article_talk.resolve_with(conn, done, "fixed by pass"); conn.commit()
+
+    # Plain dismiss + dismiss-with-reason produce the labelled resolution.
+    assert client.post(f"/api/notes/{a}/talk/{todo}/dismiss", json={"reason": "obsolete"}).json()["ok"] is True
+    row = conn.execute("SELECT resolved_at, resolution FROM article_talk WHERE id=?", (todo,)).fetchone()
+    assert row["resolved_at"] and row["resolution"] == "dismissed by owner: obsolete"
+    assert todo not in [t["id"] for t in article_talk.open_for(conn, "kb/People/A")]
+
+    # A correction can't be dismissed (409) and stays open.
+    assert client.post(f"/api/notes/{a}/talk/{corr}/dismiss", json={}).status_code == 409
+    assert corr in [t["id"] for t in article_talk.open_for(conn, "kb/People/A")]
+
+    # Already-resolved → ok False (no-op, resolution unchanged); unknown/cross-article → 404.
+    assert client.post(f"/api/notes/{a}/talk/{done}/dismiss", json={}).json()["ok"] is False
+    assert conn.execute("SELECT resolution FROM article_talk WHERE id=?", (done,)).fetchone()["resolution"] == "fixed by pass"
+    assert client.post(f"/api/notes/{a}/talk/424242/dismiss", json={}).status_code == 404
+    assert client.post(f"/api/notes/{b}/talk/{corr}/dismiss", json={}).status_code == 404
+
+
+def test_talk_list_replies_and_cascade(client):
+    """list_for attaches replies[] to open AND resolved items (empty list when none); a reply
+    is hard-deleted with its parent row (ON DELETE CASCADE, foreign_keys=ON)."""
+    from app.db import get_conn
+    from app.services import article_talk
+    conn = get_conn()
+    slug = _mk_kb(conn, "kb/People/C")
+    open_id = article_talk.add(conn, "kb/People/C", "directive", "Open one")
+    res_id = article_talk.add(conn, "kb/People/C", "todo", "Resolved one")
+    bare_id = article_talk.add(conn, "kb/People/C", "question", "No replies")
+    article_talk.reply(conn, open_id, "steer")
+    article_talk.reply(conn, res_id, "context")
+    article_talk.resolve_with(conn, res_id, "done"); conn.commit()
+
+    listed = {t["id"]: t for t in client.get(f"/api/notes/{slug}/talk").json()}
+    assert [r["body"] for r in listed[open_id]["replies"]] == ["steer"]
+    assert [r["body"] for r in listed[res_id]["replies"]] == ["context"]   # resolved carries replies too
+    assert listed[bare_id]["replies"] == []
+
+    # Cascade: deleting the parent talk row removes its replies.
+    conn.execute("DELETE FROM article_talk WHERE id=?", (open_id,)); conn.commit()
+    assert article_talk.replies_for(conn, [open_id]) == {}
+
+
+def test_maintain_now_edge_paths(client, monkeypatch):
+    """maintain_now: unknown article → ok False; nothing-to-do → ok False/True with no LLM and
+    the lock RELEASED afterwards; promoted corrections are passed as extra_source_ids."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+
+    # Unknown / non-kb article.
+    assert wiki_build.maintain_now(conn, "kb/People/Ghost")["ok"] is False
+    ns.upsert_note(conn, "notes/plain", "not a kb article"); conn.commit()
+    assert wiki_build.maintain_now(conn, "notes/plain")["ok"] is False
+
+    # Nothing to do (no open items): returns ok True, no LLM spent, and the lock is freed.
+    monkeypatch.setattr(wiki_build.llm, "has_credentials", lambda: False)  # prove no LLM is needed
+    _mk_kb(conn, "kb/People/Quiet")
+    out = wiki_build.maintain_now(conn, "kb/People/Quiet")
+    assert out["ok"] is True and out.get("changed") is False
+    assert wiki_build.kb_lock_acquire(conn) is True   # lock was released → re-acquirable
+    wiki_build.kb_lock_release(conn)
+
+    # Promoted corrections are gathered and fed in as extra_source_ids.
+    nid = ns.upsert_note(conn, "notes/truth", "CORRECTION (source of truth): born 1980"); conn.commit()
+    slug = _mk_kb(conn, "kb/People/D")
+    cid = article_talk.add(conn, "kb/People/D", "correction", "born 1980", author="user")
+    conn.execute("UPDATE article_talk SET is_correction=1, source_note_id=? WHERE id=?", (nid, cid))
+    conn.commit()
+    captured = {}
+    def fake_one(conn, title, known=None, extra_source_ids=None, **k):
+        captured["extra"] = extra_source_ids
+        return {"ok": True, "title": title, "changed": False, "content_md": "", "resolved": [], "new": []}
+    monkeypatch.setattr(wiki_build, "maintain_one", fake_one)
+    wiki_build.maintain_now(conn, "kb/People/D")
+    assert captured["extra"] == [nid]
+
+
+def test_maintain_batch_lock_and_reply_fold(client, monkeypatch):
+    """maintain_batch now takes the KB lock (skips when held) and folds an item's owner
+    replies into the writer prompt on the scheduled path too."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    conn = get_conn()
+    _mk_kb(conn, "kb/People/E", "# E\nE is a person.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n")
+    from app.services import notes as ns
+    ns.upsert_note(conn, "notes/src", "E lives in Reno."); conn.commit()
+    did = article_talk.add(conn, "kb/People/E", "directive", "Tighten the lead.", author="user")
+    article_talk.reply(conn, did, "Drop the middle name.")
+    conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+
+    # Lock held → batch skips without touching anything (restore the real lock after).
+    real_acquire = wiki_build.kb_lock_acquire
+    monkeypatch.setattr(wiki_build, "kb_lock_acquire", lambda *a, **k: False)
+    assert wiki_build.maintain_batch(conn).get("skipped") == "KB busy"
+    monkeypatch.setattr(wiki_build, "kb_lock_acquire", real_acquire)
+
+    # Real lock: the batch runs and the owner's reply rides into the prompt.
+    seen = []
+    def cap(msgs, *a, **k):
+        seen.append(msgs[0]["content"])
+        return ("```article\n# E\nE is a person.[^s1]\n\n## References\n"
+                '[^s1]: [[notes/src]] — 2026-06-01\n```\n```maintain\n{"resolved": [], "new": []}\n```\n')
+    monkeypatch.setattr(llm, "complete", cap)
+    res = wiki_build.maintain_batch(conn)
+    assert "skipped" not in res
+    assert any("Drop the middle name." in p for p in seen)
+    # And the lock is released (a follow-up on-demand pass isn't wedged).
+    assert wiki_build.kb_lock_acquire(conn) is True
+    wiki_build.kb_lock_release(conn)
+
+
 def test_note_normalize_redate_and_title(client, monkeypatch):
     """redate files loose entry notes under notes/YYYY/MM/DD/N (continuing the day's
     numbering, skipping kb/ + already-dated), folds the PWA notes/daily/ capture tree

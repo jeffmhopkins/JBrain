@@ -82,6 +82,14 @@ async def _scheduler_loop():
             await asyncio.to_thread(lambda: trips_svc.run_detection(get_conn()))
         except Exception:  # noqa: BLE001
             pass
+        try:
+            # Backstop the deferred entity rebuild: if a decision left the index dirty but its
+            # background rebuild was lost (crash mid-pass, an error pass), re-trigger it here so
+            # the durable decisions always reconcile. request_rebuild coalesces (no-op if clean).
+            from .services import entity_rebuild
+            await asyncio.to_thread(lambda: entity_rebuild.reset_on_boot(get_conn()))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @asynccontextmanager
@@ -119,6 +127,9 @@ async def lifespan(app: FastAPI):
 
     from .services import image_analysis
     image_analysis.reset_stale(get_conn())     # fail any attachment analysis left 'pending'
+
+    from .services import entity_rebuild
+    entity_rebuild.reset_on_boot(get_conn())   # re-run an entity rebuild a restart interrupted
 
     from .services import push as _push
     _push.ensure_vapid()                       # generate/seed the Web Push VAPID keypair

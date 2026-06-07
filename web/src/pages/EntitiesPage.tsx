@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   EntitySummary, EntityDetail, EntityDecision,
   listEntities, getEntity, mergeEntities, splitEntities,
-  addEntityAlias, removeEntityAlias, listEntityDecisions,
+  addEntityAlias, removeEntityAlias, listEntityDecisions, getEntityRebuildStatus,
 } from "../api";
 import { leaf, slugify } from "../util";
 
@@ -63,11 +63,65 @@ export default function EntitiesPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  // The mutating ops record their decision synchronously but defer the (slow) index rebuild
+  // to a coalesced background worker. While it runs we show a "Refreshing…" badge and poll
+  // /status; when the rebuild generation advances we re-fetch so the fold is reflected.
+  const [rebuilding, setRebuilding] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function refreshList() {
     listEntities(q, type).then(setList).catch(() => setList([]));
   }
   useEffect(refreshList, [q, type]);
+
+  // Poll the deferred-rebuild status until the index reconciles past `fromGen`, then re-fetch
+  // the open detail + the list so the merge/split/alias result is reflected. Idempotent: a new
+  // op replaces the prior poll. Cleaned up on unmount.
+  function watchRebuild(fromGen: number, keepId: number) {
+    if (pollRef.current) clearInterval(pollRef.current);
+    setRebuilding(true);
+    let attempts = 0;
+    const MAX_ATTEMPTS = 100; // ~2 min at 1.2s — defense-in-depth so the poll can never spin forever
+    const stop = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+    const refetch = () => {
+      getEntity(keepId).then((d) => {
+        setSel(d);
+        listEntityDecisions(d.id).then(setDecisions).catch(() => setDecisions([]));
+      }).catch(() => {});
+      refreshList();
+    };
+    pollRef.current = setInterval(async () => {
+      attempts += 1;
+      try {
+        const s = await getEntityRebuildStatus();
+        if (!s.rebuilding && s.generation > fromGen) {
+          // Success: the rebuild we triggered reconciled past our captured generation.
+          stop();
+          setRebuilding(false);
+          refetch();
+          return;
+        }
+        if (!s.rebuilding && s.status === "error" && s.generation <= fromGen) {
+          // Failure: the rebuild ended with an error and never advanced the generation. (While a
+          // fresh rebuild is owed/running, rebuilding stays true and we keep polling — a stale
+          // prior error isn't treated as our failure.) The decision is durable; surface a soft
+          // note and still re-fetch so the pre-fold state shows.
+          stop();
+          setRebuilding(false);
+          setErr(s.last_error || "The background rebuild failed — your change is saved and will reconcile on the next rebuild.");
+          refetch();
+          return;
+        }
+      } catch { /* transient; keep polling */ }
+      if (attempts >= MAX_ATTEMPTS) {
+        // Hard cap: stop polling, drop the badge, and re-fetch whatever the index reflects now.
+        stop();
+        setRebuilding(false);
+        refetch();
+      }
+    }, 1200);
+  }
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   useEffect(() => {
     if (q && list.length >= 1 && (!sel || sel.canonical_name.toLowerCase() !== q.toLowerCase())) {
@@ -83,16 +137,22 @@ export default function EntitiesPage() {
   function setType(t: string) { const p = new URLSearchParams(params); t ? p.set("type", t) : p.delete("type"); setParams(p); }
   function setQ(v: string) { const p = new URLSearchParams(params); v ? p.set("q", v) : p.delete("q"); setParams(p); }
 
-  // Each identity op rebuilds the index server-side; refresh the detail (survivor) + list + ledger.
+  // Each identity op records its decision synchronously and defers the index rebuild. We show
+  // the immediate (pre-fold) detail + ledger right away, then watch the deferred rebuild and
+  // re-fetch once it reconciles so the merge/split/alias result materializes.
   async function run(action: () => Promise<EntityDetail | { ok: boolean }>, keepId: number) {
     if (busy) return;
     setBusy(true); setErr("");
+    // Capture the generation BEFORE the op so we only re-fetch once the rebuild it triggers lands.
+    let fromGen = -1;
+    try { fromGen = (await getEntityRebuildStatus()).generation; } catch { /* fall back to 0 */ fromGen = 0; }
     try {
       const res = await action();
       const detail = (res as EntityDetail).id ? (res as EntityDetail) : await getEntity(keepId);
       setSel(detail);
       listEntityDecisions(detail.id).then(setDecisions).catch(() => setDecisions([]));
       refreshList();
+      watchRebuild(fromGen, detail.id);
     } catch (e: any) {
       setErr(e?.message || "That identity change didn’t go through.");
     } finally { setBusy(false); }
@@ -138,7 +198,14 @@ export default function EntitiesPage() {
 
         {sel && (
           <div style={{ flex: "1 1 340px" }}>
-            <h3 style={{ marginTop: 0 }}>{ICON[sel.type] || "•"} {sel.canonical_name}</h3>
+            <h3 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span>{ICON[sel.type] || "•"} {sel.canonical_name}</span>
+              {rebuilding && (
+                <span className="muted" style={{ fontSize: 12, fontWeight: "normal" }} title="Rebuilding the entity index in the background">
+                  ⟳ Refreshing…
+                </span>
+              )}
+            </h3>
             {!!sel.aliases?.length && <p className="muted" style={{ fontSize: 12, marginTop: -6 }}>a.k.a. {sel.aliases.join(", ")}</p>}
             {sel.article_title
               ? <p><Link to={`/note/${slugify(sel.article_title)}`} className="wikilink">📖 {leaf(sel.article_title)}</Link></p>

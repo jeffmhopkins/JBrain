@@ -40,6 +40,11 @@ def client(monkeypatch):
     monkeypatch.setattr(embeddings, "embed_many", lambda texts: [[0.0] for _ in texts])
     monkeypatch.setattr(embeddings, "store_entity_vector", lambda *a, **k: None)
     monkeypatch.setattr(embeddings, "delete_entity_embedding", lambda *a, **k: None)
+    # The /api/entities endpoints DEFER entity_index.rebuild to a background worker; the
+    # endpoint round-trip tests assert the post-rebuild state, which a TestClient won't await.
+    # Flip the test seam so the deferred rebuild reconciles synchronously on the request.
+    from app.services import entity_rebuild
+    monkeypatch.setattr(entity_rebuild, "run_inline", True)
 
     import app.db as db
     db._initialized = False

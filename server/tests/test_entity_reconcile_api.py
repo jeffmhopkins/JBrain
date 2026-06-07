@@ -33,7 +33,7 @@ def client(monkeypatch):
     from app.config import get_settings
     get_settings.cache_clear()
 
-    from app.services import embeddings, entity_index
+    from app.services import embeddings, entity_index, entity_rebuild
     for name in ("upsert_note_embedding", "delete_note_embedding", "upsert_attachment_embeddings",
                  "delete_attachment_embeddings", "delete_entity_embedding"):
         monkeypatch.setattr(embeddings, name, lambda *a, **k: None, raising=False)
@@ -42,6 +42,11 @@ def client(monkeypatch):
     # merge/split/aliases all call entity_index.rebuild(), which runs _sync_embeddings
     # (fastembed). No-op it so the endpoints run offline.
     monkeypatch.setattr(entity_index, "_sync_embeddings", lambda *a, **k: None)
+    # The endpoints now DEFER entity_index.rebuild to a background worker (so a click never
+    # blocks on _sync_embeddings). A TestClient request doesn't await that thread, so flip the
+    # entity_rebuild test seam to reconcile synchronously — these tests assert the POST-REBUILD
+    # contract (folded survivor, materialized/removed alias), which the seam preserves.
+    monkeypatch.setattr(entity_rebuild, "run_inline", True)
 
     import app.db as db
     db._initialized = False

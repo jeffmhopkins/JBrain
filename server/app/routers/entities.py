@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from ..auth import CurrentUser
 from ..db import get_conn
-from ..services import entity_decisions, entity_index
+from ..services import entity_decisions, entity_index, entity_rebuild
 
 router = APIRouter(prefix="/api/entities", tags=["entities"], dependencies=[CurrentUser])
 
@@ -27,10 +27,22 @@ def _entity(conn, entity_id: int):
     return row
 
 
+@router.get("/status")
+def rebuild_status():
+    """Poll target for the Entities page's "refreshing…" indicator. Returns
+    {rebuilding, status, generation, last_error}: a mutating op records its decision
+    synchronously but defers the (slow) entity_index.rebuild to a coalesced background
+    worker, so the UI watches `generation` advance to know the fold has materialized.
+    Defined before /{entity_id} so the literal path wins."""
+    return entity_rebuild.status(get_conn())
+
+
 @router.post("/merge")
 def merge_entities(source_id: int = Body(...), into_id: int = Body(...)):
-    """Durably merge `source_id` into `into_id`: record the ruling, rebuild the index, and
-    return the survivor (the `into` entity)."""
+    """Durably merge `source_id` into `into_id`: record the ruling synchronously, kick a
+    deferred (coalesced, background) index rebuild, and return the survivor (the `into`
+    entity) with `rebuilding: true`. The survivor id is stable across rebuilds; the
+    source's notes fold in once the deferred rebuild completes (the UI polls /status)."""
     conn = get_conn()
     src = _entity(conn, source_id)
     dst = _entity(conn, into_id)
@@ -40,17 +52,18 @@ def merge_entities(source_id: int = Body(...), into_id: int = Body(...)):
         conn, "merge", type=dst["type"], norm_a=src["normalized_key"], canonical=dst["normalized_key"],
         display_a=src["canonical_name"], display_b=dst["canonical_name"],
     )
-    conn.commit()
-    entity_index.rebuild(conn)
-    # The survivor is keyed by (type, normalized_key); its id is stable across rebuilds.
+    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    entity_rebuild.request_rebuild(conn)
+    # The survivor is keyed by (type, normalized_key); its id is stable across rebuilds, so
+    # we can return its detail now (its notes reflect the fold only after the deferred pass).
     survivor = conn.execute(
         "SELECT id FROM entities WHERE type=? AND normalized_key=?",
         (dst["type"], dst["normalized_key"]),
     ).fetchone()
     out = entity_index.notes_for(conn, survivor["id"]) if survivor else None
     if out is None:
-        raise HTTPException(status_code=404, detail="Survivor entity not found after merge")
-    return out
+        raise HTTPException(status_code=404, detail="Survivor entity not found")
+    return {**out, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 
 
 @router.post("/split")
@@ -65,9 +78,9 @@ def split_entities(a_id: int = Body(...), b_id: int = Body(...)):
         conn, "split", type=a["type"], norm_a=a["normalized_key"], norm_b=b["normalized_key"],
         display_a=a["canonical_name"], display_b=b["canonical_name"],
     )
-    conn.commit()
-    entity_index.rebuild(conn)
-    return {"ok": True}
+    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    entity_rebuild.request_rebuild(conn)
+    return {"ok": True, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 
 
 @router.post("/{entity_id}/aliases")
@@ -80,12 +93,12 @@ def add_alias(entity_id: int, display: str = Body(..., embed=True)):
     entity_decisions.add(
         conn, "alias", type=e["type"], norm_a=display, norm_b=e["normalized_key"], display_a=display,
     )
-    conn.commit()
-    entity_index.rebuild(conn)
+    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    entity_rebuild.request_rebuild(conn)
     out = entity_index.notes_for(conn, entity_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Entity not found")
-    return out
+    return {**out, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 
 
 @router.delete("/{entity_id}/aliases/{alias_norm}")
@@ -99,9 +112,9 @@ def remove_alias(entity_id: int, alias_norm: str):
         (e["type"], na, e["normalized_key"]),
     ).fetchall():
         entity_decisions.remove(conn, r["id"])
-    conn.commit()
-    entity_index.rebuild(conn)
-    return {"ok": True}
+    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    entity_rebuild.request_rebuild(conn)
+    return {"ok": True, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 
 
 @router.get("/{entity_id}/decisions")

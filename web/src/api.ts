@@ -568,18 +568,27 @@ export interface EntityDecision {
 export interface EntityDetail extends EntitySummary {
   normalized_key: string; aliases?: string[];
   notes: { id: number; title: string; slug: string; created_at: string }[];
+  // A mutating op records its decision synchronously but defers the (slow) index rebuild;
+  // `rebuilding: true` means the returned detail isn't yet reconciled with that decision.
+  rebuilding?: boolean;
+}
+// Deferred-rebuild status: the UI watches `generation` advance to know the rebuild that a
+// merge/split/alias kicked off has finished reconciling the index.
+export interface EntityRebuildStatus {
+  rebuilding: boolean; status: "idle" | "running" | "error"; generation: number; last_error: string | null;
 }
 export const listEntities = (q = "", type = "") =>
   get<EntitySummary[]>(`/api/entities?${new URLSearchParams({ ...(q ? { q } : {}), ...(type ? { type } : {}) })}`);
 export const getEntity = (id: number) => get<EntityDetail>(`/api/entities/${id}`);
+export const getEntityRebuildStatus = () => get<EntityRebuildStatus>("/api/entities/status");
 export const mergeEntities = (sourceId: number, intoId: number) =>
   post<EntityDetail>("/api/entities/merge", { source_id: sourceId, into_id: intoId });
 export const splitEntities = (aId: number, bId: number) =>
-  post<{ ok: boolean }>("/api/entities/split", { a_id: aId, b_id: bId });
+  post<{ ok: boolean; rebuilding?: boolean }>("/api/entities/split", { a_id: aId, b_id: bId });
 export const addEntityAlias = (id: number, display: string) =>
   post<EntityDetail>(`/api/entities/${id}/aliases`, { display });
 export const removeEntityAlias = (id: number, aliasNorm: string) =>
-  del<{ ok: boolean }>(`/api/entities/${id}/aliases/${encodeURIComponent(aliasNorm)}`);
+  del<{ ok: boolean; rebuilding?: boolean }>(`/api/entities/${id}/aliases/${encodeURIComponent(aliasNorm)}`);
 export const listEntityDecisions = (id: number) => get<EntityDecision[]>(`/api/entities/${id}/decisions`);
 
 export interface Person { id: number; name: string; color: string; is_default: boolean; aliases: string; note_slug: string | null; location_key: string | null; }

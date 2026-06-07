@@ -263,7 +263,10 @@ def rebuild(conn, limit: int = 20000) -> int:
         if agg is None:
             continue
         for alias_norm, alias_display in pairs:
-            if alias_norm and alias_norm != canon_norm:
+            # Never fold an alias the user has SPLIT apart from this canonical — a split is a
+            # hard "different person" ruling and must win over a stale/competing alias row.
+            if (alias_norm and alias_norm != canon_norm
+                    and frozenset({canon_norm, alias_norm}) not in splits):
                 agg["aliases"].setdefault(alias_norm, alias_display)
 
     seen_keys = set()
@@ -552,6 +555,54 @@ def ambiguous_terms(conn) -> list[dict]:
             (r["term"], r["term"]),
         ).fetchall()
         out.append({"term": r["term"], "entities": [dict(e) for e in ents]})
+    return out
+
+
+def alias_surface(conn) -> dict:
+    """The SINGLE source of truth for alias-aware LINKING: {alias_norm: (article_title,
+    alias_display)} for aliases that are SAFE to auto-link to their canonical article. One
+    cached-by-caller function consulted by the deterministic linker AND the link-label
+    hygiene allow-list, so the set that gets LINKED is exactly the set that gets PROTECTED
+    (no drift → no nightly strip↔re-add oscillation).
+
+    Drop-rules (a dropped alias stays plain text, never auto-linked):
+      (i)   alias mapping to ≥2 distinct article-bearing entities (ambiguous);
+      (ii)  alias in ambiguous_terms (collides with another entity's key/alias);
+      (iii) alias whose norm equals a live non-redirect article LEAF norm — the leaf path
+            already links it, so don't shadow it here;
+      (iv)  a single-token given-name alias ("jeff") UNLESS an explicit user
+            entity_decisions('alias') backs it — bare first names are too collision-prone
+            to auto-link on a heuristic alone;
+      (v)   a private (Health/Finance) or Reference target — the PII firewall: those pages
+            must never be named/linked from public prose.
+    `article_title` is the entity's bound canonical article (redirects are excluded by
+    _link_articles), so it is the correct, non-redirect link target."""
+    from . import wiki_guides, entity_decisions
+    rows = conn.execute(
+        "SELECT a.alias_norm, a.alias_display, e.normalized_key, e.article_title "
+        "FROM entity_aliases a JOIN entities e ON e.id = a.entity_id "
+        "WHERE e.article_title IS NOT NULL AND a.alias_norm IS NOT NULL"
+    ).fetchall()
+    by_alias: dict[str, set] = defaultdict(set)
+    info: dict[str, tuple] = {}
+    for r in rows:
+        by_alias[r["alias_norm"]].add(r["article_title"])
+        info.setdefault(r["alias_norm"], (r["article_title"], r["alias_display"] or r["alias_norm"], r["normalized_key"]))
+    amb = {str(t.get("term", "")).lower() for t in ambiguous_terms(conn)}
+    leaf_norms = {normalize(row["title"].split("/")[-1]) for row in conn.execute(
+        "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL").fetchall()}
+    decided = {(canon, an) for canon, pairs in entity_decisions.load_aliases(conn).items()
+               for an, _ in pairs}
+    out: dict[str, tuple] = {}
+    for an, targets in by_alias.items():
+        if len(targets) >= 2 or an in amb or an in leaf_norms:        # (i)(ii)(iii)
+            continue
+        art, disp, canon = info[an]
+        if len(an.split()) <= 1 and (canon, an) not in decided:       # (iv)
+            continue
+        if wiki_guides.is_private_title(art) or wiki_guides.domain_for_title(art) == "Reference":  # (v)
+            continue
+        out[an] = (art, disp)
     return out
 
 

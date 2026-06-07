@@ -158,12 +158,33 @@ def scan_link_labels(conn) -> list[dict]:
             "resolved_slug": resolved["slug"] if resolved else None, "reason": reason,
         }
 
+    # Registered-alias allow-list: a [[Target|Display]] whose Display is a known alias of
+    # Target's entity is INTENTIONAL (e.g. [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]) and must
+    # NOT be "tidied" away — that would strip the nickname the linker deliberately added, every
+    # night. FAIL CLOSED: if the alias surface can't be built (mid-rebuild error), strip NOTHING
+    # this run (return no findings) rather than risk destroying alias links; it self-heals next
+    # pass. An empty surface (a KB with no aliases) is fine — there are simply no links to protect.
+    from . import entity_index
+    try:
+        _alias_surface = entity_index.alias_surface(conn)
+    except Exception:  # noqa: BLE001 — never strip on an indeterminate alias surface
+        return []
+    from .wiki_build import _resolve_redirect_chain
+
+    def _is_registered_alias(display: str, tgt) -> bool:
+        info = _alias_surface.get(entity_index.normalize(display))
+        if not info:
+            return False
+        return _resolve_redirect_chain(conn, info[0]).lower() == _resolve_redirect_chain(conn, tgt["title"]).lower()
+
     findings: list[dict] = []
     for n in notes:
         for raw, target, display in _iter_display_links(n["content_md"]):
             tgt = by_title.get(target.lower())
             if not tgt:
                 continue  # dangling/unresolved target — out of scope
+            if _is_registered_alias(display, tgt):
+                continue  # intentional nickname/alias of THIS article — leave it alone
             # Verbose: the label just echoes the article's path/name → tidy to bare.
             if display.lower() in _path_forms(tgt["title"]):
                 findings.append(finding("verbose", n, raw, target, tgt, display,

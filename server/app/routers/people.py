@@ -52,12 +52,14 @@ def _owner_state(conn) -> dict:
         "id": o["id"] if o else None,
         "name": raw,                              # the stored name ("Me" until set)
         "display": people_svc.owner_name(conn),   # what the prompts use ("the owner" if unset)
+        "aliases": (o["aliases"] if o else "") or "",   # CSV of also-known-as names
         "is_set": raw.lower() not in _OWNER_PLACEHOLDER,
     }
 
 
 class OwnerIn(BaseModel):
     name: str
+    aliases: str | None = None     # optional CSV of also-known-as names (e.g. "Jeff, JMH")
 
 
 @router.get("/owner")
@@ -83,7 +85,17 @@ def set_owner(body: OwnerIn):
             "SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, o["id"])).fetchone():
         raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
     conn.execute("UPDATE people SET name = ? WHERE id = ?", (name, o["id"]))
+    if body.aliases is not None:
+        conn.execute("UPDATE people SET aliases = ? WHERE id = ?", (body.aliases.strip(), o["id"]))
     conn.commit()
+    # Connect the owner to their kb/People page and register their name/nicknames as durable
+    # alias decisions so prose using a nickname links to the canonical page (next rebuild
+    # materializes them). Best-effort — never block the rename.
+    try:
+        from ..services import wiki_build
+        wiki_build.reconcile_owner(conn)
+    except Exception:  # noqa: BLE001
+        pass
     _reattribute(conn)
     return _owner_state(conn)
 

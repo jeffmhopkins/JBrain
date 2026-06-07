@@ -105,6 +105,10 @@ def test_maintain_one_prompt_substitutes_known_aliases(conn, monkeypatch):
         prompts_seen.append(messages[0]["content"])
         return _REPLY
 
+    # maintain_one's MAIN draft call goes through complete_with_meta -> (text, stop_reason);
+    # the revise loop still uses complete. Patch both so the first captured prompt is the
+    # maintenance prompt regardless of which path runs.
+    monkeypatch.setattr(llm, "complete_with_meta", lambda messages, **kw: (fake_complete(messages, **kw), None))
     monkeypatch.setattr(llm, "complete", fake_complete)
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
 
@@ -134,6 +138,7 @@ def test_maintain_one_noop_when_nothing_to_do(conn, monkeypatch):
         return _REPLY
 
     monkeypatch.setattr(llm, "complete", fake_complete)
+    monkeypatch.setattr(llm, "complete_with_meta", lambda messages, **kw: (fake_complete(messages, **kw), None))
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
 
     out = wiki_build.maintain_one(conn, "kb/Things/Ford Truck", known_titles=["kb/Things/Ford Truck"])

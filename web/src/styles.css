@@ -1455,5 +1455,6 @@ button.cal-pill { border: none; color: var(--text); }
 .composer-box.sec-2 textarea { min-height: 52px; }
 /* Action buttons are a right-aligned group with 44px tap targets; send is always rightmost. */
 .composer-row .icon-btn { min-width: 44px; min-height: 44px; padding: 0; align-items: center; justify-content: center; }
-/* Research "Deep" toggle — obvious filled ON state (accent pill), not just a tint. */
-.deep-toggle.on { background: var(--accent-soft); color: var(--accent); border-radius: 999px; }
+/* Research "Deep" toggle ON — a SOLID filled bolt (matching the Advanced bolt), not a pill. */
+.deep-toggle.on { color: var(--accent); }
+.deep-toggle.on .icon { fill: currentColor; }

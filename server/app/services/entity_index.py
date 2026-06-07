@@ -576,8 +576,10 @@ def _span_surface_set(conn, ambiguous: set[str] | None = None) -> set[str]:
     note_ids_for_name" and "safe to fire on a mention buried in prose":
 
       • every MULTI-token entity CANONICAL key (a real, deliberately-named entity);
-      • a SINGLE-token key only when distinctive (len>=4, not a stop-word) — so an entity
-        named "Home"/"Work"/"Gym" or a 1-2 char key never fires on any sentence with that token;
+      • a SINGLE-token key only for a PERSON/ANIMAL mononym AND when distinctive (len>=4, not a
+        stop-word) — so a person named "Madonna" still fires, but a single-token org/thing key
+        ("google"/"costco"/"gmail") never fires on ordinary verb/noun usage, and an entity named
+        "Home"/"Work"/"Gym" or a 1-2 char key never fires on any sentence with that token;
       • every MULTI-token alias (e.g. "jeff hopkins" — two+ tokens is collision-resistant);
       • a SINGLE-token alias ONLY if the user explicitly decided it (entity_decisions 'alias').
 
@@ -587,17 +589,24 @@ def _span_surface_set(conn, ambiguous: set[str] | None = None) -> set[str]:
     The single-token ALIAS gate is the stricter alias_surface() rule (iv): a bare heuristic first
     name ("jeff" auto-merged onto "Jeffrey") is too collision-prone, so a single alias fires only
     when the user decided it — unlike note_ids_for_name, which resolves ANY key/alias. A
-    distinctive single-token NAME ("Madonna") still matches as a key — acceptable and consistent
-    with the linker. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must
+    distinctive single-token PERSON/ANIMAL name ("Madonna") still matches as a key — acceptable and
+    consistent with the linker. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must
     never auto-expand. `ambiguous` is the pre-computed lower-cased set of ambiguous terms
     (search.py computes it ONCE for the whole-query guard and threads it in); when None we compute
     it here so the helper stays standalone-callable. Built ONCE per call by the caller (a few
     cheap indexed queries) then scanned in-memory."""
     from . import entity_decisions
     surfaces: set[str] = set()
-    for r in conn.execute("SELECT normalized_key AS k FROM entities").fetchall():
+    for r in conn.execute("SELECT normalized_key AS k, type AS t FROM entities").fetchall():
         k = r["k"]
-        if k and (" " in k or _span_admit_single(k)):  # multi-token, or a distinctive single key
+        if not k:
+            continue
+        if " " in k:                                    # multi-token key (any type) — collision-resistant
+            surfaces.add(k)
+        elif (r["t"] or "") in ("person", "animal") and _span_admit_single(k):
+            # SINGLE-token key only for a person/animal mononym ("Madonna") that is also distinctive
+            # (len>=4, not a stop-word). A single-token org/thing key ("google"/"costco"/"gmail") is
+            # almost always a common verb/noun in prose, so we do NOT span-expand on it.
             surfaces.add(k)
     decided = {an for _canon, pairs in entity_decisions.load_aliases(conn).items()
                for an, _disp in pairs}

@@ -327,6 +327,42 @@ def test_distinctive_multi_token_name_still_expands(conn):
     assert any(r["id"] == n["id"] for r in exp), "a distinctive multi-token name should expand"
 
 
+def test_single_token_org_key_does_not_expand_on_verb_usage(conn):
+    """An ORG entity literally named "Google" (single-token key "google", type 'org') must NOT
+    span-expand on ordinary verb/noun usage of the word ("i need to google it later"). Although
+    "google" is len>=4 and not in _STOP_LEAVES, a single-token org/thing key is almost always a
+    common verb/noun in prose, so the single-token gate now admits keys for PERSON/ANIMAL only —
+    blending an org's whole note corpus into chat search on a non-referential token is wrong."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/05", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Google", etype="org")  # single-token key "google", an org/brand
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "i need to google it later", 8, entity_expand=True)
+    assert all(r["id"] != n["id"] for r in exp), '"Google" (org) must not span-expand on the verb "google"'
+
+
+def test_single_token_person_mononym_still_expands(conn):
+    """A single-token PERSON mononym ("Madonna", type 'person') is a genuine person reference and
+    STILL span-expands from inside a sentence — the person/animal carve-out for single-token keys."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/06", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Madonna", etype="person")
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "did madonna release a new album this year", 8, entity_expand=True)
+    assert any(r["id"] == n["id"] for r in exp), "a single-token person mononym should still span-expand"
+
+
+def test_multi_token_org_still_expands(conn):
+    """A MULTI-token org ("Acme Corp") is unaffected by the single-token person/animal restriction —
+    multi-token keys of any type stay admitted (collision-resistant)."""
+    from app.services import search
+    n = _mk(conn, "notes/2026/04/07", "zzqq unrelated body", kind="entry")
+    eid = _entity(conn, "Acme Corp", etype="org")
+    _mention(conn, eid, n["id"])
+    exp = search.hybrid_notes(conn, "what did acme corp send us last quarter", 8, entity_expand=True)
+    assert any(r["id"] == n["id"] for r in exp), "a multi-token org should still span-expand"
+
+
 # ---- K. span flooding must not evict a partial-match FTS hit (red-team FIX 2) -----------
 
 def test_partial_match_fts_hit_not_evicted_by_span_flood(conn):

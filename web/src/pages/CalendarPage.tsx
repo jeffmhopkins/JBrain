@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  calUpcoming, calHistory, calRange, calQuickAdd, calReschedule, calCancel, CalEvent,
+  calUpcoming, calHistory, calRange, calQuickAdd, CalEvent,
   Reminder, AddedEvent, calGetReminders, calSetReminders,
   calRecentlyAdded, calMarkReviewed, calDismiss, calUndismiss,
 } from "../api";
@@ -123,6 +123,7 @@ export default function CalendarPage() {
   const [sheet, setSheet] = useState<{ ev?: CalEvent; addDate?: string; addTime?: string } | null>(null);
   const [, setTick] = useState(0);                          // 60s tick to keep the now-line live
   const [reloadNonce, setReloadNonce] = useState(0);        // explicit refetch signal for the review banner
+  const [undo, setUndo] = useState<{ title: string; ik: string } | null>(null);  // Remove-from-calendar snackbar
   const cache = useRef<Map<string, CalEvent[]>>(new Map());
   const today = todayIso(tz);
 
@@ -169,8 +170,11 @@ export default function CalendarPage() {
   }, [view, cursor]);
 
   async function doQuickAdd(b: { title: string; date: string; time?: string; kind: string; reminders?: Reminder[] }) { await calQuickAdd(b); setSheet(null); reload(); }
-  async function doReschedule(ev: CalEvent, to_date: string, to_time?: string) { await calReschedule(ev.id, to_date, to_time); setSheet(null); reload(); }
-  async function doCancel(ev: CalEvent) { await calCancel(ev.id); setSheet(null); reload(); }
+  // Remove from calendar: note-free dismissal that stops re-derivation; reversible via the snackbar.
+  async function doRemove(ev: CalEvent) { const r = await calDismiss(ev.id); setSheet(null); setUndo({ title: ev.title, ik: r.identity_key }); reload(); }
+  async function doUndo() { if (!undo) return; const ik = undo.ik; setUndo(null); await calUndismiss(ik); reload(); }
+  // Auto-dismiss the undo snackbar after a few seconds.
+  useEffect(() => { if (!undo) return; const id = setTimeout(() => setUndo(null), 6000); return () => clearTimeout(id); }, [undo]);
 
   return (
     <div className="tool-body cal">
@@ -220,8 +224,15 @@ export default function CalendarPage() {
       )}
 
       {sheet && (sheet.ev
-        ? <EventSheet ev={sheet.ev} onClose={() => setSheet(null)} onReschedule={doReschedule} onCancel={doCancel} />
+        ? <EventSheet ev={sheet.ev} onClose={() => setSheet(null)} onRemove={doRemove} />
         : <QuickAddSheet date={sheet.addDate!} time={sheet.addTime} onClose={() => setSheet(null)} onAdd={doQuickAdd} />)}
+
+      {undo && (
+        <div className="cal-snack" role="status">
+          <span>Removed “{undo.title}” from calendar.</span>
+          <button className="cal-snack-undo" onClick={doUndo}>Undo</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -404,13 +415,12 @@ function DayView({ cursor, byDay, today, nowMin, onAdd, onPick }: {
 }
 
 // ---------- sheets (use the app's Modal: Esc / focus / portal / scroll-lock) ----------
-function EventSheet({ ev, onClose, onReschedule, onCancel }: {
-  ev: CalEvent; onClose: () => void;
-  onReschedule: (e: CalEvent, d: string, t?: string) => Promise<void>; onCancel: (e: CalEvent) => Promise<void>;
+// The detail sheet has exactly two actions on the calendar: set reminders, and Remove from
+// calendar (a note-free dismissal). Changing the record itself — reschedule, cancel — is done
+// in the note, so the calendar simply re-derives from it.
+function EventSheet({ ev, onClose, onRemove }: {
+  ev: CalEvent; onClose: () => void; onRemove: (e: CalEvent) => Promise<void>;
 }) {
-  const [mode, setMode] = useState<"view" | "resched" | "confirm">("view");
-  const [date, setDate] = useState((ev.starts_at || "").slice(0, 10));
-  const [time, setTime] = useState(isTimed(ev) ? ev.starts_at!.slice(11, 16) : "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [reminders, setReminders] = useState<Reminder[]>([]);
@@ -430,28 +440,15 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
     }
   }
   function changeReminders(v: Reminder[]) { setReminders(v); setSavedRem(false); pendingVal.current = v; flushSave(); }
-  async function run(fn: () => Promise<void>) {
+  async function remove() {
     setBusy(true); setErr("");
-    try { await fn(); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
+    try { await onRemove(ev); } catch (e: any) { setErr(String(e?.message || e)); setBusy(false); }
   }
-  const footer = ev.recurring
-    ? <span className="cal-recnote">Recurring — edit the source note to change the pattern.</span>
-    : mode === "view"
-      ? <>
-          <button className="ghost" onClick={() => setMode("resched")} disabled={busy}>Reschedule</button>
-          <button className="ghost" style={{ color: "var(--danger)" }} onClick={() => setMode("confirm")} disabled={busy}>Cancel event</button>
-        </>
-      : mode === "confirm"
-        ? <>
-            <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Keep</button>
-            <button className="primary" style={{ background: "var(--danger)", borderColor: "var(--danger)" }}
-              disabled={busy} onClick={() => run(() => onCancel(ev))}>Confirm cancel</button>
-          </>
-        : <>
-            <button className="ghost" onClick={() => setMode("view")} disabled={busy}>Back</button>
-            <button className="primary" disabled={busy || !date}
-              onClick={() => run(() => onReschedule(ev, date, time || undefined))}>Save</button>
-          </>;
+  const footer = (
+    <button className="ghost" style={{ color: "var(--danger)" }} disabled={busy} onClick={remove}>
+      Remove from calendar
+    </button>
+  );
   return (
     <Modal title={ev.title} size="compact" onClose={onClose} footer={footer}>
       <p className="muted" style={{ margin: "0 0 6px" }}>
@@ -460,20 +457,14 @@ function EventSheet({ ev, onClose, onReschedule, onCancel }: {
       </p>
       {ev.location_label && <p className="muted" style={{ margin: "0 0 6px" }}>◇ {ev.location_label}</p>}
       {err && <p style={{ color: "var(--danger)", fontSize: 13 }}>{err}</p>}
-      {mode === "confirm" && <p style={{ fontSize: 13 }}>Cancel “{ev.title}”? This writes a cancellation note.</p>}
-      {mode === "resched" && <>
-        <div className="cal-field"><label>NEW DATE</label>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-        <div className="cal-field"><label>NEW TIME (blank = all-day)</label>
-          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
-      </>}
-      {mode === "view" && <>
-        <RemindChips allDay={!isTimed(ev)} value={reminders} onChange={changeReminders} />
-        {ev.recurring && <p className="cal-recnote">Applies to the whole series.</p>}
-        {savedRem && <p className="cal-recnote" style={{ color: "var(--ok)" }}>Reminders saved.</p>}
-      </>}
+      <RemindChips allDay={!isTimed(ev)} value={reminders} onChange={changeReminders} />
+      {ev.recurring && <p className="cal-recnote">Reminders apply to the whole series.</p>}
+      {savedRem && <p className="cal-recnote" style={{ color: "var(--ok)" }}>Reminders saved.</p>}
       {ev.note_slug && <p style={{ marginTop: 8 }}><Link className="ghost" to={`/note/${ev.note_slug}`}>Open note</Link></p>}
-      <p className="cal-recnote">Edits write a note — the calendar re-derives.</p>
+      <p className="cal-recnote">
+        Remove just takes it off the calendar — your note is untouched. To reschedule or cancel,
+        edit the note.{ev.recurring ? " Removing takes the whole series off the calendar." : ""}
+      </p>
     </Modal>
   );
 }
@@ -552,7 +543,7 @@ function ReviewBanner({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="cal-review">
       <button className="cal-review-bar" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span>{items.length} added by auto-extraction</span>
+        <span>{items.length} added from your notes</span>
         <span className="muted">{open ? "Hide" : "Review"}</span>
       </button>
       {open && <div className="cal-card" style={{ marginTop: 6 }}>
@@ -565,7 +556,7 @@ function ReviewBanner({ refreshKey }: { refreshKey: number }) {
               <span className="meta" style={{ gap: 8 }}>
                 {e.note_slug && <Link className="open-day" to={`/note/${e.note_slug}`}>note</Link>}
                 {gone ? <button className="open-day" onClick={() => undo(e)}>Undo</button>
-                      : <button className="open-day" style={{ color: "var(--danger)" }} onClick={() => revoke(e)}>Revoke</button>}
+                      : <button className="open-day" style={{ color: "var(--danger)" }} onClick={() => revoke(e)}>Remove</button>}
               </span>
             </div>
           );

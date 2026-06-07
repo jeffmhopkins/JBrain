@@ -49,8 +49,8 @@ _DEFAULT_PROMPT = (
     "NOTE TITLE: {title}\nNOTE BODY:\n{body}"
 )
 
-# A structured supersession marker a reschedule/cancel note carries (Phase 3 UI
-# pre-fills it). Examples it matches:
+# A structured supersession marker the owner writes in a note to move or cancel an
+# earlier event (the deterministic (a) path). Examples it matches:
 #   "supersedes [[Dentist]] 2026-06-14"
 #   "Supersedes: [[Old appt]] on 2026-06-14"
 #   "cancels [[Mortgage due]] 2026-06-14"
@@ -621,8 +621,8 @@ def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
         "     OR n.content_md LIKE '%supersede%' OR n.content_md LIKE '%cancel%' "
         "     OR n.content_md LIKE '%reschedul%') "
         # Skip notes the calendar UI authored deterministically (a source='manual' row):
-        # those are projected from structured form data and edited via reschedule/cancel
-        # (superseding notes), not re-extracted by the LLM — so we never duplicate them.
+        # those are projected from structured form data and changed by editing the note
+        # itself, not re-extracted by the LLM — so we never duplicate them.
         "AND NOT EXISTS (SELECT 1 FROM calendar_events m WHERE m.note_id = n.id AND m.source = 'manual') "
         "ORDER BY n.updated_at, n.id LIMIT ?",
         (ts, ts, rid, max(1, min(int(limit), 1000))),
@@ -853,9 +853,10 @@ def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
 
 
 def dismiss_event(conn, identity_key: str) -> dict:
-    """Owner revoked an auto-extracted event from the in-calendar review: snapshot it (so
-    Undo can restore instantly), drop the row + its fired markers, and remember the
-    revoke so extraction never re-creates it. The note's text is never touched."""
+    """Remove an event from the calendar (the review banner's Revoke, or the detail
+    sheet's "Remove from calendar"): snapshot it (so Undo can restore instantly), drop
+    the row + its fired markers, and remember the removal so re-derivation never
+    re-creates it. The note's text is never touched."""
     row = conn.execute("SELECT * FROM calendar_events WHERE identity_key=?", (identity_key,)).fetchone()
     conn.execute("INSERT OR REPLACE INTO calendar_dismissed (identity_key, payload_json) VALUES (?,?)",
                  (identity_key, json.dumps(dict(row)) if row else None))

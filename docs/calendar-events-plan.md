@@ -288,7 +288,8 @@ No new notification infrastructure — both channels already ship.
   "what's on my calendar this week" conversationally and cites the source note.
 - **Calendar tab** (phase 4, `web/`) — a month/agenda view under Advanced
   (alongside Browse · Automate · Data · Review), each item linking to its note.
-  Its quick-add / reschedule / cancel controls **write notes** (§2.2), not rows.
+  Its only edit controls are Add (quick-add, which **writes a note**, §2.2) and Remove
+  (a note-free dismissal); rescheduling/cancelling is done by editing the note itself.
   Out of scope for the doc-only first pass.
 - **Search** — automatic: rows link to notes, which are already in FTS5 +
   semantic search.
@@ -306,8 +307,10 @@ No new notification infrastructure — both channels already ship.
 - **Phase 2:** `list_upcoming` / `event_history` Research tools; recurrence
   promotion branch in `promote_recurrences`.
 - **Phase 3:** `upcoming-reminders` workflow (Review cards + Web Push); calendar
-  **quick-add** UI that writes a dated note (never the row) + the
-  reschedule/cancel action that writes a superseding note (§2.2/§2.4).
+  **quick-add** UI that writes a dated note (never the row). *(A reschedule/cancel
+  action that wrote a superseding note was added here and later removed — see §9 —
+  in favor of editing the note directly; the §2.4 engine that consumes such notes
+  stays.)*
 - **Phase 4:** Calendar tab in the PWA (month/agenda view).
 
 ---
@@ -465,13 +468,22 @@ draft schema in §1.1** — those corrections are authoritative for Phase 1.
   each recurring series via `expand_rrule`) whose occurrence is within the lead
   window. Deduped per instance through `calendar_fired` (marker = identity_key|date)
   so each occurrence reminds exactly once; superseded/cancelled events are skipped.
-- **Write paths** (`routers/calendar.py`, all owner-keyed) — the UI writes NOTES:
-  - `POST /api/calendar/quick-add` writes a dated note AND deterministically projects
-    its structured event (`source='manual'`). To avoid double-derivation, the LLM
-    extractor (`pending_notes`) SKIPS notes that already carry a `source='manual'`
-    row — those are edited via reschedule/cancel, not re-extracted.
-  - `POST /api/calendar/events/{id}/reschedule` and `/cancel` write a SUPERSEDING
-    note carrying the structured `supersedes/cancels [[old note]] <date>` marker, then
-    run `consolidate` — the same re-derivation path the nightly workflow uses.
-  - `GET /api/calendar/upcoming` / `/history` — JSON read side for the Phase 4 UI
+- **Write paths** (`routers/calendar.py`, all owner-keyed) — the calendar exposes
+  exactly two edit actions, **Add to calendar** and **Remove from calendar**:
+  - `POST /api/calendar/quick-add` (Add) writes a dated note AND deterministically
+    projects its structured event (`source='manual'`). To avoid double-derivation, the
+    LLM extractor (`pending_notes`) SKIPS notes that already carry a `source='manual'`
+    row — those are edited by changing the note, not re-extracted.
+  - `POST /api/calendar/events/{id}/dismiss` (Remove) hides the event WITHOUT writing a
+    note and remembers the removal so re-derivation never re-creates it; reversible via
+    `POST /api/calendar/undismiss` (the UI's Undo). `recently-added` / `reviewed` back
+    the in-calendar review banner.
+  - `GET /api/calendar/upcoming` / `/history` / `/range` — JSON read side for the UI
     (one-offs + recurring next-occurrence, owner-tz windowed).
+
+  > **Note (simplification, post-Phase 4):** the calendar no longer has Reschedule or
+  > Cancel controls/endpoints. Changing the *record* — moving or cancelling an
+  > appointment — is done in the notes (write a superseding/cancellation note carrying a
+  > `supersedes/cancels [[old note]] <date>` marker, then consolidate); the nightly
+  > re-derivation reflects it here. That note-driven supersession engine (§2.4) is
+  > unchanged — only the UI/API affordances that wrote those markers for you were removed.

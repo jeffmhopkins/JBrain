@@ -1200,3 +1200,13 @@ button.cal-pill { border: none; color: var(--text); }
 .cal-review-bar { width: 100%; display: flex; justify-content: space-between; align-items: center;
   background: var(--accent-soft); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 9px 12px; font-size: 13px; color: var(--text); cursor: pointer; }
+
+/* Undo snackbar for Remove-from-calendar */
+.cal-snack { position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 60;
+  display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 32px);
+  background: var(--text); color: var(--bg); border-radius: var(--radius);
+  padding: 10px 14px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.28); }
+.cal-snack span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-snack-undo { background: none; border: none; color: var(--accent);
+  font-weight: 600; font-size: 13px; cursor: pointer; padding: 0; flex: none; }

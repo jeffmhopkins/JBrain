@@ -796,24 +796,6 @@ def test_quick_add_writes_note_and_manual_row_and_skips_llm(conn):
     assert all(p["id"] != out["note_id"] for p in cal.pending_notes(conn, "", 100))
 
 
-def test_reschedule_supersedes_old_and_adds_new(conn):
-    from app.routers import calendar as r
-    added = r.quick_add(r.QuickAddIn(title="Dentist", date="2099-06-14"))
-    old_id = added["event"]["id"]
-    r.reschedule(old_id, r.RescheduleIn(to_date="2099-06-21"))
-    up = {(row["title"], row["starts_at"]) for row in conn.execute("SELECT title, starts_at FROM v_upcoming")}
-    assert ("Dentist", "2099-06-21") in up
-    assert ("Dentist", "2099-06-14") not in up   # old occurrence superseded
-
-
-def test_cancel_removes_from_upcoming(conn):
-    from app.routers import calendar as r
-    added = r.quick_add(r.QuickAddIn(title="Lunch", date="2099-07-01"))
-    r.cancel(added["event"]["id"])
-    up = [row["title"] for row in conn.execute("SELECT title FROM v_upcoming")]
-    assert "Lunch" not in up
-
-
 def test_upcoming_endpoint_merges_oneoff_and_recurring(conn):
     from app.routers import calendar as r
     from app.services import calendar as cal
@@ -879,34 +861,6 @@ def test_views_timed_today_boundary(conn):
     hist = {r["title"] for r in conn.execute("SELECT title FROM v_event_history WHERE note_id=?", (nid,))}
     assert "Later" in up and "Earlier" not in up
     assert "Earlier" in hist
-
-
-def test_reschedule_recurring_is_rejected(conn):
-    import pytest as _pt
-    from fastapi import HTTPException
-    from app.routers import calendar as r
-    from app.services import calendar as cal
-    nid = _mknote(conn, "Series")
-    cal.upsert_events(conn, nid, [{"title": "Gym", "kind": "recurring", "starts_at": "2020-01-06",
-                                   "all_day": True, "rrule": "FREQ=WEEKLY;BYDAY=MO"}],
-                     source="workflow", sweep=False)
-    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
-    with _pt.raises(HTTPException) as ei:
-        r.reschedule(ev_id, r.RescheduleIn(to_date="2099-01-01"))
-    assert ei.value.status_code == 422
-
-
-def test_cancel_works_when_source_note_title_has_brackets(conn):
-    """B2: the edge is recorded by identity_key, so an old note whose title contains
-    ']]' is still retired (the marker round-trip can't break it)."""
-    from app.routers import calendar as r
-    from app.services import calendar as cal
-    nid = _mknote(conn, "Weird ]] title")
-    cal.upsert_events(conn, nid, [{"title": "Checkup", "starts_at": "2099-04-04"}])
-    ev_id = conn.execute("SELECT id FROM calendar_events WHERE note_id=?", (nid,)).fetchone()["id"]
-    r.cancel(ev_id)
-    up = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming WHERE note_id=?", (nid,))]
-    assert "Checkup" not in up
 
 
 def test_quick_add_rejects_bad_time(conn):
@@ -1172,6 +1126,27 @@ def test_dismiss_revoke_stops_reextraction_and_undo_restores(conn):
     assert _count(conn, nid) == 0                                   # stays gone
     cal.undismiss_event(conn, ik)
     assert _count(conn, nid) == 1 and not cal.is_dismissed(conn, ik)   # restored
+
+
+def test_remove_from_calendar_is_note_free_and_undoable(conn):
+    """The UI's only edit actions: Add (quick-add) then Remove (dismiss) — note-free,
+    reversible, and writes NO superseding/cancellation note."""
+    from app.routers import calendar as r
+    from app.services import calendar as cal
+    notes_before = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    added = r.quick_add(r.QuickAddIn(title="Haircut", date="2099-09-09"))
+    ev_id = added["event"]["id"]
+    out = r.dismiss_event_route(ev_id)
+    ik = out["identity_key"]
+    up = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming")]
+    assert "Haircut" not in up                      # gone from the calendar
+    body = conn.execute("SELECT content_md FROM notes WHERE id=?", (added["note_id"],)).fetchone()["content_md"]
+    assert not cal.parse_supersession_markers(body)  # no cancellation marker was written
+    # Remove added exactly one note (the quick-add), none for the removal itself.
+    assert conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == notes_before + 1
+    r.undismiss_event_route(r.UndismissIn(identity_key=ik))
+    up2 = [x["title"] for x in conn.execute("SELECT title FROM v_upcoming")]
+    assert "Haircut" in up2                          # restored
 
 
 def test_recently_added_excludes_manual_and_dismissed(conn):

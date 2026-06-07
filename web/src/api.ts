@@ -115,9 +115,6 @@ export interface AddedEvent {
 }
 export const calQuickAdd = (b: { title: string; date: string; time?: string; kind?: string; detail?: string; reminders?: Reminder[] }) =>
   post<{ note_id: number; note_title: string; event: CalEvent | null }>("/api/calendar/quick-add", b);
-export const calReschedule = (id: number, to_date: string, to_time?: string) =>
-  post(`/api/calendar/events/${id}/reschedule`, { to_date, to_time });
-export const calCancel = (id: number) => post(`/api/calendar/events/${id}/cancel`, {});
 export const calGetReminders = (id: number) => get<{ reminders: Reminder[] }>(`/api/calendar/events/${id}/reminders`);
 export const calSetReminders = (id: number, reminders: Reminder[]) =>
   post<{ count: number }>(`/api/calendar/events/${id}/reminders`, { reminders });

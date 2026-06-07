@@ -259,6 +259,12 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
         "WHERE id = ? AND reply_count < max_total_replies",
         (spec["id"],),
     ).rowcount == 1
+    # Release the write lock the billing UPDATE opened BEFORE any LLM call — never hold it
+    # across the (up to 120s) model round-trip, or other writers wedge within busy_timeout (5s).
+    if budget_ok:
+        conn.commit()
+    else:
+        conn.rollback()  # the no-op UPDATE still opened an (empty) write txn
 
     if over_turns or not budget_ok:
         # Wrap up gracefully and draft from whatever we have.
@@ -277,6 +283,7 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
     try:
         raw = llm.complete(msgs, system=system, max_tokens=_REPLY_MAX_TOKENS)
     except Exception:
+        conn.rollback()  # clear any open txn so this pooled connection can't wedge later writers
         return {"phase": "error", "message": "Something went wrong — please try again in a moment."}
 
     # Abuse / distress evaluation runs BEFORE <<DONE>> (an abusive turn must not

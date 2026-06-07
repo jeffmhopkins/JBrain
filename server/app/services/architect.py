@@ -6,6 +6,7 @@ router. Tools are executed server-side against SQLite.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -2601,7 +2602,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             yield {"type": "tool", "tool": call.name}   # drives the "Searching notes…" status
             is_err = False
             try:
-                result_text, event = _run_tool(conn, conversation_id, call.name, call.args, mode)
+                # Tool dispatch does blocking, CPU/IO-bound work — embedding inference
+                # (fastembed ONNX), blocking urllib geocode/medref calls (with time.sleep
+                # under a lock), and synchronous LLM calls for the kb_* tools. Running any
+                # of that inline would freeze the single event loop for the whole turn (and
+                # thus every other request); offload it to a worker thread. The connection
+                # is only touched here (serialized — we await before resuming), so sharing
+                # it across the thread boundary is safe.
+                result_text, event = await asyncio.to_thread(
+                    _run_tool, conn, conversation_id, call.name, call.args, mode)
             except Exception as exc:  # noqa: BLE001 — a bad tool call must not kill the stream
                 # Feed the error back as a tool result so the model can recover,
                 # rather than aborting the whole turn (and losing its text). Fence the

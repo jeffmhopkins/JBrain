@@ -717,12 +717,21 @@ export async function streamChat(
   mode: "assisted" | "research" = "assisted",
   freshContext = false,
   deep = false,
+  signal?: AbortSignal,
 ): Promise<void> {
   const body: any = { text, mode };
   if (freshContext) body.fresh_context = true;   // user left/returned/changed topic → re-ground fresh
   if (deep) body.deep = true;   // read-only "Deep" opt-in: bigger budget, same strict posture
   if (location) { body.lat = location.lat; body.lon = location.lon; }
   const ctrl = new AbortController();
+  // Let the caller abort this stream (leaving chat, or starting a new turn) so its long-lived
+  // POST connection is torn down at once instead of lingering against the browser's ~6-per-host
+  // connection cap until the 90s stall watchdog fires. A few un-aborted streams would otherwise
+  // pile up and block every later request — the "fine for a turn or two, then frozen" symptom.
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  }
   const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
     method: "POST",
     headers: authHeaders(),
@@ -761,6 +770,9 @@ export async function streamChat(
     }
   } finally {
     if (idle) clearTimeout(idle);
+    // Release the reader so the body stream / underlying connection is returned to the pool
+    // promptly on the abort/stall/error path, not left half-open until GC.
+    try { await reader.cancel(); } catch { /* already closed */ }
   }
 }
 

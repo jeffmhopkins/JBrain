@@ -1727,6 +1727,90 @@ def test_article_talk(client, monkeypatch):
     assert len(article_talk.open_for(conn, "kb/People/Allan")) == 2
 
 
+def test_talk_replies_dismiss_and_fold(client, monkeypatch):
+    """Owner can REPLY to a talk item and DISMISS one (a correction can't be dismissed); a
+    reply is folded into maintain_one's writer prompt and survives the AI-note cap."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk, llm
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "notes/src", "Allan lives in Portland.")
+    ns.upsert_note(conn, "kb/People/Allan",
+                   "# Allan\nAllan lives in Portland.[^s1]\n\n## References\n[^s1]: [[notes/src]] — 2026-06-01\n",
+                   kind="kb")
+    conn.commit()
+    slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Allan'").fetchone()["slug"]
+    cid = article_talk.add(conn, "kb/People/Allan", "conflict", "Sources disagree on the year.")
+    corr = article_talk.add(conn, "kb/People/Allan", "correction", "Born 1980, not 1981.", author="user")
+    conn.commit()
+
+    # Reply to the conflict → appears in the listing with author 'user'.
+    r = client.post(f"/api/notes/{slug}/talk/{cid}/reply", json={"body": "Use the 1979 deed."})
+    assert r.status_code == 200 and r.json()["id"]
+    talk = client.get(f"/api/notes/{slug}/talk").json()
+    item = next(t for t in talk if t["id"] == cid)
+    assert item["replies"][0]["body"] == "Use the 1979 deed." and item["replies"][0]["author"] == "user"
+
+    # Dismiss the conflict → it leaves the open set; a correction is refused (409).
+    assert client.post(f"/api/notes/{slug}/talk/{cid}/dismiss", json={}).json()["ok"] is True
+    assert cid not in [t["id"] for t in article_talk.open_for(conn, "kb/People/Allan")]
+    assert client.post(f"/api/notes/{slug}/talk/{corr}/dismiss", json={}).status_code == 409
+
+    # An open directive's reply is folded into the maintainer's prompt.
+    seen: list = []   # maintain_one may make a 2nd (revise) call; the reply is in the 1st
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    def cap(msgs, *a, **k):
+        seen.append(msgs[0]["content"])
+        return ("```article\n# Allan\nAllan lives in Portland.[^s1]\n\n## References\n"
+                '[^s1]: [[notes/src]] — 2026-06-01\n```\n```maintain\n{"resolved": [], "new": []}\n```\n')
+    monkeypatch.setattr(llm, "complete", cap)
+    did = article_talk.add(conn, "kb/People/Allan", "directive", "Keep it concise.", author="user")
+    article_talk.reply(conn, did, "Especially trim the early-life section.")
+    conn.commit()
+    wiki_build.maintain_one(conn, "kb/People/Allan", [])
+    assert any("Especially trim the early-life section." in p for p in seen)
+
+    # A replied-to AI note survives the note-cap (the reply would cascade-delete with it).
+    nid = article_talk.add(conn, "kb/People/Allan", "note", "kept because replied")
+    article_talk.reply(conn, nid, "noted")
+    for i in range(8):
+        article_talk.add(conn, "kb/People/Allan", "note", f"filler {i}")
+    article_talk._cap_notes(conn, "kb/People/Allan")
+    conn.commit()
+    assert conn.execute("SELECT 1 FROM article_talk WHERE id=?", (nid,)).fetchone()
+
+
+def test_talk_maintain_now(client, monkeypatch):
+    """The on-demand pass reports busy when the KB lock is held, and otherwise applies a
+    revision + closes the items the (stubbed) maintainer settled — reusing _apply_maintain."""
+    from app.db import get_conn
+    from app.services import wiki_build, article_talk
+    from app.services import notes as ns
+    conn = get_conn()
+    ns.upsert_note(conn, "kb/People/Bo", "# Bo\nBo is a person.", kind="kb")
+    conn.commit()
+    slug = conn.execute("SELECT slug FROM notes WHERE title='kb/People/Bo'").fetchone()["slug"]
+    did = article_talk.add(conn, "kb/People/Bo", "directive", "Add birth year 1980.", author="user")
+    conn.commit()
+
+    # Busy: lock held → reports busy, nothing applied.
+    monkeypatch.setattr(wiki_build, "kb_lock_acquire", lambda *a, **k: False)
+    busy = client.post(f"/api/notes/{slug}/talk/maintain-now").json()
+    assert busy["ok"] is False and "busy" in busy["reason"].lower()
+
+    # Apply: stub maintain_one to resolve the directive; maintain_now applies + commits.
+    monkeypatch.setattr(wiki_build, "kb_lock_acquire", lambda *a, **k: True)
+    monkeypatch.setattr(wiki_build, "kb_lock_release", lambda *a, **k: None)
+    monkeypatch.setattr(wiki_build, "maintain_one", lambda *a, **k: {
+        "ok": True, "title": "kb/People/Bo", "changed": True,
+        "content_md": "# Bo\nBo was born in 1980.",
+        "resolved": [{"id": did, "kind": "directive", "outcome": "applied", "how": "added"}],
+        "new": []})
+    res = client.post(f"/api/notes/{slug}/talk/maintain-now").json()
+    assert res["ok"] is True and res["resolved"] == 1
+    assert did not in [t["id"] for t in article_talk.open_for(conn, "kb/People/Bo")]
+
+
 def test_note_normalize_redate_and_title(client, monkeypatch):
     """redate files loose entry notes under notes/YYYY/MM/DD/N (continuing the day's
     numbering, skipping kb/ + already-dated), folds the PWA notes/daily/ capture tree

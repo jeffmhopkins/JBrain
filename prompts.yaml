@@ -937,6 +937,11 @@ actions:
 
     The owner is {owner}; first-person in the sources refers to them (resolve by name).
 
+    An OPEN ITEM may carry the owner's follow-up replies, shown indented beneath it as
+    "↳ reply (user): …". A reply is the owner conversing about that item — treat the LATEST
+    reply as the most current, AUTHORITATIVE steer (it refines or overrides the item's
+    original wording), and honor it when you settle the item.
+
     Work each OPEN ITEM:
     - directive — a standing instruction from the owner; APPLY it (it stays OPEN until applied).
     - correction — an owner SOURCE-OF-TRUTH fact fix (its note is in NEW/CHANGED SOURCES);

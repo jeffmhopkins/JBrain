@@ -104,7 +104,7 @@ def _embedding_dim() -> int:
     return EMBEDDING_DIM
 
 
-SCHEMA_VERSION = 54
+SCHEMA_VERSION = 55
 
 
 def init_db() -> None:
@@ -772,6 +772,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         # AI-drafted chat links: created with empty wraps + pending_setup=1; the owner FINALIZES
         # in the browser (which mints the zero-knowledge key) before the link works.
         _add_column(conn, "chat_channels", "pending_setup", "INTEGER NOT NULL DEFAULT 0")
+
+    if current < 55:
+        # Threaded replies on article-talk items: the owner↔AI maintenance conversation.
+        # New self-contained table FK'ing only to article_talk, so its index is safe inline.
+        # schema.sql carries the identical block for fresh DBs.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS article_talk_reply (
+              id         INTEGER PRIMARY KEY AUTOINCREMENT,
+              talk_id    INTEGER NOT NULL REFERENCES article_talk(id) ON DELETE CASCADE,
+              author     TEXT NOT NULL DEFAULT 'user',
+              body       TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_article_talk_reply_talk ON article_talk_reply(talk_id);
+        """)
 
 
 # Lab-share schema — kept identical to the "Lab share" section of schema.sql.

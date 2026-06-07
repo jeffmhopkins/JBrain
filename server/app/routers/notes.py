@@ -204,6 +204,14 @@ class TalkIn(BaseModel):
     body: str
 
 
+class TalkReplyIn(BaseModel):
+    body: str
+
+
+class TalkDismissIn(BaseModel):
+    reason: str = ""
+
+
 def _note_title(conn, slug: str) -> str:
     row = conn.execute("SELECT title FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
     if not row:
@@ -240,6 +248,58 @@ def add_talk(slug: str, body: TalkIn):
     if promoted:
         notes_svc.flush_entry_events(conn)  # fire analysis/auto-tag AFTER commit
     return {"id": tid, "promoted": promoted}
+
+
+def _talk_row(conn, slug: str, talk_id: int):
+    """Fetch a talk row and verify it belongs to THIS article (no cross-article writes)."""
+    article_title = _note_title(conn, slug)
+    row = conn.execute(
+        "SELECT id, kind, article_title FROM article_talk WHERE id=?", (talk_id,)).fetchone()
+    if not row or row["article_title"] != article_title:
+        raise HTTPException(status_code=404, detail="Talk item not found")
+    return row
+
+
+@router.post("/{slug}/talk/{talk_id}/reply")
+def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
+    """Reply to a talk item — the owner↔AI maintenance conversation. The reply is folded into
+    the next maintenance pass over this article (the scheduled pass, or 'maintain-now')."""
+    conn = get_conn()
+    from ..services import article_talk
+    _talk_row(conn, slug, talk_id)
+    rid = article_talk.reply(conn, talk_id, body.body, author="user")
+    conn.commit()
+    if rid is None:
+        raise HTTPException(status_code=400, detail="Empty reply")
+    return {"id": rid}
+
+
+@router.post("/{slug}/talk/{talk_id}/dismiss")
+def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
+    """Owner dismissal of a talk item — closes it as 'dismissed by owner' (distinct from a
+    maintenance resolution). Refused on a 'correction': its promoted truth note still heals
+    the article next pass, so hiding the row would mislead — delete that note to undo it."""
+    conn = get_conn()
+    from ..services import article_talk
+    row = _talk_row(conn, slug, talk_id)
+    if row["kind"] == "correction":
+        raise HTTPException(
+            status_code=409,
+            detail="A correction can't be dismissed — it's a source-of-truth fact. "
+                   "Delete the truth note it created to undo it.")
+    ok = article_talk.dismiss(conn, talk_id, body.reason)
+    conn.commit()
+    return {"ok": ok}
+
+
+@router.post("/{slug}/talk/maintain-now")
+def maintain_now_talk(slug: str):
+    """Run the surgical maintenance pass on THIS article right now — consumes its open items
+    and the owner's replies without waiting for the nightly batch. Runs under the KB lock."""
+    conn = get_conn()
+    from ..services import wiki_build
+    article_title = _note_title(conn, slug)
+    return wiki_build.maintain_now(conn, article_title)
 
 
 @router.get("/kb/dead-links")

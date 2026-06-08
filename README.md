@@ -188,35 +188,180 @@ search, a graph, and a programmable automation layer.
 
 ## Architecture
 
-```
-            ┌────────────┐      ┌──────────────────────────────────┐
- phone /    │   Caddy    │  →   │                api               │
- desktop ── │ TLS + proxy│      │   FastAPI + built React PWA      │
-   PWA      └────────────┘      │  LLM seam · fastembed · whisper  │
-                                │  sqlite-vec + FTS5 · tesseract   │
-                                └────────────────┬─────────────────┘
-                                                 │  brain.db (volume)
-   ┌──────────────┐                              │
-   │ Android phone │ ── REST (Bearer key) ───────┘
-   │  + Wear watch │
-   └──────────────┘
+JBrain is one small Docker stack on your own Linux VM. There is no cloud tier and
+no third-party datastore: every note, attachment, and revision lives in **one
+SQLite file** on a volume *you* own. Heavy ML — embeddings, transcription, OCR —
+runs **locally**; only the LLM calls leave the box, through a single swappable
+seam. The same backend serves the owner's PWA, the native Android clients, and
+public share links, all over `Authorization: Bearer <access-key>`.
+
+### The big picture
+
+```text
+  Phone / desktop PWA          Native Android (phone + Wear OS)
+        │                             │
+        └──────────── HTTPS ──────────┘    Authorization: Bearer <key>
+                      │
+                      ▼
+  ┌─ Caddy ────────────────────────────────────────────────
+  │  TLS (auto Let's Encrypt) · reverse proxy · ports 80/443
+  │  unbuffered SSE for /api/chat/* · security headers / CSP
+  │  access-key-gated /deploy-status console (survives restarts)
+  └──────────────────────────────┬─────────────────────────
+                                 │  reverse_proxy → api:8000
+                                 ▼
+  ┌─ api · FastAPI (Python 3.12) + built React 18 PWA ──────
+  │  ~29 routers  →  ~60 services
+  │   • LLM seam      → Anthropic Claude (default) | xAI Grok
+  │   • local ML      → fastembed · faster-whisper · tesseract
+  │   • hybrid search → FTS5 / BM25  +  sqlite-vec vectors
+  └──────────────────────────────┬─────────────────────────
+                                 │  one SQLite connection per request
+                                 ▼
+  ┌─ brain.db · one SQLite file (~64 tables, schema v56) ───
+  │  notes · versions · attachments(BLOB) · search index ·
+  │  conversations · workflows · entities · shares · system
+  └─────────────────────────────────────────────────────────
+  volume: brain-data    (+ caddy-data, caddy-config, model-cache)
+
+  updater (optional sidecar, profile: autoupdate) rebuilds the api image
+  on a PWA-triggered update; mounts the Docker socket — off by default.
 ```
 
-- **Backend** — FastAPI (`server/`, Python 3.12), ~30 routers, ~40 services. The
-  LLM goes through the `app.services.llm` seam (Anthropic / xAI adapters);
-  `fastembed` provides local 384-dim embeddings; `sqlite-vec` + FTS5 power hybrid
-  search; `faster-whisper` (+ PyAV) does local transcription; `pypdf`, `Pillow`,
-  and `tesseract-ocr` extract text/EXIF/OCR from attachments. Data is a single
-  SQLite file (~64 tables, schema `v56`) with a 50+ step in-process migration
-  runner that upgrades on boot.
-- **Frontend** — React 18 + Vite 5 + TypeScript PWA (`web/`), React Router 6,
-  `vite-plugin-pwa`/Workbox, `react-force-graph-2d` (graph), `leaflet` +
-  `leaflet.heat` (map), `react-markdown`. Built into the API image and served as
-  static files (or hostable separately on GitHub Pages — see below).
-- **Proxy** — Caddy terminates TLS (automatic Let's Encrypt), proxies `/api`
-  (with unbuffered SSE for streaming chat), adds security headers, and exposes a
-  small access-key-gated **deploy console** so you can watch updates while the API
-  restarts.
+A single FastAPI process *is* the application: it serves the JSON API **and** the
+pre-built React PWA as static files. To keep the event loop responsive, every
+blocking unit — embedding inference, LLM calls, SQLite writes — is offloaded to a
+worker thread (`asyncio.to_thread`), and each request gets its own serialized
+connection. The frontend (`web/`) is React 18 + Vite 5 + TypeScript with React
+Router 6, `vite-plugin-pwa`/Workbox, `react-force-graph-2d` (graph), and
+`leaflet` + `leaflet.heat` (map). Cheaper sub-tasks (tagging, filing, vision) can
+route to a cheaper model through the same LLM seam; extended thinking is
+Anthropic-only.
+
+### Data flow
+
+**Capture (Entry mode) — no LLM on the hot path.** Send returns immediately;
+enrichment happens after the commit so a slow hook never holds the write lock.
+
+```text
+PWA compose · Entry        POST /api/notes/entry {text, dest?, lat?, lon?}
+   │
+   ▼
+notes_svc.upsert_note()  ── one transaction ──
+   ├─ INSERT notes        (title notes/YYYY/MM/DD/NN, or .../<dest>/NN)
+   ├─ INSERT note_versions (source='user')
+   ├─ reconcile [[wiki-links]] → links
+   ├─ index  → notes_fts (FTS5)
+   └─ embed  → vec_notes / vec_note_chunks (fastembed)
+   │  commit, return to the client
+   ▼
+after commit (best-effort): fire 'entry_created' workflows (auto-tag),
+and — only if "auto-analyze new notes" is on — run the note_analysis pass
+```
+
+**Chat turn (Full Brain / Research) — a streamed, grounded agent loop.** Nothing
+touches the wiki until you tap **Apply**.
+
+```text
+PWA ── POST /api/chat/conversations/{id}/message   (mode: assisted|research)
+       response streams back as SSE; Caddy keeps /api/chat/* unbuffered
+   │
+   ▼
+architect.run()  — async generator, bounded by max-iterations + token budget
+   repeat:
+     llm.stream_turn()   → token deltas stream straight to the client;
+        │                  the model may request tool calls (~50 tools)
+        ▼
+     await asyncio.to_thread(run_tool)   ← search, query_sql (SELECT-only),
+        │                                  kb sub-calls, SQLite writes
+        ▼
+     propose_actions → INSERT staging_actions (status='pending')
+                       emits a 'staging' event → the Staging area card
+   reply + tool-step history persisted; 'done'
+
+   user taps Apply → POST /api/staging/{id}/apply
+        claims the row (pending → applied) and writes the note,
+        versioned source='architect'; destructive ops keep a one-tap Undo
+```
+
+Research mode gets a strictly read-only tool set; an unrecognized mode fails
+**closed** to read-only.
+
+**Attachment enrichment.** Bytes are stored as a BLOB; text is always extracted,
+and (with auto-analyze) local models add a richer sidecar.
+
+```text
+POST /api/notes/{slug}/attachments   (multipart, ≤ 100 MB → BLOB in DB)
+   │
+   ▼
+extract text   PDF → pypdf (≤100 pg / 200 KB) · image → PIL EXIF/GPS ·
+   │           text/code → decode · scans → tesseract OCR
+   ├─ chunk (1200 chars, 200 overlap, header-aware)
+   └─ index → attachments_fts (FTS5) + vec_chunks (embeddings)
+   │
+   ▼  if "auto-analyze" is on (else: manual Analyze / Transcribe button)
+   image → vision summary · audio → faster-whisper (local) ·
+   video → PyAV audio → whisper  +  frames sampled → vision model
+   │   written to the attachment's analysis_md sidecar
+   │   status pending → done | error   (30-min stale watchdog)
+   ▼
+   folds into the note's note_analysis  (gist · facts · tags)
+```
+
+**Search.** Both halves over-fetch, then fuse; attachment hits credit their note.
+
+```text
+GET /api/search?q=…&mode=hybrid | keyword | semantic | entities
+   │
+   ├─ keyword   → notes_fts + attachments_fts          (FTS5 / BM25)
+   ├─ semantic  → sqlite-vec nearest-neighbour over note/chunk/entity vecs
+   └─ entities  → canonical index matched by name + alias (+ vector)
+   │
+   ▼  reciprocal-rank fusion blends the sources → dedup best-per-note
+   ranked results (semantic degrades to keyword while the model warms up)
+```
+
+### Storage model
+
+One SQLite file (`/data/brain.db`, ~64 tables, schema `v56`); a 50+ step migration
+runner upgrades it on boot, so an old backup imports cleanly. **Attachments are
+stored as BLOBs**, so that single `.db` is a complete, self-contained backup —
+notes, history, files, and config together.
+
+| Group | Tables (representative) |
+|-------|-------------------------|
+| Content | `notes`, `note_versions`, `note_chunks`, `note_analysis`, `links`, `attachments` (+BLOB) |
+| Search | `notes_fts`, `attachments_fts` (FTS5); `vec_notes`, `vec_chunks`, `vec_note_chunks`, `vec_entities` (sqlite-vec) |
+| Conversation | `conversations`, `messages`, `message_steps`, `staging_actions` |
+| Automation | `workflows`, `action_defs`, `workflow_runs`, `review_items` |
+| Entities | `entities`, `entity_mentions`, `entity_aliases`, `entity_decisions` |
+| Sharing | `share_links`, `*_specs` / `*_sessions`, `chat_channels` / `chat_messages` / `chat_files` |
+| Location / health / calendar | `locations`, `trips`, `places`; `lab_results`, `vitals`, `medications`; `calendar_events` |
+| System | `meta`, `llm_usage`, `push_subscriptions` |
+
+The FTS5 indexes are defined in `schema.sql`; the `vec_*` virtual tables are built
+in `db.py` at startup. (The full inventory is one `SELECT` away in the SQL console.)
+
+### Security & privacy posture
+
+- **One credential.** No usernames/passwords — a single high-entropy **access
+  key** over Caddy's TLS. The server stores only its **SHA-256 hash** and compares
+  in constant time.
+- **Read-only SQL is read-only.** The in-app console and the agent's `query_sql`
+  accept only `SELECT`/`WITH`, enforced at **three layers**: a statement check,
+  SQLite's `query_only` pragma, and an engine **authorizer** that denies sensitive
+  tables/columns (access-key hash, share secrets, location keys…).
+- **Private domains are firewalled.** `kb/Health/*` and `kb/Finance/*` share links
+  are always device-bound and short-TTL — a boot-time assertion refuses to start if
+  that clamp is ever bypassed.
+- **Share-link chat is end-to-end encrypted.** The **AES-256-GCM** channel key is
+  generated in the browser and rides the link's URL `#fragment` (PBKDF2-200k,
+  optional out-of-band OTP), so JBrain relays only opaque ciphertext. The share
+  token itself is an unguessable **capability secret**, not ciphertext. (Your own
+  notes are, of course, plaintext at rest in your DB — that's what makes them
+  searchable and analyzable.)
+- **ML stays local.** Embeddings, transcription, and OCR need no external service;
+  only your chosen LLM provider ever sees prompt content.
 
 ## Authentication
 

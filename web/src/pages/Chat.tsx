@@ -8,6 +8,7 @@ import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
 import { linkifyAddresses, renderWikiLinks } from "../util";
 import { makeChatLinkRenderer } from "../components/CitationLink";
+import { useCapability } from "../capabilities";
 import { showToast, explainError } from "../toast";
 import { toolLabel } from "../toolLabels";
 import ToolHistory from "../components/ToolHistory";
@@ -116,6 +117,7 @@ let _leftChatAt: number | null = null;
 
 export default function Chat() {
   const online = useOnline();
+  const llm = useCapability("llm");      // Research/Full Brain need the assistant; Entry doesn't
   const geo = useGeo();
   const tts = useTts();                 // on-device speech (saved voice + speed)
   const ttsOn = useTtsEnabled();        // top-bar "read replies aloud" toggle
@@ -926,7 +928,7 @@ export default function Chat() {
         <div className="composer-row">
           {/* Bottom row: the safety/scope hint sits LEFT (flex:1, ellipsis), the action buttons
               are a group hard-RIGHT (send always last → bottom-right corner, aligned with the hint). */}
-          <span className="compose-safety"><span className="sdot" /><span className="safety-txt">{safetyText}</span></span>
+          <span className="compose-safety"><span className="sdot" /><span className="safety-txt">{mode !== "entry" && !llm.ready ? llm.reason : safetyText}</span></span>
           <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                  onChange={(e) => {
                    const picked = Array.from(e.target.files || []);
@@ -944,8 +946,8 @@ export default function Chat() {
           {mode !== "research" && (
             <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" size={22} /></button>
           )}
-          <button className="icon-btn send" title="Send" onClick={() => send()}
-                  disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
+          <button className="icon-btn send" title={mode !== "entry" && !llm.ready ? llm.reason : "Send"} onClick={() => send()}
+                  disabled={streaming || busy || !online || (mode !== "entry" && !llm.ready) || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
         </div>
       </div>
     </div>

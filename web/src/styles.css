@@ -457,6 +457,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .toast-x { background: transparent; border: none; color: var(--text-dim); font-size: 18px; line-height: 1; padding: 0 2px; cursor: pointer; }
 .toast-x:hover { color: var(--text); }
 
+/* Inline capability explanation (why a feature is disabled). */
+.cap-note { color: var(--text-dim); font-size: 12px; margin: 4px 0 0; }
+
 .applied-chip { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-2); font-size: 14px; }
 .applied-chip .ghost { margin-left: auto; }
 .list-item { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--bg-elev); }

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useCapability } from "../capabilities";
 import { get } from "../api";
 import { Icon } from "../components/Icon";
 
@@ -45,6 +46,17 @@ export default function SearchPage() {
   const [results, setResults] = useState<Result[]>([]);
   const [searched, setSearched] = useState(false);
   const reqId = useRef(0);
+  const embeddings = useCapability("embeddings");
+
+  // R3-M4: pure `semantic` mode returns [] while the embedding model is warming/unavailable
+  // (the server keyword fallback only rescues `hybrid`). Don't let the user sit on — or land
+  // via the URL on — semantic until it's ready: fall back to `hybrid` (which degrades to
+  // keyword safely). The query effect's debounce clears any pending request before it fires,
+  // so no doomed semantic request is sent during warmup. Runs again to re-enable nothing —
+  // once embeddings are ready the user can re-pick semantic.
+  useEffect(() => {
+    if (mode === "semantic" && !embeddings.ready) setMode("hybrid");
+  }, [mode, embeddings.ready]);
 
   // Mirror the query into the URL (replace, so typing doesn't spam history) so
   // Back from a note returns to a populated search.
@@ -90,11 +102,16 @@ export default function SearchPage() {
       <form onSubmit={onSubmit}>
         <input placeholder="Search by keyword or meaning…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
         <div className="row" style={{ marginTop: 10 }}>
-          {MODES.map((m) => (
-            <button type="button" key={m} className={mode === m ? "primary" : "ghost"} onClick={() => setMode(m)}>
-              {m}
-            </button>
-          ))}
+          {MODES.map((m) => {
+            const disabled = m === "semantic" && !embeddings.ready;
+            return (
+              <button type="button" key={m} className={mode === m ? "primary" : "ghost"}
+                      disabled={disabled} title={disabled ? embeddings.reason : undefined}
+                      onClick={() => setMode(m)}>
+                {m}
+              </button>
+            );
+          })}
         </div>
       </form>
       <div style={{ marginTop: 18 }}>

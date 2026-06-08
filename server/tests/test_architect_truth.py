@@ -11,6 +11,8 @@ pytest.importorskip("anthropic")
 
 from app.services import architect
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(__file__).resolve().parents[1] / "app" / "schema.sql"
 
 

@@ -4,8 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import SearchPage from "./pages/SearchPage";
-import { __reset, ingestVerify } from "./health";
+import SearchPage from "./SearchPage";
+import { __reset, ingestVerify } from "../health";
 
 function caps(embeddingsState: string): any {
   return { capabilities: {

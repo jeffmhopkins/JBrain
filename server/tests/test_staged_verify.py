@@ -10,6 +10,8 @@ pytest.importorskip("sqlite_vec")
 
 from app.services import staged_verify
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(__file__).resolve().parents[1] / "app" / "schema.sql"
 
 

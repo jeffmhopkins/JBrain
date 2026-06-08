@@ -3,6 +3,9 @@ Tesseract, no PHI) so we exercise the FAITHFULNESS plumbing: JSON parsing, schem
 and — the crux — that a value reaches the staged results only if the independent OCR corpus
 also contains it."""
 from app.services import lab_vision
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_parse_json_rows_tolerates_fences_and_prose():

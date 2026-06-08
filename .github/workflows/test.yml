@@ -47,9 +47,10 @@ jobs:
           pip install -r /tmp/reqs-core.txt -r requirements-dev.txt
           pip install pywebpush==2.0.0 || echo "::warning::pywebpush unavailable; push tests will skip"
       - name: Test + coverage gate
-        # fail_under=75 lives in pyproject.toml. `-m "not concurrency"` excludes the
-        # serial thread/WAL tests (none marked yet; forward-compatible with Stage 3).
-        run: python -m pytest -m "not concurrency" --cov=app --cov-report=term-missing
+        # Full suite (incl. the `concurrency` tier) so coverage is the true number;
+        # fail_under=75 lives in pyproject.toml. Locally `./jt` default skips the
+        # concurrency tier for a faster inner loop; CI keeps those regression tests in.
+        run: python -m pytest --cov=app --cov-report=term-missing
 
   front:
     name: frontend (vitest)

@@ -9,6 +9,8 @@ pytest.importorskip("sqlite_vec")
 
 import app.db as db
 
+pytestmark = pytest.mark.unit
+
 SCHEMA = Path(db.__file__).parent / "schema.sql"
 
 

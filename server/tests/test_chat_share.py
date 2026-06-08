@@ -12,6 +12,8 @@ from app.services import chat_relay
 from app.services import chat_share as cs
 from app.services import share as share_svc
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(__file__).resolve().parents[1] / "app" / "schema.sql"
 
 

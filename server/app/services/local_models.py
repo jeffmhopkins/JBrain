@@ -344,7 +344,10 @@ def describe_models() -> dict:
     for m in models:
         est = ram_estimate(m.get("size", 0) or 0)
         fits = (usable == 0) or (est <= usable)     # unknown RAM → don't false-negative
-        warn = "Large model — slow on CPU" if (fits and est > _SLOW_RAM_BYTES) else None
+        # "Slow" only applies to CPU inference — a GPU box (e.g. Strix Halo) runs big
+        # models fine, so don't cry wolf there.
+        warn = ("Large model — slow on CPU"
+                if (fits and est > _SLOW_RAM_BYTES and hw["cpu_only"]) else None)
         out.append({
             "name": m["name"],
             "size_bytes": m.get("size", 0) or 0,

@@ -1,8 +1,11 @@
 # Hybrid Local-LLM — Implementation Plan
 
-Status: **Phase 1 + Phase 2 implemented** (backend plumbing, compose, config, the
-model-selection UI, and tests). Remaining: the `install.sh` interactive prompt and a
-Playwright e2e (noted at the end).
+Status: **Phase 1 + Phase 2 complete** (backend plumbing, compose, config, the
+model-selection UI, the `install.sh` prompt, and tests incl. an e2e). The curated model
+set spans the small CPU tier and large high-memory models (up to a 120B MoE) for a
+128 GB Strix Halo, gated by a hardware-aware fit check. Remaining: ratchet coverage
+floors once measured on full CI; the Playwright e2e is written but not run in this
+sandbox (no browsers) — run `./jt e2e` to confirm.
 
 ## Goal
 
@@ -102,13 +105,27 @@ health dot shows `local_llm: pulling → ready`.
   cases, extended `test_local_models.py` (`describe_models`/`delete_model`/`hardware`/
   `pull_events`). Backend 103 + full frontend 821 green; `tsc --noEmit` clean.
 
-## Remaining (not yet done)
+## Phase 3 — install + larger models + e2e (done)
 
-- `install.sh` — interactive "Run a local LLM?" prompt + curated model menu that appends
-  `localllm` to `COMPOSE_PROFILES` and writes the `LLM_LOCAL_*` vars.
-- A Playwright e2e (`e2e/`) exercising pull → assign → reload, with Ollama + the pull
-  stream faked at the boundary (like `e2e/fake_llm.py`).
-- Coverage-floor ratchet once measured on full CI.
+- `install.sh` — "Enable a local LLM (Ollama)?" prompt + a curated model menu split into a
+  **Small** tier (7–8B, ~6 GB, fine on a 32 GB/CPU box) and a **Large** tier
+  (`qwen2.5:14b`/`32b`, `llama3.3:70b`, `gpt-oss:120b` MoE) for a high-memory box — each
+  with its RAM requirement shown and a warning to confirm the box has it. Appends
+  `localllm` to `COMPOSE_PROFILES`, sizes `OLLAMA_MEM_LIMIT`, and writes the `LLM_LOCAL_*`
+  vars to `.env`.
+- The same large models are offered in **System → Local models** (`LocalModelsPanel`
+  `CURATED`), with each model's RAM noted; the server's `describe_models` `fits` verdict
+  **disables any that won't fit** the detected RAM, so the big ones are selectable only on
+  a box that can run them (e.g. a 128 GB Strix Halo). The "slow on CPU" warning is gated
+  on `cpu_only`, so a GPU box isn't told its big model is slow.
+- e2e: `e2e/fake_llm.py` gained a minimal in-memory Ollama admin API (`/api/tags`,
+  `/api/pull` NDJSON stream, `/api/delete`); `e2e/run-jbrain.sh` enables local pointed at
+  it; `e2e/tests/localmodels.system.spec.ts` drives pull → assign → reload. Backend
+  round-trip verified via TestClient; the browser run needs `./jt e2e`.
+
+## Remaining
+
+- Ratchet coverage floors once measured on full CI.
 
 ## Guardrails / invariants
 

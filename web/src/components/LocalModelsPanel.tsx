@@ -8,11 +8,19 @@ import { deleteLocalModel, pullLocalModel, type LocalModel, type LocalModelsResp
 // refresh() so a pull/delete updates both this card and ModelPicker's dropdowns.
 
 // Curated, vetted models offered for one-click pull. Sizes are approximate (for the
-// client-side fit hint); the server is authoritative for installed models.
+// client-side fit hint); the server is authoritative for installed models. The RAM note
+// is the resident footprint (≈ size × 1.3) — the larger ones need a high-memory box
+// (e.g. a 128 GB Strix Halo); on a 32 GB box the server marks them "won't fit".
 const CURATED: { name: string; label: string; approxBytes: number; role: string }[] = [
-  { name: "qwen2.5:7b", label: "Qwen2.5 7B", approxBytes: 4.7e9, role: "Recommended for routine jobs (cheap tier)" },
-  { name: "llama3.1:8b", label: "Llama 3.1 8B", approxBytes: 4.9e9, role: "Alternative routine model" },
-  { name: "llava:7b", label: "LLaVA 7B", approxBytes: 4.7e9, role: "Vision (image analysis)" },
+  // Small — fine on a CPU / 32 GB box (the cheap-tier sweet spot).
+  { name: "qwen2.5:7b", label: "Qwen2.5 7B", approxBytes: 4.7e9, role: "Recommended for routine jobs (cheap tier) · ~6 GB RAM" },
+  { name: "llama3.1:8b", label: "Llama 3.1 8B", approxBytes: 4.9e9, role: "Alternative routine model · ~6 GB RAM" },
+  { name: "llava:7b", label: "LLaVA 7B", approxBytes: 4.7e9, role: "Vision (image analysis) · ~6 GB RAM" },
+  // Large — need a high-memory box (e.g. 128 GB unified). Disabled where they won't fit.
+  { name: "qwen2.5:14b", label: "Qwen2.5 14B", approxBytes: 9e9, role: "Stronger agent · needs ~12 GB RAM" },
+  { name: "qwen2.5:32b", label: "Qwen2.5 32B", approxBytes: 2.0e10, role: "High-quality agent · needs ~26 GB RAM" },
+  { name: "llama3.3:70b", label: "Llama 3.3 70B", approxBytes: 4.3e10, role: "Top quality · needs ~56 GB RAM (e.g. 128 GB unified)" },
+  { name: "gpt-oss:120b", label: "GPT-OSS 120B (MoE)", approxBytes: 6.5e10, role: "Largest · needs ~85 GB RAM (128 GB box)" },
 ];
 
 const fmtBytes = (n: number) => {
@@ -59,7 +67,8 @@ export default function LocalModelsPanel({ data, onRefresh }: {
   function curatedFit(approxBytes: number): { fits: boolean; warn: string | null } {
     const est = approxBytes * 1.3;
     const fits = usable === 0 || est <= usable;
-    const warn = fits && est > 9e9 ? "Large — slow on CPU" : null;
+    // "Slow" only matters on CPU — a GPU box (Strix Halo) runs big models fine.
+    const warn = fits && est > 9e9 && data!.hardware.cpu_only ? "Large — slow on CPU" : null;
     return { fits, warn };
   }
 

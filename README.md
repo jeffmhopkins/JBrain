@@ -459,10 +459,18 @@ in `prompts.yaml`). Manage installed models — pull/remove with live progress �
 **System → Local models**, which is hardware-aware and warns when a model won't fit.
 
 **Hardware:** local inference is CPU/RAM-bandwidth bound. On a 32 GB box, use a **7–8 B**
-quantized model (≈ 5 GB resident), allow up to ~13 B, and **avoid 70 B**. Generation runs
+quantized model (≈ 6 GB resident), allow up to ~13 B, and **avoid 70 B**. Generation runs
 at tens of tokens/sec on a GPU box but only a few tok/s on a DDR4 CPU — fine for the
 background `cheap` tier, which is exactly what to offload. Health (`down`/`pulling`/
 `warming`/`ready`) shows on the status dot.
+
+Both `install.sh` and **System → Local models** also offer **larger models** —
+`qwen2.5:14b` (~12 GB), `qwen2.5:32b` (~26 GB), `llama3.3:70b` (~56 GB), and the
+`gpt-oss:120b` MoE (~85 GB) — for a **high-memory machine** (e.g. a 128 GB unified-memory
+Strix Halo mini PC). The RAM each needs is shown next to it, and the UI **disables any
+model that won't fit** the detected memory, so the big ones are selectable only where the
+box can actually run them. With enough memory you can route the chat agent locally too —
+not just the `cheap` tier.
 
 ## Hosting the PWA on GitHub Pages (optional)
 

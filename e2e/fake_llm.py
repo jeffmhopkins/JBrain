@@ -10,6 +10,12 @@ offers a `propose_actions` tool (Full-Brain architect), we emit a single tool ca
 stages one note, so the propose->Apply journey is exercisable; otherwise we return plain
 text (Research / quick replies). A trivial in-loop guard avoids re-proposing after the
 tool result comes back.
+
+This same app also fakes a minimal Ollama HOST/admin API (GET /api/tags, POST /api/pull,
+DELETE /api/delete) so the local-models settings UI can be exercised end-to-end without a
+real Ollama. An in-memory set tracks which models are "installed"; it starts EMPTY so the
+curated one-click "Pull" path is the one under test. Pulls stream a couple of NDJSON
+progress frames ending in {"status":"success"} — deterministic and fast (no real sleeps).
 """
 import json
 import os
@@ -167,3 +173,75 @@ def healthz():
         JSON dict {"ok": True}.
     """
     return {"ok": True}
+
+
+# --- Fake Ollama admin API ---------------------------------------------------
+# In-memory set of "installed" model names. Starts EMPTY so the curated one-click
+# "Pull" path is exercised; /api/pull adds, /api/delete removes, /api/tags reflects.
+_INSTALLED: set[str] = set()
+# Size reported per model (bytes) — small enough that the server's RAM-based "fits"
+# verdict is true on any CI runner (qwen2.5:7b is ~4.7 GB on disk).
+_MODEL_SIZE = 4_700_000_000
+
+
+@app.get("/api/tags")
+def ollama_tags():
+    """List locally 'installed' models, mirroring Ollama's GET /api/tags.
+
+    Returns:
+        JSON dict {"models": [{"name": <id>, "size": <bytes>}, ...]} reflecting the
+        in-memory installed set (empty until something is pulled).
+    """
+    return {"models": [{"name": name, "size": _MODEL_SIZE} for name in sorted(_INSTALLED)]}
+
+
+def _pull_ndjson(name: str):
+    """Yield a short deterministic NDJSON pull stream, marking `name` installed.
+
+    Mirrors Ollama's POST /api/pull stream shape: a manifest status, a couple of
+    downloading-progress frames, then a terminal {"status": "success"}. No real
+    sleeps — fast and deterministic for tests.
+
+    Args:
+        name: Model id being pulled, e.g. 'qwen2.5:7b'.
+
+    Yields:
+        NDJSON lines (bytes) of Ollama-shaped progress dicts.
+    """
+    yield json.dumps({"status": "pulling manifest"}).encode() + b"\n"
+    yield json.dumps({"status": "downloading", "completed": _MODEL_SIZE // 2, "total": _MODEL_SIZE}).encode() + b"\n"
+    yield json.dumps({"status": "downloading", "completed": _MODEL_SIZE, "total": _MODEL_SIZE}).encode() + b"\n"
+    _INSTALLED.add(name)
+    yield json.dumps({"status": "success"}).encode() + b"\n"
+
+
+@app.post("/api/pull")
+async def ollama_pull(request: Request):
+    """Stream a fake model pull as NDJSON, mirroring Ollama's POST /api/pull.
+
+    Adds the requested model to the in-memory installed set on success.
+
+    Args:
+        request: Incoming request carrying {"name", "stream"} JSON.
+
+    Returns:
+        A StreamingResponse of NDJSON progress lines ending in {"status": "success"}.
+    """
+    body = await request.json()
+    name = body.get("name") or ""
+    return StreamingResponse(_pull_ndjson(name), media_type="application/x-ndjson")
+
+
+@app.delete("/api/delete")
+async def ollama_delete(request: Request):
+    """Remove a model from the in-memory installed set, mirroring DELETE /api/delete.
+
+    Args:
+        request: Incoming request carrying {"name"} JSON.
+
+    Returns:
+        JSON dict {"status": "success"} (200) — matching Ollama's empty-body 200.
+    """
+    body = await request.json()
+    _INSTALLED.discard(body.get("name") or "")
+    return {"status": "success"}

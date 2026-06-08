@@ -174,6 +174,51 @@ read -r -p "Enable automatic updates? [y/N] " autoupd
 COMPOSE_PROFILES=""
 [[ "${autoupd,,}" == "y" ]] && COMPOSE_PROFILES="autoupdate"
 
+# --- Optional local LLM (Ollama) -------------------------------------------
+# Runs routine jobs (tags, summaries, filing) on a local model — no API key, nothing
+# leaves the box. The cloud provider above still handles the chat agent. CPU inference
+# is RAM-bandwidth bound, so model size is gated by how much RAM the box has.
+echo
+echo "Optional: run a LOCAL LLM on this box (Ollama) for routine jobs — no API key,"
+echo "nothing leaves the machine. The cloud provider above still handles the chat agent."
+read -r -p "Enable a local LLM (Ollama)? [y/N] " localllm_ans
+LLM_LOCAL_ENABLE="false"
+LLM_LOCAL_MODEL=""
+OLLAMA_MEM_LIMIT="8g"
+LLM_TIMEOUT_SECONDS="120"
+if [[ "${localllm_ans,,}" == "y" ]]; then
+  LLM_LOCAL_ENABLE="true"
+  LLM_TIMEOUT_SECONDS="600"        # CPU inference can be slow — give requests room
+  if [[ -n "$COMPOSE_PROFILES" ]]; then COMPOSE_PROFILES="$COMPOSE_PROFILES,localllm"; else COMPOSE_PROFILES="localllm"; fi
+  echo
+  echo "Pick a model to pull on first boot. The RAM figure is the resident footprint —"
+  echo "your box MUST have at least that much free, or the model won't load."
+  echo "  Small — fine on a 32 GB / CPU box (the recommended cheap-tier sweet spot):"
+  echo "    1) qwen2.5:7b    ~6 GB RAM   routine jobs (recommended)   [default]"
+  echo "    2) llama3.1:8b   ~6 GB RAM   alternative routine model"
+  echo "    3) llava:7b      ~6 GB RAM   vision (image analysis)"
+  echo "  Large — need a HIGH-MEMORY box (e.g. a 128 GB Strix Halo); too big for 32 GB:"
+  echo "    4) qwen2.5:14b   ~12 GB RAM  stronger agent"
+  echo "    5) qwen2.5:32b   ~26 GB RAM  high-quality agent"
+  echo "    6) llama3.3:70b  ~56 GB RAM  top quality"
+  echo "    7) gpt-oss:120b  ~85 GB RAM  largest (MoE)"
+  echo "    8) Other (type an Ollama model tag)"
+  read -r -p "Choose [1]: " m_choice
+  case "${m_choice:-1}" in
+    2) LLM_LOCAL_MODEL="llama3.1:8b" ;;
+    3) LLM_LOCAL_MODEL="llava:7b" ;;
+    4) LLM_LOCAL_MODEL="qwen2.5:14b";  OLLAMA_MEM_LIMIT="16g" ;;
+    5) LLM_LOCAL_MODEL="qwen2.5:32b";  OLLAMA_MEM_LIMIT="28g" ;;
+    6) LLM_LOCAL_MODEL="llama3.3:70b"; OLLAMA_MEM_LIMIT="60g" ;;
+    7) LLM_LOCAL_MODEL="gpt-oss:120b"; OLLAMA_MEM_LIMIT="96g" ;;
+    8) ask LLM_LOCAL_MODEL "Ollama model tag (e.g. mistral:7b)" "qwen2.5:7b" ;;
+    *) LLM_LOCAL_MODEL="qwen2.5:7b" ;;
+  esac
+  info "Local model: $LLM_LOCAL_MODEL — pulls on first boot; routine jobs route to it,"
+  info "and you can pull/assign more later in System → Local models."
+  warn "Make sure this box has the RAM for $LLM_LOCAL_MODEL (see the note above), or it won't load."
+fi
+
 # The pasteable access key (the "cert"). Generated here; you paste it into the
 # app (and watch) on first run. Treat it like a password.
 JBRAIN_ACCESS_KEY="$(gen_secret)"
@@ -187,6 +232,10 @@ ACME_EMAIL=$ACME_EMAIL
 LLM_PROVIDER=$LLM_PROVIDER
 LLM_API_KEY=$LLM_API_KEY
 LLM_MODEL=$LLM_MODEL
+LLM_LOCAL_ENABLE=$LLM_LOCAL_ENABLE
+LLM_LOCAL_MODEL=$LLM_LOCAL_MODEL
+LLM_TIMEOUT_SECONDS=$LLM_TIMEOUT_SECONDS
+OLLAMA_MEM_LIMIT=$OLLAMA_MEM_LIMIT
 BRAIN_NAME=$BRAIN_NAME
 JBRAIN_ACCESS_KEY=$JBRAIN_ACCESS_KEY
 EMBEDDING_MODEL=$EMBEDDING_MODEL
@@ -218,6 +267,9 @@ echo
 read -r -p "Build and start JBrain now? [Y/n] " go
 if [[ "${go,,}" != "n" ]]; then
   info "Building and starting (first run downloads the embedding model)…"
+  [[ "$LLM_LOCAL_ENABLE" == "true" ]] && \
+    warn "Local LLM on: first boot also pulls $LLM_LOCAL_MODEL (several GB, in the background)." && \
+    warn "Watch it with:  docker compose logs -f ollama-pull   — until it finishes, routine jobs use the cloud."
   export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
   $DOCKER compose up -d --build
   echo

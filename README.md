@@ -527,7 +527,8 @@ Repo layout:
 - `prompts.yaml` — the single source for agent modes, tool descriptions, and
   workflow action prompts (hot-reloaded; in-app edits persist in the DB).
 - `docs/` — testing design & coverage history (`docs/testing-plan/`,
-  `docs/coverage-audit/`) plus historical planning notes.
+  `docs/coverage-audit/`), with historical design plans for shipped features under
+  `docs/archive/` (see `docs/README.md` for the map).
 
 ## Testing
 

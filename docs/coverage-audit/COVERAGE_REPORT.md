@@ -1,5 +1,11 @@
 # JBrain — Test Coverage Gap Report
 
+> **⚠️ Point-in-time snapshot (2026-06-08), kept for history.** Since this audit,
+> the `./jt` runner, CI (`back`/`front`/`e2e`/`android` jobs), the Playwright
+> system tier, the `flows` tier, and an Android Robolectric baseline have all
+> landed, so the "no CI / no system-e2e / 8% frontend" findings below are stale.
+> Treat the numbers as the baseline they were measured against, not current state.
+
 **Date:** 2026-06-08
 **Method:** Multi-agent audit. Four analysis agents mapped features/intent across the
 full stack (backend API, backend services, frontend + automations + Android) and

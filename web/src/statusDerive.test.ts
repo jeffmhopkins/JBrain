@@ -95,3 +95,27 @@ describe("deriveStatus", () => {
     expect(d.level).toBe("down");
   });
 });
+
+describe("local_llm subsystem", () => {
+  it("absent (the opt-in norm) is hidden so it never degrades the rollup", () => {
+    const d = deriveStatus(model({ caps: caps({ local_llm: { state: "absent" } }) }), "Brain");
+    expect(d.level).toBe("ok");
+    expect(d.rows.some((r) => r.key === "local_llm")).toBe(false);
+    expect(d.rows).toHaveLength(6);
+  });
+
+  it("pulling shows a warn row with friendly copy", () => {
+    const d = deriveStatus(model({ caps: caps({ local_llm: { state: "pulling" } }) }), "Brain");
+    const row = d.rows.find((r) => r.key === "local_llm")!;
+    expect(row.label).toBe("Local AI: downloading model…");
+    expect(row.level).toBe("warn");
+    expect(d.level).toBe("warn");
+  });
+
+  it("ready shows an ok row", () => {
+    const d = deriveStatus(model({ caps: caps({ local_llm: { state: "ready" } }) }), "Brain");
+    const row = d.rows.find((r) => r.key === "local_llm")!;
+    expect(row.level).toBe("ok");
+    expect(d.level).toBe("ok");
+  });
+});

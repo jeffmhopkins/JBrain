@@ -13,14 +13,21 @@ per-poll capabilities() path.
 """
 from __future__ import annotations
 
+import glob
 import json
+import os
 import threading
 import time
-import urllib.error
 import urllib.request
 from typing import Iterator
 
 from ..config import get_settings
+
+# Reserve for the OS + JBrain (embeddings/whisper resident) + headroom when sizing
+# what a box can run; the rest is "usable" for a model. ~8 GB on a 32 GB box → ~24 GB.
+_RAM_RESERVE_BYTES = 8 * 1024 ** 3
+# A model whose resident estimate exceeds this fits but is flagged slow on CPU.
+_SLOW_RAM_BYTES = 9 * 1024 ** 3
 
 # --- readiness state (cheap, in-memory; no I/O on read) ----------------------
 # LOUD CONSTRAINT: this is PER-PROCESS state, exactly like embeddings._state. JBrain
@@ -145,6 +152,41 @@ def pull_model(name: str) -> Iterator[dict]:
         _set_state("ready", model=name)
 
 
+def pull_events(name: str) -> Iterator[dict]:
+    """Yield the PWA's typed pull events for `name`, mapping Ollama's raw progress.
+
+    Wraps pull_model() and normalises each raw dict to one of: {"type": "status",
+    "status"}, {"type": "progress", "completed", "total", "status"}, {"type": "error",
+    "message"}, {"type": "done"}. Always ends with a terminal done/error so the client
+    can close its progress UI. Errors (including transport failures) become a terminal
+    error event rather than propagating.
+
+    Args:
+        name: Model id to pull.
+
+    Yields:
+        Typed event dicts for SSE serialisation.
+    """
+    errored = False
+    try:
+        for evt in pull_model(name):
+            if evt.get("error"):
+                errored = True
+                yield {"type": "error", "message": evt["error"]}
+            elif evt.get("total"):
+                yield {"type": "progress", "completed": evt.get("completed", 0),
+                       "total": evt["total"], "status": evt.get("status", "")}
+            elif evt.get("status") == "success":
+                yield {"type": "done"}
+            else:
+                yield {"type": "status", "status": evt.get("status", "")}
+    except Exception as exc:  # noqa: BLE001 — surface as a terminal error frame
+        yield {"type": "error", "message": str(exc)[:200]}
+        return
+    if not errored:
+        yield {"type": "done"}
+
+
 def _timeout() -> float:
     """Return a generous timeout for pulls (multi-GB downloads can run long)."""
     # A pull is not a request the user is blocking on; allow it to run well past the
@@ -220,3 +262,96 @@ def _name_in(name: str, models: list[dict]) -> bool:
     """
     base = name.split(":", 1)[0]
     return any(m["name"] == name or m["name"].split(":", 1)[0] == base for m in models)
+
+
+def delete_model(name: str) -> bool:
+    """Delete a pulled model via Ollama's DELETE /api/delete.
+
+    Args:
+        name: Model id to remove, e.g. 'qwen2.5:7b'.
+
+    Returns:
+        True on success; False if the admin URL is unset or the call failed.
+    """
+    base = _admin_base()
+    if not base or not name:
+        return False
+    body = json.dumps({"name": name}).encode()
+    req = urllib.request.Request(f"{base}/api/delete", data=body,
+                                 headers={"Content-Type": "application/json"}, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status in (200, 204)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _total_ram_bytes() -> int:
+    """Return total physical RAM in bytes from /proc/meminfo, or 0 if unknown."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def hardware() -> dict:
+    """Return a coarse hardware profile for sizing what models the box can run.
+
+    Returns:
+        Dict with usable_ram_bytes (total minus an OS/JBrain reserve), total_ram_bytes,
+        cpu_only (no GPU device detected), and a human note.
+    """
+    total = _total_ram_bytes()
+    usable = max(total - _RAM_RESERVE_BYTES, total // 2) if total else 0
+    cpu_only = not (glob.glob("/dev/nvidia[0-9]*") or os.path.exists("/dev/kfd"))
+    note = ("CPU-only — generation speed is bound by RAM bandwidth; "
+            "prefer a 7-8B model." if cpu_only else "GPU detected.")
+    return {"usable_ram_bytes": usable, "total_ram_bytes": total,
+            "cpu_only": cpu_only, "note": note}
+
+
+def ram_estimate(size_bytes: int) -> int:
+    """Estimate a model's resident RAM from its on-disk size (weights + KV headroom).
+
+    Args:
+        size_bytes: Model size on disk (from /api/tags).
+
+    Returns:
+        Estimated resident bytes.
+    """
+    return int(size_bytes * 1.3)
+
+
+def describe_models() -> dict:
+    """Build the local-models view for the settings UI: installed models + hardware.
+
+    Each installed model carries a server-computed fit verdict (against usable RAM) and
+    a 'slow on CPU' warning, so the UI never hardcodes thresholds.
+
+    Returns:
+        Dict with running (Ollama reachable), models (list), and hardware.
+    """
+    models = list_models()
+    running = _admin_reachable(models)
+    hw = hardware()
+    usable = hw["usable_ram_bytes"]
+    cfg_model = get_settings().llm_local_model
+    out = []
+    for m in models:
+        est = ram_estimate(m.get("size", 0) or 0)
+        fits = (usable == 0) or (est <= usable)     # unknown RAM → don't false-negative
+        warn = "Large model — slow on CPU" if (fits and est > _SLOW_RAM_BYTES) else None
+        out.append({
+            "name": m["name"],
+            "size_bytes": m.get("size", 0) or 0,
+            "ram_estimate_bytes": est,
+            "fits": fits,
+            "warn": warn,
+            # The configured model carries live readiness; others are simply present.
+            "state": readiness()["state"] if m["name"] == cfg_model else "ready",
+        })
+    return {"running": running, "models": out, "hardware": hw}

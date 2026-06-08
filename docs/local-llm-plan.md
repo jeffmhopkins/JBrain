@@ -1,7 +1,8 @@
 # Hybrid Local-LLM — Implementation Plan
 
-Status: **Phase 1 implemented** (backend plumbing + compose + config + tests). Phase 2
-(UI) is designed below but not yet built.
+Status: **Phase 1 + Phase 2 implemented** (backend plumbing, compose, config, the
+model-selection UI, and tests). Remaining: the `install.sh` interactive prompt and a
+Playwright e2e (noted at the end).
 
 ## Goal
 
@@ -76,23 +77,38 @@ models:
 `docker compose up -d` brings up Ollama, pulls the model in the background, and the
 health dot shows `local_llm: pulling → ready`.
 
-## Phase 2 — UI (designed, not built)
+## Phase 2 — UI (implemented)
 
-- `web/src/api.ts` — `getLocalModels`, `pullLocalModel` (reuse `streamSSE`),
-  `deleteLocalModel`.
-- New router endpoints: `GET /api/system/local-models` (with server-computed
-  `fits`/`warn` per detected RAM), `POST .../pull` (SSE), `DELETE .../{name}`.
-- `web/src/components/LocalModelsPanel.tsx` (new) — installed list, curated pull
-  allowlist (Qwen2.5-7B, Llama 3.1 8B, a vision model), pull-with-progress,
-  hardware-aware guardrails.
-- `web/src/components/ModelPicker.tsx` — add a "Local (Ollama)" optgroup; skip the
-  missing-key warning for local ids; disable won't-fit options; `cheap`-tier hint.
-- Health wiring: `local_llm` slice in `health.ts`/`statusDerive.ts`/`capabilities.ts`
-  (with `pulling` → warn); pull progress teed to the deploy console.
-- `install.sh` + README — local-LLM prompt + curated model menu; env table, Mode A/B
-  table, allowed-model table, RAM math.
-- Tests: `LocalModelsPanel.test.tsx`, extended `ModelPicker.test.tsx`, MSW handlers,
-  status-derive cases, and one Playwright e2e (Ollama + pull faked at the boundary).
+- `server/app/services/local_models.py` — `delete_model`, `hardware` (usable RAM +
+  cpu_only), `ram_estimate`, `describe_models` (installed models + server-computed
+  `fits`/`warn`), `pull_events` (typed SSE event mapping).
+- `server/app/routers/system.py` — `GET /api/system/local-models`,
+  `POST /api/system/local-models/pull` (SSE), `DELETE /api/system/local-models/{name}`.
+- `web/src/api.ts` — `getLocalModels`, `pullLocalModel` (dedicated SSE reader),
+  `deleteLocalModel`, typed `LocalModel`/`PullEvent`.
+- `web/src/components/LocalModelsPanel.tsx` — installed list (remove), curated pull
+  allowlist (Qwen2.5-7B, Llama 3.1 8B, LLaVA-7B), pull-with-progress, hardware
+  guardrails, "Ollama not running" state.
+- `web/src/components/ModelPicker.tsx` — "Local (Ollama)" optgroup (bare Ollama id as
+  the value), no missing-key warning for local, won't-fit options disabled, cheap hint.
+- Health wiring: `local_llm` in `health.ts` (`CapState` gains `pulling`),
+  `statusDerive.ts` (icon/label; `absent` hidden so it never degrades the dot),
+  `capabilities.ts` (`CapId`/`CAP_COPY`); `READY_CAPS` + a default `/local-models`
+  handler in `web/src/test/handlers.ts`.
+- `SystemPage.tsx` — mounts `LocalModelsPanel` above `ModelPicker` with a shared
+  installed-models fetch + `refresh()` so pull/delete updates both.
+- README — env-var rows + a "Local LLM (Ollama)" section (Mode A/B, RAM/model guidance).
+- Tests: `LocalModelsPanel.test.tsx`, extended `ModelPicker.test.tsx`, `statusDerive`
+  cases, extended `test_local_models.py` (`describe_models`/`delete_model`/`hardware`/
+  `pull_events`). Backend 103 + full frontend 821 green; `tsc --noEmit` clean.
+
+## Remaining (not yet done)
+
+- `install.sh` — interactive "Run a local LLM?" prompt + curated model menu that appends
+  `localllm` to `COMPOSE_PROFILES` and writes the `LLM_LOCAL_*` vars.
+- A Playwright e2e (`e2e/`) exercising pull → assign → reload, with Ollama + the pull
+  stream faked at the boundary (like `e2e/fake_llm.py`).
+- Coverage-floor ratchet once measured on full CI.
 
 ## Guardrails / invariants
 

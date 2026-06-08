@@ -555,3 +555,70 @@ def set_media_settings(body: MediaSettingsIn):
         set_meta(conn, "video_frame_max", str(max(0, int(body.video_frame_max))))
     conn.commit()
     return _media_settings()
+
+
+# --- Local LLM (Ollama) model management ------------------------------------
+from fastapi.responses import StreamingResponse   # noqa: E402
+
+
+class LocalPullIn(_BaseModel):
+    """Input schema for pulling a local model."""
+
+    name: str
+
+
+@router.get("/local-models")
+def get_local_models():
+    """List local (Ollama) models with per-model fit verdicts and a hardware profile.
+
+    Returns:
+        JSON ``{running, models: [{name, size_bytes, ram_estimate_bytes, fits, warn,
+        state}], hardware: {usable_ram_bytes, total_ram_bytes, cpu_only, note}}``.
+        ``running`` is False when Ollama is unreachable.
+    """
+    from ..services import local_models
+    return local_models.describe_models()
+
+
+@router.post("/local-models/pull")
+def pull_local_model(body: LocalPullIn):
+    """Pull a local model, streaming progress as Server-Sent Events.
+
+    Streams ``data: {json}`` frames the PWA parses: ``{type:"status"|"progress"|
+    "done"|"error", ...}``. Multi-GB downloads run for a while; the stream ends with a
+    ``done`` (or ``error``) event.
+
+    Args:
+        body: ``{"name": "<model:tag>"}`` — the model to pull.
+
+    Returns:
+        A text/event-stream StreamingResponse of pull-progress events.
+    """
+    from ..services import local_models
+
+    def _events():
+        """Serialise local_models.pull_events into SSE data frames."""
+        for evt in local_models.pull_events(body.name):
+            yield f"data: {json.dumps(evt)}\n\n"
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+@router.delete("/local-models/{name:path}")
+def delete_local_model(name: str):
+    """Delete a pulled local model from Ollama.
+
+    Args:
+        name: Model id to remove (``:path`` so an Ollama 'name:tag' passes intact).
+
+    Returns:
+        JSON ``{"removed": bool}``.
+
+    Raises:
+        HTTPException: 502 if Ollama is unreachable or the delete failed.
+    """
+    from ..services import local_models
+    ok = local_models.delete_model(name)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Could not delete the model (is Ollama running?).")
+    return {"removed": True}

@@ -190,3 +190,104 @@ def test_readiness_is_in_memory_no_network(patch_settings, monkeypatch):
     snap = lm.readiness()
     assert snap["state"] == "ready" and snap["model"] == "qwen2.5:7b"
     assert "since" in snap
+
+
+# --- pull_events (typed SSE mapping) ---------------------------------------
+
+def test_pull_events_maps_progress_and_done(patch_settings, monkeypatch):
+    patch_settings()
+    monkeypatch.setattr(lm, "pull_model", lambda name: iter([
+        {"status": "pulling manifest"},
+        {"status": "downloading", "completed": 50, "total": 100},
+        {"status": "success"},
+    ]))
+    evts = list(lm.pull_events("qwen2.5:7b"))
+    assert evts[0] == {"type": "status", "status": "pulling manifest"}
+    assert evts[1] == {"type": "progress", "completed": 50, "total": 100, "status": "downloading"}
+    assert {"type": "done"} in evts
+    assert evts[-1] == {"type": "done"}
+
+
+def test_pull_events_maps_error(patch_settings, monkeypatch):
+    patch_settings()
+    monkeypatch.setattr(lm, "pull_model", lambda name: iter([{"error": "no such model"}]))
+    evts = list(lm.pull_events("nope"))
+    assert {"type": "error", "message": "no such model"} in evts
+    assert evts[-1] != {"type": "done"}     # errored → no trailing done
+
+
+def test_pull_events_transport_error_becomes_terminal_error(patch_settings, monkeypatch):
+    patch_settings()
+
+    def _boom(name):
+        raise OSError("refused")
+        yield  # pragma: no cover — make it a generator
+
+    monkeypatch.setattr(lm, "pull_model", _boom)
+    evts = list(lm.pull_events("qwen2.5:7b"))
+    assert evts == [{"type": "error", "message": "refused"}]
+
+
+# --- delete_model -----------------------------------------------------------
+
+def test_delete_model_success(patch_settings, monkeypatch):
+    patch_settings()
+    _patch_urlopen(monkeypatch, lambda req, timeout=None: _FakeResp(status=200))
+    assert lm.delete_model("qwen2.5:7b") is True
+
+
+def test_delete_model_failure_returns_false(patch_settings, monkeypatch):
+    patch_settings()
+
+    def _boom(req, timeout=None):
+        raise OSError("down")
+
+    _patch_urlopen(monkeypatch, _boom)
+    assert lm.delete_model("qwen2.5:7b") is False
+    assert lm.delete_model("") is False
+
+
+# --- hardware / describe_models --------------------------------------------
+
+def test_hardware_reports_usable_ram(patch_settings, monkeypatch):
+    patch_settings()
+    monkeypatch.setattr(lm, "_total_ram_bytes", lambda: 32 * 1024 ** 3)
+    hw = lm.hardware()
+    # 32GB total minus the 8GB reserve → 24GB usable.
+    assert hw["total_ram_bytes"] == 32 * 1024 ** 3
+    assert hw["usable_ram_bytes"] == 24 * 1024 ** 3
+    assert "cpu_only" in hw
+
+
+def test_hardware_unknown_ram_is_zero(patch_settings, monkeypatch):
+    patch_settings()
+    monkeypatch.setattr(lm, "_total_ram_bytes", lambda: 0)
+    assert lm.hardware()["usable_ram_bytes"] == 0
+
+
+def test_describe_models_computes_fit_and_warn(patch_settings, monkeypatch):
+    patch_settings(llm_local_model="qwen2.5:7b")
+    monkeypatch.setattr(lm, "_total_ram_bytes", lambda: 12 * 1024 ** 3)  # ~12GB → ~6GB usable
+    body = ('{"models":['
+            '{"name":"qwen2.5:7b","size":4700000000},'
+            '{"name":"llama3.3:70b","size":40000000000}]}').encode()
+    _patch_urlopen(monkeypatch, lambda url, timeout=None: _FakeResp(body=body))
+    out = lm.describe_models()
+    assert out["running"] is True
+    by = {m["name"]: m for m in out["models"]}
+    assert by["qwen2.5:7b"]["fits"] is True          # ~6GB est ≤ usable
+    assert by["llama3.3:70b"]["fits"] is False        # 52GB est > usable
+    # The configured model carries the live readiness state; others are 'ready'.
+    assert by["llama3.3:70b"]["state"] == "ready"
+
+
+def test_describe_models_unreachable(patch_settings, monkeypatch):
+    patch_settings()
+
+    def _boom(url, timeout=None):
+        raise OSError("down")
+
+    _patch_urlopen(monkeypatch, _boom)
+    out = lm.describe_models()
+    assert out["running"] is False
+    assert out["models"] == []

@@ -42,3 +42,6 @@ e2e/.cache/
 .idea/
 .vscode/
 deploy-status/
+
+# jt ci run logs
+.jt-logs/

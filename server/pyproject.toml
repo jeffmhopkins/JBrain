@@ -1,0 +1,36 @@
+# Backend test + coverage config (see ../docs/testing-plan/PLAN.md §4.1).
+# Coverage is opt-in via `--cov` (CI / `./jt cov`); plain `pytest` stays fast.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",                       # summarize all non-passing outcomes
+    "--strict-markers",          # an unknown @pytest.mark.* is an error (enforces the taxonomy)
+    "--import-mode=importlib",
+]
+markers = [
+    "unit: fast, isolated; no app wiring, DB init, or real network",
+    "integration: temp-SQLite + TestClient/service wiring; LLM & embeddings mocked",
+    "concurrency: real threads / on-disk WAL contention / background workers; run serially",
+]
+# Kill a wedged async/polling test instead of hanging CI (pytest-timeout; per-test).
+timeout = 120
+timeout_method = "thread"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# FLOOR, not a target — pinned just under the measured baseline so adopting the
+# standard never reds CI without a code change. Ratchet UP as coverage rises;
+# never set above actual. (See docs/coverage-audit for the weak modules to lift.)
+fail_under = 75
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

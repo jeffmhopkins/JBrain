@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+# jt — JBrain Test. One command for every domain. Run from anywhere: `./jt [cmd]`.
+#
+#   ./jt            run the gate (backend non-concurrency tier + frontend)
+#   ./jt back  [..] backend pytest (extra args passed through, e.g. ./jt back -k notes)
+#   ./jt front      frontend vitest run
+#   ./jt unit       the `unit` tier across both domains (one word, one meaning)
+#   ./jt cov        both domains with coverage + per-domain floors
+#   ./jt watch      frontend vitest watch (TDD loop)
+#
+# The native commands still work too: `cd server && pytest`, `cd web && npm test`.
+set -eu
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cmd="${1:-all}"
+[ "$#" -gt 0 ] && shift || true
+
+back()  { ( cd "$ROOT/server" && python -m pytest "$@" ); }
+front() { ( cd "$ROOT/web"    && npm run --silent "$@" ); }
+
+case "$cmd" in
+  all)    back -m "not concurrency" && front test ;;
+  back)   back "$@" ;;
+  front)  front test ;;
+  unit)   back -m unit --no-cov && front test ;;
+  cov)    back --cov=app --cov-report=term-missing && front test:cov ;;
+  watch)  front test:watch ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)      echo "jt: unknown command '$cmd'"; echo "usage: ./jt [all|back|front|unit|cov|watch]"; exit 2 ;;
+esac

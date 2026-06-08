@@ -5,6 +5,7 @@ The model is loaded lazily on first use and cached for the process lifetime.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Iterable
 
 import sqlite_vec
@@ -16,17 +17,52 @@ EMBEDDING_DIM = 384
 _model = None
 _model_lock = threading.Lock()
 
+# --- readiness state (cheap, in-memory; no I/O on read) ----------------------
+# LOUD CONSTRAINT: this is PER-PROCESS state. JBrain runs a SINGLE uvicorn worker
+# (server/Dockerfile, no --workers). Do NOT add --workers without a shared
+# readiness store or the health dot will flicker between workers warming at
+# different rates.
+_state = "unknown"            # unknown | warming | ready | unavailable | failed
+_last_error: str | None = None
+_state_since = time.time()
+_state_lock = threading.Lock()
+
+
+def _set_state(s: str, err: str | None = None) -> None:
+    global _state, _last_error, _state_since
+    # Cross-thread: the boot warmer runs _get_model on an asyncio.to_thread worker,
+    # so this write can race the snapshot read below — guard both with one lock.
+    with _state_lock:
+        _state, _last_error, _state_since = s, (err and str(err)[:200]), time.time()
+
+
+def readiness() -> dict:
+    """O(1), no model touch, never blocks. Safe to call on every health poll."""
+    with _state_lock:                       # same lock → the snapshot tuple is never torn
+        return {"state": _state, "last_error": _last_error, "since": _state_since}
+
 
 def _get_model():
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
-                from fastembed import TextEmbedding
-
+                # Resolve config OUTSIDE the try so a config import/error can't be
+                # miscategorised as "fastembed not installed".
                 from ..config import get_settings
+                model_name = get_settings().embedding_model
+                _set_state("warming")
+                try:
+                    from fastembed import TextEmbedding
 
-                _model = TextEmbedding(model_name=get_settings().embedding_model)
+                    _model = TextEmbedding(model_name=model_name)
+                    _set_state("ready")
+                except ImportError:
+                    _set_state("unavailable", "fastembed not installed")
+                    raise
+                except Exception as exc:                       # noqa: BLE001
+                    _set_state("failed", str(exc)[:200])
+                    raise
     return _model
 
 

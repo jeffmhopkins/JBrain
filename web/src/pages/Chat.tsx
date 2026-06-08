@@ -8,6 +8,8 @@ import LabChartCard from "../components/LabChartCard";
 import { Icon } from "../components/Icon";
 import { linkifyAddresses, renderWikiLinks } from "../util";
 import { makeChatLinkRenderer } from "../components/CitationLink";
+import { useCapability } from "../capabilities";
+import { showToast, explainError } from "../toast";
 import { toolLabel } from "../toolLabels";
 import ToolHistory from "../components/ToolHistory";
 import { clearConversationSteps } from "../api";
@@ -115,6 +117,7 @@ let _leftChatAt: number | null = null;
 
 export default function Chat() {
   const online = useOnline();
+  const llm = useCapability("llm");      // Research/Full Brain need the assistant; Entry doesn't
   const geo = useGeo();
   const tts = useTts();                 // on-device speech (saved voice + speed)
   const ttsOn = useTtsEnabled();        // top-bar "read replies aloud" toggle
@@ -351,7 +354,7 @@ export default function Chat() {
       const { names } = await setMedicalDests([...dests, name]);
       setDests(names);
       pickDest(names.find((n) => n.toLowerCase() === name.toLowerCase()) || names[names.length - 1] || name);
-    } catch { alert("Couldn’t save that destination — please try again."); }
+    } catch { showToast("Couldn’t save that destination — please try again."); }
   }
   async function addFinDest() {
     const name = window.prompt("New financial destination (e.g. “2026 Brokerage”)")?.trim();
@@ -360,7 +363,7 @@ export default function Chat() {
       const { names } = await setFinancialDests([...finDests, name]);
       setFinDests(names);
       pickFinDest(names.find((n) => n.toLowerCase() === name.toLowerCase()) || names[names.length - 1] || name);
-    } catch { alert("Couldn’t save that destination — please try again."); }
+    } catch { showToast("Couldn’t save that destination — please try again."); }
   }
 
   // A vertical swipe in the left third of the composer (detected by the shell) carousels whatever
@@ -477,7 +480,7 @@ export default function Chat() {
   function rollbackComposer(text: string, files: File[], err: unknown, prefix: string) {
     setInput((cur) => cur.trim() ? cur : text);
     if (files.length) setPendingFiles((cur) => cur.length ? cur : files);
-    alert(`${prefix}: ` + (err instanceof Error ? err.message : "please try again."));
+    showToast(`${prefix}: ` + explainError(err, "please try again."));
   }
 
   // Upload a batch sequentially to one note, surfacing per-file progress. A single file's
@@ -511,8 +514,8 @@ export default function Chat() {
       if (old) clearConversationSteps(old).catch(() => { /* best-effort cleanup */ });
       return;
     }
-    if (mode === "entry" && subPicker && sub === "medical" && !curDest) { alert("Pick or add a medical destination first."); return; }
-    if (mode === "entry" && subPicker && sub === "financial" && !curFinDest) { alert("Pick or add a financial destination first."); return; }
+    if (mode === "entry" && subPicker && sub === "medical" && !curDest) { showToast("Pick or add a medical destination first.", "info"); return; }
+    if (mode === "entry" && subPicker && sub === "financial" && !curFinDest) { showToast("Pick or add a financial destination first.", "info"); return; }
     sendingRef.current = true;
     setProposals([]);   // a new turn supersedes any pending external-lookup chips
     // Both chat modes stream a spoken-able prose reply; entry captures don't.
@@ -925,13 +928,13 @@ export default function Chat() {
         <div className="composer-row">
           {/* Bottom row: the safety/scope hint sits LEFT (flex:1, ellipsis), the action buttons
               are a group hard-RIGHT (send always last → bottom-right corner, aligned with the hint). */}
-          <span className="compose-safety"><span className="sdot" /><span className="safety-txt">{safetyText}</span></span>
+          <span className="compose-safety"><span className="sdot" /><span className="safety-txt">{mode !== "entry" && !llm.ready ? llm.reason : safetyText}</span></span>
           <input ref={fileRef} type="file" multiple style={{ display: "none" }}
                  onChange={(e) => {
                    const picked = Array.from(e.target.files || []);
                    const tooBig = picked.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
                    const ok = picked.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
-                   if (tooBig.length) alert(`Over 100 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`);
+                   if (tooBig.length) showToast(`Over 100 MB (skipped): ${tooBig.map((f) => f.name).join(", ")}`, "info");
                    if (ok.length) setPendingFiles((xs) => [...xs, ...ok]);
                    e.currentTarget.value = "";
                  }} />
@@ -943,8 +946,8 @@ export default function Chat() {
           {mode !== "research" && (
             <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}><Icon name="clip" size={22} /></button>
           )}
-          <button className="icon-btn send" title="Send" onClick={() => send()}
-                  disabled={streaming || busy || !online || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
+          <button className="icon-btn send" title={mode !== "entry" && !llm.ready ? llm.reason : "Send"} onClick={() => send()}
+                  disabled={streaming || busy || !online || (mode !== "entry" && !llm.ready) || (!input.trim() && pendingFiles.length === 0)}><Icon name="send" size={22} /></button>
         </div>
       </div>
     </div>

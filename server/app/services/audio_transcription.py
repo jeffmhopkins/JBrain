@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import os
 import threading
+import time
 
 from ..db import get_conn, get_meta
 from . import llm
@@ -38,6 +39,45 @@ _MAX_TRANSCRIPT_CHARS = 200_000   # parity with the PDF text cap
 _model = None
 _model_key: tuple[str, str] | None = None   # (model, compute_type) the cached model was loaded with
 _model_lock = threading.Lock()
+
+# --- readiness state (cheap, in-memory; no model load on read) ---------------
+# LOUD CONSTRAINT: PER-PROCESS state; single uvicorn worker only (see the same
+# note in embeddings.py). Adding --workers without a shared store flickers the dot.
+_state = "unknown"            # unknown | warming | ready | unavailable | failed
+_last_error: str | None = None
+_state_since = time.time()
+_state_lock = threading.Lock()
+
+
+def _set_state(s: str, err: str | None = None) -> None:
+    global _state, _last_error, _state_since
+    with _state_lock:                       # cross-thread: warmer runs on a to_thread worker
+        _state, _last_error, _state_since = s, (err and str(err)[:200]), time.time()
+
+
+def readiness() -> dict:
+    """O(1) + two cheap get_meta() reads. NO model load, never blocks.
+
+    Recomputes the desired (model, compute_type) so a Settings-driven reload reads
+    as 'warming' immediately: if the cached model's key != the live want, we are
+    (about to be) re-downloading -> report warming, not a stale ready. We read
+    _model_key WITHOUT _model_lock by design (a poll must never block behind a
+    multi-hundred-MB model load); a torn read costs at most one extra 'warming' tick.
+    """
+    with _state_lock:
+        state, err, since = _state, _last_error, _state_since
+    if state == "unavailable":
+        return {"state": "unavailable", "last_error": err, "since": since,
+                "model": None, "compute_type": None}
+    try:
+        want = (audio_model(), audio_compute_type())
+    except Exception:                                          # noqa: BLE001
+        want = None
+    if state == "ready" and want is not None and _model_key != want:
+        state = "warming"                                     # Settings swap → re-download in flight
+    return {"state": state, "last_error": err, "since": since,
+            "model": (want[0] if want else None),
+            "compute_type": (want[1] if want else None)}
 
 
 # --- Runtime-editable settings (DB `meta` override → env/config default) --------------------
@@ -98,15 +138,24 @@ def _get_model():
     if _model is None or _model_key != want:
         with _model_lock:
             if _model is None or _model_key != want:
+                _set_state("warming")
                 try:
                     from faster_whisper import WhisperModel
                 except ImportError as exc:  # the runtime image installs it; dev/test may not
+                    _set_state("unavailable", "faster-whisper not installed")
                     raise TranscriptionUnavailable(
                         "Audio transcription needs faster-whisper "
                         "(pip install -r requirements-audio.txt)."
                     ) from exc
-                _model = WhisperModel(want[0], device="cpu", compute_type=want[1])
-                _model_key = want
+                try:
+                    _model = WhisperModel(want[0], device="cpu", compute_type=want[1])
+                    _model_key = want
+                    _set_state("ready")
+                except Exception as exc:                       # noqa: BLE001
+                    # _model_key keeps its old value (assigned only on success), so a
+                    # failed reload reads as 'warming' (old key != want), never a false ready.
+                    _set_state("failed", str(exc)[:200])
+                    raise
     return _model
 
 

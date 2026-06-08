@@ -1,10 +1,14 @@
 """Hybrid search over notes, attachments AND canonical entities: FTS5 keyword +
 sqlite-vec semantic (entities by name/alias)."""
+import logging
+
 from fastapi import APIRouter
 
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import embeddings, entity_index
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/search", tags=["search"], dependencies=[CurrentUser])
 
@@ -78,18 +82,27 @@ def search(q: str, mode: str = "hybrid", limit: int = 20):
             pass
 
     if do_semantic and not entity_only:
-        for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
-            bump(f"note:{r['id']}", {
-                "kind": "note", "id": r["id"], "title": r["title"], "slug": r["slug"],
-                "distance": r["distance"],
-            }, i)
-        for i, r in enumerate(embeddings.semantic_search_attachments(conn, q, limit)):
-            bump(f"att:{r['attachment_id']}", {
-                "kind": "attachment", "attachment_id": r["attachment_id"],
-                "note_id": r["note_id"], "filename": r["filename"],
-                "title": r["title"], "slug": r["slug"], "snippet": r["snippet"],
-                "distance": r["distance"],
-            }, i)
+        # Semantic search loads the local embedding model (embeddings._get_model), which
+        # blocks while warming and raises if it failed/unavailable. Degrade to the keyword
+        # hits already collected above instead of 500-ing the whole search request.
+        try:
+            for i, r in enumerate(embeddings.semantic_search(conn, q, limit)):
+                bump(f"note:{r['id']}", {
+                    "kind": "note", "id": r["id"], "title": r["title"], "slug": r["slug"],
+                    "distance": r["distance"],
+                }, i)
+        except Exception:
+            log.debug("semantic_search degraded to keyword", exc_info=True)
+        try:
+            for i, r in enumerate(embeddings.semantic_search_attachments(conn, q, limit)):
+                bump(f"att:{r['attachment_id']}", {
+                    "kind": "attachment", "attachment_id": r["attachment_id"],
+                    "note_id": r["note_id"], "filename": r["filename"],
+                    "title": r["title"], "slug": r["slug"], "snippet": r["snippet"],
+                    "distance": r["distance"],
+                }, i)
+        except Exception:
+            log.debug("semantic_search_attachments degraded to keyword", exc_info=True)
 
     if do_semantic:
         try:

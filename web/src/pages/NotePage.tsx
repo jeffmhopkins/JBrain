@@ -13,6 +13,8 @@ import LabImportPanel from "../components/LabImportPanel";
 import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
+import { useCapability } from "../capabilities";
+import { showToast, explainError } from "../toast";
 import ListEditor from "../components/ListEditor";
 import NoteActionsMenu from "../components/NoteActionsMenu";
 import RebuildPanel from "../components/RebuildPanel";
@@ -58,6 +60,7 @@ export default function NotePage() {
   const redirectedFrom = (location.state as { redirectedFrom?: string } | null)?.redirectedFrom;
   const isDesktop = useIsDesktop();
   const { appTz } = useAuth();
+  const llm = useCapability("llm");   // KB "Rebuild page now" runs an LLM gather→draft
   const [note, setNote] = useState<Note | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState("");
@@ -93,7 +96,7 @@ export default function NotePage() {
   async function remove() {
     if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
     try { await del(`/api/notes/${note.slug}`); navigate("/wiki"); }
-    catch (e: any) { alert(e?.message || "Couldn't delete."); }
+    catch (e: any) { showToast(explainError(e, "Couldn't delete.")); }
   }
 
   async function mintShare(scope: "view" | "edit") {
@@ -113,7 +116,12 @@ export default function NotePage() {
     } catch (e: any) { alert(e?.message || "Couldn't tag as person."); }
   }
 
-  function rebuildNow() { setRebuilding(true); }
+  function rebuildNow() {
+    // Pre-flight: the rebuild fires LLM-backed SSE (gather→draft). Don't open the panel
+    // into a doomed run with no usable key — explain instead.
+    if (!llm.ready) { showToast(llm.reason, "info"); return; }
+    setRebuilding(true);
+  }
 
   function startEdit() {
     if (!note) return;
@@ -256,7 +264,7 @@ export default function NotePage() {
           <div className="note-head-actions">
             <NoteActionsMenu items={[
               ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
-                                          accent: true, hint: "AI rewrites it", onClick: rebuildNow }] : []),
+                                          accent: true, hint: llm.ready ? "AI rewrites it" : llm.reason, onClick: rebuildNow }] : []),
               { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
               { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
               ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",

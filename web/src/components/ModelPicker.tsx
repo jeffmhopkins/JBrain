@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { get, put } from "../api";
+import { useCapability } from "../capabilities";
 
 // Pick the LLM model per task. The provider is inferred from the id (grok* → xAI,
 // claude* → Anthropic), so this dropdown is the only control — selecting writes the
@@ -25,7 +26,11 @@ const providerOf = (m: string) =>
 
 export default function ModelPicker() {
   const [vals, setVals] = useState<Record<string, string>>({});
-  const [keys, setKeys] = useState<{ anthropic: boolean; xai: boolean }>({ anthropic: true, xai: false });
+  // The ONLY consumer of the informational per-provider key-presence map. Folds the
+  // former private /api/auth/verify re-fetch into the shared health store. Unknown
+  // (pre-poll) → assume present so we never show a spurious "missing key" warning.
+  const { providers } = useCapability("llm");
+  const keys = providers ?? { anthropic: true, xai: true };
 
   async function load() {
     try {
@@ -34,7 +39,6 @@ export default function ModelPicker() {
       for (const t of TIERS) v[t.key] = rows.find((r) => r.key === t.key)?.effective || "";
       setVals(v);
     } catch { /* ignore */ }
-    try { const i: any = await get("/api/auth/verify"); if (i?.llm_keys) setKeys(i.llm_keys); } catch { /* ignore */ }
   }
   useEffect(() => { load(); }, []);
 

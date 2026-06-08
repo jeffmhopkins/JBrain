@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { get, refreshNoteAnalysis } from "../api";
+import { useCapability } from "../capabilities";
 import { Icon } from "./Icon";
 import { expandTimeTokens } from "../time";
 
@@ -29,6 +30,7 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const llm = useCapability("llm");   // the analysis sidecar is AI-generated
 
   useEffect(() => {
     let live = true;
@@ -60,8 +62,9 @@ export default function AiAnalysisPanel({ slug }: { slug: string }) {
           <span className="badge" style={{ verticalAlign: "middle", fontWeight: 500 }}>{a.domain}</span>
         )}
         <span style={{ flex: 1 }} />
-        <button className="icon-btn" style={{ padding: 4 }} disabled={busy} onClick={reanalyze}
-                title={busy ? "Analyzing…" : a ? "Re-analyze + title this note (ignores the cache)"
+        <button className="icon-btn" style={{ padding: 4 }} disabled={busy || !llm.ready} onClick={reanalyze}
+                title={!llm.ready ? llm.reason
+                       : busy ? "Analyzing…" : a ? "Re-analyze + title this note (ignores the cache)"
                                                : "Analyze + title this note"}>
           <Icon name="refresh" size={15} />
         </button>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { get, post, talkReply, talkDismiss, talkMaintainNow } from "../api";
+import { useCapability } from "../capabilities";
 
 interface Reply { id: number; author: string; body: string; created_at: string; }
 interface Talk {
@@ -44,6 +45,7 @@ export default function TalkPanel({ slug }: { slug: string }) {
   const [replyText, setReplyText] = useState("");
   const [busy, setBusy] = useState(false);
   const [maintaining, setMaintaining] = useState(false);
+  const llm = useCapability("llm");   // "Resolve with AI now" runs the LLM maintenance pass
   const [maintMsg, setMaintMsg] = useState("");
 
   function load() { get<Talk[]>(`/api/notes/${slug}/talk`).then(setItems).catch(() => setItems([])); }
@@ -180,7 +182,7 @@ export default function TalkPanel({ slug }: { slug: string }) {
 
       {open.length > 0 && (
         <div className="talk-maint-row">
-          <button className="ghost" disabled={maintaining} onClick={maintainNow}>
+          <button className="ghost" disabled={maintaining || !llm.ready} title={!llm.ready ? llm.reason : undefined} onClick={maintainNow}>
             {maintaining ? "Running…" : "Resolve with AI now"}
           </button>
           {maintMsg && <span className="muted" style={{ fontSize: 11 }}>{maintMsg}</span>}

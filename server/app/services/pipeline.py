@@ -98,13 +98,23 @@ _MAX_STEPS = 5000       # total steps executed per top-level run
 
 
 class _Ctx:
-    def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None, on_step=None):
+    def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None,
+                 on_step=None, commit_steps=False):
         self.conn = conn
         self.workflow_id = workflow_id
         self.trigger = trigger or {}
         self.call_stack = call_stack or []          # action types currently on the stack
         self.depth = depth                          # call_action nesting depth
         self.on_step = on_step                      # optional progress callback(step_name)
+        # Commit after each step / for_each item so a write NEVER stays in an open
+        # transaction across the NEXT step's LLM call. Without this, a scheduled batch
+        # (e.g. analyze_notes' for_each over dozens of analyze_note steps) accumulated a
+        # single write transaction across every model call, holding SQLite's write lock for
+        # the batch's whole multi-minute duration — so an interactive chat's user-turn INSERT
+        # timed out with "database is locked" and the reply silently failed. Only ON for
+        # scheduled runs (run_workflow commit=True); synchronous in-transaction callers
+        # (the entry_created hook) still own their single transaction.
+        self.commit_steps = commit_steps
         # Shared, mutable across nested call_action sub-runs so the step cap is
         # global (a [remaining] one-element list passed by reference).
         self.budget = budget if budget is not None else [_MAX_STEPS]
@@ -988,7 +998,7 @@ def _p_call_action(ctx, action, config=None, trigger=None):
 
     sub = _Ctx(ctx.conn, ctx.workflow_id, trigger or {},
                call_stack=ctx.call_stack + [target], depth=ctx.depth + 1, budget=ctx.budget,
-               on_step=ctx.on_step)
+               on_step=ctx.on_step, commit_steps=ctx.commit_steps)
     scope = {"config": config or {}, "trigger": trigger or {}, "today": _today(), "prompts": _PromptsProxy()}
     trace: list = []
     stopped = None
@@ -1658,6 +1668,16 @@ class _Stop(Exception):
         self.message = message
 
 
+def _commit_step(ctx):
+    """In a scheduled run, commit whatever the just-finished step wrote so its write
+    transaction is NOT held open across the next step's (often slow) LLM call. This keeps a
+    long batch from pinning SQLite's single write lock for its whole duration and starving
+    interactive writes (a chat's user-turn INSERT). No-op when nothing was written, or for
+    synchronous in-transaction callers (commit_steps=False) that own their own transaction."""
+    if ctx.commit_steps and ctx.conn.in_transaction:
+        ctx.conn.commit()
+
+
 def _run_steps(ctx, steps, scope, trace):
     for step in steps:
         when = step.get("when")
@@ -1681,6 +1701,7 @@ def _run_steps(ctx, steps, scope, trace):
                 child = dict(scope)
                 child["item"] = item
                 _run_steps(ctx, step.get("steps", []), child, trace)
+                _commit_step(ctx)   # release the write lock between items (don't hold it across the next LLM call)
             if step.get("id"):
                 scope[step["id"]] = {"count": len(coll)}
             continue
@@ -1698,14 +1719,16 @@ def _run_steps(ctx, steps, scope, trace):
         if step.get("id"):
             scope[step["id"]] = out
         trace.append(step["do"])
+        _commit_step(ctx)   # release the write lock between steps (don't hold it across the next LLM call)
 
         swe = step.get("stop_when_empty")
         if swe is not None and not _truthy(out):
             raise _Stop(str(swe))
 
 
-def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None, *, on_step=None) -> str:
-    ctx = _Ctx(conn, workflow_id, context, on_step=on_step)
+def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None, *,
+                 on_step=None, commit_steps=False) -> str:
+    ctx = _Ctx(conn, workflow_id, context, on_step=on_step, commit_steps=commit_steps)
     scope = {
         "config": cfg or {},
         "trigger": context or {},

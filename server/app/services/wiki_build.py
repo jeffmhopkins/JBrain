@@ -1930,6 +1930,13 @@ def _apply_maintain(conn, out: dict, version_note: str) -> tuple[bool, int]:
         closed += 1
     if out["new"]:
         article_talk.record(conn, out["title"], out["new"], author="ai")
+    # Commit this article's writes now so the write lock is released BEFORE the batch's next
+    # maintain_one() runs its (slow) LLM generation. update_batch / maintain_batch loop over
+    # many articles within a single pipeline primitive — without this, each article's writes
+    # stayed in an open transaction across the next article's model call, pinning SQLite's
+    # write lock for the batch's whole duration and blocking interactive chat writes. The
+    # batches are watermark-resumable, so per-article commits are safe (a crash just retries).
+    conn.commit()
     return changed, closed
 
 

@@ -1,0 +1,72 @@
+name: Tests
+
+# The cross-domain test gate (see docs/testing-plan/PLAN.md §5). Two parallel,
+# per-domain jobs — each enforces its OWN coverage floor (backend fail_under in
+# server/pyproject.toml; frontend thresholds in web/vitest.config.ts). There is no
+# combined gate: a backend-dominated combined number would be meaningless across the
+# 15.6k/9k statement split. Locally the same checks run via `./jt cov`.
+#
+# Existing pages.yml / android-apk.yml workflows are untouched.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  back:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            server/requirements.txt
+            server/requirements-dev.txt
+      - name: Install backend deps
+        # fastapi/pydantic MUST be installed before pytest collects, or import fails.
+        # pywebpush (-> py-vapid/http-ece) is split out and best-effort: it doesn't always
+        # build, the push module is import-guarded, and it must never fail the gate.
+        run: |
+          python -m pip install -U pip
+          grep -v '^pywebpush' requirements.txt > /tmp/reqs-core.txt
+          pip install -r /tmp/reqs-core.txt -r requirements-dev.txt
+          pip install pywebpush==2.0.0 || echo "::warning::pywebpush unavailable; push tests will skip"
+      - name: Test + coverage gate
+        # fail_under=75 lives in pyproject.toml. `-m "not concurrency"` excludes the
+        # serial thread/WAL tests (none marked yet; forward-compatible with Stage 3).
+        run: python -m pytest -m "not concurrency" --cov=app --cov-report=term-missing
+
+  front:
+    name: frontend (vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Typecheck (part of the gate)
+        run: npx tsc -b
+      - name: Test + coverage gate
+        # thresholds (floor 7) live in vitest.config.ts.
+        run: npm run test:cov

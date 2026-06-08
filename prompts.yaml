@@ -916,6 +916,12 @@ actions:
     Any other subject must be plain text, never wrapped in [[ ]]. Fix every "Dead link"
     issue this way.
 
+    DATES & TIME — this article is evergreen, so a value that DRIFTS must be a live token,
+    never a frozen number: @t[age:YYYY-MM-DD] for an age, @t[since:YYYY-MM-DDTHH:MM] for
+    elapsed time, @t[until:YYYY-MM-DDTHH:MM] for a countdown. Use a literal ISO date for fixed
+    historical facts. PRESERVE verbatim any @t[...] token already in the draft — never replace
+    one with a frozen number. Fix any "looks frozen" or "not a valid live time token" issue.
+
     ISSUES TO FIX:
     {issues}
 

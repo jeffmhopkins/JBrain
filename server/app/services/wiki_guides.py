@@ -319,6 +319,13 @@ def validate_structure(title: str, content_md: str) -> dict:
     if frozen:
         warnings.append(f'"{frozen.group(0)}" looks frozen — use a live @t[...] token so it stays current')
 
+    # Token-shaped near-misses (@t{age:…}, @t[born:…], @t[age:bad-date]) render as raw text in
+    # the article — flag each so the writer/reviewer fixes the syntax instead of shipping it.
+    from .clock import malformed_tokens
+    for bad in malformed_tokens(body):
+        warnings.append(f'"{bad}" is not a valid live time token — use @t[age:YYYY-MM-DD], '
+                        f'@t[since:ISO], or @t[until:ISO]')
+
     # Foldered domains must live in a subcategory (kb/<Domain>/<Sub>/<Name>), not flat:
     # Reference (the general-knowledge tree) and Finance (the vault: Accounts/, Investments/, …).
     if domain in ("Reference", "Finance") and len([p for p in (title or "").split("/") if p]) < 4:

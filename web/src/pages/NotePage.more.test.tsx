@@ -252,18 +252,18 @@ describe("NotePage — checkbox toggle", () => {
   });
 });
 
-describe("NotePage — KB rebuild entry", () => {
-  it("'Rebuild page now' on a KB note mounts RebuildPanel and opens the stream", async () => {
+describe("NotePage — KB Edit-with-AI entry", () => {
+  it("'Edit with AI' on a KB note mounts RebuildPanel in suggest mode and opens the stream", async () => {
     mountHandlers(note({ title: "kb/Coffee", slug: "coffee", kind: "kb", content_md: "About coffee." }));
     const { user } = renderWithProviders(<NotePage />, { route: "/note/coffee" });
 
     await screen.findByRole("heading", { name: /Coffee/ });
     await openMenu(user);
-    await user.click(await screen.findByRole("menuitem", { name: /Rebuild page now/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /Edit with AI/ }));
 
-    // Modal title + the stream method fired for this slug.
-    expect(await screen.findByText("Rebuild page")).toBeInTheDocument();
-    expect(rebuildStream).toHaveBeenCalledWith("coffee", expect.any(Function));
+    // Modal title (suggest mode) + the stream method fired for this slug in suggest mode.
+    expect(await screen.findByText("Edit with AI")).toBeInTheDocument();
+    expect(rebuildStream).toHaveBeenCalledWith("coffee", expect.any(Function), "suggest");
   });
 });
 

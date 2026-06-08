@@ -192,3 +192,74 @@ def expand_tokens(text: str, *, snapshot: bool = False, now: datetime | None = N
         return f"{base} (as of {today.isoformat()})" if snapshot else base
 
     return _TOKEN_RE.sub(repl, text)
+
+
+# A token-SHAPED substring: "@t" then one of the bracket openers a writer might use, up to the
+# first matching-ish closer (or end of the run). Broad on PURPOSE — it catches the near-misses
+# (`@t{age:…}`, `@t(since:…)`, `@t[born:…]`, `@t[age:not-a-date]`) that _TOKEN_RE silently
+# ignores, so malformed_tokens can flag them instead of shipping raw ugly text into an article.
+_ANY_TOKEN_RE = re.compile(r"@t\s*[\[{(][^\]\n})]*[\]})]?")
+
+
+def tokens_in(text: str) -> set[str]:
+    """Return the set of VALID @t[...] live-time tokens present in text.
+
+    A token is valid only if it matches the canonical grammar AND its date argument parses;
+    a wrong kind or unparseable date is excluded (and would be reported by malformed_tokens).
+
+    Args:
+        text: Text to scan.
+
+    Returns:
+        Set of valid token strings (e.g. {"@t[age:1986-03-15]"}).
+    """
+    tz = app_tz()
+    out: set[str] = set()
+    for m in _TOKEN_RE.finditer(text or ""):
+        if _to_dt(m.group(2).strip(), tz) is not None:
+            out.add(m.group(0))
+    return out
+
+
+def malformed_tokens(text: str) -> list[str]:
+    """Return token-SHAPED substrings that are not valid live-time tokens, de-duplicated.
+
+    Catches the common authoring mistakes that render as raw text in an article: the wrong
+    brackets (`@t{age:…}`), an unknown kind (`@t[born:…]`), or an unparseable date
+    (`@t[age:nineteen]`). A correctly-formed token never appears here.
+
+    Args:
+        text: Article (or draft) text to scan.
+
+    Returns:
+        Ordered list of distinct malformed token strings, in first-seen order.
+    """
+    tz = app_tz()
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _ANY_TOKEN_RE.finditer(text or ""):
+        s = m.group(0)
+        valid = _TOKEN_RE.fullmatch(s)
+        if valid and _to_dt(valid.group(2).strip(), tz) is not None:
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def dropped_tokens(base: str, draft: str) -> list[str]:
+    """Return valid @t[...] tokens present in base but missing from draft (a likely freeze).
+
+    A revision/rebuild that drops a live token the prior article carried has probably frozen
+    a drifting value (e.g. replaced ``@t[age:1986-03-15]`` with a bare ``40``). Detection
+    only — the caller decides whether to warn or restore.
+
+    Args:
+        base: The prior article body.
+        draft: The new draft body.
+
+    Returns:
+        Sorted list of token strings that vanished from draft.
+    """
+    return sorted(tokens_in(base) - tokens_in(draft))

@@ -916,6 +916,12 @@ actions:
     Any other subject must be plain text, never wrapped in [[ ]]. Fix every "Dead link"
     issue this way.
 
+    DATES & TIME — this article is evergreen, so a value that DRIFTS must be a live token,
+    never a frozen number: @t[age:YYYY-MM-DD] for an age, @t[since:YYYY-MM-DDTHH:MM] for
+    elapsed time, @t[until:YYYY-MM-DDTHH:MM] for a countdown. Use a literal ISO date for fixed
+    historical facts. PRESERVE verbatim any @t[...] token already in the draft — never replace
+    one with a frozen number. Fix any "looks frozen" or "not a valid live time token" issue.
+
     ISSUES TO FIX:
     {issues}
 
@@ -930,6 +936,74 @@ actions:
 
     CURRENT DRAFT:
     {draft}
+  wiki_suggest: |
+    You are revising an EXISTING knowledge-base article at the owner's direction. Start from the
+    CURRENT ARTICLE below and make ONLY the changes the owner's guidance calls for — PRESERVE
+    everything else VERBATIM, including every @t[...] live time token, every [[wikilink]], and the
+    "## References" footnotes. Output the COMPLETE revised article in Markdown, starting with
+    "# <name>" — never a diff, never a partial.
+
+    Be TRUTH-SEEKING for salient facts: when a SOURCE NOTE genuinely supports a fact the guidance
+    is about, fold it in and cite it as a footnote — a marker [^sN] in the text, defined under
+    "## References" as
+        [^sN]: [[Exact Source Title]] — DATE
+    using the EXACT source-note titles given. Invent nothing; a fact must come from a source note
+    or already be in the article. The owner's guidance steers structure, formatting, and corrects
+    your assumptions — defer to it.
+
+    DATES & TIME — this article is evergreen, so a value that DRIFTS must be a live token, never a
+    frozen number: @t[age:YYYY-MM-DD] for an age, @t[since:YYYY-MM-DDTHH:MM] for elapsed time,
+    @t[until:YYYY-MM-DDTHH:MM] for a countdown; a literal ISO date for a fixed historical fact.
+    NEVER replace an existing @t[...] token with a frozen number.
+
+    CROSS-LINKS — link every mention that HAS a home, invent nothing. Use [[...]] ONLY for a cited
+    source-note title or a title in the EXISTING ARTICLES list below; when a mention matches an
+    EXISTING ARTICLES title you MUST link it. Any other subject stays plain text.
+
+    AUTHOR — the source notes are written by the owner, {owner}, in the first person; resolve
+    "I/me/my/we/our" to {owner} by name. (The PII firewall still holds for Reference: keep those
+    general and unnamed.)
+
+    HOUSE STYLE
+    {general_guide}
+
+    DOMAIN GUIDE — {domain}
+    {domain_guide}
+
+    ARTICLE: {title}
+
+    EXISTING ARTICLES (the only titles you may cross-link, besides the sources):
+    {known_titles}
+
+    KNOWN ALIASES — a name on the left is another way of referring to the article on the right;
+    link the name to that article keeping the name as the display, e.g.
+    [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]:
+    {known_aliases}
+
+    BACKLINKS (read-only — other articles that refer to this one; keep this article consistent
+    with how they describe it, but do NOT edit them):
+    {backlinks}
+
+    SOURCE NOTES:
+    {sources}
+
+    CURRENT ARTICLE:
+    {base}
+
+    OWNER GUIDANCE:
+    {instructions}
+  wiki_find_facts: |
+    From the owner's personal notes below, extract up to {limit} SALIENT facts that are relevant
+    to "{query}" and would genuinely belong in the knowledge-base article "{title}". Each fact is
+    ONE concise sentence, faithful to a note (invent nothing — no outside knowledge), paired with
+    the EXACT title of the source note it came from. Skip anything off-topic, trivial, or already
+    obvious. If nothing relevant is there, return an empty array.
+
+    Output ONLY a JSON array, nothing else:
+    [{"claim": "one concise sentence", "source": "Exact Source Note Title"}]
+
+    NOTES:
+    {sources}
   wiki_maintain: |
     Update ONE existing knowledge-base article so it's faithful and current: address its
     OPEN ITEMS, integrate any NEW/CHANGED sources, and purge anything that relied on a

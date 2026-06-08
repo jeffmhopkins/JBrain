@@ -263,8 +263,8 @@ export default function NotePage() {
         {editing === null && (
           <div className="note-head-actions">
             <NoteActionsMenu items={[
-              ...(note.kind === "kb" ? [{ key: "rebuild", label: "Rebuild page now", icon: "refresh",
-                                          accent: true, hint: llm.ready ? "AI rewrites it" : llm.reason, onClick: rebuildNow }] : []),
+              ...(note.kind === "kb" ? [{ key: "rebuild", label: "Edit with AI", icon: "refresh",
+                                          accent: true, hint: llm.ready ? "Talk to revise it" : llm.reason, onClick: rebuildNow }] : []),
               { key: "share", label: "Share", icon: "link", onClick: () => setSharing((s) => !s) },
               { key: "edit", label: note.kind === "list" ? "Edit list" : "Edit", icon: "list", onClick: startEdit },
               ...(note.kind === "kb" ? [{ key: "person", label: "Tag as person", icon: "people",
@@ -377,7 +377,7 @@ export default function NotePage() {
         );
       })()}
       {rebuilding && (
-        <RebuildPanel slug={note.slug} note={{ title: note.title, content_md: note.content_md }}
+        <RebuildPanel slug={note.slug} note={{ title: note.title, content_md: note.content_md }} mode="suggest"
           onClose={() => setRebuilding(false)}
           onAccepted={(s) => { setRebuilding(false); if (s !== note.slug) navigate(`/note/${s}`); else reload(); }} />
       )}

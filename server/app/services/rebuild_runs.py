@@ -33,6 +33,8 @@ class RebuildRun:
     title: str
     model: str | None                       # pinned at creation; Guide must reuse it
     base_hash: str                          # sha256 of the live page content at start
+    kind: str = "rebuild"                   # "rebuild" (write from sources) | "suggest" (edit BASE)
+    base_content: str = ""                  # verbatim live page body at start (suggest edits FROM it)
     instructions: str | None = None
     messages: list[dict] = field(default_factory=list)   # verbatim provider blocks (opaque)
     known: list[str] = field(default_factory=list)       # cross-link candidates (allowed set)
@@ -45,6 +47,7 @@ class RebuildRun:
     status: str = "streaming"               # streaming|ready|guiding|accepting|accepted|rejected|error|cancelled
     error: str | None = None
     cancelled: bool = False                 # cooperative cancel flag (polled by the engine)
+    rebound: bool = False                   # entity index freshened once for this session (draft-time linking)
     created_at: float = field(default_factory=time.monotonic)
     touched_at: float = field(default_factory=time.monotonic)
 
@@ -73,7 +76,8 @@ def _sweep() -> None:
         drop(rid)
 
 
-def create(slug: str, title: str, model: str | None, base_content: str) -> RebuildRun:
+def create(slug: str, title: str, model: str | None, base_content: str,
+           kind: str = "rebuild") -> RebuildRun:
     """Start a fresh rebuild run for a page, cancelling any prior live run for the same slug.
 
     Enforces one active rebuild per page. Reaps idle and over-cap runs first.
@@ -82,7 +86,10 @@ def create(slug: str, title: str, model: str | None, base_content: str) -> Rebui
         slug: Page slug (used as the unique key for one-active-run-per-page).
         title: KB article title.
         model: LLM model identifier pinned for the duration of this run.
-        base_content: Live page content at the time of creation (hashed for the staleness guard).
+        base_content: Live page content at the time of creation (hashed for the staleness
+            guard, and kept verbatim so a "suggest" session can edit FROM it).
+        kind: "rebuild" (write the article from sources) or "suggest" (edit the current
+            article at the owner's direction).
 
     Returns:
         Newly created RebuildRun.
@@ -97,7 +104,8 @@ def create(slug: str, title: str, model: str | None, base_content: str) -> Rebui
             break
         drop(oldest.run_id)
     run = RebuildRun(run_id=secrets.token_urlsafe(12), slug=slug, title=title,
-                     model=model, base_hash=content_hash(base_content))
+                     model=model, base_hash=content_hash(base_content),
+                     kind=kind, base_content=base_content or "")
     _RUNS[run.run_id] = run
     _BY_SLUG[slug] = run.run_id
     return run

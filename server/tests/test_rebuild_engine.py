@@ -363,6 +363,39 @@ def test_gather_append_merges_without_dupes(conn, monkeypatch):
     assert sorted(titles) == ["notes/2026/01/a", "notes/2026/01/b"]   # no duplicate of a
 
 
+def test_entity_rebuild_skips_embeddings_when_flagged(conn, monkeypatch):
+    """rebuild(sync_embeddings=False) rebuilds the tables but skips the embed refresh."""
+    from app.services import entity_index
+    seen = []
+    monkeypatch.setattr(entity_index, "_sync_embeddings", lambda c: seen.append(True))
+    entity_index.rebuild(conn, sync_embeddings=False)
+    assert seen == []                       # the cheap path never touches the embedder
+    entity_index.rebuild(conn)              # default re-syncs
+    assert seen == [True]
+
+
+def test_gather_rebinds_entity_index_once_cheaply(conn, monkeypatch):
+    """A session start freshens the entity index (embeddings-free), and only once per run."""
+    from app.services import rebuild_engine, entity_index
+    _mk(conn, "kb/Things/Truck", "# Truck\n")
+    calls = []
+    monkeypatch.setattr(entity_index, "rebuild",
+                        lambda c, *a, **k: calls.append(k.get("sync_embeddings", True)) or 0)
+
+    async def _passthru(f, *a, **k):        # run the offloaded fn inline so the spy fires
+        return f(*a, **k)
+    monkeypatch.setattr(rebuild_engine.asyncio, "to_thread", _passthru)
+
+    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
+    _install_provider(monkeypatch, prov)
+    run = _new_run()
+    _drain(rebuild_engine.run_gather(run))
+    assert calls == [False]                 # one rebind, embeddings-free
+    assert run.rebound is True
+    _drain(rebuild_engine.run_gather(run, append=True))
+    assert calls == [False]                 # a re-gather does NOT rebind again
+
+
 # =========================================================================================
 # Stage 2 — DRAFT / GUIDE / RE-DRAFT
 # =========================================================================================
@@ -563,6 +596,126 @@ def test_guide_revises_from_loaded_context(conn, monkeypatch):
     assert len(run.messages) > n_before
     assert any(m["role"] == "user" and "Guidance: Make it shorter." in str(m.get("content", ""))
                for m in run.messages)
+
+
+def _suggest_run(base, slug="People/Al", title="kb/People/Al", model="claude-x"):
+    from app.services import rebuild_runs
+    return rebuild_runs.create(slug, title, model, base, kind="suggest")
+
+
+def test_load_backlinks_firewall_excludes_private_into_public(conn):
+    from app.services import rebuild_engine, notes as notes_svc
+    target = _mk(conn, "kb/People/Al", "# Al\n\nAbout Al.\n")
+    pub = _mk(conn, "kb/Groups/Team", "# Team\n\nAl is on the team.\n")
+    priv = _mk(conn, "kb/Health/Al", "# Al (health)\n\nSensitive medical detail.\n")
+    raw = _mk(conn, "notes/2026/01/diary", "saw Al today", kind="entry")
+    # Wire inbound links target<-(pub, priv, raw) directly for a deterministic graph.
+    for src in (pub, priv, raw):
+        conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                     (src["id"], target["id"], target["title"]))
+    conn.commit()
+    bl = rebuild_engine._load_backlinks(conn, "kb/People/Al")
+    titles = {b["title"] for b in bl}
+    assert "kb/Groups/Team" in titles            # public kb backlink → included
+    assert "kb/Health/Al" not in titles          # private-domain source → firewalled OUT
+    assert "notes/2026/01/diary" not in titles    # raw note → not article context
+    # A PRIVATE target may see its private backlinks (no leak across the firewall).
+    notes_svc.upsert_note(conn, "kb/Health/Target", "# T\n", kind="kb", fire_events=False)
+    conn.commit()
+    htarget = notes_svc.get_by_title(conn, "kb/Health/Target")
+    conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                 (priv["id"], htarget["id"], htarget["title"]))
+    conn.commit()
+    assert "kb/Health/Al" in {b["title"] for b in rebuild_engine._load_backlinks(conn, "kb/Health/Target")}
+
+
+def test_run_suggest_seeds_base_and_streams_edit(conn, monkeypatch):
+    from app.services import rebuild_engine
+    base = "# Al\n\nAl is a friend.\n"
+    _mk(conn, "kb/People/Al", base)
+    src = _mk(conn, "notes/2026/01/al", "Al moved to Denver in 2026.", kind="entry")
+    revised = "# Al\n\nAl is a friend who moved to Denver.\n"
+    prov = FakeProvider([[_td(revised), _end(stop_reason="end_turn")]])
+    _install_provider(monkeypatch, prov)
+    run = _suggest_run(base)
+    evs = _drain(rebuild_engine.run_suggest(run, [src["id"]], "Add that Al moved to Denver."))
+    assert run.status == "ready"
+    assert evs[-1]["type"] == "done"
+    assert "Denver" in run.draft
+    # The first turn embedded the CURRENT article and the owner's guidance in ONE user turn.
+    seed = run.messages[0]["content"]
+    assert run.messages[0]["role"] == "user"
+    assert "CURRENT ARTICLE" in seed and "Al is a friend." in seed
+    assert "Add that Al moved to Denver." in seed
+    assert run.sources == [{"title": "notes/2026/01/al"}]
+
+
+def test_run_suggest_then_guide_continues_same_transcript(conn, monkeypatch):
+    from app.services import rebuild_engine
+    base = "# Al\n\nAl is a friend.\n"
+    _mk(conn, "kb/People/Al", base)
+    prov = FakeProvider([
+        [_td("# Al\n\nAl is a good friend.\n"), _end(stop_reason="end_turn")],
+        [_td("# Al\n\nAl is a great friend.\n"), _end(stop_reason="end_turn")],
+    ])
+    _install_provider(monkeypatch, prov)
+    run = _suggest_run(base)
+    _drain(rebuild_engine.run_suggest(run, [], "Call him a good friend."))   # no sources → pure edit
+    n_before = len(run.messages)
+    _drain(rebuild_engine.run_guide(run, "Make it 'great' instead."))
+    assert "great friend" in run.draft
+    assert len(run.messages) > n_before          # guide continued the same loaded transcript
+
+
+def test_private_note_ids_floor_flags_health_linked_notes(conn):
+    from app.services import rebuild_engine, notes as notes_svc
+    _mk(conn, "kb/Health/Al", "# Al (health)\n")
+    diary = _mk(conn, "notes/2026/01/diary", "checkup notes", kind="entry")
+    plain = _mk(conn, "notes/2026/01/trip", "road trip", kind="entry")
+    htgt = notes_svc.get_by_title(conn, "kb/Health/Al")
+    conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                 (diary["id"], htgt["id"], "kb/Health/Al"))
+    conn.commit()
+    priv = rebuild_engine._private_note_ids(conn)
+    assert diary["id"] in priv             # links to a Health page → sensitivity floor
+    assert plain["id"] not in priv
+
+
+def test_find_facts_firewall_and_extraction(conn, monkeypatch):
+    from app.services import rebuild_engine, search, notes as notes_svc, llm
+    _mk(conn, "kb/People/Al", "# Al\n")
+    _mk(conn, "kb/Health/Al", "# Al (health)\n")
+    pub = _mk(conn, "notes/2026/01/hobby", "Al took up sailing in 2026.", kind="entry")
+    sens = _mk(conn, "notes/2026/01/checkup", "Al's blood pressure reading.", kind="entry")
+    htgt = notes_svc.get_by_title(conn, "kb/Health/Al")
+    conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                 (sens["id"], htgt["id"], "kb/Health/Al"))   # marks the checkup note private-adjacent
+    conn.commit()
+    # Search returns both notes; the model would name both, but the private one must be filtered.
+    monkeypatch.setattr(search, "hybrid_notes", lambda *a, **k: [
+        {"id": pub["id"], "title": "notes/2026/01/hobby"},
+        {"id": sens["id"], "title": "notes/2026/01/checkup"}])
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: __import__("json").dumps([
+        {"claim": "Al took up sailing in 2026.", "source": "notes/2026/01/hobby"},
+        {"claim": "Al's blood pressure was recorded.", "source": "notes/2026/01/checkup"}]))
+
+    # Editing a PUBLIC article: the private-adjacent source is firewalled out (floor + backstop).
+    facts = rebuild_engine.find_facts(conn, "kb/People/Al", "what's new with Al")
+    titles = {f["source_title"] for f in facts}
+    assert "notes/2026/01/hobby" in titles
+    assert "notes/2026/01/checkup" not in titles
+    assert all(f["claim"] and f["source_id"] for f in facts)
+
+    # Editing the PRIVATE article itself: its own private sources are allowed (no cross-firewall).
+    facts_priv = rebuild_engine.find_facts(conn, "kb/Health/Al", "what's new with Al")
+    assert "notes/2026/01/checkup" in {f["source_title"] for f in facts_priv}
+
+
+def test_find_facts_no_creds_returns_empty(conn, monkeypatch):
+    from app.services import rebuild_engine, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: False)
+    assert rebuild_engine.find_facts(conn, "kb/People/Al", "anything") == []
 
 
 def test_redraft_unwinds_continue_scaffolding(conn, monkeypatch):

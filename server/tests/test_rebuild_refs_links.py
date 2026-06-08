@@ -142,3 +142,34 @@ def test_scoped_known_titles_skips_seeding_for_reference_target(conn):
     # alphabetical top-up only if it sorts in — but it must not be SEEDED). With 700 Reference
     # fillers sorting before 'kb/People', the top-up won't reach it.
     assert "kb/People/Jeff Hopkins" not in out
+
+
+# --- promote(): network-free promotion parity on the Accept path -----------------------
+
+def test_promote_runs_only_the_network_free_steps(conn, monkeypatch):
+    from app.services import wiki_build, wikilinks, medref, places
+    called = []
+    monkeypatch.setattr(wiki_build, "link_owner", lambda c: called.append("owner") or {"linked": None})
+    monkeypatch.setattr(wiki_build, "surface_aliases", lambda c: called.append("aliases") or {"updated": 0})
+    monkeypatch.setattr(wiki_build, "flag_ungrounded_reference",
+                        lambda c: called.append("grounding") or {"scanned": 0, "flagged": 0})
+    monkeypatch.setattr(wikilinks, "normalize_all_link_labels",
+                        lambda c, *a, **k: called.append("labels") or {"fixed": 0})
+    # The two NETWORK-bound build steps must never run on the interactive Accept path.
+    monkeypatch.setattr(medref, "link_medications", lambda *a, **k: called.append("MEDS") or {})
+    monkeypatch.setattr(places, "link_places", lambda *a, **k: called.append("PLACES") or {})
+
+    out = wiki_build.promote(conn)
+    assert sorted(called) == ["aliases", "grounding", "labels", "owner"]
+    assert "MEDS" not in called and "PLACES" not in called
+    assert set(out) == {"owner", "aliases", "labels", "grounding"}
+
+
+def test_finalize_rebuild_invokes_promote(conn, monkeypatch):
+    from app.services import wiki_build
+    _mk(conn, "kb/Things/Gadget", "# Gadget\n\nA gadget on the shelf.\n")
+    seen = []
+    monkeypatch.setattr(wiki_build, "promote", lambda c: seen.append(True) or {})
+    wiki_build.finalize_rebuild(conn, "kb/Things/Gadget", "# Gadget\n\nAn updated gadget.\n")
+    conn.commit()
+    assert seen == [True]                       # promotion parity runs as part of finalize

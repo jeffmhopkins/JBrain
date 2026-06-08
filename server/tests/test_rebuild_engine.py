@@ -430,6 +430,33 @@ def test_gather_rebind_is_bounded_and_never_hangs(conn, monkeypatch):
     assert evs[-1]["type"] == "sources_proposed"
 
 
+def test_gather_rebind_uses_its_own_connection_off_thread(conn, monkeypatch):
+    """The rebind must run on its OWN connection in a WORKER thread, never the request's.
+
+    Encodes the invariant behind the gather hang: under uvicorn every async request shares one
+    event-loop-thread sqlite3 connection, so handing that connection to a worker thread is a
+    cross-thread-sharing deadlock. Reverting to ``entity_index.rebuild(conn, …)`` fails here.
+    """
+    import threading
+    from app.services import rebuild_engine, entity_index
+    _mk(conn, "kb/Things/Truck", "# Truck\n")
+    seen: dict = {}
+
+    def capture(c, *a, **k):
+        seen["conn"] = c
+        seen["thread"] = threading.current_thread()
+        return 0
+    monkeypatch.setattr(entity_index, "rebuild", capture)
+    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
+    _install_provider(monkeypatch, prov)
+    run = _new_run()
+
+    _drain(rebuild_engine.run_gather(run))
+    assert "conn" in seen                               # the rebind ran
+    assert seen["conn"] is not conn                     # …on its OWN connection, not the request's
+    assert seen["thread"] is not threading.current_thread()   # …and off the calling thread
+
+
 # =========================================================================================
 # Stage 2 — DRAFT / GUIDE / RE-DRAFT
 # =========================================================================================

@@ -13,10 +13,27 @@ router = APIRouter(prefix="/api/places", tags=["places"], dependencies=[CurrentU
 
 
 def _loc_title(name: str) -> str:
+    """Build the canonical loc/<name> note title for a place.
+
+    Args:
+        name: Place name (stripped of surrounding slashes).
+
+    Returns:
+        Title string of the form 'loc/<name>'.
+    """
     return f"loc/{name.strip().strip('/')}"
 
 
 def _note_by_slug(conn, slug: str):
+    """Fetch a live note row by slug, returning None if not found or slug is empty.
+
+    Args:
+        conn: Active database connection.
+        slug: Note slug to look up.
+
+    Returns:
+        Row with id, slug, and content_md, or None.
+    """
     if not slug:
         return None
     return conn.execute(
@@ -25,6 +42,8 @@ def _note_by_slug(conn, slug: str):
 
 
 class PlaceIn(BaseModel):
+    """Input body for creating a new named geofence."""
+
     name: str
     lat: float
     lon: float
@@ -34,12 +53,31 @@ class PlaceIn(BaseModel):
 
 @router.get("")
 def list_places():
+    """List all named geofences, ordered by name.
+
+    Returns:
+        List of place dicts (id, name, lat, lon, radius_m, note_slug).
+    """
     return [dict(r) for r in get_conn().execute(
         "SELECT id, name, lat, lon, radius_m, note_slug FROM places ORDER BY name").fetchall()]
 
 
 @router.post("")
 def add_place(body: PlaceIn):
+    """Create a new named geofence and its backing loc/<name> note.
+
+    Names are unique (case-insensitive) so a place and its note stay paired.
+
+    Args:
+        body: Place name, coordinates, radius, and optional note slug.
+
+    Returns:
+        Dict with 'id' and 'name' of the new place.
+
+    Raises:
+        HTTPException: 409 if a place with the same name (case-insensitive) already exists.
+        HTTPException: 422 if the name is blank.
+    """
     name = body.name.strip()[:80]
     if not name:
         raise HTTPException(status_code=422, detail="Name required")
@@ -63,13 +101,30 @@ def add_place(body: PlaceIn):
 
 
 class PlacePatch(BaseModel):
+    """Input body for a partial update to a place (rename and/or resize)."""
+
     name: str | None = None
     radius_m: int | None = None
 
 
 @router.patch("/{place_id}")
 def update_place(place_id: int, body: PlacePatch):
-    """Edit a place: rename it and/or resize its geofence. Either field is optional."""
+    """Edit a place: rename it and/or resize its geofence radius. Either field is optional.
+
+    A rename also updates the linked loc/<name> note's title to keep them in sync.
+
+    Args:
+        place_id: ID of the place to update.
+        body: Optional new name and/or radius_m.
+
+    Returns:
+        Dict with 'ok' and the effective 'name' after the update.
+
+    Raises:
+        HTTPException: 404 if the place is not found.
+        HTTPException: 409 if renaming would conflict with another existing place or note.
+        HTTPException: 422 if an explicit blank name is provided.
+    """
     conn = get_conn()
     place = conn.execute("SELECT name, note_slug, radius_m FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
@@ -108,8 +163,20 @@ def update_place(place_id: int, body: PlacePatch):
 @router.post("/{place_id}/note")
 def ensure_place_note(place_id: int):
     """Lazily create (or find) the loc/<name> note that backs this place and link it.
-    The place page is that note + a geofence card; bare geofences carry no note until
-    you add content here. Returns the note slug to navigate to."""
+
+    The place page is that note plus a geofence card; bare geofences carry no note
+    until content is added here.
+
+    Args:
+        place_id: ID of the place to back with a note.
+
+    Returns:
+        Dict with 'slug' of the backing note to navigate to.
+
+    Raises:
+        HTTPException: 404 if the place is not found.
+        HTTPException: 409 if the place note could not be created or adopted.
+    """
     conn = get_conn()
     place = conn.execute("SELECT name FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
@@ -134,6 +201,14 @@ def ensure_place_note(place_id: int):
 
 @router.delete("/{place_id}")
 def delete_place(place_id: int):
+    """Delete a place and remove any associated location state.
+
+    Args:
+        place_id: ID of the place to delete.
+
+    Returns:
+        Dict with key 'ok' set to True.
+    """
     conn = get_conn()
     conn.execute("DELETE FROM places WHERE id = ?", (place_id,))
     conn.execute("DELETE FROM location_state WHERE place_id = ?", (place_id,))

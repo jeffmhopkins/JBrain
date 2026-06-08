@@ -31,29 +31,41 @@ _OWNER_ALIAS_NORMS = {"owner", "me", "myself", "i", "self", "narrator"}
 
 
 def _tokens(name: str) -> list[str]:
+    """Tokenize a name: lowercase, strip punctuation, and remove title words."""
     parts = _NONWORD.sub(" ", (name or "").lower()).split()
     return [p for p in parts if p and p not in _TITLES]
 
 
 def normalize(name: str) -> str:
-    """A stable merge key: lowercased, title-words/punctuation stripped, tokens joined."""
+    """Return a stable merge key: lowercased, title-words and punctuation stripped, tokens joined."""
     return " ".join(_tokens(name))
 
 
 def _distinctive(tok: str) -> bool:
+    """Return True when ``tok`` is a real word (likely a surname) rather than an initial."""
     return len(tok) >= 3            # a real word (likely a surname), not an initial
 
 
 def _acronymish(norm: str) -> bool:
+    """Return True when ``norm`` looks like an acronym (single token, 2–6 alpha chars)."""
     return " " not in norm and 2 <= len(norm) <= 6 and norm.isalpha()
 
 
 def _initials(name: str) -> str:
+    """Return the initials string for ``name`` (first character of each token joined)."""
     return "".join(t[0] for t in _tokens(name) if t)
 
 
 def _collect(conn, limit: int) -> dict:
-    """type -> {norm -> {tokens, count, notes:set, raws:Counter}} from note_analysis."""
+    """Collect entity occurrences from note_analysis into per-type/norm buckets.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of note_analysis rows to scan.
+
+    Returns:
+        Nested dict: type -> {norm -> {tokens, count, notes: set, raws: Counter}}.
+    """
     rows = conn.execute(
         "SELECT a.note_id, a.entities_json FROM note_analysis a "
         "JOIN notes n ON n.id = a.note_id "
@@ -87,22 +99,33 @@ def _collect(conn, limit: int) -> dict:
 
 
 def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None = None) -> dict:
-    """type -> {norm -> canonical_norm}, unioning subset-name variants that share a
-    distinctive token. Blocked by token so we don't compare every pair.
+    """Build a type -> {norm -> canonical_norm} mapping via union-find.
 
-    Durable user rulings override the heuristic (pure — they're passed in, never read here):
-    - `splits`: a set of frozenset({norm_a, norm_b}) pairs that must NEVER end up in one
-      group. Enforced as a HARD invariant: a union (heuristic, acronym, OR forced merge) is
-      refused if ANY member of the two components forms a split pair — so a bridge variant
-      can't transitively co-group two split-apart names, regardless of processing order, and
-      a forced merge can't silently override a split (split wins; a directly-contradicting
-      same-pair merge is instead resolved last-writer-wins in entity_decisions.add).
-    - `merges`: {member_norm -> canonical_norm}, pre-resolved to the TERMINAL canonical (see
-      entity_decisions.load_merges). Forced unions fire even with no shared token. A member
-      with no matching cluster this pass is DORMANT — it seeds union-find so an EXISTING side
-      still binds, but a merge whose sides are ALL absent materializes no entity. A group's
-      forced canonical (a merges value) wins as the group's canonical over the most-tokens
-      rule."""
+    Unions subset-name variants that share a distinctive token, blocked by token so
+    not every pair is compared.
+
+    Durable user rulings override the heuristic (pure — passed in, never read here):
+
+    - ``splits``: frozenset({norm_a, norm_b}) pairs that must NEVER be co-grouped.
+      Enforced as a hard invariant: a union (heuristic, acronym, or forced merge) is
+      refused if joining the two components would put any split pair together, so a
+      bridge variant can't transitively re-unite them. Split wins over a directly-
+      contradicting merge (last-writer-wins is resolved in entity_decisions.add).
+    - ``merges``: {member_norm -> canonical_norm} pre-resolved to the terminal
+      canonical (see entity_decisions.load_merges). Forced unions fire even without a
+      shared token. A member absent from this pass's clusters is DORMANT — it seeds
+      union-find so an existing side still binds, but a merge whose both sides are
+      absent materializes no entity. A group's forced canonical wins over the
+      most-tokens rule.
+
+    Args:
+        clusters: Output of ``_collect``.
+        merges: Forced merge decisions, member_norm -> terminal canonical_norm.
+        splits: Set of frozenset({norm_a, norm_b}) pairs forbidden from co-grouping.
+
+    Returns:
+        Nested dict: type -> {norm -> canonical_norm}.
+    """
     merges = merges or {}
     splits = splits or set()
     out: dict = defaultdict(dict)
@@ -125,17 +148,20 @@ def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None
         comp = {n: {n} for n in nodes}           # root -> set of member norms (split checking)
 
         def find(x):
+            """Find with path compression for the union-find structure."""
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
 
         def _split_blocked(a, b):
+            """Return True when merging components of a and b would violate a split ruling."""
             # Refuse if joining the two components would put any user-split pair together.
             ca, cb = comp[find(a)], comp[find(b)]
             return any(not split_adj[x].isdisjoint(cb) for x in ca if x in split_adj)
 
         def union(a, b):
+            """Union the components of a and b in the union-find structure."""
             ra, rb = find(a), find(b)
             if ra == rb:
                 return
@@ -175,6 +201,7 @@ def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None
                             union(a, b)
         # Acronym union: "ttp" ↔ "thrombotic thrombocytopenic purpura" (initials match).
         def _rep(n):
+            """Return the most-common raw surface form for cluster norm ``n``."""
             raws = clusters[typ][n]["raws"]
             return raws.most_common(1)[0][0] if raws else n
         expansions = [n for n in norms if " " in n]
@@ -205,14 +232,20 @@ def _merge_map(clusters: dict, *, merges: dict | None = None, splits: set | None
 
 
 def _fold_owner(conn, clusters: dict, mapping: dict) -> None:
-    """Merge the owner's self-references into their NAMED person entity.
+    """Merge the owner's self-references into their named person entity.
 
-    The owner is the note-taker, so first-person facts get extracted under the owner's
-    name (once they've set one) but stray mentions like "the owner"/"Owner"/"me"/"I" also
-    appear. This points those placeholder person-clusters at the owner's real-name cluster
-    so the index holds ONE owner entity (displayed under the real name, the placeholders
-    becoming its aliases). No-op until the owner has set a real name AND it actually shows
-    up as a person entity — re-analysis is what makes first-person resolve to that name."""
+    The owner is the note-taker, so first-person facts are extracted under the owner's
+    real name (once set), but stray mentions like "the owner"/"me"/"I" also appear.
+    Points those placeholder person-clusters at the owner's real-name cluster so the
+    index holds ONE owner entity (displayed under the real name, with placeholders as
+    aliases). No-op until the owner has set a real name that actually appears as a
+    person entity; re-analysis is what makes first-person resolve to that name.
+
+    Args:
+        conn: SQLite connection (read-only: used to fetch the owner record).
+        clusters: Output of ``_collect``, mutated in place (person clusters).
+        mapping: Output of ``_merge_map``, mutated in place (person mappings).
+    """
     o = people.owner(conn)
     real = normalize(o["name"]) if o else ""
     if not real or real in _OWNER_ALIAS_NORMS:
@@ -227,10 +260,26 @@ def _fold_owner(conn, clusters: dict, mapping: dict) -> None:
             pm[n] = canon
 
 
-def rebuild(conn, limit: int = 20000) -> int:
-    """(Re)aggregate the entity index from note_analysis. Upserts by (type, key) so ids
-    are stable, replaces each entity's mentions, prunes entities that vanished, and links
-    each to its kb article (if one exists). Returns the entity count."""
+def rebuild(conn, limit: int = 20000, *, sync_embeddings: bool = True) -> int:
+    """Reaggregate the entity index from note_analysis.
+
+    Upserts by (type, normalized_key) so entity IDs are stable across rebuilds.
+    Replaces each entity's mentions and aliases, prunes vanished entities, links
+    each to its kb article, applies owner name overrides, and refreshes embeddings.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        limit: Maximum number of note_analysis rows to scan.
+        sync_embeddings: When False, skip the (CPU/network-bound) entity-embedding
+            refresh — the entity/alias/article-link tables are still rebuilt, which is
+            all the deterministic wiki linkers need. Used on the live request path (a
+            rebuild/suggest session start) so a freshly-created or renamed People page
+            becomes linkable at draft time without paying the embed cost; the next full
+            rebuild (e.g. Accept's finalize) re-syncs the vectors.
+
+    Returns:
+        Total number of entity (type, canonical_norm) pairs after this rebuild.
+    """
     from . import entity_decisions
     clusters = _collect(conn, limit)
     # Durable user rulings (type='person' — the only type with an identity UI). merges/splits
@@ -314,17 +363,28 @@ def rebuild(conn, limit: int = 20000) -> int:
         except Exception:
             pass
 
-    _sync_embeddings(conn)            # embed AFTER overrides so vectors use the corrected name
+    if sync_embeddings:
+        _sync_embeddings(conn)        # embed AFTER overrides so vectors use the corrected name
     conn.commit()
     return len(seen_keys)
 
 
 def set_canonical_override(conn, article_title: str, canonical_name: str,
                            source_note_id: int | None = None) -> None:
-    """Record an owner source-of-truth override for an entity's display name, keyed by the kb
-    article it backs (a stable key that survives the normalize() diacritic/spelling fork).
-    Durable — rebuild() re-applies it via _apply_overrides — and patches the live entity now
-    (if one is linked) for immediate effect. No LLM/embeddings; safe on the request path."""
+    """Record an owner source-of-truth override for an entity's display name.
+
+    Keyed by the kb article title (a stable key that survives normalize() diacritic or
+    spelling forks). Durable — rebuild() re-applies it via _apply_overrides — and patches
+    the live entity immediately if one is already linked. No LLM or embeddings; safe on
+    the request path.
+
+    Args:
+        conn: SQLite connection.
+        article_title: Title of the kb article that backs the entity.
+        canonical_name: The owner-specified display name to record.
+        source_note_id: Optional note ID that is the source of the correction; when
+            that note is soft-deleted, the override auto-reverts.
+    """
     article_title = (article_title or "").strip()
     canonical_name = (canonical_name or "").strip()
     if not article_title or not canonical_name:
@@ -339,8 +399,16 @@ def set_canonical_override(conn, article_title: str, canonical_name: str,
 
 
 def _apply_one_override(conn, article_title: str, canonical_name: str) -> None:
-    """Set the linked entity's display name to the override, keeping the prior name AND the
-    corrected name as aliases so both spellings still resolve in search/routing. Idempotent."""
+    """Set the linked entity's display name to the override value.
+
+    Preserves both the prior name and the corrected name as aliases so both spellings
+    still resolve in search and routing. Idempotent.
+
+    Args:
+        conn: SQLite connection.
+        article_title: Title of the kb article whose linked entity is updated.
+        canonical_name: New display name to apply.
+    """
     ent = conn.execute("SELECT id, canonical_name FROM entities WHERE article_title=?",
                        (article_title,)).fetchone()
     if not ent:
@@ -356,9 +424,14 @@ def _apply_one_override(conn, article_title: str, canonical_name: str) -> None:
 
 
 def _apply_overrides(conn) -> None:
-    """Re-apply owner name overrides after rebuild recomputed display names from raw frequency.
-    An override whose source correction note was (soft-)deleted is skipped, so the entity name
-    auto-reverts to the frequency-derived one — the revert path for an undone correction."""
+    """Re-apply all active owner name overrides after rebuild recomputes display names.
+
+    Skips any override whose source note was soft-deleted, so the entity name auto-reverts
+    to the frequency-derived value — the revert path for an undone correction.
+
+    Args:
+        conn: SQLite connection.
+    """
     rows = conn.execute(
         "SELECT o.article_title, o.canonical_name FROM entity_overrides o "
         "LEFT JOIN notes n ON n.id = o.source_note_id "
@@ -371,8 +444,20 @@ _LABEL = dict(_TYPE_LABELS)
 
 
 def _entity_embed_text(name: str, typ: str, aliases: list[str], lead: str) -> str:
-    """The string an entity is embedded from: its name, human type, aliases, and (when it
-    has one) its KB article's lead sentence — so a descriptive query can reach it."""
+    """Build the embedding input string for an entity.
+
+    Combines the entity's name, human-readable type, aliases, and (when available)
+    its KB article's lead sentence so descriptive queries can reach it.
+
+    Args:
+        name: Canonical display name.
+        typ: Entity type key (e.g. 'person', 'org').
+        aliases: List of alias display strings.
+        lead: First line of the entity's KB article, or an empty string.
+
+    Returns:
+        Combined embedding string (capped at 500 characters).
+    """
     parts = [name]
     label = _LABEL.get(typ, typ)
     if label:
@@ -388,9 +473,18 @@ _AKA_LEAD_RE = re.compile(r"^\*Also known as:.*\*$")
 
 
 def _article_leads(conn) -> dict:
-    """{kb article title -> its lead sentence} (first non-heading line), for embed context.
-    Skips an '*Also known as: ...*' line so the real lead — not the alias line surface_aliases
-    inserts under the H1 — is what feeds the entity's embedding."""
+    """Return a mapping of kb article title to its lead sentence for embedding context.
+
+    The lead is the first non-blank, non-heading line. Skips an '*Also known as: ...*'
+    line so the real lead — not the alias line surface_aliases inserts under the H1 —
+    feeds the entity's embedding.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict mapping article title to lead sentence string (up to 200 chars each).
+    """
     out: dict = {}
     for a in conn.execute(
         "SELECT title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
@@ -406,8 +500,14 @@ def _article_leads(conn) -> dict:
 
 
 def _sync_embeddings(conn) -> None:
-    """Refresh each entity's semantic vector, skipping entities whose embed text is
-    unchanged (entities.embed_hash). Batched; only changed entities hit the embedder."""
+    """Refresh each entity's semantic embedding vector.
+
+    Skips entities whose embed text is unchanged (compared via entities.embed_hash).
+    Batched so only changed entities hit the embedder.
+
+    Args:
+        conn: SQLite connection.
+    """
     leads = _article_leads(conn)
     aliases: dict = {}
     for a in conn.execute(
@@ -434,11 +534,16 @@ def _sync_embeddings(conn) -> None:
 
 
 def _link_articles(conn) -> None:
-    """Point each entity at the kb article whose title leaf matches the entity — by the SAME
-    robust basis as note_ids_for_name (normalized key OR any alias), not a raw-string leaf.
-    A leaf-exact match missed common variants (entity 'Thrombotic Thrombocytopenic Purpura'
-    vs article leaf 'TTP', or aliased/merged names), silently leaving article_title NULL and
-    breaking incremental routing, disambiguation, and the browse link."""
+    """Link each entity to its kb article by normalized key or alias match.
+
+    Uses the same robust basis as note_ids_for_name (normalized key OR any alias)
+    rather than a raw-string leaf match, which would miss common variants (e.g.
+    entity 'Thrombotic Thrombocytopenic Purpura' vs article leaf 'TTP' or
+    aliased/merged names) and silently leave article_title NULL.
+
+    Args:
+        conn: SQLite connection.
+    """
     from . import wiki_guides
     conn.execute("UPDATE entities SET article_title = NULL")
     leaf_map: dict = {}      # normalized article leaf -> full title (first wins)
@@ -467,6 +572,7 @@ def _link_articles(conn) -> None:
 
 
 def _partners(conn, entity_id: int, k: int) -> list[str]:
+    """Return the top-k entity names most frequently co-mentioned with ``entity_id``."""
     rows = conn.execute(
         "SELECT e.canonical_name AS name, COUNT(*) AS c FROM entity_mentions m1 "
         "JOIN entity_mentions m2 ON m2.note_id = m1.note_id AND m2.entity_id != m1.entity_id "
@@ -478,9 +584,20 @@ def _partners(conn, entity_id: int, k: int) -> list[str]:
 
 
 def roster(conn, per_type: int = 40, partners: int = 3) -> str:
-    """A compact roster of recurring entities (by type, with co-occurring partners) for
-    the outline prompt. The ubiquitous owner entity (in nearly every note) is dropped so
-    it doesn't drown the co-occurrence signal."""
+    """Build a compact roster of recurring entities for the outline prompt.
+
+    Groups entities by type with their most frequent co-occurring partners. The
+    ubiquitous owner entity (present in nearly every note) is excluded so it doesn't
+    drown the co-occurrence signal.
+
+    Args:
+        conn: SQLite connection.
+        per_type: Maximum entities to list per type.
+        partners: Number of frequent co-mention partners to include per entity.
+
+    Returns:
+        Multi-line string formatted as ``Type:\\n- Name (N notes; often with: ...)\\n...``.
+    """
     total = conn.execute(
         "SELECT COUNT(*) c FROM notes WHERE deleted_at IS NULL AND kind IN ('entry','daily')"
     ).fetchone()["c"]
@@ -507,6 +624,17 @@ def roster(conn, per_type: int = 40, partners: int = 3) -> str:
 
 
 def index(conn, type: str | None = None, q: str | None = None, limit: int = 500) -> list[dict]:
+    """Query the entity index with optional type and text filters.
+
+    Args:
+        conn: SQLite connection.
+        type: Optional entity type to filter by (e.g. 'person', 'org').
+        q: Optional text search against canonical_name and aliases.
+        limit: Maximum number of results to return.
+
+    Returns:
+        List of entity dicts ordered by note_count descending then canonical_name.
+    """
     sql = ("SELECT id, type, canonical_name, note_count, article_title FROM entities WHERE 1=1")
     args: list = []
     if type:
@@ -520,7 +648,16 @@ def index(conn, type: str | None = None, q: str | None = None, limit: int = 500)
 
 
 def notes_for(conn, entity_id: int) -> dict | None:
-    """An entity plus the notes that mention it (for the browse view)."""
+    """Return an entity and the notes that mention it for the browse view.
+
+    Args:
+        conn: SQLite connection.
+        entity_id: ID of the entity to look up.
+
+    Returns:
+        Dict with entity fields plus ``aliases`` and ``notes`` lists, or None if
+        the entity does not exist.
+    """
     e = conn.execute(
         "SELECT id, type, canonical_name, normalized_key, note_count, article_title FROM entities WHERE id=?",
         (entity_id,),
@@ -539,7 +676,15 @@ def notes_for(conn, entity_id: int) -> dict | None:
 
 
 def note_ids_for_name(conn, name: str) -> list[int]:
-    """Note ids for the canonical entity matching a name OR alias (any type)."""
+    """Return note IDs for the canonical entity matching a name or alias across all types.
+
+    Args:
+        conn: SQLite connection.
+        name: Raw name string; normalized internally before lookup.
+
+    Returns:
+        List of note IDs that mention the matching entity, or an empty list.
+    """
     norm = normalize(name)
     if not norm:
         return []
@@ -558,43 +703,49 @@ def note_ids_for_name(conn, name: str) -> list[int]:
 # ---- Span-detection alias expansion (OWNER-CONTEXT ONLY) ---------------------------------
 
 def _span_admit_single(surface: str) -> bool:
-    """Gate for a SINGLE-token span surface (key OR alias): admit only a distinctive token —
-    len>=4 AND not a common stop-word — mirroring the linker's leaf gate (check_needed_links:
-    `len(leaf) < 4` or in `_STOP_LEAVES`). A short/common token ("home", "gym", a 1-2 char
-    key) is too collision-prone to fire on a mention buried in prose, so an entity literally
-    named "Home"/"Work"/"Gym" never expands every sentence containing that word. A distinctive
-    single-token name ("Madonna") still passes — acceptable and consistent with the linker.
-    Reuses the linker's exact stop set via a lazy import (avoids the wiki_build↔entity_index
-    import cycle)."""
+    """Return True when a single-token span surface is safe to expand on.
+
+    Admits only distinctive tokens (len >= 4 and not a common stop-word), mirroring
+    the linker's leaf gate. Short or common tokens ("home", "gym", 1–2 char keys) are
+    too collision-prone to fire on mentions buried in prose. A distinctive mononym
+    ("Madonna") still passes. Reuses the linker's exact stop set via a lazy import
+    to avoid the wiki_build <-> entity_index import cycle.
+
+    Args:
+        surface: Normalized single-token surface string.
+
+    Returns:
+        True when the surface is safe for span-expansion.
+    """
     from .wiki_build import _STOP_LEAVES
     return len(surface) >= 4 and surface not in _STOP_LEAVES
 
 
 def _span_surface_set(conn, ambiguous: set[str] | None = None) -> set[str]:
-    """The normalized name-surfaces a SPAN inside a sentence query is allowed to expand on —
-    a dictionary, not NER. It is the conservative intersection of "resolvable by
+    """Return the safe set of normalized name-surfaces for in-query span expansion.
+
+    A dictionary (not NER): the conservative intersection of "resolvable by
     note_ids_for_name" and "safe to fire on a mention buried in prose":
 
-      • every MULTI-token entity CANONICAL key (a real, deliberately-named entity);
-      • a SINGLE-token key only for a PERSON/ANIMAL mononym AND when distinctive (len>=4, not a
-        stop-word) — so a person named "Madonna" still fires, but a single-token org/thing key
-        ("google"/"costco"/"gmail") never fires on ordinary verb/noun usage, and an entity named
-        "Home"/"Work"/"Gym" or a 1-2 char key never fires on any sentence with that token;
-      • every MULTI-token alias (e.g. "jeff hopkins" — two+ tokens is collision-resistant);
-      • a SINGLE-token alias ONLY if the user explicitly decided it (entity_decisions 'alias').
+    - Every multi-token canonical key (collision-resistant).
+    - A single-token key ONLY for a person/animal mononym that is distinctive
+      (len >= 4, not a stop-word) — org/thing single-token keys ("google") are
+      excluded because they appear as ordinary verbs/nouns in prose.
+    - Every multi-token alias (e.g. "jeff hopkins").
+    - A single-token alias ONLY when the user explicitly decided it via
+      entity_decisions 'alias' — bare heuristic first names are too collision-prone.
 
-    The single-token KEY gate mirrors the linker's leaf gate (check_needed_links: `len(leaf)<4`
-    or in `_STOP_LEAVES`): an unconditional single-token key let an entity literally named
-    "Home"/"Work" fire on every sentence with that word, so a common-word / short key is dropped.
-    The single-token ALIAS gate is the stricter alias_surface() rule (iv): a bare heuristic first
-    name ("jeff" auto-merged onto "Jeffrey") is too collision-prone, so a single alias fires only
-    when the user decided it — unlike note_ids_for_name, which resolves ANY key/alias. A
-    distinctive single-token PERSON/ANIMAL name ("Madonna") still matches as a key — acceptable and
-    consistent with the linker. Ambiguous surfaces (a term mapping to ≥2 entities) are removed: those must
-    never auto-expand. `ambiguous` is the pre-computed lower-cased set of ambiguous terms
-    (search.py computes it ONCE for the whole-query guard and threads it in); when None we compute
-    it here so the helper stays standalone-callable. Built ONCE per call by the caller (a few
-    cheap indexed queries) then scanned in-memory."""
+    Ambiguous surfaces (mapping to >= 2 entities) are removed. ``ambiguous`` is the
+    pre-computed lower-cased set from search.py (threaded in for efficiency); when
+    None it is computed here so the helper stays standalone-callable.
+
+    Args:
+        conn: SQLite connection.
+        ambiguous: Optional pre-computed set of ambiguous term strings.
+
+    Returns:
+        Set of normalized surface strings safe for span expansion.
+    """
     from . import entity_decisions
     surfaces: set[str] = set()
     for r in conn.execute("SELECT normalized_key AS k, type AS t FROM entities").fetchall():
@@ -623,22 +774,30 @@ def _span_surface_set(conn, ambiguous: set[str] | None = None) -> set[str]:
 
 def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 15,
                          ambiguous: set[str] | None = None) -> list[int]:
-    """Note ids reached by NAME SPANS mentioned INSIDE the query `q` (owner-context only).
+    """Return note IDs reached by named entity spans found inside query ``q``.
 
-    Complements the whole-query expansion: a sentence like "what did jeff hopkins say about
-    taxes" never resolves AS A WHOLE to an entity, but it CONTAINS the known surface "jeff
-    hopkins". We scan the normalized query token stream LONGEST-MATCH-FIRST against the safe
-    surface set (so "jeff hopkins" wins over the bare "jeff" sub-span, and its tokens are then
-    consumed — no double count), then take the union of the matched entities' mention notes
-    (each resolved through note_ids_for_name, which carries its own key/alias resolution).
+    Owner-context only. Complements whole-query expansion: "what did jeff hopkins say
+    about taxes" never resolves as a whole entity, but CONTAINS "jeff hopkins". Scans
+    the normalized token stream longest-match-first (so "jeff hopkins" wins over the
+    bare "jeff" sub-span and its tokens are consumed), then unions the matched
+    entities' mention notes via note_ids_for_name.
 
-    Bounded for the hot path and for ranking: at most `max_spans` distinct surfaces expand and
-    at most `max_notes` (default 15) ids return, so a span hit can AUGMENT the fusion but never
-    floods it — a low cap keeps span-only mentions from crowding genuinely-relevant partial-match
-    FTS hits out of the top results. `ambiguous` is threaded through to `_span_surface_set`
-    (computed once by the caller; None → computed there). Returns [] when nothing safe matches
-    (the no-name-sentence case → byte-identical to expansion off). Pure read; no LLM, no
-    embeddings."""
+    Bounded for the hot path: at most ``max_spans`` distinct surfaces expand and at
+    most ``max_notes`` IDs return, so span hits augment fusion without flooding it.
+    ``ambiguous`` is threaded to ``_span_surface_set`` (computed once by the caller;
+    None -> computed there). Returns [] when nothing safe matches. Pure read; no LLM
+    or embeddings.
+
+    Args:
+        conn: SQLite connection.
+        q: Raw query string to scan for entity name spans.
+        max_spans: Maximum number of distinct surfaces to expand.
+        max_notes: Maximum total note IDs to return.
+        ambiguous: Optional pre-computed set of ambiguous term strings.
+
+    Returns:
+        List of note IDs (up to ``max_notes``) reached by entity spans in the query.
+    """
     toks = _NONWORD.sub(" ", (q or "").lower()).split()
     if not toks:
         return []
@@ -670,8 +829,18 @@ def span_entity_note_ids(conn, q: str, *, max_spans: int = 2, max_notes: int = 1
 
 
 def ambiguous_terms(conn) -> list[dict]:
-    """Terms (canonical keys or aliases) that map to ≥2 distinct entities — disambiguation
-    candidates. Returns [{term, entities:[{id,type,canonical_name,article_title}]}]."""
+    """Return terms that map to two or more distinct entities.
+
+    These are disambiguation candidates: canonical keys or aliases shared by multiple
+    entities.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        List of dicts with keys ``term`` and ``entities`` (list of entity dicts with
+        ``id``, ``type``, ``canonical_name``, and ``article_title``).
+    """
     rows = conn.execute(
         "SELECT term, COUNT(DISTINCT entity_id) c FROM "
         "(SELECT normalized_key AS term, id AS entity_id FROM entities "
@@ -691,24 +860,27 @@ def ambiguous_terms(conn) -> list[dict]:
 
 
 def alias_surface(conn) -> dict:
-    """The SINGLE source of truth for alias-aware LINKING: {alias_norm: (article_title,
-    alias_display)} for aliases that are SAFE to auto-link to their canonical article. One
-    cached-by-caller function consulted by the deterministic linker AND the link-label
-    hygiene allow-list, so the set that gets LINKED is exactly the set that gets PROTECTED
-    (no drift → no nightly strip↔re-add oscillation).
+    """Return the safe set of aliases for auto-linking, keyed by alias_norm.
 
-    Drop-rules (a dropped alias stays plain text, never auto-linked):
-      (i)   alias mapping to ≥2 distinct article-bearing entities (ambiguous);
-      (ii)  alias in ambiguous_terms (collides with another entity's key/alias);
-      (iii) alias whose norm equals a live non-redirect article LEAF norm — the leaf path
-            already links it, so don't shadow it here;
-      (iv)  a single-token given-name alias ("jeff") UNLESS an explicit user
-            entity_decisions('alias') backs it — bare first names are too collision-prone
-            to auto-link on a heuristic alone;
-      (v)   a private (Health/Finance) or Reference target — the PII firewall: those pages
-            must never be named/linked from public prose.
-    `article_title` is the entity's bound canonical article (redirects are excluded by
-    _link_articles), so it is the correct, non-redirect link target."""
+    The single source of truth for alias-aware linking: consulted by the deterministic
+    linker AND the link-label hygiene allow-list, so the set that gets linked is exactly
+    the set that gets protected (no drift, no nightly strip-then-re-add oscillation).
+
+    Drop rules (a dropped alias stays plain text, never auto-linked):
+
+    - (i)   alias maps to >= 2 distinct article-bearing entities (ambiguous);
+    - (ii)  alias appears in ambiguous_terms (collides with another entity's key/alias);
+    - (iii) alias norm equals a live non-redirect article leaf norm (leaf path handles it);
+    - (iv)  single-token given-name alias ("jeff") UNLESS backed by an explicit
+            entity_decisions 'alias' ruling — bare first names are too collision-prone;
+    - (v)   private (Health/Finance) or Reference target — PII firewall.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict mapping alias_norm to (article_title, alias_display) tuples.
+    """
     from . import wiki_guides, entity_decisions
     rows = conn.execute(
         "SELECT a.alias_norm, a.alias_display, e.normalized_key, e.article_title "
@@ -739,8 +911,18 @@ def alias_surface(conn) -> dict:
 
 
 def write_disambiguation_pages(conn) -> int:
-    """Generate protected kb/_disambig/<Term> pages for terms that map to ≥2 entities
-    which each have an article. Regenerated each call (old ones cleared first)."""
+    """Generate protected kb/_disambig/<Term> pages for ambiguous terms.
+
+    Creates a disambiguation page for every term that maps to two or more entities
+    each having a kb article. All existing disambiguation pages are cleared first so
+    the set is fully regenerated each call.
+
+    Args:
+        conn: SQLite connection (commits internally).
+
+    Returns:
+        Number of disambiguation pages created.
+    """
     from . import notes as notes_svc
     for r in conn.execute(
         "SELECT id FROM notes WHERE kind='kb' AND title LIKE 'kb/_disambig/%' AND deleted_at IS NULL"
@@ -765,8 +947,16 @@ def write_disambiguation_pages(conn) -> int:
 # ---- Phase 5: LLM "same person?" proposals (propose-only; never auto-merge) ---------------
 
 def _open_proposed_pairs(conn) -> set:
-    """Unordered {norm_a, norm_b} pairs that already have a PENDING entity_merge review card —
-    so the proposer never re-nags about a pair awaiting the owner's decision."""
+    """Return unordered {norm_a, norm_b} pairs with a pending entity_merge review card.
+
+    Used to avoid re-proposing a pair that is already awaiting the owner's decision.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Set of frozenset({norm_a, norm_b}) pairs.
+    """
     out: set = set()
     for r in conn.execute(
         "SELECT payload_json FROM review_items WHERE kind='entity_merge' AND status='pending'"
@@ -783,9 +973,19 @@ def _open_proposed_pairs(conn) -> set:
 
 
 def _adjudicate_same_person(conn, a: dict, b: dict) -> dict:
-    """Ask the model whether two same-surname person entities are the SAME individual (vs
-    relatives/namesakes), given their aliases + frequent co-occurring partners. Returns
-    {same: bool, confidence: float, why: str}; defensive on parse failure."""
+    """Ask the LLM whether two same-surname person entities are the same individual.
+
+    Considers aliases and frequent co-occurring partners to distinguish the same person
+    from relatives or namesakes. Defensive on parse failure.
+
+    Args:
+        conn: SQLite connection (used to fetch aliases and partners).
+        a: Entity dict for the first person (must have ``id`` and ``canonical_name``).
+        b: Entity dict for the second person (must have ``id`` and ``canonical_name``).
+
+    Returns:
+        Dict with keys ``same`` (bool), ``confidence`` (float), and ``why`` (str).
+    """
     from . import llm, prompts
     aka_a = [x["alias_display"] for x in conn.execute(
         "SELECT alias_display FROM entity_aliases WHERE entity_id=? AND alias_display IS NOT NULL", (a["id"],)).fetchall()]
@@ -810,11 +1010,22 @@ def _adjudicate_same_person(conn, a: dict, b: dict) -> dict:
 
 
 def propose_person_merges(conn, limit: int = 40, min_confidence: float = 0.7) -> dict:
-    """Surface likely-duplicate PEOPLE for the owner to confirm — never auto-merging. Candidates
-    are pairs of distinct person entities that SHARE A SURNAME (their last distinctive token) and
-    aren't already merged, split, or awaiting review; the model then adjudicates same-person vs
-    relative/namesake, and only high-confidence 'same' verdicts post an 'entity_merge' Review card
-    (approve -> a durable merge decision; reject -> a durable split). Returns counts."""
+    """Surface likely-duplicate people for the owner to confirm (never auto-merging).
+
+    Candidates are pairs of distinct person entities sharing a surname (last distinctive
+    token) that aren't already merged, split, or awaiting review. The LLM adjudicates
+    same-person vs relative/namesake. Only high-confidence 'same' verdicts post an
+    'entity_merge' Review card (approve -> durable merge; reject -> durable split).
+    No-op without LLM credentials.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        limit: Maximum number of candidate pairs to adjudicate.
+        min_confidence: Minimum LLM confidence to post a review card.
+
+    Returns:
+        Dict with keys ``candidates`` (pairs evaluated) and ``proposed`` (cards posted).
+    """
     from . import entity_decisions, llm, reviews
     if not llm.has_credentials():
         return {"candidates": 0, "proposed": 0, "reason": "no LLM credentials"}
@@ -836,6 +1047,7 @@ def propose_person_merges(conn, limit: int = 40, min_confidence: float = 0.7) ->
         by_surname[e["surname"]].append(e)
 
     def canon_of(n):
+        """Return the terminal canonical norm for ``n`` according to the merge map."""
         return merges.get(n, n)
 
     # Bound generation, not just adjudication: skip pathologically large same-surname buckets

@@ -24,6 +24,14 @@ _DEFAULTS = ["Statements", "Receipts", "Invoices", "Taxes", "Accounts"]
 
 
 def _load(conn) -> list[str]:
+    """Load the financial destination list from meta, falling back to defaults on error.
+
+    Args:
+        conn: Active database connection (unused; kept for signature consistency).
+
+    Returns:
+        List of destination folder name strings.
+    """
     raw = get_meta(_META_KEY)
     if raw is None:
         return list(_DEFAULTS)
@@ -35,18 +43,34 @@ def _load(conn) -> list[str]:
 
 
 class DestsIn(BaseModel):
+    """Input body for replacing the financial destination picklist."""
+
     names: list[str] = []
 
 
 @router.get("/destinations")
 def list_destinations():
+    """List the configured financial capture destination folders.
+
+    Returns:
+        Dict with key 'names' containing a list of destination folder name strings.
+    """
     return {"names": _load(get_conn())}
 
 
 @router.put("/destinations")
 def set_destinations(body: DestsIn):
-    """Replace the destination picklist. Each name is sanitized to a safe notes/financial
-    sub-path; blanks and case-insensitive duplicates are dropped; capped at 50."""
+    """Replace the financial destination picklist.
+
+    Each name is sanitized to a safe notes/financial sub-path; blanks and
+    case-insensitive duplicates are dropped; the list is capped at 50 entries.
+
+    Args:
+        body: New list of destination names.
+
+    Returns:
+        Dict with key 'names' containing the sanitized, deduplicated list.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for n in body.names:

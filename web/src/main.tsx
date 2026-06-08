@@ -28,6 +28,20 @@ if (navigator.serviceWorker?.controller) {
   });
 }
 
+// Don't pester share-link recipients to install the PWA. The public
+// /share/:token page is a one-off view for someone who isn't the owner, so
+// swallow the browser's install prompt there (Chrome/Edge fire
+// `beforeinstallprompt`; calling preventDefault suppresses the mini-infobar).
+// Strip the deploy base so this holds at "/" and under a sub-path (e.g.
+// "/JBrain/") alike.
+window.addEventListener("beforeinstallprompt", (e) => {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const path = window.location.pathname.startsWith(base)
+    ? window.location.pathname.slice(base.length)
+    : window.location.pathname;
+  if (path.startsWith("/share/")) e.preventDefault();
+});
+
 // Point the favicon at the deploy base (e.g. "/JBrain/icon.svg" on Pages); the
 // static index.html link is "/icon.svg", which 404s under a sub-path base.
 const fav = document.querySelector<HTMLLinkElement>("link[rel~='icon']");

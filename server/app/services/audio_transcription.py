@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import os
 import threading
+import time
 
 from ..db import get_conn, get_meta
 from . import llm
@@ -39,26 +40,79 @@ _model = None
 _model_key: tuple[str, str] | None = None   # (model, compute_type) the cached model was loaded with
 _model_lock = threading.Lock()
 
+# --- readiness state (cheap, in-memory; no model load on read) ---------------
+# LOUD CONSTRAINT: PER-PROCESS state; single uvicorn worker only (see the same
+# note in embeddings.py). Adding --workers without a shared store flickers the dot.
+_state = "unknown"            # unknown | warming | ready | unavailable | failed
+_last_error: str | None = None
+_state_since = time.time()
+_state_lock = threading.Lock()
+
+
+def _set_state(s: str, err: str | None = None) -> None:
+    """Update the module-level readiness state atomically.
+
+    Args:
+        s: New state string (unknown, warming, ready, unavailable, or failed).
+        err: Optional error message to record, truncated to 200 characters.
+    """
+    global _state, _last_error, _state_since
+    with _state_lock:                       # cross-thread: warmer runs on a to_thread worker
+        _state, _last_error, _state_since = s, (err and str(err)[:200]), time.time()
+
+
+def readiness() -> dict:
+    """Return the transcription service readiness state without loading the model.
+
+    O(1) plus two cheap get_meta() reads — never blocks. Recomputes the desired
+    (model, compute_type) so a Settings-driven reload reads as 'warming' immediately:
+    if the cached model's key != the live want, we are (about to be) re-downloading
+    and report 'warming', not a stale 'ready'. _model_key is read WITHOUT _model_lock
+    by design (a poll must never block behind a multi-hundred-MB model load); a torn
+    read costs at most one extra 'warming' tick.
+
+    Returns:
+        Dict with keys: state, last_error, since, model, compute_type.
+    """
+    with _state_lock:
+        state, err, since = _state, _last_error, _state_since
+    if state == "unavailable":
+        return {"state": "unavailable", "last_error": err, "since": since,
+                "model": None, "compute_type": None}
+    try:
+        want = (audio_model(), audio_compute_type())
+    except Exception:                                          # noqa: BLE001
+        want = None
+    if state == "ready" and want is not None and _model_key != want:
+        state = "warming"                                     # Settings swap → re-download in flight
+    return {"state": state, "last_error": err, "since": since,
+            "model": (want[0] if want else None),
+            "compute_type": (want[1] if want else None)}
+
 
 # --- Runtime-editable settings (DB `meta` override → env/config default) --------------------
 # These are read fresh each call so a change in the Settings GUI takes effect with no restart.
 
 def audio_model() -> str:
+    """Return the configured Whisper model name, preferring the DB meta override."""
     from ..config import get_settings
     return get_meta("audio_model") or get_settings().audio_model
 
 
 def audio_compute_type() -> str:
+    """Return the configured compute type for the Whisper model, preferring the DB meta override."""
     from ..config import get_settings
     return get_meta("audio_compute_type") or get_settings().audio_compute_type
 
 
 def video_frame_interval() -> str:
+    """Return the configured video frame-sampling interval, preferring the DB meta override."""
     from ..config import get_settings
     return get_meta("video_frame_interval") or get_settings().video_frame_interval
 
 
 def video_frame_max() -> int:
+    """Return the maximum number of video frames to extract, preferring the DB meta override."""
     from ..config import get_settings
     v = get_meta("video_frame_max")
     if v is None or v == "":
@@ -70,49 +124,104 @@ def video_frame_max() -> int:
 
 
 class TranscriptionUnavailable(Exception):
-    """faster-whisper isn't installed, or the audio couldn't be decoded."""
+    """Raised when faster-whisper is not installed or the audio cannot be decoded."""
 
 
 def is_audio(mime: str | None, filename: str | None) -> bool:
+    """Return True if the MIME type or file extension indicates an audio file.
+
+    Args:
+        mime: MIME type string, or None.
+        filename: Filename, or None.
+
+    Returns:
+        True if the attachment appears to be audio.
+    """
     if (mime or "").startswith("audio/"):
         return True
     return os.path.splitext((filename or "").lower())[1] in AUDIO_EXTS
 
 
 def is_video(mime: str | None, filename: str | None) -> bool:
+    """Return True if the MIME type or file extension indicates a video file.
+
+    Args:
+        mime: MIME type string, or None.
+        filename: Filename, or None.
+
+    Returns:
+        True if the attachment appears to be video.
+    """
     if (mime or "").startswith("video/"):
         return True
     return os.path.splitext((filename or "").lower())[1] in VIDEO_EXTS
 
 
 def is_transcribable(mime: str | None, filename: str | None) -> bool:
-    """Audio OR video — both yield a transcript (video via its audio track)."""
+    """Return True if the attachment can be transcribed (audio or video).
+
+    Both audio and video yield a transcript; video is transcribed via its audio track.
+
+    Args:
+        mime: MIME type string, or None.
+        filename: Filename, or None.
+
+    Returns:
+        True if the file is audio or video.
+    """
     return is_audio(mime, filename) or is_video(mime, filename)
 
 
 def _get_model():
-    """Load (and cache) the Whisper model. Reloads if the configured model/compute_type has
-    changed (e.g. edited in the Settings GUI). Downloads from Hugging Face on first use."""
+    """Load and cache the Whisper model, reloading if the configuration has changed.
+
+    Reloads if the configured model or compute_type has changed (e.g. edited in
+    the Settings GUI). Downloads from Hugging Face on first use.
+
+    Returns:
+        Loaded WhisperModel instance.
+
+    Raises:
+        TranscriptionUnavailable: If faster-whisper is not installed or model load fails.
+    """
     global _model, _model_key
     want = (audio_model(), audio_compute_type())
     if _model is None or _model_key != want:
         with _model_lock:
             if _model is None or _model_key != want:
+                _set_state("warming")
                 try:
                     from faster_whisper import WhisperModel
                 except ImportError as exc:  # the runtime image installs it; dev/test may not
+                    _set_state("unavailable", "faster-whisper not installed")
                     raise TranscriptionUnavailable(
                         "Audio transcription needs faster-whisper "
                         "(pip install -r requirements-audio.txt)."
                     ) from exc
-                _model = WhisperModel(want[0], device="cpu", compute_type=want[1])
-                _model_key = want
+                try:
+                    _model = WhisperModel(want[0], device="cpu", compute_type=want[1])
+                    _model_key = want
+                    _set_state("ready")
+                except Exception as exc:                       # noqa: BLE001
+                    # _model_key keeps its old value (assigned only on success), so a
+                    # failed reload reads as 'warming' (old key != want), never a false ready.
+                    _set_state("failed", str(exc)[:200])
+                    raise
     return _model
 
 
 def _parse_frame_spec(spec: str) -> tuple[str, float]:
-    """Parse VIDEO_FRAME_INTERVAL → ('percent', step%) or ('interval', seconds).
-    Accepts "25%", "30s", or a bare number (seconds). Falls back to every-25%."""
+    """Parse a VIDEO_FRAME_INTERVAL spec into a (kind, value) sampling descriptor.
+
+    Accepts "25%", "30s", or a bare number (seconds). Falls back to every-25%
+    on invalid input.
+
+    Args:
+        spec: Interval specification string.
+
+    Returns:
+        Tuple of ('percent', step_pct) or ('interval', seconds).
+    """
     s = (spec or "").strip().lower()
     if s.endswith("%"):
         try:
@@ -130,9 +239,21 @@ def _parse_frame_spec(spec: str) -> tuple[str, float]:
 
 
 def _frame_positions(duration: float, kind: str, value: float, max_frames: int) -> list[float]:
-    """Sample positions as fractions of the clip [0,1]. Percent mode is duration-independent;
-    interval mode needs the duration (falls back to a single frame if unknown). If the step
-    would produce more than max_frames, re-space evenly across the whole clip instead."""
+    """Compute sample positions as fractions of the clip in [0, 1].
+
+    Percent mode is duration-independent; interval mode needs the duration and
+    falls back to a single frame if unknown. If the step would produce more than
+    max_frames, positions are re-spaced evenly across the whole clip instead.
+
+    Args:
+        duration: Clip duration in seconds (0 or negative if unknown).
+        kind: Sampling mode, either 'percent' or 'interval'.
+        value: Step size — percentage (0–100) for percent mode, seconds for interval mode.
+        max_frames: Hard cap on the number of sample positions returned.
+
+    Returns:
+        Sorted list of fractional positions in [0, 1].
+    """
     if kind == "percent":
         step = max(value, 1.0) / 100.0
         fracs = [min(i * step, 1.0) for i in range(int(1.0 / step) + 1)]
@@ -147,9 +268,19 @@ def _frame_positions(duration: float, kind: str, value: float, max_frames: int) 
 
 
 def _extract_frames(raw: bytes, max_edge: int = 1568) -> list[bytes]:
-    """Grab JPEG frames sampled across a video, cadence from VIDEO_FRAME_INTERVAL (% or time).
-    Best-effort; returns [] if the bytes aren't a decodable video. Uses PyAV (bundled with
-    faster-whisper)."""
+    """Extract JPEG frames sampled across a video at the configured cadence.
+
+    Cadence is controlled by VIDEO_FRAME_INTERVAL (percent or time). Best-effort:
+    returns [] if the bytes are not a decodable video. Uses PyAV, which is bundled
+    with faster-whisper.
+
+    Args:
+        raw: Raw video bytes.
+        max_edge: Maximum pixel length of the longer image edge after thumbnail scaling.
+
+    Returns:
+        List of JPEG-encoded frame bytes, possibly empty.
+    """
     import io
     try:
         import av
@@ -190,6 +321,19 @@ def _extract_frames(raw: bytes, max_edge: int = 1568) -> list[bytes]:
 
 
 def _transcribe(raw: bytes) -> str:
+    """Transcribe audio bytes using the cached Whisper model.
+
+    Uses VAD filtering to drop long silences and auto-detects language.
+
+    Args:
+        raw: Raw audio or video bytes.
+
+    Returns:
+        Transcribed text, truncated to _MAX_TRANSCRIPT_CHARS.
+
+    Raises:
+        TranscriptionUnavailable: If the model is not available or decoding fails.
+    """
     model = _get_model()
     try:
         # vad_filter drops long silences (cheaper, fewer hallucinated fillers);
@@ -206,8 +350,18 @@ def _transcribe(raw: bytes) -> str:
 # --- Status + worker (writes the same analysis_* columns image analysis uses) ---
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
-    # Mirrors image_analysis._set_status: stamp analyzed_at on 'pending' too, so the shared
-    # stale-pending watchdog has a precise "analysis started at" clock for transcription too.
+    """Update the analysis status and detail for an attachment row.
+
+    Mirrors image_analysis._set_status: stamps analyzed_at on 'pending' too, so the
+    shared stale-pending watchdog has a precise "analysis started at" clock for
+    transcription rows as well.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to update.
+        status: New status string ('pending', 'done', or 'error').
+        detail: Optional human-readable detail or error message.
+    """
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
         "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
@@ -217,6 +371,13 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:
+    """Set an attachment's analysis status to 'error' and commit, ignoring failures.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to mark as errored.
+        detail: Error description to store (truncated to 500 characters).
+    """
     try:
         _set_status(conn, att_id, "error", detail[:500])
         conn.commit()
@@ -225,7 +386,16 @@ def _mark_error(conn, att_id: int, detail: str) -> None:
 
 
 def transcribe(att_id: int) -> None:
-    """Background worker (own thread → own thread-local connection)."""
+    """Run transcription for an attachment on a background worker thread.
+
+    Runs on its own thread with its own thread-local database connection.
+    Transcribes the audio/video, optionally adds a vision summary for video
+    files, writes the sidecar and searchable content, and requests a
+    note-analysis fold-back.
+
+    Args:
+        att_id: Attachment row ID to transcribe.
+    """
     from ..db import close_conn, has_conn
     owns_conn = not has_conn()   # fresh worker thread created it → we close it; inline call → leave it
     conn = get_conn()
@@ -327,8 +497,18 @@ def transcribe(att_id: int) -> None:
 
 
 def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
-    """Request thread: guard double-runs, mark pending, spawn the worker. Needs no
-    LLM credentials — the model is local. Returns {"status": ...}."""
+    """Guard against double-runs, mark pending, and spawn the transcription worker.
+
+    Called on the request thread. No LLM credentials are needed — the model is local.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to transcribe.
+        force: If True, restart even a pending or already-done transcription.
+
+    Returns:
+        Status dict with at least a "status" key.
+    """
     row = conn.execute(
         "SELECT filename, mime, analysis_status FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()

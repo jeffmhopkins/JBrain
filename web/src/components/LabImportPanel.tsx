@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { get, getAttachmentLabs, getAttachmentLabSeries, approveLabs, revokeLabs, reanalyzeLabs,
          LabSeries, StagedLab } from "../api";
+import { useCapability } from "../capabilities";
 import LabChart from "./LabChart";
 
 // On a medical note, preview the lab values EXTRACTED from each PDF attachment as a table +
@@ -12,6 +13,7 @@ function AttachmentLabs({ id, filename, onChange }: { id: number; filename: stri
   const [sel, setSel] = useState<string>("");
   const [series, setSeries] = useState<LabSeries | null>(null);
   const [busy, setBusy] = useState(false);
+  const llm = useCapability("llm");   // lab-value extraction is an AI step
 
   const load = () => getAttachmentLabs(id).then(setS).catch(() => setS(null));
   useEffect(() => { load(); }, [id]);
@@ -55,7 +57,8 @@ function AttachmentLabs({ id, filename, onChange }: { id: number; filename: stri
         {imported > 0 && <p className="muted" style={{ fontSize: 13, margin: "2px 0 8px" }}>
           {imported} lab results from this PDF are in your trends (imported before review existed).</p>}
         <div className="lab-import-actions">
-          <button className="primary" disabled={busy} onClick={() => act(() => reanalyzeLabs(id))}>
+          <button className="primary" disabled={busy || !llm.ready} title={!llm.ready ? llm.reason : undefined}
+                  onClick={() => act(() => reanalyzeLabs(id))}>
             {imported > 0 ? "Re-analyze (remove & re-extract)" : "Extract lab values"}</button>
           {imported > 0 && <button className="ghost" disabled={busy} onClick={() => act(() => revokeLabs(id))}>Remove</button>}
         </div>

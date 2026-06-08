@@ -16,7 +16,7 @@ import { Parsed, parseList, serialize } from "../lists";
 interface ShareAtt { id: number; filename: string; mime: string; byte_size: number; }
 interface ShareView {
   requires_claim?: boolean; allow_chat?: boolean; has_labs?: boolean;
-  kind?: string; intro?: string; consent?: string; goal?: string;
+  kind?: string; intro?: string; consent?: string; goal?: string; llm_ready?: boolean;
   scope: "view" | "edit"; can_edit: boolean; brain_name: string; app_tz?: string; bound_name?: string | null;
   note?: { title: string; content_md: string; kind: string; updated_at: string; attachments: ShareAtt[] };
 }
@@ -61,6 +61,19 @@ export default function SharePage() {
     </div></div>
   );
   if (!data) return <div className="share-page"><div className="muted">Loading…</div></div>;
+
+  // Pre-flight for the AI-backed share kinds: the public recipient route has no key
+  // and the poller is carved out, so we rely on the server-driven `llm_ready` flag in
+  // the landing payload (same has_credentials() predicate as the owner's dot). Show a
+  // friendly "unavailable" instead of a chat that would 404 at start/turn.
+  if ((data.kind === "guided" || data.kind === "research") && data.llm_ready === false) {
+    return (
+      <div className="share-page"><div className="share-card">
+        <h2>Temporarily unavailable</h2>
+        <p className="muted">{data.brain_name}’s assistant isn’t available right now. Please check back later.</p>
+      </div></div>
+    );
+  }
 
   // --- Guided AI intake: a separate, self-contained recipient experience ---
   if (data.kind === "guided") {

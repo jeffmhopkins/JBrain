@@ -69,11 +69,24 @@ _REDIRECT = "I can only answer questions about the specific records {owner} has 
 
 
 def _owner() -> str:
+    """Return the brain owner's display name, or 'the owner' if unset.
+
+    Returns:
+        Owner name string for prompt interpolation.
+    """
     from ..config import get_settings
     return get_settings().brain_name or "the owner"
 
 
 def _sanitize(text: str) -> str:
+    """Strip URLs, wikilinks, and control tokens from model output; clamp to 2000 chars.
+
+    Args:
+        text: Raw model output to sanitize.
+
+    Returns:
+        Cleaned, length-clamped reply string.
+    """
     text = _URL_RE.sub(lambda m: m.group(2) or "", text or "")
     text = _WIKILINK_RE.sub("", text)
     text = _CTRL_RE.sub("", text).strip()
@@ -83,12 +96,38 @@ def _sanitize(text: str) -> str:
 # --- spec lifecycle (owner side) -------------------------------------------
 
 def get_spec(conn, link_id: int):
+    """Fetch the research_specs row for a share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        The research_specs row, or None if not found.
+    """
     return conn.execute("SELECT * FROM research_specs WHERE share_link_id = ?", (link_id,)).fetchone()
 
 
 def create_spec(conn, link_id: int, *, scope_json: dict, persona_voice: str = "", intro: str = "",
                 topics: str = "", bind: bool = False, single_use: bool = False, max_turns: int = 30,
                 max_total_replies: int = 200) -> int:
+    """Create a research spec in 'draft' status for the given share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id this spec belongs to.
+        scope_json: Candidate filter dict (prefixes/titles/kinds).
+        persona_voice: Optional tone/persona for the assistant.
+        intro: Optional intro text shown to the recipient.
+        topics: Optional discussion-scope constraint for the assistant.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Block a second session after the first.
+        max_turns: Per-session turn cap.
+        max_total_replies: Total-reply budget across all sessions.
+
+    Returns:
+        The new research_specs.id.
+    """
     cur = conn.execute(
         "INSERT INTO research_specs (share_link_id, status, scope_json, approved_ids_json, "
         "dismissed_ids_json, persona_voice, topics, intro, bind, single_use, max_turns, max_total_replies) "
@@ -101,21 +140,46 @@ def create_spec(conn, link_id: int, *, scope_json: dict, persona_voice: str = ""
 
 
 def set_scope(conn, link_id: int, scope_json: dict) -> None:
+    """Replace the candidate-filter scope on an existing research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        scope_json: New candidate filter dict (prefixes/titles/kinds).
+    """
     conn.execute("UPDATE research_specs SET scope_json=? WHERE share_link_id=?",
                  (json.dumps(scope_json or {}), link_id))
 
 
 def lab_allowed(spec) -> set[str]:
-    """The attached labs allow-list (the lab boundary), or empty if no labs are attached.
-    Delegates to the import-isolated module so there is ONE parser/blank-filter."""
+    """Return the attached analyte allow-list, or an empty set if no labs are attached.
+
+    Delegates to the import-isolated research_labs_ai module so there is one parser
+    and blank-filter for the lab boundary.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Set of permitted analyte key strings.
+    """
     from . import research_labs_ai
     return research_labs_ai.allowed_labs(spec)
 
 
 def set_lab_scope(conn, link_id: int, *, analytes=None, window_from=..., window_to=...) -> None:
-    """Owner-side: attach/adjust a scoped labs allow-list + date window on a research link.
-    Like remove_approved, narrowing takes effect on the next read (mid-session safe). Blank
-    analytes are dropped so an all-blank list can't pass the activation gate."""
+    """Attach or adjust a scoped labs allow-list and date window on a research link.
+
+    Like remove_approved, narrowing takes effect on the next read (mid-session safe).
+    Blank analytes are dropped so an all-blank list can't pass the activation gate.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        analytes: New analyte key list, or None to leave unchanged.
+        window_from: ISO date string for the window start, or Ellipsis to leave unchanged.
+        window_to: ISO date string for the window end, or Ellipsis to leave unchanged.
+    """
     sets, params = [], []
     if analytes is not None:
         clean = sorted({str(a).strip() for a in analytes if str(a).strip()})
@@ -132,6 +196,19 @@ def set_lab_scope(conn, link_id: int, *, analytes=None, window_from=..., window_
 
 def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: bool,
                 single_use: bool, max_turns: int, max_total_replies: int, topics: str = "") -> None:
+    """Update persona, intro, discussion scope, and session-limit settings on a research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        persona_voice: Tone/role instruction for the assistant.
+        intro: Intro text shown to the recipient.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Block a second session after the first.
+        max_turns: Per-session turn cap.
+        max_total_replies: Total-reply budget across all sessions.
+        topics: Optional discussion-scope constraint for the assistant.
+    """
     conn.execute(
         "UPDATE research_specs SET persona_voice=?, topics=?, intro=?, bind=?, single_use=?, max_turns=?, "
         "max_total_replies=? WHERE share_link_id=?",
@@ -141,20 +218,40 @@ def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: boo
 
 
 def activate_spec(conn, link_id: int) -> None:
+    """Transition a research spec from 'draft' to 'active', making the link live.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id whose spec to activate.
+    """
     conn.execute("UPDATE research_specs SET status='active' WHERE share_link_id=?", (link_id,))
 
 
 def _save_ids(conn, link_id: int, col: str, ids: set[int]) -> None:
+    """Persist a set of note ids to a JSON column on the research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        col: Column name to update (e.g. 'approved_ids_json').
+        ids: Set of note ids to serialize and store.
+    """
     conn.execute(f"UPDATE research_specs SET {col}=? WHERE share_link_id=?",
                  (json.dumps(sorted(ids)), link_id))
 
 
 def approve(conn, link_id: int, ids: list[int]) -> None:
-    """Add notes to the exposed allowlist (and clear them from 'dismissed').
+    """Add notes to the exposed allowlist and remove them from 'dismissed'.
 
-    Intersect with the link's declared scope so approval can never widen exposure
+    Intersects with the link's declared scope so approval can never widen exposure
     beyond the folders/titles the link was scoped to — a code-enforced guarantee,
-    not just the owner-review UI filtering candidates."""
+    not just a UI constraint.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to approve.
+    """
     spec = get_spec(conn, link_id)
     in_scope = scope.filter_match_ids(conn, scope._scope(spec))
     add = {int(i) for i in ids} & in_scope
@@ -163,17 +260,39 @@ def approve(conn, link_id: int, ids: list[int]) -> None:
 
 
 def dismiss(conn, link_id: int, ids: list[int]) -> None:
+    """Add notes to the dismissed set, hiding them from the candidate tray.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to dismiss.
+    """
     spec = get_spec(conn, link_id)
     _save_ids(conn, link_id, "dismissed_ids_json", scope._ids(spec, "dismissed_ids_json") | {int(i) for i in ids})
 
 
 def remove_approved(conn, link_id: int, ids: list[int]) -> None:
-    """Pull notes back out of the allowlist — instantly out of scope, even mid-session."""
+    """Remove notes from the allowlist, taking effect instantly even mid-session.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to remove from the allowlist.
+    """
     spec = get_spec(conn, link_id)
     _save_ids(conn, link_id, "approved_ids_json", scope.approved_ids(spec) - {int(i) for i in ids})
 
 
 def _titles(conn, ids: set[int]) -> list[dict]:
+    """Fetch id+title pairs for a set of live note ids, sorted by title.
+
+    Args:
+        conn: Database connection.
+        ids: Set of note ids to look up.
+
+    Returns:
+        List of {id, title} dicts for non-deleted notes.
+    """
     if not ids:
         return []
     rows = conn.execute(
@@ -183,11 +302,30 @@ def _titles(conn, ids: set[int]) -> list[dict]:
 
 
 def list_candidates(conn, link_id: int) -> list[dict]:
-    """Owner-only: filter matches not yet approved/dismissed (titles allowed here)."""
+    """Return id+title pairs for filter matches not yet approved or dismissed.
+
+    Owner-only endpoint — titles are safe here because the owner configured the filter.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        List of {id, title} dicts.
+    """
     return _titles(conn, scope.candidate_ids(conn, get_spec(conn, link_id)))
 
 
 def list_approved(conn, link_id: int) -> list[dict]:
+    """Return id+title pairs for all owner-approved notes on a research link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        List of {id, title} dicts.
+    """
     return _titles(conn, scope.approved_ids(get_spec(conn, link_id)))
 
 
@@ -195,6 +333,23 @@ def list_approved(conn, link_id: int) -> list[dict]:
 
 def start_session(conn, link, spec, name: str | None, client_ip: str | None,
                   my_secret: str | None = None) -> tuple[int, str]:
+    """Create a recipient session, honoring the link's bind and single_use options.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The research_specs row.
+        name: Recipient's display name (truncated to 80 chars).
+        client_ip: Originating IP for audit purposes.
+        my_secret: Existing session secret if the caller already has one.
+
+    Returns:
+        A (session_id, secret) tuple for the new session.
+
+    Raises:
+        HTTPException: 409 if the link is single_use and has already been used.
+        HTTPException: 403 if the link is bound to a different device.
+    """
     from fastapi import HTTPException
     if spec["single_use"] and conn.execute(
         "SELECT 1 FROM research_sessions WHERE share_link_id=? AND turn_count>0 LIMIT 1",
@@ -215,6 +370,16 @@ def start_session(conn, link, spec, name: str | None, client_ip: str | None,
 
 
 def find_session(conn, link_id: int, secret: str | None):
+    """Look up a research session by link and secret cookie.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to scope the search.
+        secret: Session secret from the recipient's cookie.
+
+    Returns:
+        The research_sessions row, or None if secret is missing or not found.
+    """
     if not secret:
         return None
     return conn.execute("SELECT * FROM research_sessions WHERE share_link_id=? AND secret=?",
@@ -222,6 +387,14 @@ def find_session(conn, link_id: int, secret: str | None):
 
 
 def _transcript(session) -> list[dict]:
+    """Deserialize the session transcript from JSON, returning an empty list on error.
+
+    Args:
+        session: A research_sessions row with a transcript_json column.
+
+    Returns:
+        List of transcript turn dicts, or an empty list if parsing fails.
+    """
     try:
         return json.loads(session["transcript_json"]) or []
     except Exception:
@@ -229,6 +402,14 @@ def _transcript(session) -> list[dict]:
 
 
 def _global_budget_ok(conn) -> bool:
+    """Atomically increment today's global research-reply counter; return False if the cap is hit.
+
+    Args:
+        conn: Database connection (must support the meta KV table).
+
+    Returns:
+        True if the counter was incremented, False if the daily cap is already reached.
+    """
     from . import clock
     key = f"research:replies:{clock.today_iso()}"
     conn.execute("INSERT INTO meta(key,value) VALUES(?, '0') ON CONFLICT(key) DO NOTHING", (key,))
@@ -238,10 +419,20 @@ def _global_budget_ok(conn) -> bool:
 
 
 def _pre_turn_guard(conn, spec, session) -> dict | None:
-    """Shared per-turn gate for BOTH research paths (notes-only RAG and attached-labs tools):
-    end on the per-session turn cap, atomically bill ONE reply against the per-link cap (so a
-    multi-tool labs turn still counts once), then the global daily backstop. Returns an early-exit
-    dict, or None to proceed."""
+    """Shared per-turn gate for both the notes-only RAG and attached-labs research paths.
+
+    Ends the session on the per-session turn cap, atomically bills ONE reply against the
+    per-link cap (so a multi-tool labs turn still counts once), then checks the global
+    daily backstop.
+
+    Args:
+        conn: Database connection.
+        spec: The research_specs row.
+        session: The research_sessions row.
+
+    Returns:
+        An early-exit response dict if a cap is hit, or None to proceed with the turn.
+    """
     if session["turn_count"] >= spec["max_turns"]:
         return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
     if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
@@ -259,9 +450,21 @@ def _pre_turn_guard(conn, spec, session) -> dict | None:
 
 
 def answer(conn, link, spec, session, question: str) -> dict:
-    """One Q&A turn. Server-driven RAG over the approved allowlist; tool-less model.
-    Returns {phase: 'answer'|'ended', message, retrieved}. Enforces per-session,
-    per-link (atomic), and global daily caps."""
+    """Process one Q&A turn with server-driven RAG over the approved allowlist.
+
+    Uses a tool-less model for notes-only links; delegates to research_labs_ai when
+    labs are attached. Enforces per-session, per-link (atomic), and global daily caps.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The research_specs row.
+        session: The research_sessions row.
+        question: Raw question text from the recipient.
+
+    Returns:
+        Dict with phase ('answer' or 'ended') and message fields.
+    """
     if not llm.has_credentials():
         return {"phase": "answer", "message": _UNAVAILABLE}
 
@@ -323,6 +526,16 @@ def answer(conn, link, spec, session, question: str) -> dict:
 
 
 def _record(conn, session, transcript, question, reply, retrieved_ids) -> None:
+    """Append a Q&A pair to the session transcript and persist it.
+
+    Args:
+        conn: Database connection.
+        session: The research_sessions row to update.
+        transcript: Existing transcript list (not mutated; a new list is created).
+        question: The recipient's question text.
+        reply: The assistant's sanitized reply text.
+        retrieved_ids: Note ids retrieved for this turn (merged into the session audit set).
+    """
     transcript = transcript + [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
     prev = set(json.loads(session["retrieved_ids_json"] or "[]"))
     conn.execute(
@@ -336,8 +549,18 @@ def _record(conn, session, transcript, question, reply, retrieved_ids) -> None:
 # --- candidate nudge (owner) ------------------------------------------------
 
 def post_candidate_nudges(conn) -> int:
-    """Daily sweep: for each active research link with new candidate notes, post a
-    review-inbox nudge so the owner can include them. Returns links nudged."""
+    """Daily sweep: post review-inbox nudges for active research links with new candidate notes.
+
+    For each active research link that has filter-matching notes the owner hasn't yet
+    approved or dismissed, posts a nudge so the owner can include them. Nothing new is
+    exposed to recipients until the owner approves.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        Number of links for which a nudge was posted.
+    """
     from . import reviews as reviews_svc
     n = 0
     rows = conn.execute(

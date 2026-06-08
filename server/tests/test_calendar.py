@@ -12,6 +12,8 @@ from datetime import datetime
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 TEST_KEY = "k" * 40
 
 
@@ -74,7 +76,7 @@ def test_schema_objects_exist_and_version(conn):
     )}
     assert names == {"calendar_events", "calendar_supersedes", "calendar_fired",
                      "v_upcoming", "v_event_history"}
-    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 51
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION   # DB migrated to latest
 
 
 def test_migration_recreates_calendar_from_prior_version(conn):
@@ -1010,7 +1012,7 @@ def test_reminder_schema_v51(conn):
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IN ('calendar_reminders','calendar_dismissed')")}
     assert names == {"calendar_reminders", "calendar_dismissed"}
-    assert int(get_meta("schema_version")) == SCHEMA_VERSION == 51
+    assert int(get_meta("schema_version")) == SCHEMA_VERSION   # DB migrated to latest
 
 
 def test_set_get_reminders(conn):

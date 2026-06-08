@@ -33,30 +33,74 @@ _STRIP_ROW = ("note_slug", "note_title")
 
 
 def assert_recipient_tools_safe() -> None:
-    """Release-blocker check (call at startup): the recipient tool set must hold none of the
-    forbidden owner tools, and must be a subset of the declared scoped lab tools."""
+    """Check at startup that the recipient tool set leaks no forbidden owner tools.
+
+    This is a release-blocker guard: raises RuntimeError if any forbidden tool appears
+    in RECIPIENT_TOOLS.
+
+    Raises:
+        RuntimeError: If RECIPIENT_TOOLS intersects FORBIDDEN_RECIPIENT_TOOLS.
+    """
     bad = set(RECIPIENT_TOOLS) & FORBIDDEN_RECIPIENT_TOOLS
     if bad:
         raise RuntimeError(f"lab-share recipient tool set leaks forbidden tools: {sorted(bad)}")
 
 
 def _allow(allowed) -> set[str]:
+    """Normalize the allow-list to a set of non-empty strings.
+
+    Args:
+        allowed: Iterable of analyte slugs, or None.
+
+    Returns:
+        Set of non-empty analyte slug strings.
+    """
     return {a for a in (allowed or ()) if a}
 
 
 def _scrub_point(p: dict) -> dict:
+    """Remove identity fields from a series point dict.
+
+    Args:
+        p: Series point dict.
+
+    Returns:
+        Copy of p with note_id, note_slug, note_title, and encounter_id removed.
+    """
     return {k: v for k, v in p.items() if k not in _STRIP_POINT}
 
 
 def _scrub_row(r: dict | None) -> dict | None:
+    """Remove identity fields from a stat/point_at row dict.
+
+    Args:
+        r: Flat row dict, or None.
+
+    Returns:
+        Copy of r with note_slug and note_title removed, or None if r is None.
+    """
     return None if r is None else {k: v for k, v in r.items() if k not in _STRIP_ROW}
 
 
 def series_scoped(conn, analyte, *, allowed, dfrom=None, dto=None, unit=None) -> dict | None:
-    """One analyte's series — ONLY if it is in the allow-list — clamped to [dfrom, dto],
-    identity-stripped, with encounter labels removed (they leak facilities/admission dates).
-    Returns None for an out-of-scope analyte (default-deny). The domain/value_range/segments are
-    recomputed from the WINDOWED points so the recipient can't pan past the owner's window."""
+    """Return one analyte's series, only if it is in the allow-list.
+
+    Clamped to [dfrom, dto], identity-stripped, and with encounter labels removed (they
+    leak facility names and admission dates). domain, value_range, and segments are
+    recomputed from the windowed points so the recipient can't pan past the owner's window.
+    Default-deny: returns None for any out-of-scope analyte.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug to retrieve.
+        allowed: Set of allowed analyte slugs.
+        dfrom: Window start (ISO date), or None.
+        dto: Window end (ISO date), or None.
+        unit: Target unit string; defaults to modal unit when None.
+
+    Returns:
+        Scoped series dict, or None if the analyte is not in the allow-list.
+    """
     if analyte not in _allow(allowed):
         return None
     s = lab_series.series(conn, analyte, unit)
@@ -74,20 +118,57 @@ def series_scoped(conn, analyte, *, allowed, dfrom=None, dto=None, unit=None) ->
 
 
 def list_analytes_scoped(conn, allowed) -> list[dict]:
-    """The picklist, limited to the allow-list (list_analytes carries no identity fields)."""
+    """Return the analyte picklist limited to the allow-list.
+
+    lab_series.list_analytes carries no identity fields, so no additional scrubbing is
+    needed beyond the allow-list filter.
+
+    Args:
+        conn: Database connection.
+        allowed: Set of allowed analyte slugs.
+
+    Returns:
+        Filtered list of analyte dicts from lab_series.list_analytes.
+    """
     al = _allow(allowed)
     return [a for a in lab_series.list_analytes(conn) if a["analyte"] in al]
 
 
 def abnormal_scoped(conn, allowed, dfrom=None, dto=None, limit=8) -> list[dict]:
-    """Out-of-range analytes — but only those in the allow-list (so 'what's abnormal' can never
-    enumerate an analyte the owner didn't approve)."""
+    """Return out-of-range analytes filtered to the allow-list.
+
+    Ensures 'what's abnormal' can never enumerate an analyte the owner didn't approve.
+
+    Args:
+        conn: Database connection.
+        allowed: Set of allowed analyte slugs.
+        dfrom: Window start (ISO date), or None.
+        dto: Window end (ISO date), or None.
+        limit: Maximum number of analytes to return.
+
+    Returns:
+        Filtered list of abnormal analyte dicts from lab_series.abnormal_analytes.
+    """
     al = _allow(allowed)
     return [a for a in lab_series.abnormal_analytes(conn, dfrom, dto, limit=limit) if a["analyte"] in al]
 
 
 def stat_scoped(conn, analyte, *, allowed, unit=None, dfrom=None, dto=None) -> dict | None:
-    """Scalar summary — only if in the allow-list; extremes have their note id/title stripped."""
+    """Return a scalar summary for one analyte, only if it is in the allow-list.
+
+    The min/max/latest/first extremes have their note id and title stripped.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug.
+        allowed: Set of allowed analyte slugs.
+        unit: Target unit string; defaults to modal unit when None.
+        dfrom: Window start (ISO date), or None.
+        dto: Window end (ISO date), or None.
+
+    Returns:
+        Scoped stat dict, or None if the analyte is not in the allow-list.
+    """
     if analyte not in _allow(allowed):
         return None
     st = lab_series.stat(conn, analyte, unit, dfrom, dto)
@@ -97,7 +178,21 @@ def stat_scoped(conn, analyte, *, allowed, unit=None, dfrom=None, dto=None) -> d
 
 
 def point_at_scoped(conn, analyte, which, *, allowed, **kw) -> dict | None:
-    """A single selected point — only if in the allow-list; note id/title stripped."""
+    """Return a single selected point, only if the analyte is in the allow-list.
+
+    Note id and title are stripped from the result.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug.
+        which: Point selector (see lab_series.point_at for valid values).
+        allowed: Set of allowed analyte slugs.
+        **kw: Additional keyword arguments forwarded to lab_series.point_at.
+
+    Returns:
+        Scoped slim row dict, or None if the analyte is not in the allow-list or no
+        matching point exists.
+    """
     if analyte not in _allow(allowed):
         return None
     return _scrub_row(lab_series.point_at(conn, analyte, which, **kw))

@@ -46,6 +46,13 @@ android {
         jvmTarget = "17"
     }
 
+    // Robolectric needs the merged Android resources/manifest on the unit-test classpath.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+
     // Sign the release build. CI supplies a real keystore via env vars
     // (KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD) for a stable signature so
     // updates install in place; without one we fall back to the debug key so the APK is
@@ -101,4 +108,9 @@ dependencies {
     // watch app, which the Wear companion delivers to a paired watch. Both modules share
     // an applicationId + signing key, which the embedding requires.
     wearApp(project(":wear"))
+
+    // JVM unit tests (Robolectric: real SharedPreferences/org.json off-device).
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }

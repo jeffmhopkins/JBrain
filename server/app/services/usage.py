@@ -28,7 +28,21 @@ _DEFAULT_PRICE = (3.0, 15.0, 0.30, 3.75)   # assume Sonnet-class if unknown
 
 
 def _rates(model: str) -> tuple:
+    """Return the (input, output, cache_read, cache_write) price tuple for a model.
+
+    Args:
+        model: Model identifier string (substring-matched against _PRICES keys).
+
+    Returns:
+        Tuple of USD per 1M token rates; falls back to _DEFAULT_PRICE if unknown.
+    """
     m = (model or "").lower()
+    # Local/Ollama models cost nothing — an Ollama id carries a 'name:tag' colon that
+    # cloud ids never have. Return zero so the meter doesn't bill them at the unknown
+    # default (Sonnet) rate; token counts are still recorded for the "N local calls, $0"
+    # view that is the whole point of running local.
+    if ":" in m or "ollama" in m:
+        return (0.0, 0.0, 0.0, 0.0)
     for key, r in _PRICES.items():
         if key in m:
             return r
@@ -36,13 +50,36 @@ def _rates(model: str) -> tuple:
 
 
 def _cost(model: str, i: int, o: int, cr: int, cw: int) -> float:
+    """Estimate USD cost for one LLM call given token counts.
+
+    Args:
+        model: Model identifier used to look up pricing.
+        i: Input tokens.
+        o: Output tokens.
+        cr: Cache-read tokens.
+        cw: Cache-write tokens.
+
+    Returns:
+        Estimated cost in USD.
+    """
     ri, ro, rcr, rcw = _rates(model)
     return (i * ri + o * ro + cr * rcr + cw * rcw) / 1_000_000.0
 
 
 def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
            cache_read: int = 0, cache_write: int = 0, context: str | None = None) -> None:
-    """Log one LLM call. Never raises — metering must not break a generation."""
+    """Log one LLM call to the usage ledger on a dedicated connection.
+
+    Never raises — metering must never break a generation.
+
+    Args:
+        model: Model identifier string (e.g. 'claude-sonnet-4').
+        input_tokens: Number of input tokens billed.
+        output_tokens: Number of output tokens billed.
+        cache_read: Cache-read tokens (Anthropic prompt-cache).
+        cache_write: Cache-write tokens (Anthropic prompt-cache).
+        context: Optional free-text label identifying the call site.
+    """
     if not model or not (input_tokens or output_tokens or cache_read or cache_write):
         return
     try:
@@ -62,6 +99,15 @@ def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
 
 
 def _agg(conn, since_utc: str) -> dict:
+    """Aggregate usage rows since a UTC timestamp into a summary dict.
+
+    Args:
+        conn: SQLite connection.
+        since_utc: ISO-format UTC datetime string (inclusive lower bound).
+
+    Returns:
+        Dict with keys: input, output, cost, calls, by_model (list sorted by cost desc).
+    """
     rows = conn.execute(
         "SELECT model, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cache_read_tokens) cr, "
         "SUM(cache_write_tokens) cw, COUNT(*) n FROM llm_usage WHERE ts >= ? GROUP BY model",
@@ -78,13 +124,24 @@ def _agg(conn, since_utc: str) -> dict:
 
 
 def summary(conn) -> dict:
-    """Today + month-to-date usage, on LOCAL (app_tz) day/month boundaries converted
-    to the UTC the ledger stores in."""
+    """Return today and month-to-date usage aggregates on local day/month boundaries.
+
+    Boundaries use app_tz (the owner's local timezone) converted to the UTC timestamps
+    stored in the ledger.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with keys: tz, estimated (True — cost is an estimate), today, month.
+        Each period dict has keys: input, output, cost, calls, by_model.
+    """
     now_local = datetime.now(clock.app_tz())
     day_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     month_local = day_local.replace(day=1)
 
     def _utc(dt: datetime) -> str:
+        """Convert a local datetime to a UTC string for the ledger query."""
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     return {"tz": clock.app_tz_name(), "estimated": True,

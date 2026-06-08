@@ -5,6 +5,7 @@ The model is loaded lazily on first use and cached for the process lifetime.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Iterable
 
 import sqlite_vec
@@ -16,35 +17,99 @@ EMBEDDING_DIM = 384
 _model = None
 _model_lock = threading.Lock()
 
+# --- readiness state (cheap, in-memory; no I/O on read) ----------------------
+# LOUD CONSTRAINT: this is PER-PROCESS state. JBrain runs a SINGLE uvicorn worker
+# (server/Dockerfile, no --workers). Do NOT add --workers without a shared
+# readiness store or the health dot will flicker between workers warming at
+# different rates.
+_state = "unknown"            # unknown | warming | ready | unavailable | failed
+_last_error: str | None = None
+_state_since = time.time()
+_state_lock = threading.Lock()
+
+
+def _set_state(s: str, err: str | None = None) -> None:
+    """Update the process-level embedding model readiness state under the state lock.
+
+    Args:
+        s: New state string: 'unknown', 'warming', 'ready', 'unavailable', or 'failed'.
+        err: Optional error message; truncated to 200 chars.
+    """
+    global _state, _last_error, _state_since
+    # Cross-thread: the boot warmer runs _get_model on an asyncio.to_thread worker,
+    # so this write can race the snapshot read below — guard both with one lock.
+    with _state_lock:
+        _state, _last_error, _state_since = s, (err and str(err)[:200]), time.time()
+
+
+def readiness() -> dict:
+    """O(1), no model touch, never blocks. Safe to call on every health poll."""
+    with _state_lock:                       # same lock → the snapshot tuple is never torn
+        return {"state": _state, "last_error": _last_error, "since": _state_since}
+
 
 def _get_model():
+    """Return the process-singleton TextEmbedding model, loading it on first call.
+
+    Updates readiness state as it warms. Raises ImportError when fastembed is not
+    installed, or the underlying fastembed exception on any other load failure.
+
+    Returns:
+        Loaded fastembed TextEmbedding model instance.
+    """
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
-                from fastembed import TextEmbedding
-
+                # Resolve config OUTSIDE the try so a config import/error can't be
+                # miscategorised as "fastembed not installed".
                 from ..config import get_settings
+                model_name = get_settings().embedding_model
+                _set_state("warming")
+                try:
+                    from fastembed import TextEmbedding
 
-                _model = TextEmbedding(model_name=get_settings().embedding_model)
+                    _model = TextEmbedding(model_name=model_name)
+                    _set_state("ready")
+                except ImportError:
+                    _set_state("unavailable", "fastembed not installed")
+                    raise
+                except Exception as exc:                       # noqa: BLE001
+                    _set_state("failed", str(exc)[:200])
+                    raise
     return _model
 
 
 def embed(text: str) -> list[float]:
-    """Embed a single string."""
+    """Return the embedding vector for a single string.
+
+    Args:
+        text: Text to embed.
+
+    Returns:
+        List of floats of length EMBEDDING_DIM.
+    """
     return embed_many([text])[0]
 
 
 def embed_many(texts: Iterable[str]) -> list[list[float]]:
+    """Return embedding vectors for a batch of strings.
+
+    Args:
+        texts: Iterable of strings to embed.
+
+    Returns:
+        List of float vectors, one per input string, each of length EMBEDDING_DIM.
+    """
     model = _get_model()
     return [vec.tolist() for vec in model.embed(list(texts))]
 
 
 def upsert_note_embedding(conn, note_id: int, title: str, content_md: str) -> None:
     """(Re)compute and store BOTH representations of a note:
-      - vec_notes: one whole-note vector (research_scope reads this directly), and
-      - vec_note_chunks: one vector per content window, so a long note's body — past
-        the embedder's ~512-token truncation — is still reachable by semantic_search.
+    - vec_notes: one whole-note vector (research_scope reads this directly), and
+    - vec_note_chunks: one vector per content window, so a long note's body — past
+      the embedder's ~512-token truncation — is still reachable by semantic_search.
     """
     full = f"{title}\n\n{content_md}".strip()
     vec = embed(full)
@@ -58,7 +123,8 @@ def upsert_note_embedding(conn, note_id: int, title: str, content_md: str) -> No
 
 def upsert_note_chunk_embeddings(conn, note_id: int, full_text: str) -> None:
     """Replace a note's chunk vectors. `full_text` is the same 'title\\n\\ncontent'
-    string used for the whole-note vector, so a one-chunk note matches identically."""
+    string used for the whole-note vector, so a one-chunk note matches identically.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     delete_note_chunk_embeddings(conn, note_id)
     chunks = chunk_text(full_text)
@@ -77,6 +143,15 @@ def upsert_note_chunk_embeddings(conn, note_id: int, full_text: str) -> None:
 
 
 def delete_note_chunk_embeddings(conn, note_id: int) -> None:
+    """Delete all chunk rows and their vectors for a note.
+
+    vec_note_chunks is a virtual table — FK CASCADE on note_chunks won't reach it,
+    so vectors are deleted explicitly first.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose chunks and vectors should be removed.
+    """
     # vec_note_chunks is a virtual table: the FK CASCADE on note_chunks won't reach
     # it, so delete its vectors explicitly first (mirrors delete_attachment_embeddings).
     for r in conn.execute(
@@ -87,6 +162,12 @@ def delete_note_chunk_embeddings(conn, note_id: int) -> None:
 
 
 def delete_note_embedding(conn, note_id: int) -> None:
+    """Delete the whole-note vector and all chunk vectors for a note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose embeddings should be removed.
+    """
     conn.execute("DELETE FROM vec_notes WHERE note_id = ?", (note_id,))
     delete_note_chunk_embeddings(conn, note_id)
 
@@ -94,7 +175,8 @@ def delete_note_embedding(conn, note_id: int) -> None:
 def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for notes that have none yet (e.g. after the migration
     that introduced them). Returns how many notes were indexed. Commits if it did
-    work. `batch` caps the pass; None does all remaining."""
+    work. `batch` caps the pass; None does all remaining.
+    """
     # Redirect rows carry only a one-line marker and must stay out of semantic search.
     sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL "
            "AND id NOT IN (SELECT DISTINCT note_id FROM note_chunks)")
@@ -115,7 +197,8 @@ def reindex_missing_attachment_analysis(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for analyzed attachments whose sidecar was never embedded
     (e.g. images analyzed before image analysis started embedding its summary). Their text
     is already in attachments_fts, so keyword search worked all along — this adds the
-    SEMANTIC half. Returns how many attachments were indexed; commits if it did work."""
+    SEMANTIC half. Returns how many attachments were indexed; commits if it did work.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     sql = ("SELECT id, note_id, analysis_md FROM attachments "
            "WHERE analysis_md IS NOT NULL AND analysis_md != '' "
@@ -138,7 +221,8 @@ def reindex_all_chunks(conn) -> int:
     chunk_index values read_attachment trusts) were built by the old splitter. Notes are
     rebuilt from their stored title+body, attachments from their stored content_text — no
     re-extraction. Commits as it goes so a crash resumes from roughly where it stopped.
-    Returns the number of items reprocessed."""
+    Returns the number of items reprocessed.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     n = 0
     for r in conn.execute(
@@ -168,7 +252,8 @@ def reindex_all_chunks(conn) -> int:
 def run_pending_rechunk(conn) -> int | None:
     """If a chunking-strategy migration flagged a full re-chunk ('rechunk:pending'), run
     it ONCE, clear the flag, and return the count. Returns None when nothing is pending.
-    Called from the startup warm task so re-embedding the corpus never blocks boot."""
+    Called from the startup warm task so re-embedding the corpus never blocks boot.
+    """
     from ..db import get_meta, set_meta
     if get_meta("rechunk:pending", conn=conn) != "1":
         return None
@@ -189,7 +274,8 @@ def relevant_note_excerpt(conn, note_id: int, query: str, budget_chars: int) -> 
     slice — unless some buried chunk is MORE on-subject than the note's own head. That keeps
     the head's behaviour wherever it was already capturing the relevant content, so the change
     can only help the off-topic-head case it targets (and can't fire on a vocabulary mismatch
-    where nothing buried stands out)."""
+    where nothing buried stands out).
+    """
     import numpy as np
     from .attachments import CHUNK_MAX_CHARS  # lazy: avoid an import cycle at module load
     rows = conn.execute(
@@ -239,14 +325,16 @@ def embed_attachment_chunks(chunks: list[str]) -> list[list[float]]:
     so a background worker can compute vectors BEFORE it opens its write transaction. Holding the
     single WAL write lock across multi-second fastembed inference wedges every other writer within
     busy_timeout (5s) — including the owner chat persisting its turn — so the embed must never run
-    under a lock. Pair with write_attachment_embeddings(), which does the fast row writes."""
+    under a lock. Pair with write_attachment_embeddings(), which does the fast row writes.
+    """
     return embed_many(chunks) if chunks else []
 
 
 def write_attachment_embeddings(conn, attachment_id: int, note_id: int | None,
                                 chunks: list[str], vectors: list[list[float]]) -> None:
     """Pure-SQL write of PRE-COMPUTED attachment chunk vectors (fast; safe inside a write txn).
-    Replaces the attachment's chunk rows. Pair with embed_attachment_chunks() for the slow half."""
+    Replaces the attachment's chunk rows. Pair with embed_attachment_chunks() for the slow half.
+    """
     delete_attachment_embeddings(conn, attachment_id)
     if not chunks:
         return
@@ -266,11 +354,21 @@ def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, 
     """Compute-then-write in one call (multi-vector). Convenience wrapper for callers ALREADY
     outside a hot write lock (backfills, the upload path); background workers that hold a write
     txn should instead embed_attachment_chunks() before the lock and write_attachment_embeddings()
-    inside it, so the slow embed never holds the lock."""
+    inside it, so the slow embed never holds the lock.
+    """
     write_attachment_embeddings(conn, attachment_id, note_id, chunks, embed_attachment_chunks(chunks))
 
 
 def delete_attachment_embeddings(conn, attachment_id: int) -> None:
+    """Delete all chunk rows and vectors for an attachment.
+
+    vec_chunks is a virtual table — FK CASCADE on attachment_chunks won't reach it,
+    so vectors are deleted explicitly before removing the chunk rows.
+
+    Args:
+        conn: SQLite connection.
+        attachment_id: Attachment whose chunks and vectors should be removed.
+    """
     # vec_chunks is a virtual table: the FK CASCADE on attachment_chunks won't
     # reach it, so delete the vectors explicitly first.
     for r in conn.execute(
@@ -290,7 +388,8 @@ ATT_SNIPPET_CHARS = 600    # cap on the expanded snippet
 def _expanded_snippet(conn, attachment_id: int, chunk_index, matched_text: str,
                       cap: int = ATT_SNIPPET_CHARS) -> str:
     """The matched chunk WITH ±ATT_SNIPPET_WINDOW neighbours from the same attachment,
-    concatenated and capped. Falls back to the matched chunk alone when it has no index."""
+    concatenated and capped. Falls back to the matched chunk alone when it has no index.
+    """
     if chunk_index is None:
         return matched_text[:cap]
     rows = conn.execute(
@@ -307,7 +406,8 @@ def semantic_search_attachments(conn, query: str, limit: int = 10, *,
     """Semantic search over attachment chunks, collapsed to best chunk per attachment.
     Each hit's snippet is neighbour-expanded (see _expanded_snippet) for context. The
     governance gates mirror semantic_search: an attachment hit credits its parent note,
-    so a parent the owner hid from the assistant must not surface here either."""
+    so a parent the owner hid from the assistant must not surface here either.
+    """
     qvec = embed(query)
     rows = conn.execute(
         """
@@ -341,13 +441,25 @@ def semantic_search_attachments(conn, query: str, limit: int = 10, *,
 
 
 def store_entity_vector(conn, entity_id: int, vec: list[float]) -> None:
-    """Replace one canonical entity's semantic vector (vec_entities)."""
+    """Replace one canonical entity's semantic vector in vec_entities.
+
+    Args:
+        conn: SQLite connection.
+        entity_id: Entity row ID.
+        vec: New embedding vector.
+    """
     conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
     conn.execute("INSERT INTO vec_entities (entity_id, embedding) VALUES (?, ?)",
                  (entity_id, sqlite_vec.serialize_float32(vec)))
 
 
 def delete_entity_embedding(conn, entity_id: int) -> None:
+    """Remove a canonical entity's semantic vector from vec_entities.
+
+    Args:
+        conn: SQLite connection.
+        entity_id: Entity row ID whose vector should be deleted.
+    """
     conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
 
 
@@ -363,7 +475,8 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
     """Canonical entities most similar in meaning to the query (vec_entities), filtered to a
     relevance floor. Entities are embedded from their name + type + aliases + KB-article
     lead, so a descriptive query ('my dog') can surface a named entity ('Buddy'). Returns
-    rows with distance, nearest first, dropping anything farther than `max_distance`."""
+    rows with distance, nearest first, dropping anything farther than `max_distance`.
+    """
     qvec = embed(query)
     rows = conn.execute(
         "SELECT e.id, e.type, e.canonical_name, e.note_count, e.article_title, v.distance "
@@ -375,8 +488,19 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
 
 
 def _flag_gate(require_tool_access: bool, require_kb_ingest: bool, alias: str = "n") -> str:
-    """SQL fragment to gate note rows by the per-note governance flags. Empty unless a
-    caller opts in, so owner-facing search/browse is unaffected by default."""
+    """Build a SQL fragment gating note rows by per-note governance flags.
+
+    Empty string when both gates are off, so owner-facing search/browse is unaffected
+    by default.
+
+    Args:
+        require_tool_access: If True, add AND <alias>.tool_access = 1 condition.
+        require_kb_ingest: If True, add AND <alias>.kb_ingest = 1 condition.
+        alias: SQL table alias to qualify the flag columns (default 'n').
+
+    Returns:
+        SQL fragment string (may be empty).
+    """
     conds = []
     if require_tool_access:
         conds.append(f" AND {alias}.tool_access = 1")
@@ -394,7 +518,8 @@ def semantic_search(conn, query: str, limit: int = 10, *,
 
     `require_tool_access` / `require_kb_ingest`: caller-aware governance gates — the
     assistant's research tools pass tool_access; KB synthesis passes kb_ingest. Default
-    off so owner-facing search is unchanged."""
+    off so owner-facing search is unchanged.
+    """
     qvec = embed(query)
     # Over-fetch chunks so several distinct notes survive even when one long note
     # contributes many near-neighbour chunks; then collapse to best-per-note.

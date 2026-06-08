@@ -342,8 +342,17 @@ _NON_CONTENT_TABLES = {"meta", "prompt_overrides", "staging_actions",
 
 
 def _schema_tables(conn) -> str:
-    """Live, user-facing table list for the research prompt (excludes fts/vec
-    shadows and secret/internal tables)."""
+    """Return the live, user-facing table list for the research prompt.
+
+    Excludes fts/vec shadow tables and secret/internal tables so the model
+    only sees queryable user content.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Comma-separated table names, or an empty string on error.
+    """
     try:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name"
@@ -357,6 +366,19 @@ def _schema_tables(conn) -> str:
 
 
 def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
+    """Build the per-turn system prompt for the given mode, injecting live values.
+
+    Inserts brain name, owner-local time, and (for research mode) the live table
+    list. Rebuilt every turn so 'now'/'yesterday' always resolve correctly.
+
+    Args:
+        brain_name: The display name of this brain instance.
+        mode: Agent mode — 'assisted', 'research', or 'analyze'.
+        conn: Optional SQLite connection; required for {tables} substitution.
+
+    Returns:
+        Rendered system prompt string.
+    """
     tmpl = prompts.get(f"modes.{mode}.system") or _FALLBACK_SYSTEM.get(mode, _FALLBACK_SYSTEM["assisted"])
     tmpl = tmpl.replace("{brain_name}", brain_name)
     # Ground the agent in the owner's LOCAL time so "yesterday"/"in 1 hour"/"how
@@ -368,20 +390,53 @@ def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
 
 
 def _mode_tool_names(mode: str) -> list[str]:
+    """Return the ordered tool-name list for a mode, consulting prompts.yaml first.
+
+    Args:
+        mode: Agent mode string.
+
+    Returns:
+        List of tool names available in this mode.
+    """
     return prompts.get_list(f"modes.{mode}.tools", _DEFAULT_MODE_TOOLS.get(mode, []))
 
 
 def _build_tool(name: str) -> llm.ToolDef:
+    """Build a ToolDef for the named tool, pulling its description from prompts.yaml.
+
+    Args:
+        name: Tool name key present in _TOOL_SCHEMAS.
+
+    Returns:
+        Populated ToolDef ready for the LLM provider.
+    """
     return llm.ToolDef(name=name, description=prompts.get(f"tools.{name}", ""), json_schema=_TOOL_SCHEMAS[name])
 
 
 def _tools_for(mode: str) -> list[llm.ToolDef]:
+    """Return the ToolDef list for all schema-registered tools in a mode.
+
+    Args:
+        mode: Agent mode string.
+
+    Returns:
+        List of ToolDef objects for tools that have a registered schema.
+    """
     return [_build_tool(n) for n in _mode_tool_names(mode) if n in _TOOL_SCHEMAS]
 
 
 def validate_agent_config(conn=None) -> list[str]:
-    """Flag drift: unknown tools in a mode, prompts naming unavailable tools, empty
-    descriptions / action prompts. Used at startup and in tests."""
+    """Flag configuration drift at startup and in tests.
+
+    Checks for unknown tools in a mode, prompt text referencing unavailable
+    tools, empty tool descriptions, and missing action prompts.
+
+    Args:
+        conn: Unused; accepted for interface compatibility.
+
+    Returns:
+        List of human-readable warning strings; empty when everything is clean.
+    """
     warnings: list[str] = []
     known = set(_TOOL_SCHEMAS)
     for mode in ("assisted", "research", "analyze"):
@@ -407,9 +462,17 @@ def validate_agent_config(conn=None) -> list[str]:
 def _untrusted(label: str, body: str) -> str:
     """Wrap stored/user content so the model treats it as data, not instructions.
 
-    A RANDOM per-call nonce is mixed into the delimiter so the body can't close
-    the fence and re-open a forged 'trusted' context (delimiter injection) — it
-    can't predict the closing tag."""
+    A random per-call nonce is mixed into the delimiter so the body cannot close
+    the fence and re-open a forged 'trusted' context (delimiter injection) — the
+    attacker cannot predict the closing tag.
+
+    Args:
+        label: Short name used as the XML tag prefix (e.g. 'note', 'search-results').
+        body: The untrusted content to fence.
+
+    Returns:
+        Fenced string with a nonce-salted tag and an advisory attribute.
+    """
     nonce = secrets.token_hex(6)
     tag = f"{label}-{nonce}"
     return (
@@ -421,9 +484,20 @@ def _untrusted(label: str, body: str) -> str:
 
 
 def _snippet(content: str, query: str, width: int = 160) -> str:
-    """A short, query-relevant excerpt of a note for search results — so an opaquely
-    titled note (e.g. notes/daily/2026/06/03/3) still reveals what it's about. Centres
-    on the first matching query term; falls back to the start."""
+    """Return a short, query-relevant excerpt of a note for search results.
+
+    Centres on the first matching query term so an opaquely titled note (e.g.
+    notes/daily/2026/06/03/3) still reveals what it's about. Falls back to the
+    start of the text when no term matches.
+
+    Args:
+        content: Raw note markdown.
+        query: The search query whose terms guide centering.
+        width: Maximum excerpt character width.
+
+    Returns:
+        Excerpt string, possibly prefixed/suffixed with '…'.
+    """
     text = " ".join((content or "").split())
     if not text:
         return ""
@@ -444,9 +518,20 @@ _SENT_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
-    """A longer, sentence-bounded excerpt centred on the best query match — clean enough for the
-    model to QUOTE verbatim (vs `_snippet`'s tiny relevance cue). Trims to sentence boundaries so a
-    quote isn't a mangled mid-word fragment."""
+    """Return a longer, sentence-bounded excerpt centred on the best query match.
+
+    Clean enough for the model to QUOTE verbatim (vs. _snippet's tiny relevance
+    cue). Trims to sentence boundaries so a quote is never a mangled mid-word
+    fragment.
+
+    Args:
+        content: Raw note markdown.
+        query: The search query whose terms guide centering.
+        max_chars: Maximum excerpt character width.
+
+    Returns:
+        Sentence-bounded excerpt, possibly prefixed/suffixed with '…'.
+    """
     text = " ".join((content or "").split())
     if not text:
         return ""
@@ -471,10 +556,20 @@ def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
 
 
 def _searchable_text(conn, note_id: int) -> str:
-    """The note body PLUS its AI image-analysis sidecars, as one string for snippet/passage
-    extraction — so a hit that lives ONLY in a photo's vision summary (e.g. an address read
-    off a storefront image) still yields a relevant excerpt instead of a blind head slice.
-    @t[...] tokens are expanded so the excerpt reads like the rendered note."""
+    """Return the note body plus AI image-analysis sidecars as one string.
+
+    Merging both ensures a hit that lives only in a photo's vision summary
+    (e.g. an address read off a storefront image) still yields a relevant
+    excerpt instead of a blind head slice. @t[...] tokens are expanded so
+    the excerpt reads like the rendered note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Primary key of the note.
+
+    Returns:
+        Combined expanded text suitable for snippet/passage extraction.
+    """
     from . import image_analysis
     c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
     body = clock.expand_tokens(c["content_md"] if c else "")
@@ -486,9 +581,21 @@ def _searchable_text(conn, note_id: int) -> str:
 
 
 def _tool_find(conn, query: str, limit: int = 6) -> str:
-    """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
-    + its [[Title]] — so the model can answer with a real citation in a single call (no separate
-    read_note round-trip). The passages are exactly what it should quote verbatim."""
+    """Implement the find tool: best-matching notes with a quotable passage each.
+
+    Returns each hit with a sentence-bounded passage and its [[Title]] so the
+    model can answer with a real citation in a single call without a separate
+    read_note round-trip. The passages are exactly what the model should quote
+    verbatim.
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of notes to return (capped to 12).
+
+    Returns:
+        Untrusted-fenced block of passages, or a 'no results' string.
+    """
     from . import search as search_svc
     rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)),
                                    entity_expand=True, require_tool_access=True)
@@ -508,9 +615,20 @@ _REFERENCE_PREFIX = "kb/reference/"
 
 
 def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
-    """FIRST-LINE reference: search ONLY the owner's curated reference library (kb/Reference/…) and
-    return the best articles each with a quotable passage + [[Title]]. The owner's trusted, curated
-    sources — consulted before any external lookup. Read-only."""
+    """Implement the reference_lookup tool: search only the owner's curated reference library.
+
+    Searches kb/Reference/… only and returns the best articles each with a
+    quotable passage and [[Title]]. These are the owner's trusted, curated
+    sources — consulted before any external lookup. Read-only.
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of reference articles to return (capped to 10).
+
+    Returns:
+        Untrusted-fenced block of passages, or a 'no results' string.
+    """
     from . import search as search_svc
     rows = search_svc.hybrid_notes(conn, query, 24, require_tool_access=True)
     hits = [r for r in rows if (r["title"] or "").lower().startswith(_REFERENCE_PREFIX)][:max(1, min(int(limit or 6), 10))]
@@ -527,6 +645,21 @@ def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
+    """Implement the search_notes tool: hybrid keyword + semantic note search.
+
+    One call covers exact terms AND meaning. Each hit carries a query-relevant
+    snippet so the model can judge relevance without read_note'ing every result
+    (titles alone — especially dated daily paths — give no clue what the note
+    is about).
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of results.
+
+    Returns:
+        Untrusted-fenced list of title + snippet lines, or 'no results'.
+    """
     from . import search as search_svc
     # Hybrid: keyword (FTS) + semantic, fused — so one call covers exact terms AND
     # meaning. Each hit carries a query-relevant snippet so the model can judge
@@ -544,10 +677,21 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
 
 
 def _note_extras(conn, note_id: int) -> str:
-    """The note's AI-derived sidecars — image summaries, the analysis (gist/facts/dates) and
-    its entities — so a tool reading a note gets the WHOLE picture, not just the prose. Each
-    piece is bounded so a batch read (up to 12 notes) can't blow the budget. @t[...] tokens
-    are expanded for consistency with the body."""
+    """Return the note's AI-derived sidecars as a formatted string.
+
+    Includes image summaries, the analysis block (gist/facts/dates) and
+    entities, so a tool reading a note gets the whole picture, not just the
+    prose. Each piece is bounded so a batch read of up to 12 notes cannot blow
+    the context budget. @t[...] tokens are expanded for consistency with the
+    body.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Primary key of the note.
+
+    Returns:
+        Newline-separated sidecar text prefixed with a blank line, or '' if none.
+    """
     from . import image_analysis, note_analysis
     out = []
     img = image_analysis.block_for_note(conn, note_id, cap=1500)
@@ -571,6 +715,19 @@ def _note_extras(conn, note_id: int) -> str:
 
 
 def _render_note_body(conn, row) -> str:
+    """Render a note row to the full text the model reads, including sidecars.
+
+    Expands @t[...] live values, appends stored geolocation if present, and
+    appends AI-derived sidecars via _note_extras.
+
+    Args:
+        conn: SQLite connection (needed for sidecar lookup).
+        row: A notes table row with at minimum title, content_md, lat, lon,
+            location_label, and id columns.
+
+    Returns:
+        Formatted markdown string starting with a level-1 heading.
+    """
     # Expand @t[...] live values so the agent reads "40", not the raw token.
     body = f"# {row['title']}\n\n{clock.expand_tokens(row['content_md'])}"
     if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
@@ -582,6 +739,15 @@ def _render_note_body(conn, row) -> str:
 
 
 def _tool_read_note(conn, title: str) -> str:
+    """Implement the read_note tool: return one note's full rendered body.
+
+    Args:
+        conn: SQLite connection.
+        title: Exact note title.
+
+    Returns:
+        Untrusted-fenced rendered body, or an error string if not found.
+    """
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
@@ -589,8 +755,19 @@ def _tool_read_note(conn, title: str) -> str:
 
 
 def _tool_read_notes(conn, titles: list[str]) -> str:
-    """Batch read — pull several notes' full text in ONE turn (search returns
-    snippets; this expands the promising hits without one round-trip per title)."""
+    """Implement the read_notes tool: batch-read several notes in one turn.
+
+    Search returns snippets; this expands the promising hits without one
+    round-trip per title. Capped at 12 titles.
+
+    Args:
+        conn: SQLite connection.
+        titles: Exact note titles to read (max 12; extras are dropped).
+
+    Returns:
+        Untrusted-fenced block of rendered bodies separated by '---', including
+        a list of any titles not found.
+    """
     titles = [t for t in (titles or []) if (t or "").strip()][:12]
     if not titles:
         return "Give one or more note titles to read."
@@ -610,8 +787,19 @@ def _tool_read_notes(conn, titles: list[str]) -> str:
 
 
 def _tool_related_notes(conn, title: str, limit: int = 8) -> str:
-    """Traverse OUT from one note instead of re-searching: its outgoing [[links]],
-    its backlinks (what links TO it), and its nearest semantic neighbours."""
+    """Implement the related_notes tool: traverse out from one note.
+
+    Returns outgoing [[links]], backlinks (notes that link to it), and the
+    nearest semantic neighbours — without re-searching.
+
+    Args:
+        conn: SQLite connection.
+        title: Exact title of the note to traverse from.
+        limit: Maximum number of semantic neighbours (capped to 25).
+
+    Returns:
+        Untrusted-fenced sections, or a 'no links' message if isolated.
+    """
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
@@ -663,9 +851,19 @@ _COORD_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 def _resolve_point(conn, ref: str):
-    """Resolve a geo endpoint given as 'lat,lon', a SAVED PLACE name, or a note title.
-    A place that shows on the map keeps its coordinates in the places (geofence) table,
-    NOT on its loc/ note, so we consult both. Returns (lat, lon, label) or an error str."""
+    """Resolve a geo endpoint to (lat, lon, label) or an error string.
+
+    Accepts 'lat,lon', a saved place name, or a note title. A place that shows
+    on the map keeps its coordinates in the places (geofence) table, NOT on its
+    loc/ note, so both are consulted.
+
+    Args:
+        conn: SQLite connection.
+        ref: The endpoint reference string.
+
+    Returns:
+        Tuple (lat, lon, label) on success, or an error string on failure.
+    """
     ref = (ref or "").strip()
     m = _COORD_RE.match(ref)
     if m:
@@ -697,8 +895,18 @@ def _resolve_point(conn, ref: str):
 
 
 def _tool_current_location(conn, conversation_id):
-    """The device's live GPS — the location stamped on the user's latest message
-    in this conversation (the app attaches it when location sharing is on)."""
+    """Implement the current_location tool: return the device's live GPS fix.
+
+    Returns the location stamped on the user's latest message in this
+    conversation; the app attaches it when location sharing is on.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+
+    Returns:
+        Untrusted-fenced location string, or a 'not available' message.
+    """
     loc = notes_svc.conversation_location(conn, conversation_id)
     if not loc or loc["lat"] is None:
         return ("No current location available — the user hasn't shared GPS in this "
@@ -710,10 +918,20 @@ def _tool_current_location(conn, conversation_id):
 
 
 def _resolve_person(conn, person):
-    """Map an optional person name/alias to (person_id, display_name, explicit, error).
-    No name → the DEFAULT person (so 'where was I' means the owner, not everyone).
-    Unknown name → an error string for the agent to relay. Empty registry → (None, …)
-    which leaves the trail tools unscoped (legacy single-user behaviour)."""
+    """Map an optional person name/alias to a (person_id, display_name, explicit, error) tuple.
+
+    No name → the DEFAULT person, so 'where was I' means the owner, not
+    everyone. Unknown name → error string for the agent to relay. Empty
+    registry → (None, …) which leaves trail tools unscoped (legacy single-user
+    behaviour).
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias string, or None/empty for the default person.
+
+    Returns:
+        Tuple of (person_id, display_name, explicit, error_or_None).
+    """
     from . import people as people_svc
     if person and person.strip():
         p = people_svc.by_name(conn, person)
@@ -726,7 +944,16 @@ def _resolve_person(conn, person):
 
 
 def _ago(recorded_at: str) -> str:
-    """Humanised age of a 'YYYY-MM-DD HH:MM:SS' UTC timestamp (for 'where is X now')."""
+    """Return a humanised age of a 'YYYY-MM-DD HH:MM:SS' UTC timestamp.
+
+    Used for 'where is X now' phrasing (e.g. '5 min ago', '3 h ago').
+
+    Args:
+        recorded_at: UTC timestamp string in 'YYYY-MM-DD HH:MM:SS' format.
+
+    Returns:
+        Human-readable elapsed-time string.
+    """
     from datetime import datetime, timezone
     try:
         t = datetime.strptime(recorded_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -743,8 +970,19 @@ def _ago(recorded_at: str) -> str:
 
 
 def _tool_locate_person(conn, person=None):
-    """Most recent known location for a registered person (or the owner if unnamed),
-    from the location trail — answers 'where is Allan right now / last seen'."""
+    """Implement the locate_person tool: return the most recent known location.
+
+    Looks up the last fix for a registered person (or the owner when no name
+    is given) from the location trail — answers 'where is Allan right now /
+    last seen'.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced location string or an error message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -758,9 +996,20 @@ def _tool_locate_person(conn, person=None):
 
 
 def _is_owner_person(conn, pid, explicit) -> bool:
-    """True when the resolved person is the owner/default (privacy boundary for raw
-    coordinates). No name (explicit=False) or an empty registry = the owner; a named
-    person counts as the owner only if it resolves to the default person's id."""
+    """Return True when the resolved person is the owner/default.
+
+    Enforces the privacy boundary for raw coordinates. No name (explicit=False)
+    or an empty registry counts as the owner; a named person counts as the
+    owner only if it resolves to the default person's id.
+
+    Args:
+        conn: SQLite connection.
+        pid: Resolved person_id, or None.
+        explicit: Whether the caller supplied an explicit name.
+
+    Returns:
+        True if the person is the owner; False for any named third party.
+    """
     if not explicit:
         return True
     from . import people as people_svc
@@ -769,10 +1018,25 @@ def _is_owner_person(conn, pid, explicit) -> bool:
 
 
 def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, limit=20):
-    """EXACT fixes for the OWNER (full-precision lat/lon + timestamp), because the owner
-    is entitled to the precise data in their own brain. For any OTHER registered person
-    this degrades to place LABELS (no consent layer exists for third-party raw GPS).
-    `when` → the single nearest fix; otherwise a window (capped/evenly-sampled by `limit`)."""
+    """Implement the location_fixes tool: return exact fixes for the owner or place labels for others.
+
+    The owner is entitled to full-precision lat/lon + timestamps from their own
+    brain. For any other registered person this degrades to place LABELS — no
+    consent layer exists for third-party raw GPS. `when` returns the single
+    nearest fix; otherwise a window is returned, capped and evenly sampled by
+    `limit`.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+        when: Single moment (owner's local time) → nearest fix.
+        since: Window start in owner's local time (optional).
+        until: Window end in owner's local time (optional).
+        limit: Max fixes to return for a window (evenly sampled; hard cap 500).
+
+    Returns:
+        Untrusted-fenced fix list or an error message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -818,6 +1082,14 @@ def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, l
 
 
 def _dur(s: int | None) -> str:
+    """Format a duration in seconds as a compact 'XhYYm' or 'Xm' string.
+
+    Args:
+        s: Duration in seconds, or None (treated as 0).
+
+    Returns:
+        Formatted string such as '1h05m' or '42m'.
+    """
     s = int(s or 0)
     if s < 3600:
         return f"{s // 60}m"
@@ -825,6 +1097,14 @@ def _dur(s: int | None) -> str:
 
 
 def _trip_line(t: dict) -> str:
+    """Format a trip row as a single summary line for the model.
+
+    Args:
+        t: Trip dict as returned by trips_svc.query_trips / trip_detail.
+
+    Returns:
+        One-line string: '#id datetime: from → to · dist · duration [speed]'.
+    """
     a, b = t["start_place"] or "?", t["end_place"] or "?"
     spd = f", max {t['max_speed_kmh']:.0f} km/h" if t.get("max_speed_kmh") else ""
     live = " [in progress]" if t.get("status") == "open" else ""
@@ -833,10 +1113,22 @@ def _trip_line(t: dict) -> str:
 
 
 def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
-    """Upcoming calendar events (live, soonest first). One-off future events come from
-    the v_upcoming projection; RECURRING series are expanded to their NEXT occurrence
-    within the window (a recurring row's stored starts_at is its first, past, occurrence,
-    so it wouldn't otherwise surface). Read-only; reports only what's derived from notes."""
+    """Implement the list_upcoming tool: upcoming calendar events, soonest first.
+
+    One-off future events come from the v_upcoming projection; RECURRING series
+    are expanded to their NEXT occurrence within the window (a recurring row's
+    stored starts_at is its first, past occurrence, so it wouldn't otherwise
+    surface). Read-only; reports only what's derived from notes.
+
+    Args:
+        conn: SQLite connection.
+        within_days: Only include events starting within this many days from today.
+        kind: Optional filter to one event kind ('appointment', 'deadline', etc.).
+        limit: Max events to return (soonest first; capped 100).
+
+    Returns:
+        Untrusted-fenced event list or a 'no events' message.
+    """
     from datetime import timedelta
     from . import clock
     limit = max(1, min(int(limit or 20), 100))
@@ -899,8 +1191,20 @@ def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
 
 
 def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
-    """Past / terminal calendar events from v_event_history (most recent first) — for
-    'when did I last…' / 'how often…'. Read-only."""
+    """Implement the event_history tool: past/terminal events, most recent first.
+
+    Reads from v_event_history — useful for 'when did I last…' / 'how
+    often…'. Read-only.
+
+    Args:
+        conn: SQLite connection.
+        since: Optional ISO lower bound on event date.
+        until: Optional ISO upper bound on event date.
+        limit: Max events (most recent first; capped 100).
+
+    Returns:
+        Untrusted-fenced event list or a 'no events' message.
+    """
     limit = max(1, min(int(limit or 20), 100))
     params: list = []
     where = ""
@@ -931,8 +1235,20 @@ def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
 
 
 def _tool_list_trips(conn, person=None, since=None, until=None, limit=20) -> str:
-    """Precomputed trips for the owner or a registered person — the server already
-    segmented and measured them, so this is cheap and exact."""
+    """Implement the list_trips tool: precomputed trips for the owner or a registered person.
+
+    The server already segmented and measured them, so this is cheap and exact.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        limit: Max trips to return (newest first; capped 200).
+
+    Returns:
+        Untrusted-fenced trip list or a 'no trips' message.
+    """
     from . import trips as trips_svc
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
@@ -946,6 +1262,15 @@ def _tool_list_trips(conn, person=None, since=None, until=None, limit=20) -> str
 
 
 def _tool_trip_detail(conn, trip_id: int) -> str:
+    """Implement the trip_detail tool: full stats and stop list for one trip.
+
+    Args:
+        conn: SQLite connection.
+        trip_id: The trip id as returned by list_trips.
+
+    Returns:
+        Untrusted-fenced detail block or 'no trip' message.
+    """
     from . import trips as trips_svc
     got = trips_svc.trip_detail(conn, int(trip_id))
     if got is None:
@@ -966,6 +1291,19 @@ def _tool_trip_detail(conn, trip_id: int) -> str:
 
 
 def _tool_geo_distance(conn, conversation_id, frm, to=None):
+    """Implement the geo_distance tool: haversine distance and bearing between two points.
+
+    When `to` is omitted the user's current conversation location is used.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        frm: 'from' endpoint — place name, note title, or 'lat,lon'.
+        to: Optional 'to' endpoint; defaults to current location.
+
+    Returns:
+        Untrusted-fenced distance + bearing string, or an error message.
+    """
     a = _resolve_point(conn, frm)
     if isinstance(a, str):
         return a
@@ -985,6 +1323,18 @@ def _tool_geo_distance(conn, conversation_id, frm, to=None):
 
 
 def _tool_nearby_notes(conn, conversation_id, center=None, radius_km=25, limit=10):
+    """Implement the nearby_notes tool: notes whose captured location falls within radius_km.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        center: Place name, note title, or 'lat,lon'. Defaults to current location.
+        radius_km: Search radius in kilometres.
+        limit: Max notes to return (capped 50).
+
+    Returns:
+        Untrusted-fenced note list with distances, or a 'none found' message.
+    """
     if center:
         c = _resolve_point(conn, center)
         if isinstance(c, str):
@@ -1019,9 +1369,19 @@ def _tool_nearby_notes(conn, conversation_id, center=None, radius_km=25, limit=1
 
 
 def _resolve_place(conn, ref: str, radius_m: float = 150.0):
-    """Resolve a place reference to (lat, lon, radius_m, label). A SAVED place
-    matched by name wins (and carries its own radius); else fall back to a
-    'lat,lon' / note title via _resolve_point. Returns an error string on miss."""
+    """Resolve a place reference to (lat, lon, radius_m, label) or an error string.
+
+    A saved place matched by name wins and carries its own radius. Otherwise
+    falls back to a 'lat,lon' / note title via _resolve_point.
+
+    Args:
+        conn: SQLite connection.
+        ref: Place name, note title, or 'lat,lon'.
+        radius_m: Fallback match radius when no saved place provides one.
+
+    Returns:
+        Tuple (lat, lon, radius_m, label) on success, or an error string.
+    """
     row = conn.execute(
         "SELECT name, lat, lon, radius_m FROM places WHERE name = ? COLLATE NOCASE LIMIT 1",
         ((ref or "").strip(),),
@@ -1042,9 +1402,18 @@ _WHERE_WAS_I_MAX_GAP_MIN = 360.0   # > 6 h from the asked time = no real fix; do
 
 
 def _utc_bound(ts):
-    """Normalise an agent-supplied time bound to UTC for geotrail. A NAIVE value is
-    read as the owner's LOCAL (app_tz) time — so the model can pass "2pm last Tuesday"
-    without doing timezone math — while an explicit offset/Z is always honored."""
+    """Normalise an agent-supplied time bound to a UTC ISO string for geotrail.
+
+    A naive value is read as the owner's LOCAL (app_tz) time so the model can
+    pass '2pm last Tuesday' without doing timezone math. An explicit offset or
+    Z suffix is always honoured.
+
+    Args:
+        ts: Timestamp string from the model, or None/empty.
+
+    Returns:
+        UTC ISO string, the original ts if parsing fails, or None if ts is falsy.
+    """
     if not ts:
         return ts
     try:
@@ -1057,6 +1426,17 @@ def _utc_bound(ts):
 
 
 def _tool_where_was_i(conn, when: str, person=None) -> str:
+    """Implement the where_was_i tool: place label for the nearest location fix to a moment.
+
+    Args:
+        conn: SQLite connection.
+        when: The moment to look up in owner's local time.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced location string; a 'gap too large' message when the
+        nearest fix is more than _WHERE_WAS_I_MAX_GAP_MIN minutes away.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -1075,6 +1455,19 @@ def _tool_where_was_i(conn, when: str, person=None) -> str:
 
 
 def _tool_time_at_place(conn, place: str, radius_m=150, since=None, until=None, person=None) -> str:
+    """Implement the time_at_place tool: total dwell time within a geofence.
+
+    Args:
+        conn: SQLite connection.
+        place: Saved place name, note title, or 'lat,lon'.
+        radius_m: Match radius in metres (ignored for saved places with their own).
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced dwell-time string or an error message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -1091,6 +1484,21 @@ def _tool_time_at_place(conn, place: str, radius_m=150, since=None, until=None, 
 
 
 def _tool_places_visited(conn, since=None, until=None, min_minutes=20, person=None) -> str:
+    """Implement the places_visited tool: distinct stays above a minimum duration.
+
+    Shows unlabeled spots as coordinates to the owner (only) so they can save
+    them as named places. Never exposes raw coordinates for a named third party.
+
+    Args:
+        conn: SQLite connection.
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        min_minutes: Ignore stays shorter than this.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced stay list or a 'no stays' message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -1119,6 +1527,17 @@ def _tool_places_visited(conn, since=None, until=None, min_minutes=20, person=No
 
 
 def _tool_distance_traveled(conn, since=None, until=None, person=None) -> str:
+    """Implement the distance_traveled tool: total GPS-path distance in a window.
+
+    Args:
+        conn: SQLite connection.
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced distance string in km and miles.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -1129,6 +1548,17 @@ def _tool_distance_traveled(conn, since=None, until=None, person=None) -> str:
 
 
 def _tool_trail_summary(conn, since=None, until=None, person=None) -> str:
+    """Implement the trail_summary tool: combined distance + notable stays for a window.
+
+    Args:
+        conn: SQLite connection.
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced summary string, or a 'no data' message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -1156,9 +1586,23 @@ def _tool_trail_summary(conn, since=None, until=None, person=None) -> str:
 
 
 def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=None, kind=None) -> str:
-    """Notes whose CAPTURE coordinate falls within range of a place (optionally in a
-    time window / of a kind). Place-and-time is the combination query_sql/nearby_notes
-    can't do directly — a saved geofence ∩ created_at window."""
+    """Implement the entries_at_place tool: notes captured within range of a place.
+
+    Optionally filtered by time window and/or note kind. This is the
+    place-and-time query that query_sql / nearby_notes cannot do directly —
+    a saved geofence intersected with the note's created_at window.
+
+    Args:
+        conn: SQLite connection.
+        place: Saved place name, note title, or 'lat,lon'.
+        radius_m: Match radius in metres (ignored for saved places with their own).
+        since: Optional lower bound on capture time in owner's local time.
+        until: Optional upper bound on capture time in owner's local time.
+        kind: Optional note kind filter ('entry' or 'kb').
+
+    Returns:
+        Untrusted-fenced note list or a 'none found' message.
+    """
     pt = _resolve_place(conn, place, radius_m)
     if isinstance(pt, str):
         return pt
@@ -1188,9 +1632,22 @@ def _tool_entries_at_place(conn, place: str, radius_m=150, since=None, until=Non
 
 
 def _tool_reverse_geocode(conn, conversation_id, lat=None, lon=None) -> str:
-    """A SUSPECTED street address for a coordinate (or the conversation's shared location),
-    via OpenStreetMap. External best-guess — relay it as 'suspected', never as certain. A
-    saved place that contains the point is shown too (it's the authoritative local label)."""
+    """Implement the reverse_geocode tool: suspected street address for a coordinate.
+
+    Queries OpenStreetMap. The result is an external best-guess — relay it as
+    'suspected', never as certain. A saved place that contains the point is
+    also shown as it is the authoritative local label. Uses the conversation's
+    shared location when lat/lon are omitted.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        lat: Latitude, or None to use the conversation location.
+        lon: Longitude, or None to use the conversation location.
+
+    Returns:
+        Untrusted-fenced address string or an error/unavailable message.
+    """
     from . import geocode
     if lat is None or lon is None:
         loc = notes_svc.conversation_location(conn, conversation_id)
@@ -1216,7 +1673,19 @@ def _tool_reverse_geocode(conn, conversation_id, lat=None, lon=None) -> str:
 
 
 def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
-    """Ranked SUSPECTED coordinate candidates for an address/place query, via OpenStreetMap."""
+    """Implement the forward_geocode tool: ranked coordinate candidates for an address query.
+
+    Results are sourced from OpenStreetMap and should be relayed as suspected
+    matches, not certain.
+
+    Args:
+        conn: SQLite connection.
+        query: Address or place name to look up.
+        limit: Max candidates (1–10).
+
+    Returns:
+        Untrusted-fenced candidate list or a 'not found' message.
+    """
     from . import geocode
     if not geocode.enabled():
         return "Address lookup is turned off (no geocoder configured)."
@@ -1229,19 +1698,41 @@ def _tool_forward_geocode(conn, query: str, limit: int = 5) -> str:
 
 
 def _drug_topic_name(title: str, fallback: str) -> str:
-    """The clean medication topic to capture/curate from a MedlinePlus drug page title — strip a
-    trailing ': MedlinePlus …' suffix (e.g. 'Metformin: MedlinePlus Drug Information' -> 'Metformin').
-    Falls back to the approved lookup name if the title is empty."""
+    """Return the clean medication topic name from a MedlinePlus drug page title.
+
+    Strips a trailing ': MedlinePlus …' suffix (e.g. 'Metformin: MedlinePlus
+    Drug Information' → 'Metformin'). Falls back to the approved lookup name
+    when the title is empty.
+
+    Args:
+        title: Raw page title from the MedlinePlus API response.
+        fallback: The approved lookup name used if title is empty.
+
+    Returns:
+        Clean topic string suitable for curating into kb/Reference.
+    """
     leaf = (title or "").split(":")[0].strip()
     return leaf or (fallback or "").strip()
 
 
 def _tool_drug_reference(conn, conversation_id, name: str):
-    """EXTERNAL medication reference: the MedlinePlus consumer drug page for a name, resolved via RxNorm
-    (NLM, public domain). GATED — it sends NOTHING externally (no RxNav / MedlinePlus Connect call) until
-    the owner approves the EXACT name, so no PII leaks in a drug query. An un-approved name is PROPOSED
-    (surfaced as a confirm chip); once approved the lookup runs and an EXACT match records a Medications
-    TOPIC-ONLY usage signal for the kb/Reference loop. Returns (result_text, event_or_None)."""
+    """Implement the drug_reference tool: gated external MedlinePlus drug lookup.
+
+    Resolves via RxNorm (NLM, public domain). Sends NOTHING externally until
+    the owner approves the EXACT name, so no PII leaks in a drug query. An
+    unapproved name is PROPOSED (surfaced as a confirm chip); once approved the
+    lookup runs and an exact match records a Medications TOPIC-ONLY usage signal
+    for the kb/Reference loop.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        name: Medication name (brand or generic).
+
+    Returns:
+        Tuple (result_text, event_or_None) where event is an 'external_proposal'
+        dict when approval is still pending.
+    """
     from . import medref, reference_candidates, external_lookups
     term = (name or "").strip()
     if not term:
@@ -1283,11 +1774,23 @@ def _tool_drug_reference(conn, conversation_id, name: str):
 
 
 def _tool_medical_reference(conn, conversation_id, query: str):
-    """EXTERNAL, second-line reference: a MedlinePlus consumer health-topic page (NLM, public domain).
-    GATED — it sends NOTHING externally until the owner approves the EXACT term (so no PII leaks in a
-    search query). An un-approved term is PROPOSED (surfaced to the owner as a confirm chip); once
-    approved the lookup runs and records a TOPIC-ONLY usage signal for the kb/Reference loop. Returns
-    (result_text, event_or_None)."""
+    """Implement the medical_reference tool: gated external MedlinePlus health-topic lookup.
+
+    Second-line reference (NLM, public domain). Sends NOTHING externally until
+    the owner approves the EXACT term, preventing PII leakage in a search
+    query. An unapproved term is PROPOSED (surfaced as a confirm chip); once
+    approved the lookup runs and records a TOPIC-ONLY usage signal for the
+    kb/Reference loop.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        query: Health condition, topic, or test name.
+
+    Returns:
+        Tuple (result_text, event_or_None) where event is an 'external_proposal'
+        dict when approval is still pending.
+    """
     from . import medref, reference_candidates, external_lookups
     term = (query or "").strip()
     if not term:
@@ -1323,8 +1826,19 @@ def _tool_medical_reference(conn, conversation_id, query: str):
 
 
 def _tool_save_place(conn, name: str) -> str:
-    """Save a place the owner names as a geofence (forward-geocoded) so visits get tracked.
-    Already-saved → reports it; else creates at the best match and reports the address."""
+    """Implement the save_place tool: save a named place as a geofence.
+
+    Forward-geocodes the name so visits get tracked. If the place is already
+    saved, reports it; otherwise creates it at the best geocode match and
+    reports the address.
+
+    Args:
+        conn: SQLite connection.
+        name: Human-readable place name to save.
+
+    Returns:
+        Untrusted-fenced confirmation string or an error message.
+    """
     from . import places as places_svc, geocode
     name = (name or "").strip()
     if not name:
@@ -1346,6 +1860,16 @@ def _tool_save_place(conn, name: str) -> str:
 
 
 def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
+    """Implement the search_attachments tool: semantic search over attachment chunks.
+
+    Args:
+        conn: SQLite connection.
+        query: Search query.
+        limit: Maximum number of attachment chunks to return.
+
+    Returns:
+        Untrusted-fenced list of matching attachment excerpts, or 'no results'.
+    """
     rows = embeddings.semantic_search_attachments(conn, query, limit, require_tool_access=True)
     if not rows:
         return "No matching attachments."
@@ -1361,6 +1885,21 @@ def _tool_search_attachments(conn, query: str, limit: int = 6) -> str:
 
 
 def _tool_read_attachment(conn, attachment_id: int, around_chunk=None, window: int = 2) -> str:
+    """Implement the read_attachment tool: return attachment text, optionally windowed.
+
+    Windowed read pulls just the chunk that matched (± window) so a large file
+    (up to 200 chunks) doesn't dump its whole body into context. Falls back to
+    the full text when the file was never chunked or no window is requested.
+
+    Args:
+        conn: SQLite connection.
+        attachment_id: Primary key of the attachment.
+        around_chunk: Center chunk index for a windowed read; None for full text.
+        window: Chunks of context on each side of around_chunk (0–10).
+
+    Returns:
+        Untrusted-fenced attachment text or an error string.
+    """
     row = conn.execute(
         "SELECT filename, content_text FROM attachments WHERE id = ?", (attachment_id,)
     ).fetchone()
@@ -1397,6 +1936,16 @@ def _tool_read_attachment(conn, attachment_id: int, around_chunk=None, window: i
 
 
 def _tool_query_sql(conn, sql: str, limit: int = 50) -> str:
+    """Implement the query_sql tool: run a safe SELECT against a read-only connection.
+
+    Args:
+        conn: Unused; the tool opens its own read-only connection internally.
+        sql: SELECT statement to execute (non-SELECT is rejected by sqlsafe).
+        limit: Max rows to return.
+
+    Returns:
+        Untrusted-fenced table string, '(no rows)', or a rejection message.
+    """
     from ..db import get_query_conn  # a read-only connection — writes can't reach the DB
     try:
         cols, rows = sqlsafe.run_select(get_query_conn(), sql, limit)
@@ -1410,6 +1959,15 @@ def _tool_query_sql(conn, sql: str, limit: int = 50) -> str:
 
 
 def _tool_list_recent(conn, limit: int = 10) -> str:
+    """Implement the list_recent_notes tool: most recently updated notes with snippets.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of notes to return.
+
+    Returns:
+        Untrusted-fenced list of title + snippet lines, or an 'empty brain' message.
+    """
     rows = conn.execute(
         "SELECT title, content_md FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?",
         (limit,),
@@ -1425,8 +1983,17 @@ def _tool_list_recent(conn, limit: int = 10) -> str:
 
 
 def _tool_list_tags(conn) -> str:
-    """The tag taxonomy with live note counts — an organizational access path that
-    keyword/semantic search can't enumerate."""
+    """Implement the list_tags tool: tag taxonomy with live note counts.
+
+    Provides an organizational access path that keyword/semantic search cannot
+    enumerate.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Untrusted-fenced list of 'tag (count)' lines, or 'no tags yet'.
+    """
     rows = conn.execute(
         "SELECT t.name, COUNT(n.id) AS n FROM tags t "
         "JOIN note_tags nt ON nt.tag_id = t.id "
@@ -1439,8 +2006,19 @@ def _tool_list_tags(conn) -> str:
 
 
 def _tool_notes_with_tag(conn, tag: str, limit: int = 25) -> str:
-    """Every note carrying a tag — the browse path for the brain's own structure
-    (orthogonal to search; a topic search can miss what an explicit tag groups)."""
+    """Implement the notes_with_tag tool: every note carrying a given tag.
+
+    Provides the browse path for the brain's own structure; orthogonal to
+    search — a topic search can miss what an explicit tag groups.
+
+    Args:
+        conn: SQLite connection.
+        tag: Tag name (with or without a leading '#'; case-insensitive).
+        limit: Maximum number of notes (capped 100).
+
+    Returns:
+        Untrusted-fenced list of title + snippet lines, or a 'not found' message.
+    """
     tag = (tag or "").strip().lstrip("#").lower()
     if not tag:
         return "Give a tag name."
@@ -1475,7 +2053,14 @@ _BASIS_TYPES = {"UPDATE", "RENAME", "DELETE", "DELETE_LIST"}
 
 
 def _action_error(a: dict) -> str | None:
-    """Return a human error if a proposed action is missing fields apply will need."""
+    """Return a human-readable error string if a proposed action is missing required fields.
+
+    Args:
+        a: Action dict with at minimum a 'type' key.
+
+    Returns:
+        Error string, or None if the action is structurally valid.
+    """
     t = a.get("type")
     if t == "DELETE_LIST":
         if not (a.get("list_title") or a.get("title")):
@@ -1488,12 +2073,36 @@ def _action_error(a: dict) -> str | None:
 
 
 def _basis_title(a: dict) -> str:
+    """Return the note title that anchors a destructive action's identity check.
+
+    Args:
+        a: Action dict.
+
+    Returns:
+        The title string to look up, or '' if absent.
+    """
     if a.get("type") == "DELETE_LIST":
         return (a.get("list_title") or a.get("title") or "").strip()
     return (a.get("title") or "").strip()
 
 
 def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]) -> tuple[str, dict]:
+    """Implement the propose_actions tool: stage proposed note changes for owner review.
+
+    Validates up front so a malformed action neither stages a doomed row nor
+    (via a mid-loop KeyError) leaves uncommitted INSERTs to be flushed by a
+    later commit. Captures a content hash for destructive ops at propose time
+    so apply can detect a lost update or stale/identity-swapped target.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        actions: List of action dicts from the model's propose_actions call.
+
+    Returns:
+        Tuple (message, staging_event_or_None). staging_event is None only on
+        validation failure.
+    """
     # Validate up front so a malformed action neither stages a doomed row nor (via a
     # mid-loop KeyError) leaves uncommitted INSERTs to be flushed by a later commit.
     errors = [e for a in actions if (e := _action_error(a))]
@@ -1535,9 +2144,21 @@ def _tool_propose_actions(conn, conversation_id: int | None, actions: list[dict]
 
 
 def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=False):
-    """Find entries no KB article cites (and synthesis never evaluated) and
-    re-synthesise them, STAGING the proposed KB changes for review. Mutates the KB
-    only via approval, so it's Assisted-mode only (never Research)."""
+    """Implement the kb_coverage_check tool: find and re-synthesise uncited entries.
+
+    Stages proposed KB changes for review; mutates the KB only via owner
+    approval. Assisted-mode only — never available in Research.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        batch_limit: Max uncited entries to integrate this run (capped 200).
+        reconsider: Re-feed entries synthesis already evaluated and skipped
+            (expensive).
+
+    Returns:
+        Tuple (message, staging_event_or_None).
+    """
     from . import pipeline
     if not llm.has_credentials():
         return "I can't run a KB coverage check without an LLM key configured.", None
@@ -1554,9 +2175,21 @@ def _tool_kb_coverage_check(conn, conversation_id, batch_limit=25, reconsider=Fa
 
 
 def _tool_kb_citation_cleanup(conn, conversation_id, batch_limit=10, auto_apply=False):
-    """Reformat KB articles still in the old citation style to the house footnote
-    style. Stages the rewrites for review by default (auto_apply writes directly).
-    Mutates the KB → Assisted-mode only."""
+    """Implement the kb_citation_cleanup tool: reformat KB citations to the house style.
+
+    Reformats articles still in the old citation style to the house footnote
+    style. Stages rewrites for review by default; auto_apply writes directly
+    (versioned). Mutates the KB — Assisted-mode only.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        batch_limit: Max KB articles to reformat this run.
+        auto_apply: Apply rewrites directly instead of staging for review.
+
+    Returns:
+        Tuple (message, staging_event_or_None).
+    """
     from . import pipeline
     if not llm.has_credentials():
         return "I can't reformat citations without an LLM key configured.", None
@@ -1574,8 +2207,21 @@ def _tool_kb_citation_cleanup(conn, conversation_id, batch_limit=10, auto_apply=
 
 
 def _tool_kb_promote_recurrences(conn, conversation_id, min_days=3, auto_apply=False):
-    """Surface durable patterns hiding in repeated chatter and stage a kb/Patterns
-    article for each (auto_apply writes directly). Assisted-mode only (mutates KB)."""
+    """Implement the kb_promote_recurrences tool: surface recurring patterns as KB articles.
+
+    Finds durable patterns hiding in repeated chatter and stages a kb/Patterns
+    article for each. auto_apply writes directly (versioned). Mutates the KB
+    — Assisted-mode only.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        min_days: Distinct days a thing must recur to count as a pattern.
+        auto_apply: Write pattern articles directly instead of staging.
+
+    Returns:
+        Tuple (message, staging_event_or_None).
+    """
     from . import pipeline
     if not llm.has_credentials():
         return "I can't check for recurring patterns without an LLM key configured.", None
@@ -1593,9 +2239,20 @@ def _tool_kb_promote_recurrences(conn, conversation_id, min_days=3, auto_apply=F
 
 
 def _tool_kb_audit(conn, conversation_id, limit=1000):
-    """Read-only lint of the KB: report each article's citation/formatting problems
-    inline. Writes nothing to the KB (the same check runs on a schedule via the
-    kb_audit action, which files findings to the Review inbox)."""
+    """Implement the kb_audit tool: read-only lint of KB citation and formatting.
+
+    Reports each article's problems inline. Writes nothing to the KB. The same
+    check runs on a schedule via the kb_audit action, which files findings to
+    the Review inbox.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        limit: Max KB articles to scan.
+
+    Returns:
+        Tuple (message, None).
+    """
     from . import pipeline
     try:
         res = pipeline._PRIMITIVES["kb_audit"](pipeline._Ctx(conn, None, None), limit=int(limit))
@@ -1612,7 +2269,17 @@ def _tool_kb_audit(conn, conversation_id, limit=1000):
 
 
 def _tool_kb_taxonomy_health(conn, conversation_id):
-    """Read-only KB health report (orphans + un-foldered Reference). Writes nothing."""
+    """Implement the kb_taxonomy_health tool: read-only KB orphan and folder health report.
+
+    Reports orphaned articles and un-foldered Reference entries. Writes nothing.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+
+    Returns:
+        Tuple (message, None).
+    """
     from . import wiki_build
     try:
         rep = wiki_build.taxonomy_health(conn, post_card=False)
@@ -1629,8 +2296,19 @@ def _tool_kb_taxonomy_health(conn, conversation_id):
 
 
 def _tool_kb_titles(conn, conversation_id, title=""):
-    """The canonical kb/ article titles the model may cross-link to — the interactive analog of the
-    nightly {known_titles} allow-list, scoped to the neighbourhood of `title`. Read-only."""
+    """Implement the kb_titles tool: canonical kb/ article titles available for cross-linking.
+
+    The interactive analog of the nightly {known_titles} allow-list, scoped to
+    the neighbourhood of `title`. Read-only.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        title: Optional kb/ article being authored/edited — anchors the neighbourhood.
+
+    Returns:
+        Tuple (titles_message, None).
+    """
     from . import wiki_build
     allt = wiki_build._known_titles(conn)
     if not allt:
@@ -1642,7 +2320,18 @@ def _tool_kb_titles(conn, conversation_id, title=""):
 
 
 def _tool_kb_needed_links(conn, conversation_id, title):
-    """Suggest missing cross-links for a KB article. Read-only (proposes, never writes)."""
+    """Implement the kb_needed_links tool: suggest missing cross-links for a KB article.
+
+    Read-only; proposes, never writes.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        title: Exact kb/… article title to check.
+
+    Returns:
+        Tuple (message, None).
+    """
     from . import wiki_build
     try:
         res = wiki_build.check_needed_links(conn, title, "propose")
@@ -1658,7 +2347,18 @@ def _tool_kb_needed_links(conn, conversation_id, title):
 
 
 def _tool_kb_research_links(conn, conversation_id, title):
-    """Suggest RELATED Reference articles to link from a KB article, by meaning. Read-only."""
+    """Implement the kb_research_links tool: suggest related Reference articles by meaning.
+
+    Read-only.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        title: Exact kb/… article title to find related Reference links for.
+
+    Returns:
+        Tuple (message, None).
+    """
     from . import wiki_build
     try:
         res = wiki_build.research_article(conn, title)
@@ -1674,7 +2374,18 @@ def _tool_kb_research_links(conn, conversation_id, title):
 
 
 def _tool_kb_read_talk(conn, conversation_id, title):
-    """Read the OPEN AI-talk items (owner directives, conflicts, questions, todos) on a KB article."""
+    """Implement the kb_read_talk tool: read open AI-talk items on a KB article.
+
+    Includes owner directives, conflicts, questions, and todos.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        title: Exact kb/… article title.
+
+    Returns:
+        Tuple (message, None).
+    """
     from . import article_talk
     items = article_talk.open_for(conn, title)
     if not items:
@@ -1686,8 +2397,20 @@ def _tool_kb_read_talk(conn, conversation_id, title):
 
 
 def _tool_kb_add_directive(conn, conversation_id, title, directive):
-    """Add a standing directive to a KB article's talk; maintenance applies it next pass.
-    Additive + undoable (it only appends a talk row)."""
+    """Implement the kb_add_directive tool: add a standing directive to a KB article's talk.
+
+    Maintenance applies the directive on its next pass. Additive and undoable
+    — it only appends a talk row.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        title: Exact kb/… article title.
+        directive: The standing instruction to record.
+
+    Returns:
+        Tuple (confirmation_message, None).
+    """
     from . import article_talk
     from . import notes as notes_svc
     note = notes_svc.get_by_title(conn, title)
@@ -1702,9 +2425,19 @@ def _tool_kb_add_directive(conn, conversation_id, title, directive):
 
 
 def _record_chart(conn, conversation_id, spec: dict) -> dict:
-    """Persist a thin chart MARKER (role='event') so the card re-renders on reload; the UI
-    re-fetches the live series from the spec, so no lab values are copied into messages and a
-    later-corrected/deleted result self-heals."""
+    """Persist a thin chart marker so the UI card re-renders on conversation reload.
+
+    The UI re-fetches the live series from the spec, so no lab values are
+    copied into messages and a later-corrected or deleted result self-heals.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key, or None.
+        spec: Chart spec dict (analyte, unit, from, to, title).
+
+    Returns:
+        SSE event dict {'type': 'chart', 'chart': spec}.
+    """
     if conversation_id is not None:
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'event', ?)",
@@ -1717,9 +2450,18 @@ _RANGE_DAYS = {"3mo": 91, "6mo": 183, "1y": 365, "2y": 730, "5y": 1826}
 
 
 def _range_to_days(rng) -> int | None:
-    """Days for a relative-window token, TOLERANT of the variants a model may emit instead of
-    the canonical enum: '1y', '1 year', '1year', '12 months', 'year', '6mo', etc. Returns None
-    for 'all'/unbounded/unrecognized (no window)."""
+    """Return days for a relative-window token, tolerant of model-emitted variants.
+
+    Accepts canonical enum values ('1y', '6mo', …) and common alternates ('1 year',
+    '1year', '12 months', 'year', etc.). Returns None for 'all'/unbounded/
+    unrecognized tokens (no window).
+
+    Args:
+        rng: Range token from the model, or None.
+
+    Returns:
+        Integer number of days, or None for an unbounded window.
+    """
     if not rng:
         return None
     r = " ".join(str(rng).strip().lower().split())
@@ -1742,9 +2484,21 @@ def _range_to_days(rng) -> int | None:
 
 
 def _resolve_range(rng=None, dfrom=None, dto=None) -> tuple[str | None, str | None]:
-    """(from_iso, to_iso) for a tool's window. Explicit from/to win; otherwise a relative
-    `range` token ('1y', '6mo', …) is resolved against TODAY (owner-local). 'all'/None = no
-    bound. This is where "over the last year" actually becomes a date window."""
+    """Return (from_iso, to_iso) for a tool's date window.
+
+    Explicit from/to win; otherwise a relative `range` token ('1y', '6mo', …)
+    is resolved against TODAY in the owner's local timezone. 'all'/None = no
+    bound. This is where 'over the last year' actually becomes a concrete date
+    window.
+
+    Args:
+        rng: Relative range token (e.g. '1y', '6mo').
+        dfrom: Optional explicit ISO lower bound (overrides rng).
+        dto: Optional explicit ISO upper bound (overrides rng).
+
+    Returns:
+        Tuple (from_iso, to_iso); either may be None for an open bound.
+    """
     if dfrom or dto:
         return dfrom, dto
     days = _range_to_days(rng)
@@ -1757,6 +2511,18 @@ def _resolve_range(rng=None, dfrom=None, dto=None) -> tuple[str | None, str | No
 
 
 def _tool_list_abnormal_labs(conn, rng=None, dfrom=None, dto=None, limit=8) -> str:
+    """Implement the list_abnormal_labs tool: out-of-range analytes in a window.
+
+    Args:
+        conn: SQLite connection.
+        rng: Relative window token (e.g. '1y', '6mo').
+        dfrom: Optional explicit ISO lower bound (overrides rng).
+        dto: Optional explicit ISO upper bound.
+        limit: Max analytes to return (capped 12).
+
+    Returns:
+        Untrusted-fenced list of abnormal analytes, or a 'none found' message.
+    """
     from . import lab_series
     dfrom, dto = _resolve_range(rng, dfrom, dto)
     rows = lab_series.abnormal_analytes(conn, dfrom, dto, limit)
@@ -1773,6 +2539,24 @@ def _tool_list_abnormal_labs(conn, rng=None, dfrom=None, dto=None, limit=8) -> s
 
 
 def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, rng=None, dfrom=None, dto=None):
+    """Implement the show_lab_chart tool: persist a chart marker and return a summary.
+
+    Windows the summary to the requested range so 'over the last year' reports
+    last-year counts. The chart opens to the same window but the user can
+    pan/zoom out to all data.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        analyte: Analyte key from list_abnormal_labs.
+        unit: Optional unit pin when the analyte was recorded in several.
+        rng: Relative window token.
+        dfrom: Optional explicit ISO lower bound.
+        dto: Optional explicit ISO upper bound.
+
+    Returns:
+        Tuple (summary_text, chart_event_or_None).
+    """
     from . import lab_series
     rf, rt = _resolve_range(rng, dfrom, dto)
     s = lab_series.series(conn, analyte, unit)
@@ -1796,8 +2580,18 @@ def _tool_show_lab_chart(conn, conversation_id, analyte, unit=None, rng=None, df
 
 
 def _resolve_analyte(conn, text: str):
-    """Resolve free text to an analyte_key the owner actually has. Returns (key, None) on a
-    confident match, or (None, candidates) when ambiguous / (None, []) when nothing matches."""
+    """Resolve free text to an analyte_key the owner actually has.
+
+    Returns (key, None) on a confident match, (None, candidates) when
+    ambiguous, or (None, []) when nothing matches.
+
+    Args:
+        conn: SQLite connection.
+        text: Free-text analyte name or key.
+
+    Returns:
+        Tuple (analyte_key, None) or (None, list_of_candidate_dicts).
+    """
     from . import lab_series, lab_parse
     items = {a["analyte"]: a for a in lab_series.list_analytes(conn)}
     t = " ".join((text or "").lower().split())
@@ -1813,7 +2607,15 @@ def _resolve_analyte(conn, text: str):
 
 
 def _fmt_point(p: dict) -> str:
-    """A faithful one-liner for a result row: value + unit + date + the lab/range status."""
+    """Return a faithful one-liner for a result row: value + unit + date + status.
+
+    Args:
+        p: Lab result point dict with value_text, unit, collected_at, status,
+            and optional ref_text fields.
+
+    Returns:
+        Formatted string such as '5.4 g/dL on 2025-03-01 (status: normal)'.
+    """
     return (f"{p['value_text']}{(' ' + p['unit']) if p['unit'] else ''} on {p['collected_at']} "
             f"(status: {p['status']}{('; ref ' + p['ref_text']) if p['ref_text'] else ''})")
 
@@ -1823,6 +2625,15 @@ _LAB_MUZZLE = (" Report the value, unit, and date exactly as given; do not infer
 
 
 def _no_analyte_msg(text, candidates) -> str:
+    """Return a helpful 'no analyte found' message for the model.
+
+    Args:
+        text: The free-text input the model supplied.
+        candidates: List of candidate analyte dicts from _resolve_analyte.
+
+    Returns:
+        Untrusted-fenced message naming candidates or confirming absence.
+    """
     if candidates:
         lst = "; ".join(f"{c['test_name']} (analyte_key '{c['analyte']}', {c['n']} results)" for c in candidates[:8])
         return _untrusted("lab", f"'{text}' matches several labs — re-ask with the analyte_key: {lst}")
@@ -1830,6 +2641,20 @@ def _no_analyte_msg(text, candidates) -> str:
 
 
 def _tool_lab_stat(conn, conversation_id, analyte, unit=None, rng=None, dfrom=None, dto=None):
+    """Implement the lab_stat tool: summary statistics for an analyte over a window.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        analyte: Free-text analyte name or analyte_key.
+        unit: Optional unit pin.
+        rng: Relative window token.
+        dfrom: Optional explicit ISO lower bound.
+        dto: Optional explicit ISO upper bound.
+
+    Returns:
+        Tuple (stats_text, None).
+    """
     from . import lab_series
     key, cand = _resolve_analyte(conn, analyte)
     if not key:
@@ -1863,6 +2688,23 @@ def _tool_lab_stat(conn, conversation_id, analyte, unit=None, rng=None, dfrom=No
 
 def _tool_lab_value_at(conn, conversation_id, analyte, which, unit=None, threshold=None,
                        direction="above", rng=None, dfrom=None, dto=None):
+    """Implement the lab_value_at tool: a specific result point for an analyte.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key (unused; for consistency).
+        analyte: Free-text analyte name or analyte_key.
+        which: Which point to return ('latest', 'first', 'first_out_of_range', etc.).
+        unit: Optional unit pin.
+        threshold: Numeric threshold for *_cross selectors.
+        direction: 'above' or 'below' for *_cross selectors.
+        rng: Relative window token.
+        dfrom: Optional explicit ISO lower bound.
+        dto: Optional explicit ISO upper bound.
+
+    Returns:
+        Tuple (value_text, None).
+    """
     from . import lab_series
     key, cand = _resolve_analyte(conn, analyte)
     if not key:
@@ -1877,7 +2719,21 @@ def _tool_lab_value_at(conn, conversation_id, analyte, which, unit=None, thresho
 
 
 def _record_applied(conn, conversation_id, action_type: str, display: str, undo: dict) -> dict:
-    """Log an auto-applied additive op (status='applied') with its inverse for Undo."""
+    """Log an auto-applied additive op with status='applied' and its inverse for Undo.
+
+    Writes both a staging_actions row (so Undo has the inverse op) and a
+    chat-record event row (so the approval persists across reloads).
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key, or None.
+        action_type: Staging action type string (e.g. 'ADD_ITEM', 'LOG').
+        display: Human-readable summary surfaced in the UI.
+        undo: Inverse-op dict stored for the Undo handler.
+
+    Returns:
+        SSE event dict {'type': 'applied', 'action': {'id': …, 'summary': …}}.
+    """
     cur = conn.execute(
         "INSERT INTO staging_actions (conversation_id, type, payload_json, status) "
         "VALUES (?, ?, ?, 'applied')",
@@ -1895,6 +2751,19 @@ def _record_applied(conn, conversation_id, action_type: str, display: str, undo:
 
 
 def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True, priority=None):
+    """Implement the add_list_item tool: append an item to a list note.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        list_title: Target list title (bare name or lists/…).
+        item: Item text, without bullet/checkbox/priority prefix.
+        checkbox: Whether to add a checkbox.
+        priority: Optional priority (1 = highest).
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     loc = notes_svc.conversation_location(conn, conversation_id)
     r = quicktasks.add_list_item(conn, list_title, item, checkbox, priority, conversation_id=conversation_id, location=loc)
     display = f"Added “{item}” to [[{r['note_title']}]]" + (" (new list)" if r["created"] else "")
@@ -1903,6 +2772,15 @@ def _tool_add_list_item(conn, conversation_id, list_title, item, checkbox=True, 
 
 
 def _tool_read_list(conn, list_title):
+    """Implement the read_list tool: return a list note's items with indices.
+
+    Args:
+        conn: SQLite connection.
+        list_title: List title (bare name or lists/…).
+
+    Returns:
+        Untrusted-fenced indexed item list, or an error string.
+    """
     title = notes_svc.root_title(list_title, "lists")
     note = notes_svc.get_by_title(conn, title)
     if note is None or note["kind"] != "list":
@@ -1917,6 +2795,19 @@ def _tool_read_list(conn, list_title):
 
 
 def _tool_set_item_checked(conn, conversation_id, list_title, item, checked, index=None):
+    """Implement the set_item_checked tool: check or uncheck a list item.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        list_title: List title.
+        item: Exact item text (no checkbox prefix).
+        checked: Target checked state.
+        index: Optional 0-based index to disambiguate duplicates.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     r = quicktasks.set_item_checked(conn, list_title, item, checked, ordinal=index, conversation_id=conversation_id)
     display = ("Checked off" if checked else "Unchecked") + f" “{item}” in [[{r['note_title']}]]"
     undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
@@ -1924,6 +2815,19 @@ def _tool_set_item_checked(conn, conversation_id, list_title, item, checked, ind
 
 
 def _tool_set_item_priority(conn, conversation_id, list_title, item, priority, index=None):
+    """Implement the set_item_priority tool: set or clear a list item's priority.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        list_title: List title.
+        item: Exact item text.
+        priority: Priority integer (1 = highest), or None to clear.
+        index: Optional 0-based index to disambiguate duplicates.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     r = quicktasks.set_item_priority(conn, list_title, item, priority, ordinal=index, conversation_id=conversation_id)
     display = (f"Set “{item}” to P{priority}" if priority else f"Cleared priority on “{item}”") + f" in [[{r['note_title']}]]"
     undo = {"op": "replace_line", "title": r["note_title"], "from": r["new_line"], "to": r["old_line"]}
@@ -1931,6 +2835,18 @@ def _tool_set_item_priority(conn, conversation_id, list_title, item, priority, i
 
 
 def _tool_add_sublist(conn, conversation_id, parent_list, child_name, items=None):
+    """Implement the add_sublist tool: create a child list under a parent list.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        parent_list: Parent list title.
+        child_name: Child list name (filed under lists/<Parent>/<child>).
+        items: Optional initial items to populate.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     r = quicktasks.add_sublist(conn, parent_list, child_name, items, conversation_id=conversation_id)
     display = f"Added sub-list [[{r['child_title']}]] under [[{r['parent_title']}]]"
     undo = {"op": "remove_line", "title": r["parent_title"], "line": r["parent_line"]}
@@ -1938,6 +2854,18 @@ def _tool_add_sublist(conn, conversation_id, parent_list, child_name, items=None
 
 
 def _tool_set_tags(conn, conversation_id, title, tags, mode="add"):
+    """Implement the set_tags tool: stage a tag change on a note for owner review.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        title: Exact note title.
+        tags: Tag names to apply.
+        mode: 'add', 'remove', or 'replace'.
+
+    Returns:
+        Tuple (message, staging_event_or_None).
+    """
     note = notes_svc.get_by_title(conn, title)
     if note is None:
         return f"No note titled '{title}'.", None
@@ -1964,6 +2892,21 @@ def _tool_set_tags(conn, conversation_id, title, tags, mode="add"):
 
 
 def _tool_log_entry(conn, conversation_id, target, text, date=None):
+    """Implement the log_entry tool: append a dated entry to a log note.
+
+    Also fires a 'log_appended' workflow event so event-driven automations
+    (e.g. the day-log summariser) can react.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        target: Log note title.
+        text: Entry text.
+        date: ISO date; defaults to today.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     loc = notes_svc.conversation_location(conn, conversation_id)
     r = quicktasks.append_log(conn, target, text, date, conversation_id=conversation_id, location=loc)
     display = f"Logged to [[{r['note_title']}]]" + (" (new log)" if r["created"] else "")
@@ -1979,8 +2922,15 @@ def _tool_log_entry(conn, conversation_id, target, text, date=None):
 
 
 def _notify_share_created(kind: str, url: str) -> None:
-    """Push the new share link to the owner's devices so it's easy to grab/forward
-    from anywhere. Best-effort; deep-links to the Shares admin."""
+    """Push a new share link to the owner's devices for easy grab/forward.
+
+    Best-effort — failures are silently swallowed. Deep-links to the Shares
+    admin page.
+
+    Args:
+        kind: Human-readable share type (e.g. 'View share link').
+        url: The share URL to deliver.
+    """
     try:
         from . import push
         push.notify(f"{kind} created", url, "/shares")
@@ -1989,6 +2939,17 @@ def _notify_share_created(kind: str, url: str) -> None:
 
 
 def _tool_create_share_link(conn, conversation_id, title, scope="view"):
+    """Implement the create_share_link tool: mint a view or edit share link for a note.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        title: Exact note title to share.
+        scope: 'view' or 'edit'.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import share as share_svc
     if scope not in ("view", "edit"):
         return "scope must be 'view' or 'edit'.", None
@@ -2005,10 +2966,27 @@ def _tool_create_share_link(conn, conversation_id, title, scope="view"):
 
 def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
                               dest_title=None, ttl_days=14, bind=False, single_use=False):
-    """Mint a DRAFT guided AI intake link. The owner reviews/activates it (approval
-    #1) before recipients can use it. The interview AI (guided_svc) has no brain
-    access. `sub_prompt` = the goal-specific instructions you authored from the
-    owner's answers; it is wrapped at runtime by a fixed safety preamble."""
+    """Implement the create_guided_share tool: mint a DRAFT guided AI intake link.
+
+    The owner reviews and activates it (approval #1) before recipients can use
+    it. The interview AI (guided_svc) has no brain access. `sub_prompt` is the
+    goal-specific instructions authored from the owner's answers; it is wrapped
+    at runtime by a fixed safety preamble.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        goal: One-line intake goal.
+        sub_prompt: The interview instructions for the intake AI.
+        intro: Optional warm intro the recipient sees.
+        dest_title: Note the approved result lands in (created if absent).
+        ttl_days: Link TTL in days.
+        bind: Lock to the first device that begins it.
+        single_use: Close the link after one completed response.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import share as share_svc
     from . import guided as guided_svc
     bad = guided_svc.sensitive_reason(f"{goal}\n{intro}\n{sub_prompt}")
@@ -2037,12 +3015,34 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
 def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, notes=None, intro="",
                                 persona_voice="", topics="", lab_analytes=None, lab_from=None, lab_to=None,
                                 ttl_days=0, bind=False, single_use=False):
-    """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
-    (it ANSWERS from the owner's notes instead of collecting). `prefixes` (folders) and
-    `notes` (exact titles) only FIND candidate notes; the owner approves exactly which
-    are exposed and activates the link in Shares. Never expose a root/whole-brain scope.
-    Optionally `lab_analytes` ALSO lets the assistant look up & chart specific labs (still
-    owner-approved & activated). A labs-only assisted link is allowed (no folder/note needed)."""
+    """Implement the create_research_share tool: mint a DRAFT scoped read-only research Q&A link.
+
+    The inverse of guided intake: answers from the owner's notes instead of
+    collecting. `prefixes` (folders) and `notes` (exact titles) only FIND
+    candidate notes; the owner approves exactly which are exposed and activates
+    the link in Shares. Never exposes a root/whole-brain scope. Optionally
+    `lab_analytes` also lets the assistant look up and chart specific labs
+    (still owner-approved). A labs-only link is allowed (no folder/note needed).
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        label: Short label for the owner's reference.
+        prefixes: Folder path(s) to draw candidate notes from.
+        notes: Exact note titles to expose.
+        intro: Optional greeting the recipient sees.
+        persona_voice: Optional tone/role for the answering AI.
+        topics: Hard scope the AI must follow.
+        lab_analytes: Optional analyte_key(s) to also expose.
+        lab_from: Optional ISO lower bound clamping the shared labs window.
+        lab_to: Optional ISO upper bound clamping the shared labs window.
+        ttl_days: Link TTL in days (0 = never).
+        bind: Lock to the first device that opens it.
+        single_use: Allow only one recipient session.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import share as share_svc
     from . import research as research_svc
     from . import research_scope as rscope
@@ -2077,10 +3077,25 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
 
 def _tool_create_chat_share(conn, conversation_id, label=None, owner_name=None, persist=True,
                             otp_required=False, ttl_days=0):
-    """Mint a DRAFT end-to-end-encrypted chat link. Because the channel key is generated in the
-    owner's browser (the server never sees it), the AI can only set it up — the owner FINALIZES
-    it in one tap under Advanced → Shares, which mints the key and reveals the link (+ one-time
-    code, if required) to send."""
+    """Implement the create_chat_share tool: mint a DRAFT end-to-end-encrypted chat link.
+
+    The channel key is generated in the owner's browser (the server never sees
+    it), so the AI can only set the link up — the owner FINALIZES it in one tap
+    under Advanced → Shares, which mints the key and reveals the link (and a
+    one-time code, if required) to send.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        label: Short label for the owner's reference.
+        owner_name: Display name the recipient sees.
+        persist: Keep an encrypted backlog; False = ephemeral relay only.
+        otp_required: Require a one-time code delivered out-of-band.
+        ttl_days: Expiry in days (0 = never).
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import chat_share as chat_svc
     token, link_id = chat_svc.create_pending_channel(
         conn, persist=bool(persist), otp_required=bool(otp_required),
@@ -2107,6 +3122,14 @@ def _tool_create_chat_share(conn, conversation_id, label=None, owner_name=None, 
 
 
 def _tool_list_share_links(conn):
+    """Implement the list_share_links tool: return all active share links.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Untrusted-fenced list of active links, or 'no active share links'.
+    """
     from . import share as share_svc
     rows = conn.execute(
         "SELECT sl.token, sl.scope, sl.kind, sl.label, n.title FROM share_links sl "
@@ -2120,6 +3143,20 @@ def _tool_list_share_links(conn):
 
 
 def _tool_revoke_share_link(conn, conversation_id, token=None, title=None):
+    """Implement the revoke_share_link tool: deactivate share links by token or note title.
+
+    Captures the exact links being revoked so (a) the message can name the kinds
+    affected and (b) Undo reactivates only these tokens.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        token: Specific link token to revoke, or None.
+        title: Note title whose active links should all be revoked, or None.
+
+    Returns:
+        Tuple (applied_message_or_error, applied_event_or_None).
+    """
     # Capture the exact links being revoked so (a) the message can name the kinds
     # affected (revoking by title can hit view/edit/guided/research at once) and
     # (b) Undo reactivates ONLY these tokens, not every link the note ever had.
@@ -2148,7 +3185,24 @@ def _tool_revoke_share_link(conn, conversation_id, token=None, title=None):
 
 
 def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assisted"):
-    """Returns (result_text, event_or_None). event is an SSE dict to surface."""
+    """Dispatch a named tool call and return (result_text, event_or_None).
+
+    Enforces a hard mode boundary (fail closed): never dispatches a tool the
+    current mode doesn't advertise, even if a replayed or injected turn names
+    it. This is the real enforcement of research mode's read-only guarantee,
+    not just omission from the tool list.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        name: Tool name the model requested.
+        args: Parsed argument dict from the model's tool call.
+        mode: Current agent mode ('assisted', 'research', or 'analyze').
+
+    Returns:
+        Tuple (result_text, event_or_None) where event is an SSE dict to
+        surface to the client (e.g. staging or applied events).
+    """
     # Hard mode boundary (fail closed): never dispatch a tool the current mode
     # doesn't advertise, even if a replayed/injected turn names it. This is the
     # real enforcement of research mode's read-only guarantee, not just omission.
@@ -2310,15 +3364,38 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 
 
 def _norm_url(u: str) -> str:
+    """Strip trailing punctuation from a URL for comparison.
+
+    Args:
+        u: Raw URL string, possibly followed by sentence punctuation.
+
+    Returns:
+        URL with trailing '.,;:)\"\'' characters removed.
+    """
     return u.rstrip(".,;:)\"'")
 
 
 def _extract_urls(text: str) -> set[str]:
+    """Return the set of normalised URLs found in text.
+
+    Args:
+        text: Arbitrary text, possibly containing URLs.
+
+    Returns:
+        Set of stripped URL strings.
+    """
     return {_norm_url(u) for u in _URL_RE.findall(text or "")}
 
 
 def _minutes_since_utc(ts: str | None) -> float | None:
-    """Minutes since a stored UTC timestamp ('YYYY-MM-DD HH:MM:SS'), or None if unparseable."""
+    """Return minutes elapsed since a stored UTC timestamp, or None if unparseable.
+
+    Args:
+        ts: UTC timestamp string in 'YYYY-MM-DD HH:MM:SS' format, or None.
+
+    Returns:
+        Float minutes since ts, or None if ts is absent or unparseable.
+    """
     if not ts:
         return None
     from datetime import datetime, timezone
@@ -2332,12 +3409,25 @@ def _minutes_since_utc(ts: str | None) -> float | None:
 
 
 def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[dict]:
-    """Load the conversational turns for the model, FRESHNESS-WINDOWED. Returns [] (a clean slate)
-    when the client signals a fresh context (left the app / navigated away and back) OR the gap
-    since the last turn exceeds _RESUME_GAP_MINUTES — so a returning user can't get a stale value
-    re-asserted from an old answer. Within a recent, continuous conversation, prior ASSISTANT turns
-    are tagged as possibly-stale so the model re-queries values rather than trusting its own prose.
-    (Prior turns stay in the DB for display; this only shapes what the model sees.)"""
+    """Load conversational turns for the model, freshness-windowed.
+
+    Returns [] (a clean slate) when the client signals a fresh context (user
+    left the app / navigated away and back) OR the gap since the last turn
+    exceeds _RESUME_GAP_MINUTES — so a returning user cannot get a stale value
+    re-asserted from an old answer. Within a recent, continuous conversation,
+    prior ASSISTANT turns are tagged as possibly-stale so the model re-queries
+    values rather than trusting its own prose. Prior turns stay in the DB for
+    display; this only shapes what the model sees.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        fresh_context: True when the client flagged a context reset.
+
+    Returns:
+        List of {'role': …, 'content': …} dicts for the LLM provider, possibly
+        empty.
+    """
     rows = conn.execute(
         # Only conversational turns go to the model; 'event' rows (applied-action records shown in
         # the UI) are excluded from the LLM history.
@@ -2363,9 +3453,20 @@ def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[d
 
 
 def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
-    """Make the reply trustworthy before it's persisted/clicked: neutralize every [[Title]] that
-    resolves to no live note (reusing the KB dead-link sweep), and strip any URL no tool returned.
-    Returns (verified_text, changed)."""
+    """Sanitize the reply before persistence: neutralize dead [[links]] and strip ungrounded URLs.
+
+    Neutralizes every [[Title]] that resolves to no live note (reusing the KB
+    dead-link sweep) and strips any URL that no tool returned this turn.
+
+    Args:
+        conn: SQLite connection.
+        text: Raw assistant reply text.
+        allowed_urls: Set of URLs that tools genuinely returned this turn.
+
+    Returns:
+        Tuple (verified_text, changed) where changed is True if anything was
+        modified.
+    """
     from . import wikilinks, wiki_build
     bad_titles = {
         t for t in wikilinks.extract_links(text)
@@ -2377,6 +3478,7 @@ def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
     dropped_url = False
 
     def _md(m):
+        """Keep a markdown link if its URL was tool-sourced; otherwise drop the URL."""
         nonlocal dropped_url
         label, url = m.group(1), m.group(2)
         if _norm_url(url) in allowed_urls:
@@ -2385,6 +3487,7 @@ def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
         return label                                   # keep the link text, drop the fabricated URL
 
     def _bare(m):
+        """Keep a bare URL if it was tool-sourced; otherwise remove it."""
         nonlocal dropped_url
         if _norm_url(m.group(0)) in allowed_urls:
             return m.group(0)
@@ -2403,24 +3506,45 @@ _ELLIPSIS_RE = re.compile(r"\s*(?:\.\.\.|…)\s*")
 
 
 def _norm_quote(s: str) -> str:
-    """Fold a span to compare a quote against its source robustly: lowercase, drop all punctuation
-    and quote marks, collapse whitespace — so reformatting (smart quotes, spacing) isn't a mismatch
-    while genuine fabrication still fails."""
+    """Normalise a span for robust quote comparison against its source.
+
+    Lowercases, drops all punctuation and quote marks, and collapses whitespace
+    so reformatting (smart quotes, spacing differences) is not a mismatch, while
+    genuine fabrication still fails.
+
+    Args:
+        s: Raw text span to normalise.
+
+    Returns:
+        Normalised ASCII-alphanum-and-space string.
+    """
     import unicodedata
     s = unicodedata.normalize("NFKC", s or "").lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
 def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
-    """Downgrade any "verbatim quotation" in `text` that does NOT appear in `corpus` (everything a
-    tool returned this turn + the user's message) by removing its quote marks — so the model can't
-    pass off an invented or mis-remembered quote as a real one. Conservative to avoid false positives:
-    only acts on multi-word (≥6) quotes, normalizes aggressively, and treats an elided quote ("a … b")
-    as verified when EACH part appears. Returns (text, changed)."""
+    """Downgrade ungrounded verbatim quotations by stripping their quote marks.
+
+    Removes quote marks from any quoted span in `text` that does NOT appear in
+    `corpus` (everything a tool returned this turn plus the user's message) so
+    the model cannot pass off an invented or mis-remembered quote as a real one.
+    Conservative to avoid false positives: only acts on multi-word (≥6) quotes,
+    normalizes aggressively, and treats an elided quote ('a … b') as verified
+    when EACH part appears.
+
+    Args:
+        text: The assistant reply to verify.
+        corpus: All tool results and user text from this turn, concatenated.
+
+    Returns:
+        Tuple (verified_text, changed).
+    """
     cn = _norm_quote(corpus)
     changed = False
 
     def repl(m):
+        """Strip quote marks from a span that cannot be traced to this turn's data."""
         nonlocal changed
         inner = m.group(1).strip()
         if len(inner.split()) < 6:                      # short quotes (a title, a term) — too noisy to police
@@ -2448,10 +3572,19 @@ _ISODATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
 def _verify_values(text: str, corpus: str) -> tuple[str, bool]:
-    """Flag any measurement-shaped figure or ISO date in the reply that does NOT appear in what a
-    tool returned this turn — so a fabricated owner value can't ride in as unquoted analysis prose.
-    Conservative + SOFT: appends an 'unverified figures' notice (never mangles text). Returns
-    (text, changed)."""
+    """Flag measurement-shaped figures or ISO dates not grounded in this turn's tool corpus.
+
+    Prevents a fabricated owner value from riding in as unquoted analysis prose.
+    Conservative and SOFT: appends an 'unverified figures' notice rather than
+    mangling text.
+
+    Args:
+        text: The assistant reply to verify.
+        corpus: All tool results from this turn, concatenated.
+
+    Returns:
+        Tuple (text_with_optional_notice, changed).
+    """
     cn = _norm_quote(corpus)
     bad: list[str] = []
     for m in list(_VALUE_RE.finditer(text)) + list(_ISODATE_RE.finditer(text)):
@@ -2483,8 +3616,18 @@ _RESEARCH_NUDGE = (
 
 
 def _looks_factual(text: str) -> bool:
-    """Conservative: True if the reply ASSERTS something (so a zero-retrieval research answer should be
-    re-grounded), False for short acks, clarifying questions, or an honest 'I don't have it'."""
+    """Return True if the reply appears to assert facts rather than asking or deferring.
+
+    Conservative: True triggers a research-mode re-grounding pass for a
+    zero-retrieval answer. False for short acks, clarifying questions, or an
+    honest 'I don't have it'.
+
+    Args:
+        text: The assistant reply draft.
+
+    Returns:
+        True if the text looks like a factual assertion; False otherwise.
+    """
     t = (text or "").strip()
     if len(t) < 60 or t.endswith("?"):
         return False
@@ -2499,11 +3642,37 @@ def _looks_factual(text: str) -> bool:
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
               mode: str = "assisted", fresh_context: bool = False,
               deep: bool = False) -> AsyncGenerator[dict, None]:
-    """Stream the architect's reply. `mode` = 'assisted' (Full Brain) | 'research' (read-only).
-    `fresh_context` (set by the client when the user left the app / navigated away and back / is
-    resuming after a break) clears prior conversation context so the model re-grounds instead of
-    reusing stale earlier answers. `deep` (read-only only) raises the research budget for a
-    multi-step question without loosening its strict, facts-only posture."""
+    """Stream the architect's reply as SSE-friendly event dicts.
+
+    Drives the full agent loop: persist the user turn, call the LLM, dispatch
+    tool calls, verify the reply, and persist the assistant turn. Yields event
+    dicts to the chat router.
+
+    `mode` = 'assisted' (Full Brain, can propose changes) | 'research'
+    (read-only, strict facts-only posture) | 'analyze' (read-only with a
+    deeper reasoning budget).
+
+    `fresh_context` — set by the client when the user left the app / navigated
+    away and back / is resuming after a break — clears prior conversation
+    context so the model re-grounds instead of reusing stale earlier answers.
+
+    `deep` (read-only modes only) raises the iteration and token budget for a
+    multi-step question without loosening the strict research posture or granting
+    write tools.
+
+    Args:
+        conversation_id: Current conversation primary key.
+        user_text: The user's new message.
+        location: Optional dict with lat/lon/location_label from the client.
+        mode: Agent mode string ('assisted', 'research', or 'analyze').
+        fresh_context: True when the client flags a context reset.
+        deep: True to raise the research budget for a complex question.
+
+    Yields:
+        Event dicts: {'type': 'token', 'text': …}, {'type': 'tool', …},
+        {'type': 'staging'|'applied', …}, {'type': 'replace_text', …},
+        {'type': 'chart', …}, {'type': 'error', …}, {'type': 'done'}.
+    """
     settings = get_settings()
     # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
     # claude* → Anthropic; blank → the LLM_PROVIDER default).
@@ -2521,6 +3690,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     loc = location or {}
 
     def _persist_user_turn():
+        """Write the user message to the DB; offloaded to avoid blocking the event loop."""
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
             "VALUES (?, 'user', ?, ?, ?, ?)",
@@ -2672,6 +3842,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
         if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
         def _persist_reply():
+            """Write the assistant reply and its tool-step records in one offloaded DB commit.
+
+            Keeping the INSERT, step inserts, and commit together ensures the
+            write lock is never held across an await, which would re-introduce
+            the event-loop freeze.
+
+            Returns:
+                The new messages.id for the persisted reply row.
+            """
             # The reply INSERT, the tool-step inserts, and the commit are ONE offloaded unit so the
             # write lock is never held across an await (which would re-introduce the loop-freeze).
             cur = conn.execute(

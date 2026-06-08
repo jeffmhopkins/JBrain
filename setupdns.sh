@@ -15,6 +15,18 @@ err()  { printf '\033[31m%s\033[0m\n' "$1" >&2; }
 [[ -f .env ]] || { err "No .env found. Run ./install.sh first."; exit 1; }
 [[ -f Caddyfile.template ]] || { err "Caddyfile.template missing — are you in the JBrain repo?"; exit 1; }
 
+# Resolve how we invoke docker (fall back to sudo if the docker group isn't applied yet).
+DOCKER="docker"
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    DOCKER="sudo docker"
+  else
+    err "Docker daemon isn't reachable. Start it (and ensure your user can run docker), then re-run."
+    exit 1
+  fi
+fi
+DC="$DOCKER compose"; $DC version >/dev/null 2>&1 || DC="$DOCKER-compose"
+
 ask() { # ask VAR "Prompt" "default"
   local __var="$1" __prompt="$2" __default="${3:-}" __input
   if [[ -n "$__default" ]]; then
@@ -74,7 +86,7 @@ echo
 # --- Re-render the public Caddyfile ----------------------------------------
 # Inject a bcrypt of the access key to gate the live deploy console (best-effort,
 # mirroring update.sh); if hashing can't run, leave the placeholder for ./update.sh.
-HASH="$(docker run --rm caddy:2 caddy hash-password --plaintext "$KEY" 2>/dev/null | tr -d '\r' || true)"
+HASH="$($DOCKER run --rm caddy:2 caddy hash-password --plaintext "$KEY" 2>/dev/null | tr -d '\r' || true)"
 if [[ -n "$HASH" ]]; then
   sed -e "s|{{DOMAIN}}|$DOMAIN|g" -e "s|{{ACME_EMAIL}}|$EMAIL|g" -e "s|{{LOG_AUTH_HASH}}|$HASH|g" \
     Caddyfile.template > Caddyfile
@@ -95,7 +107,6 @@ info "Updated .env (mode=public, domain=$DOMAIN)."
 # --- Reload Caddy -----------------------------------------------------------
 # `caddy reload` is atomic: a bad config is rejected and the running one stays up,
 # so a typo can't take the site down. Start the stack first if it isn't up.
-DC="docker compose"; $DC version >/dev/null 2>&1 || DC="docker-compose"
 echo
 info "Reloading Caddy to pick up the new domain…"
 $DC up -d caddy >/dev/null 2>&1 || true

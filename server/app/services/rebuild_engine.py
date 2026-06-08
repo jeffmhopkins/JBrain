@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import AsyncGenerator
 
 from . import llm
@@ -31,8 +32,16 @@ _MAX_TOKENS_CEILING = 16000
 
 
 def _clamp_tokens(n) -> int:
-    """Bound a requested Stage-2 budget: never below the default, never above the ceiling
-    (so an approved re-draft can grow the budget without an unbounded cost blowout)."""
+    """Clamp a requested Stage-2 token budget between the default and the ceiling.
+
+    An approved re-draft can grow the budget without an unbounded cost blowout.
+
+    Args:
+        n: Requested token count (any type; non-numeric falls back to the default).
+
+    Returns:
+        Clamped integer token budget.
+    """
     try:
         n = int(n)
     except (TypeError, ValueError):
@@ -42,6 +51,9 @@ def _clamp_tokens(n) -> int:
 _GATHER_MAX_ITER = 5
 _GATHER_MAX_TOKENS = 1500
 _GATHER_SEARCH_LIMIT = 8
+# Max seconds to wait on the session-start entity rebind before proceeding without it. The
+# rebind keeps running in the background; this just caps how long it can delay the gather UI.
+_REBIND_TIMEOUT_S = 10
 
 _GATHER_TOOLS = [
     llm.ToolDef(
@@ -66,6 +78,15 @@ _GATHER_TOOLS = [
 
 
 def _notes_meta(conn, ids) -> list[dict]:
+    """Fetch lightweight note metadata (id, title, date) for a list of note IDs.
+
+    Args:
+        conn: Database connection.
+        ids: Iterable of note IDs to look up.
+
+    Returns:
+        List of dicts with keys id, title, and date (ISO date string).
+    """
     ids = [int(i) for i in ids if i]
     if not ids:
         return []
@@ -77,6 +98,16 @@ def _notes_meta(conn, ids) -> list[dict]:
 
 
 def _gather_system(title: str, seed_titles: list[str], hint: str | None) -> str:
+    """Build the Stage-1 gather agent system prompt.
+
+    Args:
+        title: KB article title being rebuilt.
+        seed_titles: Deterministic seed note titles from prior citations and entity index.
+        hint: Optional owner guidance injected into the prompt.
+
+    Returns:
+        System prompt string for the gather agent.
+    """
     seed = "\n".join(f"- {t}" for t in seed_titles) or "(none yet)"
     extra = f"\n\nThe owner asks specifically: {hint.strip()}" if (hint or "").strip() else ""
     return (
@@ -90,9 +121,19 @@ def _gather_system(title: str, seed_titles: list[str], hint: str | None) -> str:
 
 
 async def run_gather(run, hint: str | None = None, append: bool = False) -> AsyncGenerator[dict, None]:
-    """Stage 1: stream the gather agent's tool use and emit the proposed candidate sources."""
+    """Run Stage 1: stream the gather agent's tool use and emit proposed candidate sources.
+
+    Args:
+        run: Active RebuildRun session object.
+        hint: Optional owner guidance forwarded to the gather agent's system prompt.
+        append: If True, merge new candidates into the existing run.candidates list
+            rather than replacing it.
+
+    Yields:
+        Event dicts of type tool_use, tool_result, sources_proposed, or error.
+    """
     from ..db import get_conn
-    from . import search, wiki_build, wiki_guides
+    from . import entity_index, search, wiki_build, wiki_guides
 
     conn = get_conn()
     run.status = "gathering"
@@ -100,6 +141,31 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         run.status = "error"
         yield {"type": "error", "message": "No LLM credentials configured."}
         return
+
+    # Freshen the entity index (cheap, embeddings-free) so a People page created or renamed
+    # since the last full rebuild — and any freshly-seeded nickname alias — is linkable at
+    # draft time. Without this the deterministic add_links backstop and the known-aliases
+    # block work off a stale index and leave a known person plain.
+    #
+    # CRITICAL: open a FRESH connection inside the worker thread — a sqlite3 connection must
+    # never be shared across threads. Connections are opened check_same_thread=False, so passing
+    # this request's `conn` into the thread does NOT raise; instead the two threads contend on the
+    # connection's mutex and can DEADLOCK (an unkillable hang that the try/except can't catch).
+    # Bounded by a timeout so a large KB can't stall the gather UI either; the rebind keeps
+    # running in the background and is best-effort, so any failure/timeout just falls back to the
+    # existing index.
+    if not getattr(run, "rebound", False):
+        run.rebound = True
+
+        def _rebind() -> None:
+            """Rebuild the entity index on a thread-local connection (never the request's)."""
+            from ..db import get_conn as _thread_conn
+            entity_index.rebuild(_thread_conn(), sync_embeddings=False)
+
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_rebind), timeout=_REBIND_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 — incl. asyncio.TimeoutError; rebind is best-effort
+            log.warning("rebuild: entity rebind skipped (%s)", exc)
 
     art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
     run.known = wiki_build._known_titles(conn)
@@ -173,10 +239,27 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
 
 
 def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
+    """Build the final candidate and skipped source lists from the gather agent's proposal.
+
+    Falls back to the deterministic seed set when the proposal is empty or unusable.
+    Private-domain notes are flagged and defaulted off on public pages.
+
+    Args:
+        conn: Database connection.
+        title: KB article title being rebuilt.
+        pool: Dict mapping lowercase title -> note metadata, populated during gather.
+        proposal: Raw propose_sources args dict from the agent, or None.
+        seed_titles: Deterministic seed titles to fall back to.
+        wiki_guides: wiki_guides module (injected to avoid a top-level import).
+
+    Returns:
+        Tuple of (candidates, skipped) — each a list of source candidate dicts.
+    """
     target_private = wiki_guides.is_private_title(title)
     seen: set[int] = set()
 
     def mk(t: str, reason: str, added: bool = False):
+        """Build a candidate dict for a note title, looking it up in pool or the DB."""
         m = pool.get((t or "").lower())
         if not m:
             row = conn.execute(
@@ -215,9 +298,24 @@ def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
 
 
 async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Stream ONE drafting turn from run.messages: thinking + the article body, then lint,
-    stage on the run, and emit `done`. Shared by the initial draft and Guide. `max_tokens`
-    is the (clamped) output budget — a re-draft after truncation passes a larger value."""
+    """Stream one drafting turn from run.messages and emit the article body.
+
+    Shared by the initial draft and Guide revisions. Streams thinking deltas and
+    content deltas, then lints the assembled draft (dead links, structure), stages
+    the result on the run, and emits a done event.
+
+    An auto-continue pass resumes a truncated draft once before surfacing the
+    truncation to the user. `max_tokens` is the (clamped) output budget; a re-draft
+    after truncation passes a larger value.
+
+    Args:
+        run: Active RebuildRun session object.
+        conn: Database connection.
+        max_tokens: Output token budget; clamped to [_MAX_TOKENS, _MAX_TOKENS_CEILING].
+
+    Yields:
+        Event dicts of type thinking_delta, content_delta, lint, done, or error.
+    """
     from . import wiki_build, wiki_guides
 
     budget = _clamp_tokens(max_tokens)
@@ -330,8 +428,17 @@ async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[
 
 
 async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Stage 2: write the article from ONLY the curated source ids. `max_tokens` lets an
-    approved re-draft (after truncation) run at a larger output budget."""
+    """Run Stage 2: write the article from only the curated source note IDs.
+
+    Args:
+        run: Active RebuildRun session object.
+        source_ids: IDs of the curated source notes to write from.
+        max_tokens: Output token budget; allows an approved re-draft after truncation
+            to run at a larger budget.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
     from . import wiki_build
 
@@ -359,8 +466,176 @@ async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -
         yield ev
 
 
+def _load_backlinks(conn, title: str, *, cap_each: int = 400, max_links: int = 12) -> list[dict]:
+    """Load read-only backlink context: kb articles that link TO this one.
+
+    Firewall on the way IN: when the target article is non-private, a private-domain
+    (Health/Finance) backlink source is EXCLUDED so its content can never leak into a
+    shareable article. Raw notes (non-kb/) are skipped — only article-to-article context.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the article being edited.
+        cap_each: Max characters of each backlink's body to include as context.
+        max_links: Max number of backlinks to include.
+
+    Returns:
+        List of {title, excerpt} dicts for the permitted backlinks.
+    """
+    from . import notes as notes_svc, wiki_guides
+    row = notes_svc.get_by_title(conn, title)
+    if not row:
+        return []
+    target_private = wiki_guides.is_private_title(title)
+    out: list[dict] = []
+    for b in notes_svc.backlinks(conn, row["id"]):
+        bt = str(b["title"])
+        if not bt.lower().startswith("kb/"):
+            continue                       # article-to-article context only, never a raw note
+        if wiki_guides.is_private_title(bt) and not target_private:
+            continue                       # PII firewall: no private-domain prose into a public article
+        r = conn.execute("SELECT content_md FROM notes WHERE id=?", (b["id"],)).fetchone()
+        excerpt = re.sub(r"\s+", " ", (r["content_md"] if r else "") or "").strip()[:cap_each]
+        out.append({"title": bt, "excerpt": excerpt})
+        if len(out) >= max_links:
+            break
+    return out
+
+
+def _private_note_ids(conn) -> set[int]:
+    """Return note ids that touch a private (Health/Finance) kb article — a sensitivity FLOOR.
+
+    Best-effort: a raw note carries no privacy flag, so we infer sensitivity from the link graph
+    — any note that links to a Health/Finance kb article is treated as private. This is
+    deliberately partial (a free-text entry that merely mentions a diagnosis won't be caught),
+    which is exactly why the owner's per-fact APPROVAL is the real firewall; this floor just keeps
+    the obvious private sources from ever being surfaced for a non-private article.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Set of note ids considered private-adjacent.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT l.source_note_id AS nid FROM links l JOIN notes t ON t.id = l.target_note_id "
+        "WHERE t.kind='kb' AND t.deleted_at IS NULL "
+        "AND (lower(t.title) LIKE 'kb/health/%' OR lower(t.title) LIKE 'kb/finance/%')"
+    ).fetchall()
+    return {r["nid"] for r in rows if r["nid"]}
+
+
+def find_facts(conn, title: str, query: str, *, limit: int = 6) -> list[dict]:
+    """Find owner-approvable candidate facts from the owner's notes for the suggest loop.
+
+    The privacy-filtered, human-gated realization of truth-seeking: searches the owner's notes,
+    drops kb articles and (for a NON-private target) private-adjacent notes via the sensitivity
+    floor, then asks the cheap model to extract salient one-sentence facts each tied to an exact
+    source note. The caller surfaces these for the owner to APPROVE before any becomes an edit —
+    nothing is woven into the article automatically, so a mis-classified private fact can't leak
+    without the owner consenting. Never raises; returns [] on any failure.
+
+    Args:
+        conn: SQLite connection.
+        title: The article being edited (sets the privacy posture of the search).
+        query: What the owner is looking for.
+        limit: Max facts to return.
+
+    Returns:
+        List of {claim, source_id, source_title, date} dicts (possibly empty).
+    """
+    from . import prompts, search, wiki_build, wiki_guides
+    from .workflows import _parse_json_array
+
+    query = (query or "").strip()
+    if not query or not llm.has_credentials():
+        return []
+    target_private = wiki_guides.is_private_title(title)
+    priv = set() if target_private else _private_note_ids(conn)
+    rows = search.hybrid_notes(conn, query, 12, require_kb_ingest=True)
+    hits = [h for h in rows
+            if not h["title"].lower().startswith("kb/") and h["id"] not in priv]
+    if not hits:
+        return []
+    meta = {m["title"].lower(): m for m in _notes_meta(conn, [h["id"] for h in hits])}
+    srcs = wiki_build._load_sources(conn, [h["id"] for h in hits[: limit * 2]], query=query)
+    if not srcs:
+        return []
+    prompt = (prompts.get("actions.wiki_find_facts", "")
+              .replace("{limit}", str(limit)).replace("{query}", query)
+              .replace("{title}", title).replace("{sources}", wiki_build._sources_text(srcs)))
+    try:
+        text = llm.complete([{"role": "user", "content": prompt}], max_tokens=900)
+    except Exception as exc:  # noqa: BLE001 — fact-finding is best-effort, never fatal
+        log.info("find_facts failed: %s", exc)
+        return []
+    out: list[dict] = []
+    seen: set[int] = set()
+    for f in _parse_json_array(text):
+        if not isinstance(f, dict):
+            continue
+        claim = str(f.get("claim") or "").strip()
+        m = meta.get(str(f.get("source") or "").strip().lower())
+        if not claim or not m or m["id"] in seen or m["id"] in priv:
+            continue                       # privacy backstop: never surface a private source here
+        out.append({"claim": claim, "source_id": m["id"], "source_title": m["title"], "date": m["date"]})
+        seen.add(m["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def run_suggest(run, source_ids: list[int], instruction: str,
+                      max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
+    """Open a conversational targeted edit: revise the CURRENT article at the owner's direction.
+
+    The first turn of "Suggest revisions": seeds the live article body (run.base_content) as the
+    thing being edited, plus the curated source notes and read-only backlinks, then streams the
+    revised article (full re-emit; the diff-first UI reads it as a targeted edit). Subsequent
+    edit turns reuse run_guide, which continues this same loaded transcript. Embedding the BASE
+    in the first USER turn (not a synthetic assistant turn) keeps run_redraft's unwind correct.
+
+    Args:
+        run: Active RebuildRun session object (kind="suggest").
+        source_ids: Curated source-note IDs (may be empty for a pure formatting edit).
+        instruction: The owner's first guidance.
+        max_tokens: Output token budget passed through to _generate.
+
+    Yields:
+        Event dicts (see _generate).
+    """
+    from ..db import get_conn
+    from . import wiki_build
+
+    conn = get_conn()
+    ids = [int(i) for i in (source_ids or []) if i]
+    art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
+    subject = f"{run.title.rsplit('/', 1)[-1]} {art.get('scope') or ''}".strip()
+    srcs = wiki_build._load_sources(conn, ids, query=subject) if ids else []
+    run.sources = [{"title": s["title"]} for s in srcs]
+    if not run.known:
+        run.known = wiki_build._known_titles(conn)
+    backlinks = _load_backlinks(conn, run.title)
+    prompt = wiki_build.build_suggest_prompt(
+        conn, run.title, run.base_content, srcs, backlinks, instruction,
+        known_titles=run.known, source_ids=ids)
+    run.messages = [{"role": "user", "content": prompt}]
+    run.status = "guiding"
+    async for ev in _generate(run, conn, max_tokens=max_tokens):
+        yield ev
+
+
 async def run_guide(run, instruction: str, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Steer a revision: append guidance and re-stream from the SAME loaded context."""
+    """Steer a revision by appending guidance and re-streaming from the same loaded context.
+
+    Args:
+        run: Active RebuildRun session object.
+        instruction: Owner guidance for the revision.
+        max_tokens: Output token budget passed through to _generate.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
 
     conn = get_conn()
@@ -377,12 +652,22 @@ async def run_guide(run, instruction: str, max_tokens: int | None = None) -> Asy
 
 
 async def run_redraft(run, max_tokens: int | None) -> AsyncGenerator[dict, None]:
-    """Re-run the last drafting turn at a larger (approved) budget after a truncation. Drops
-    the truncated assistant turn — AND any auto-continue scaffolding (the appended
-    CONTINUE_PROMPT user turn + the partial assistant turn before it) — so the model answers
-    the SAME original prompt afresh, NOT the "resume where you stopped" turn. Works for both
-    the initial draft and a Guide revision, since either way run.messages ends with the right
-    user prompt once the truncated turn(s) are removed."""
+    """Re-run the last drafting turn at a larger approved budget after a truncation.
+
+    Drops the truncated assistant turn and any auto-continue scaffolding (the
+    appended CONTINUE_PROMPT user turn plus the partial assistant turn before it),
+    so the model answers the SAME original prompt afresh rather than the
+    "resume where you stopped" turn. Works for both the initial draft and a Guide
+    revision, since run.messages ends with the right user prompt once the truncated
+    turn(s) are removed.
+
+    Args:
+        run: Active RebuildRun session object.
+        max_tokens: Larger output token budget approved by the user.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
     from . import wiki_build
 

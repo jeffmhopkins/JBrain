@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { analyzeAttachment, attachmentImageUrl, attachmentMediaUrl, del, downloadAttachment, get, getAnalysisStatus, MAX_ATTACHMENT_BYTES, transcribeAttachment, uploadAttachment } from "../api";
-import { useAuth } from "../App";
+import { useCapability } from "../capabilities";
 import { Icon } from "./Icon";
 import Modal from "./Modal";
 
@@ -35,7 +35,8 @@ const isEnrichable = (a: { mime: string; filename: string }) => isImage(a.mime) 
 const IMAGE_PREVIEW_MAX = 25 * 1024 * 1024;
 
 export default function Attachments({ slug, onNoteChanged }: { slug: string; onNoteChanged?: () => void }) {
-  const { hasLlm } = useAuth();
+  const llm = useCapability("llm");                  // AI image/video vision summary
+  const transcription = useCapability("transcription");   // local speech-to-text readiness
   const [items, setItems] = useState<Attachment[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -194,7 +195,7 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
         </button>
       </div>
       <p className="muted" style={{ fontSize: 11, margin: "6px 0" }}>
-        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline and are transcribed locally (no API key).{hasLlm ? " Images are summarized by AI, and video frames are sampled and described too." : ""}
+        Any file up to 100 MB. Text, PDFs, and image metadata are searchable; audio &amp; video play inline and are transcribed locally (no API key).{llm.ready ? " Images are summarized by AI, and video frames are sampled and described too." : ""}
       </p>
       {progress && (
         <div className="upload-progress">
@@ -282,13 +283,20 @@ export default function Attachments({ slug, onNoteChanged }: { slug: string; onN
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => view(a)}>View</button>
             <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => dl(a)}>Download</button>
             {isTranscribable(a) && a.analysis_status !== "pending" && (
-              // Local transcription — no LLM key required, so not gated on hasLlm.
-              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => enrich(a)}>
+              // Local transcription, but it needs faster-whisper installed + the model loaded —
+              // gate on transcription readiness so a doomed click is disabled-and-explained.
+              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }}
+                      disabled={!transcription.ready} title={!transcription.ready ? transcription.reason : undefined}
+                      onClick={() => enrich(a)}>
                 {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-transcribe" : "Transcribe"}
               </button>
             )}
-            {hasLlm && isImage(a.mime) && a.analysis_status !== "pending" && (
-              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => enrich(a)}>
+            {isImage(a.mime) && a.analysis_status !== "pending" && (
+              // Always shown for images; disabled-and-explained when the AI isn't usable
+              // (no key / degraded) so the user learns why rather than the call failing.
+              <button className="ghost" style={{ fontSize: 11, padding: "2px 8px" }}
+                      disabled={!llm.ready} title={!llm.ready ? llm.reason : undefined}
+                      onClick={() => enrich(a)}>
                 {a.analysis_status === "done" || a.analysis_status === "error" ? "Re-analyze" : "Analyze with AI"}
               </button>
             )}

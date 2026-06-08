@@ -15,13 +15,29 @@ router = APIRouter(prefix="/api/external-lookups", tags=["external"], dependenci
 
 
 class ApproveIn(BaseModel):
+    """Input body for approving an external lookup, with an optional term edit."""
+
     term: str | None = None   # the owner may EDIT the term before it's sent (e.g. trim PHI to a topic)
 
 
 @router.post("/{lookup_id}/approve")
 def approve_lookup(lookup_id: int, body: ApproveIn | None = None):
-    """Approve a proposed external lookup (optionally editing the term first) AND run it now — the only
-    outbound moment; caches the result so the assistant's next call returns it. Returns {ok, found, term}."""
+    """Approve a proposed external lookup and execute it immediately.
+
+    This is the only moment an outbound network request is made. The owner may edit
+    the search term (e.g. to remove PHI) before approval. The result is cached so the
+    assistant's next call returns it without a second fetch.
+
+    Args:
+        lookup_id: ID of the pending external lookup to approve.
+        body: Optional edited term to use instead of the original proposed term.
+
+    Returns:
+        Dict with 'ok', 'found' (bool), and the effective 'term' sent.
+
+    Raises:
+        HTTPException: 404 if the lookup is not found.
+    """
     conn = get_conn()
     row = external_lookups.decide(conn, lookup_id, approve=True, term=(body.term if body else None))
     if row is None:
@@ -38,7 +54,17 @@ def approve_lookup(lookup_id: int, body: ApproveIn | None = None):
 
 @router.post("/{lookup_id}/deny")
 def deny_lookup(lookup_id: int):
-    """Decline a proposed external lookup — nothing is sent, and the assistant won't re-propose it."""
+    """Decline a proposed external lookup; nothing is sent and the assistant won't re-propose it.
+
+    Args:
+        lookup_id: ID of the pending external lookup to deny.
+
+    Returns:
+        Dict with key 'ok' set to True.
+
+    Raises:
+        HTTPException: 404 if the lookup is not found.
+    """
     conn = get_conn()
     if external_lookups.decide(conn, lookup_id, approve=False) is None:
         raise HTTPException(status_code=404, detail="Lookup not found")

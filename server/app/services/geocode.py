@@ -32,27 +32,45 @@ _last_call = [0.0]
 
 
 def _base() -> str:
+    """Return the configured Nominatim base URL, stripped of trailing slashes."""
     return (get_settings().geocoder_url or "").strip().rstrip("/")
 
 
 def enabled() -> bool:
-    """Geocoding is on only when a geocoder URL is configured (blank = disabled)."""
+    """Return True when a geocoder URL is configured; blank means disabled."""
     return bool(_base())
 
 
 def _now() -> str:
+    """Return the current UTC time as 'YYYY-MM-DD HH:MM:ffffff'."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%f")
 
 
 def _http_get(url: str):
-    """One Nominatim GET → parsed JSON. Factored out so tests stub it (no network)."""
+    """Perform one Nominatim GET request and return the parsed JSON response.
+
+    Factored out so tests can stub it without making real network calls.
+
+    Args:
+        url: Full Nominatim URL to fetch.
+
+    Returns:
+        Parsed JSON (dict or list depending on the endpoint).
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def _throttled_get(url: str):
-    """Serialize live calls and keep ≥ _MIN_INTERVAL between them (good Nominatim citizen)."""
+    """Serialise live Nominatim calls, enforcing at least _MIN_INTERVAL between them.
+
+    Args:
+        url: Full Nominatim URL to fetch.
+
+    Returns:
+        Parsed JSON response from _http_get.
+    """
     with _throttle:
         wait = _MIN_INTERVAL - (time.monotonic() - _last_call[0])
         if wait > 0:
@@ -64,6 +82,16 @@ def _throttled_get(url: str):
 
 
 def _cache_get(conn, kind: str, key: str):
+    """Read a cached geocoder result, returning None on miss or staleness.
+
+    Args:
+        conn: Database connection.
+        kind: Cache namespace ('reverse' or 'forward').
+        key: Cache key string.
+
+    Returns:
+        Parsed payload dict/list, or None if absent, stale, or corrupt.
+    """
     row = conn.execute(
         "SELECT payload_json, fetched_at FROM geocode_cache WHERE kind=? AND key=?", (kind, key)
     ).fetchone()
@@ -84,6 +112,14 @@ def _cache_get(conn, kind: str, key: str):
 
 
 def _cache_put(conn, kind: str, key: str, payload) -> None:
+    """Upsert a geocoder result into the cache and commit.
+
+    Args:
+        conn: Database connection.
+        kind: Cache namespace ('reverse' or 'forward').
+        key: Cache key string.
+        payload: JSON-serialisable result to store (use {} for a negative cache entry).
+    """
     conn.execute(
         "INSERT INTO geocode_cache (kind, key, payload_json, fetched_at) "
         "VALUES (?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
@@ -94,8 +130,22 @@ def _cache_put(conn, kind: str, key: str, payload) -> None:
 
 
 def reverse(conn, lat: float, lon: float) -> dict | None:
-    """A suspected street address for a coordinate, or None (disabled / nothing found).
-    Returns {address, lat, lon, type, components, source, fetched_at, cached}."""
+    """Return a suspected street address for a coordinate, or None.
+
+    Returns None when geocoding is disabled or nothing is found. Results are
+    SUSPECTED/external — tagged with their source, never treated as owner-asserted
+    fact. Coordinates are rounded before use (_REV_PRECISION) for privacy and a
+    stable cache key.
+
+    Args:
+        conn: Database connection.
+        lat: Latitude to reverse-geocode.
+        lon: Longitude to reverse-geocode.
+
+    Returns:
+        Dict with keys address, lat, lon, type, components, source, fetched_at,
+        and cached; or None.
+    """
     if not enabled():
         return None
     rlat, rlon = round(float(lat), _REV_PRECISION), round(float(lon), _REV_PRECISION)
@@ -125,8 +175,19 @@ def reverse(conn, lat: float, lon: float) -> dict | None:
 
 
 def forward(conn, query: str, limit: int = 5) -> list[dict]:
-    """Ranked coordinate candidates for an address/place query, or [] (disabled / none).
-    Each: {address, lat, lon, type, importance, source}."""
+    """Return ranked coordinate candidates for an address or place name query.
+
+    Returns [] when geocoding is disabled or no results are found. Results are
+    cached so a repeated query does not re-hit Nominatim.
+
+    Args:
+        conn: Database connection.
+        query: Address or place name to search for.
+        limit: Maximum number of candidates to return (clamped to 1–10).
+
+    Returns:
+        List of dicts each with keys address, lat, lon, type, importance, and source.
+    """
     if not enabled() or not (query or "").strip():
         return []
     q = " ".join(query.split())[:200]

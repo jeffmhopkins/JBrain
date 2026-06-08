@@ -1,5 +1,7 @@
 // Thin API client. Every request carries the access key (the "cert") as a
 // Bearer token; it is stored on-device and pasted in once on first run.
+import { report, refreshNow } from "./health";
+
 const KEY_STORAGE = "jbrain_access_key";
 const SERVER_STORAGE = "jbrain_server";
 let accessKey: string | null = localStorage.getItem(KEY_STORAGE);
@@ -38,10 +40,20 @@ function authHeaders(extra: HeadersInit = {}): HeadersInit {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(u(path), {
-    ...opts,
-    headers: authHeaders(opts.headers),
-  });
+  let res: Response;
+  try {
+    res = await fetch(u(path), {
+      ...opts,
+      headers: authHeaders(opts.headers),
+    });
+  } catch (e) {
+    // Network/CORS/DNS failure → the server is suspect. Observed feed; behaviour
+    // unchanged otherwise (we re-throw exactly as before).
+    report({ kind: "neterr" });
+    throw e;
+  }
+  // Any HTTP response proves the server is reachable; >=500 also marks it degraded.
+  report({ kind: "http", status: res.status });
   if (res.status === 401) throw new ApiError("Not authenticated", 401);
   if (!res.ok) {
     let detail: any = res.statusText;
@@ -56,11 +68,50 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   return res.json();
 }
 
+export type ErrorCategory = "auth" | "validation" | "unavailable" | "server" | "network" | "unknown";
+
+function categorizeStatus(status: number): ErrorCategory {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 400 || status === 422) return "validation";
+  if (status === 503) return "unavailable";
+  if (status >= 500) return "server";
+  if (status === 0) return "network";
+  return "unknown";
+}
+
 export class ApiError extends Error {
   status: number;
+  category: ErrorCategory;        // shared by the toast (Phase 6) and the dot for consistent classification
   constructor(message: string, status: number) {
     super(message);
     this.status = status;
+    this.category = categorizeStatus(status);
+  }
+}
+
+// Health-status poll helper. Deliberately does NOT go through api(): it must never
+// throw (so a failed poll can't bubble into the auth/logout path) and must never
+// clear the key. On a soft-auth route a missing/rotated key returns a 200 skeleton
+// (no `capabilities`), so the *store* — not this helper — decides "needs-auth"
+// (skeleton + a stored key). The only failure here is "unreachable" (network/5xx/abort).
+export type StatusResult =
+  | { ok: true; data: any }                         // skeleton OR full doc
+  | { ok: false; reason: "unreachable" };
+
+export async function getStatus(timeoutMs = 8000): Promise<StatusResult> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);   // a dead VM flips the dot in <=8s
+  try {
+    const res = await fetch(u("/api/system/status"), {
+      headers: authHeaders(),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { ok: false, reason: "unreachable" };   // 5xx/4xx → unreachable
+    return { ok: true, data: await res.json() };                // 200 skeleton or full doc
+  } catch {
+    return { ok: false, reason: "unreachable" };          // network OR the 8s abort
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -618,6 +669,60 @@ export const getMediaSettings = () => get<MediaSettings>("/api/system/settings/m
 export const setMediaSettings = (s: Partial<MediaSettings>) =>
   put<MediaSettings>("/api/system/settings/media", s);
 
+// --- Local LLM (Ollama) model management -----------------------------------
+export interface LocalModel {
+  name: string;
+  size_bytes: number;
+  ram_estimate_bytes: number;
+  fits: boolean;            // server verdict vs usable RAM
+  warn: string | null;     // e.g. "Large model — slow on CPU", else null
+  state: "ready" | "warming" | "pulling" | "failed" | "unavailable" | "absent" | "unknown";
+}
+export interface LocalModelsResponse {
+  running: boolean;         // Ollama reachable?
+  models: LocalModel[];
+  hardware: { usable_ram_bytes: number; total_ram_bytes: number; cpu_only: boolean; note: string };
+}
+export const getLocalModels = () => get<LocalModelsResponse>("/api/system/local-models");
+export const deleteLocalModel = (name: string) =>
+  del<{ removed: boolean }>(`/api/system/local-models/${encodeURIComponent(name)}`);
+
+export type PullEvent =
+  | { type: "status"; status: string }
+  | { type: "progress"; completed: number; total: number; status?: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+// Stream a model pull (multi-GB) as SSE. A dedicated reader (not the rebuild streamSSE,
+// which reports rebuild-specific health events) so a long download doesn't touch LLM
+// health state. Returns abort() so a Cancel button can stop the read.
+export function pullLocalModel(name: string, onEvent: (e: PullEvent) => void): SSEHandle {
+  const ctrl = new AbortController();
+  const done = (async () => {
+    const res = await fetch(u("/api/system/local-models/pull"), {
+      method: "POST", headers: authHeaders(), body: JSON.stringify({ name }), signal: ctrl.signal,
+    });
+    if (!res.body) throw new ApiError("No response stream", 500);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      let r: ReadableStreamReadResult<Uint8Array>;
+      try { r = await reader.read(); } catch { break; }
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        try { onEvent(JSON.parse(dataLine.slice(6)) as PullEvent); } catch { /* ignore */ }
+      }
+    }
+  })();
+  return { done, abort: () => ctrl.abort() };
+}
+
 export interface AutoAnalyzeSettings { enabled: boolean }
 export const getAutoAnalyze = () => get<AutoAnalyzeSettings>("/api/system/settings/auto-analyze");
 export const setAutoAnalyze = (enabled: boolean) =>
@@ -732,12 +837,21 @@ export async function streamChat(
     if (signal.aborted) ctrl.abort();
     else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   }
-  const res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(body),
-    signal: ctrl.signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    // A network failure opening the stream is a health signal — but a USER-initiated
+    // abort (leaving chat / starting a new turn) is not. Only report a real net error.
+    if (!ctrl.signal.aborted) report({ kind: "neterr" });
+    throw e;
+  }
+  report({ kind: "http", status: res.status });
   if (!res.body) throw new ApiError("No response stream", 500);
 
   const reader = res.body.getReader();
@@ -748,15 +862,21 @@ export async function streamChat(
   // connection that never closes), abort so streamChat resolves and the caller re-syncs
   // from the server (which already saved the full reply). Generous so a long tool run
   // never trips it; reset on every byte received.
+  // `stalled` distinguishes a REAL stall (watchdog fired) from a user abort — both land
+  // in the same catch below, but only a real stall is a health signal.
   let idle: number | undefined;
+  let stalled = false;
   const STALL_MS = 90000;
-  const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => ctrl.abort(), STALL_MS); };
+  const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => { stalled = true; ctrl.abort(); }, STALL_MS); };
   arm();
   try {
     for (;;) {
       let r: ReadableStreamReadResult<Uint8Array>;
       try { r = await reader.read(); }
-      catch { break; }   // aborted (stall) or network drop → finalize; caller reloads
+      catch {
+        if (stalled) { report({ kind: "stall" }); refreshNow(); }  // real stall → mark + re-poll now
+        break;   // user abort (stalled === false) → silent; caller reloads
+      }
       if (r.done) break;
       arm();
       buffer += decoder.decode(r.value, { stream: true });
@@ -765,7 +885,13 @@ export async function streamChat(
       for (const chunk of chunks) {
         const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
         if (!dataLine) continue;
-        try { onEvent(JSON.parse(dataLine.slice(6)) as ChatEvent); } catch { /* ignore */ }
+        try {
+          const ev = JSON.parse(dataLine.slice(6)) as ChatEvent;
+          // Observed LLM health from real chat traffic (zero token cost).
+          if (ev.type === "error") report({ kind: "llm-fail" });
+          else if (ev.type === "done") report({ kind: "llm-ok" });
+          onEvent(ev);
+        } catch { /* ignore */ }
       }
     }
   } finally {
@@ -785,7 +911,8 @@ export interface RebuildSkipped { note_id: number; title: string; date: string; 
 
 // SSE events from the rebuild engine — same wire envelope as streamChat.
 export type RebuildEvent =
-  | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string }
+  | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string;
+      kind?: "rebuild" | "suggest"; draft?: string }
   | { type: "tool_use"; tool: string; query?: string }                 // Stage 1: gather agent
   | { type: "tool_result"; tool: string; summary: string; items?: string[] }
   | { type: "sources_proposed"; candidates: RebuildCandidate[]; skipped: RebuildSkipped[] }
@@ -803,22 +930,34 @@ export interface SSEHandle { done: Promise<void>; abort: () => void; }
 function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => void): SSEHandle {
   const ctrl = new AbortController();
   const done = (async () => {
-    const res = await fetch(u(path), {
-      method: "POST", headers: authHeaders(),
-      body: JSON.stringify(body ?? {}), signal: ctrl.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(u(path), {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify(body ?? {}), signal: ctrl.signal,
+      });
+    } catch (e) {
+      if (!ctrl.signal.aborted) report({ kind: "neterr" });
+      throw e;
+    }
+    report({ kind: "http", status: res.status });
     if (!res.body) throw new ApiError("No response stream", 500);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let idle: number | undefined;
+    let stalled = false;
     const STALL_MS = 90000;
-    const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => ctrl.abort(), STALL_MS); };
+    const arm = () => { if (idle) clearTimeout(idle); idle = window.setTimeout(() => { stalled = true; ctrl.abort(); }, STALL_MS); };
     arm();
     try {
       for (;;) {
         let r: ReadableStreamReadResult<Uint8Array>;
-        try { r = await reader.read(); } catch { break; }
+        try { r = await reader.read(); }
+        catch {
+          if (stalled) { report({ kind: "stall" }); refreshNow(); }
+          break;
+        }
         if (r.done) break;
         arm();
         buffer += decoder.decode(r.value, { stream: true });
@@ -827,7 +966,14 @@ function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => vo
         for (const chunk of chunks) {
           const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
           if (!dataLine) continue;
-          try { onEvent(JSON.parse(dataLine.slice(6)) as RebuildEvent); } catch { /* ignore */ }
+          try {
+            const ev = JSON.parse(dataLine.slice(6)) as RebuildEvent;
+            // R3-M5: a revoked/over-quota key surfaces as degraded from a rebuild run too,
+            // not only chat.
+            if (ev.type === "error") report({ kind: "llm-fail" });
+            else if (ev.type === "done") report({ kind: "llm-ok" });
+            onEvent(ev);
+          } catch { /* ignore */ }
         }
       }
     } finally {
@@ -838,8 +984,16 @@ function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => vo
 }
 
 // Stage 1: gather sources (streams the agent's tool use, ends with sources_proposed).
-export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
-  streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}`, {}, onEvent);
+// mode "suggest" seeds the current article so the conversational edit loop revises FROM it.
+export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void,
+                              mode: "rebuild" | "suggest" = "rebuild"): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}?mode=${mode}`, {}, onEvent);
+
+// First conversational-edit turn (suggest mode): revise the current article per the owner's
+// guidance, grounded in the curated sources + read-only backlinks. Follow-ups use guideStream.
+export const suggestStream = (runId: string, sourceIds: number[], text: string,
+                              onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/suggest`, { source_ids: sourceIds, text }, onEvent);
 
 // Stage 1 again: find more sources for a hint, appended to the current set.
 export const regatherStream = (runId: string, hint: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
@@ -860,6 +1014,13 @@ export const guideStream = (runId: string, text: string, onEvent: (e: RebuildEve
 export const searchRebuildSources = (runId: string, q: string) =>
   get<{ note_id: number; title: string; date: string }[]>(
     `/api/kb/rebuild/${runId}/search?q=${encodeURIComponent(q)}`);
+
+export interface CandidateFact { claim: string; source_id: number; source_title: string; date: string; }
+
+// Suggest-mode truth-seeker: privacy-filtered candidate facts from the owner's notes, for the
+// owner to APPROVE before any is folded into the edit (nothing is applied server-side here).
+export const findFacts = (runId: string, query: string) =>
+  post<CandidateFact[]>(`/api/kb/rebuild/${runId}/find_facts`, { query });
 
 export const acceptRebuild = (runId: string, renameTo?: string) =>
   post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`, { rename_to: renameTo ?? null });

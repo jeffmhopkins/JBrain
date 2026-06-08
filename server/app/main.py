@@ -50,6 +50,7 @@ from .routers import (
     sql_console,
     staging,
     system,
+    system_status,
     workflows,
 )
 from .services import trips as trips_svc
@@ -61,9 +62,13 @@ SCHEDULER_INTERVAL_SECONDS = 60
 
 
 async def _scheduler_loop():
-    """Poll for due scheduled workflows. Runs in a worker THREAD so a slow/blocking
-    LLM call inside an action can't freeze the event loop (and all HTTP traffic).
-    Errors are swallowed per-iteration."""
+    """Poll and execute due scheduled workflows on a fixed interval.
+
+    Each iteration runs on a worker thread (via ``asyncio.to_thread``) so a
+    slow or blocking LLM call inside an action cannot freeze the event loop or
+    stall HTTP traffic. Errors are swallowed per-iteration so the loop never
+    dies silently.
+    """
     while True:
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
         try:
@@ -105,6 +110,19 @@ async def _scheduler_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manage application startup and shutdown.
+
+    On startup: initialises the database, seeds or reveals the access key,
+    ingests repo workflows and action definitions, warms the embedding and
+    audio models in the background, and launches the scheduler loop.
+    On shutdown: cancels the scheduler task.
+
+    Args:
+        app: The ``FastAPI`` application instance.
+
+    Yields:
+        Control to the running application between startup and shutdown.
+    """
     init_db()
     generated = ensure_access_key()
     _key_file = "/data/access-key.txt"
@@ -175,6 +193,7 @@ async def lifespan(app: FastAPI):
     # their bodies, not just their truncated head). Runs off the event loop; search
     # keeps working off vec_notes meanwhile.
     async def _warm_embeddings():
+        """Warm the local embedding model and backfill any missing chunk vectors."""
         try:
             from .services import embeddings, wiki_guides
             await asyncio.to_thread(embeddings._get_model)
@@ -206,6 +225,7 @@ async def lifespan(app: FastAPI):
     # decoupled: if faster-whisper isn't installed it raises (caught), and audio simply
     # transcribes on demand instead. Runs off the event loop; nothing waits on it.
     async def _warm_audio():
+        """Warm the local speech-to-text model so first audio upload does not block."""
         try:
             from .services import audio_transcription
             await asyncio.to_thread(audio_transcription._get_model)
@@ -213,6 +233,19 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 — missing dep / download failure is non-fatal
             print(f"[audio] transcription model not warmed: {str(exc)[:120]}", flush=True)
     asyncio.create_task(_warm_audio())
+
+    # Probe the optional local LLM (Ollama) once so the health dot reflects its state
+    # immediately. Cheap HTTP to /api/tags off the event loop; nothing waits on it, and
+    # on default installs (local disabled) it just records 'absent'.
+    async def _warm_local_llm():
+        """Probe local-LLM readiness so the health indicator reflects it from boot."""
+        try:
+            from .services import local_models
+            r = await asyncio.to_thread(local_models.warm)
+            print(f"[local-llm] readiness: {r.get('state')}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — optional subsystem; never fatal
+            print(f"[local-llm] not probed: {str(exc)[:120]}", flush=True)
+    asyncio.create_task(_warm_local_llm())
 
     task = asyncio.create_task(_scheduler_loop())
     try:
@@ -241,7 +274,7 @@ app.add_middleware(
     expose_headers=["X-Locations-Truncated", "X-Locations-Count"],
 )
 
-for r in (auth_router, notes, chat, external, search, graph, staging, sql_console, attachments, workflows, reviews, system, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, financial, events, calendar, rebuild):
+for r in (auth_router, notes, chat, external, search, graph, staging, sql_console, attachments, workflows, reviews, system, system_status, prompts_router, action_defs, share, share_admin, lists, push, locations, places, people, entities, tiles, medical, financial, events, calendar, rebuild):
     app.include_router(r.router)
 # The dictation-capture route (POST /api/notes/entry) accepts a per-person location key
 # in addition to the full key, so it lives on a separate, less-restricted router.
@@ -253,6 +286,11 @@ app.include_router(attachments.public_router)
 
 @app.get("/api/health")
 def health():
+    """Return API liveness status and the configured brain name.
+
+    Returns:
+        JSON object with ``ok`` (always True) and ``brain`` (the brain name).
+    """
     return {"ok": True, "brain": settings.brain_name}
 
 
@@ -264,6 +302,18 @@ if STATIC_DIR.exists():
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
+        """Serve the built PWA or fall back to index.html for client-side routing.
+
+        Real static files (manifest, icons, service-worker scripts) are served
+        directly. Service-worker scripts are sent with ``Cache-Control: no-cache``
+        so push-handler updates ship promptly. API paths return 404 JSON.
+
+        Args:
+            full_path: URL path segment after the root.
+
+        Returns:
+            A ``FileResponse`` for the matched file, or index.html as the SPA shell.
+        """
         # Real files (manifest, icons, sw) are served directly; everything else
         # falls back to index.html for client-side routing.
         if full_path.startswith("api/"):

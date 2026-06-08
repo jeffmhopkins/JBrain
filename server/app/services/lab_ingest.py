@@ -31,25 +31,51 @@ _INSERT = (
 
 
 def _identity_key(r: dict, source_sha: str) -> str:
-    """Stable per-result dedup hash (analyte|date|value|unit|source-sha)."""
+    """Return a stable per-result dedup hash (analyte|date|value|unit|source-sha).
+
+    Args:
+        r: Result row dict with at least analyte_key, collected_at, value_text, unit.
+        source_sha: SHA-256 hex digest of the source attachment.
+
+    Returns:
+        SHA-256 hex string uniquely identifying this result within the source file.
+    """
     raw = "|".join([r.get("analyte_key") or "", r.get("collected_at") or "",
                     r.get("value_text") or "", r.get("unit") or "", source_sha])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _is_pdf(att) -> bool:
+    """Return True if the attachment record looks like a PDF by MIME type or filename.
+
+    Args:
+        att: Attachment row with 'mime' and 'filename' fields.
+
+    Returns:
+        True if the attachment appears to be a PDF.
+    """
     return "pdf" in (att["mime"] or "").lower() or (att["filename"] or "").lower().endswith(".pdf")
 
 
 def _identity_state(conn, identity: dict) -> str:
-    """Three-state patient check against the configured owner (P1):
-      * 'mismatch'   — owner DOB set AND the document's DOB differs → wrong patient, warn loudly.
-      * 'unverified' — owner DOB set but the document has no comparable DOB → cannot confirm, say
-                       so (never let 'not contradicted' read as 'verified same patient').
-      * ''           — no owner configured (feature off), or owner set and DOBs agree.
+    """Return a three-state patient check against the configured owner (P1).
+
+    - 'mismatch': owner DOB set AND the document's DOB differs — wrong patient, warn loudly.
+    - 'unverified': owner DOB set but the document has no comparable DOB — cannot confirm;
+      never let 'not contradicted' read as 'verified same patient'.
+    - '': no owner configured (feature off), or owner set and DOBs agree.
+
     DOB is the only field compared (names like 'DOE,JANE' vs 'Jane Doe' are too fuzzy
-    to assert on); both sides are normalized to ISO so mere format drift never fabricates a
-    mismatch."""
+    to assert on); both sides are normalized to ISO so mere format drift never fabricates
+    a mismatch.
+
+    Args:
+        conn: Database connection (used to read the medical_owner meta key).
+        identity: Identity dict extracted from the document (may have a 'dob' key).
+
+    Returns:
+        One of 'mismatch', 'unverified', or '' (empty string).
+    """
     try:
         from ..db import get_meta
         owner = json.loads(get_meta("medical_owner") or "{}")
@@ -65,15 +91,32 @@ def _identity_state(conn, identity: dict) -> str:
 
 
 def _is_image(att) -> bool:
+    """Return True if the attachment is an image by MIME type or filename extension.
+
+    Args:
+        att: Attachment row with 'mime' and 'filename' fields.
+
+    Returns:
+        True if the attachment is a recognized image format.
+    """
     return (att["mime"] or "").lower().startswith("image/") or bool(
         re.search(r"\.(png|jpe?g|gif|webp|heic|tiff?|bmp)$", (att["filename"] or "").lower()))
 
 
 def _extract(att) -> dict | None:
-    """Pick the extractor by modality and return a lab_parse-shaped dict (or None for a non-lab
-    attachment). A text PDF goes through the deterministic parser; a photo/screenshot, or a PDF
-    with no extractable text (scanned/image-only), is rendered and routed to the OCR-gated
-    vision path (Phase 1). Either way the result feeds the SAME staging lifecycle below."""
+    """Pick the extractor by modality and return a lab_parse-shaped dict, or None.
+
+    A text PDF goes through the deterministic parser; a photo/screenshot, or a PDF with no
+    extractable text (scanned/image-only), is rendered and routed to the OCR-gated vision
+    path (Phase 1). Either way the result feeds the same staging lifecycle. Returns None for
+    non-lab attachments.
+
+    Args:
+        att: Attachment row with content_blob, mime, filename, and content_text fields.
+
+    Returns:
+        lab_parse-shaped dict, or None if the attachment is not a lab document.
+    """
     blob = bytes(att["content_blob"])
     if _is_pdf(att):
         parsed = lab_parse.parse_lab_pdf(blob)
@@ -100,9 +143,19 @@ def _extract(att) -> dict | None:
 
 
 def stage_attachment(conn, attachment_id: int) -> dict:
-    """Parse an attachment (PDF or image) and STAGE its results for review (no write to
-    lab_results). Re-staging supersedes any prior approval (its approved rows are cleared,
-    status -> extracted). Returns {status, doc_type, n, analytes, skipped}."""
+    """Parse an attachment (PDF or image) and stage its results for review.
+
+    Does not write to lab_results. Re-staging supersedes any prior approval: approved rows
+    are cleared and status reverts to 'extracted'.
+
+    Args:
+        conn: Database connection.
+        attachment_id: ID of the attachment to stage.
+
+    Returns:
+        Dict with keys: status, doc_type, n (staged result count), analytes (distinct
+        analyte count), skipped.
+    """
     none_result = {"status": None, "doc_type": "unknown", "n": 0, "analytes": 0, "skipped": 0}
     att = conn.execute(
         "SELECT id, note_id, filename, mime, sha256, content_blob, content_text FROM attachments WHERE id = ?",
@@ -164,10 +217,21 @@ def stage_attachment(conn, attachment_id: int) -> dict:
 
 
 def staged(conn, attachment_id: int) -> dict | None:
-    """The lab state of an attachment: its staged extraction (decoded) AND how many rows it has
-    in lab_results. Returns a dict for ANY existing attachment — `status` is None when it was
-    never staged for review (e.g. imported under the old auto-apply path), and `imported`
-    surfaces those legacy rows so the note can offer Re-analyze / Remove."""
+    """Return the lab state of an attachment: its staged extraction and approved row count.
+
+    Returns a dict for any existing attachment. 'status' is None when it was never staged
+    (e.g. imported under the old auto-apply path); 'imported' surfaces those legacy rows so
+    the note can offer Re-analyze / Remove.
+
+    Args:
+        conn: Database connection.
+        attachment_id: ID of the attachment to inspect.
+
+    Returns:
+        Dict with keys: attachment_id, note_id, status, imported, extracted_at, doc_type,
+        results, skipped, skips, low_confidence, identity, identity_state; or None if the
+        attachment does not exist.
+    """
     att = conn.execute(
         "SELECT id, note_id, lab_status, lab_json, lab_extracted_at FROM attachments WHERE id = ?",
         (attachment_id,)).fetchone()
@@ -187,8 +251,18 @@ def staged(conn, attachment_id: int) -> dict | None:
 
 
 def approve_attachment(conn, attachment_id: int) -> dict:
-    """Write the staged results into lab_results (replacing this attachment's rows) and mark it
-    approved. Idempotent."""
+    """Write the staged results into lab_results and mark the attachment approved.
+
+    Replaces this attachment's existing rows. Idempotent: a duplicate identity_key is skipped
+    rather than raising an error.
+
+    Args:
+        conn: Database connection.
+        attachment_id: ID of the attachment to approve.
+
+    Returns:
+        Dict with keys: approved (rows inserted), duplicates (rows skipped).
+    """
     att = conn.execute(
         "SELECT id, note_id, sha256, lab_status, lab_json FROM attachments WHERE id = ?",
         (attachment_id,)).fetchone()
@@ -214,8 +288,18 @@ def approve_attachment(conn, attachment_id: int) -> dict:
 
 
 def revoke_attachment(conn, attachment_id: int) -> dict:
-    """Remove this attachment's rows from lab_results, but keep the staged extraction (so it can
-    be re-approved). Status -> extracted."""
+    """Remove an attachment's rows from lab_results, keeping the staged extraction.
+
+    The staged extraction is preserved so the attachment can be re-approved. Status reverts
+    to 'extracted'.
+
+    Args:
+        conn: Database connection.
+        attachment_id: ID of the attachment to revoke.
+
+    Returns:
+        Dict with key: removed (row count deleted from lab_results).
+    """
     removed = conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (attachment_id,)).rowcount
     conn.execute("UPDATE attachments SET lab_status='extracted' WHERE id=? AND lab_status='approved'",
                  (attachment_id,))
@@ -224,8 +308,19 @@ def revoke_attachment(conn, attachment_id: int) -> dict:
 
 
 def stage_note(conn, note_id: int, *, post_review: bool = True) -> dict:
-    """Stage every PDF attachment on a note for review (no auto-apply). Posts a Review card when
-    anything was extracted, linking the note so the owner can approve it."""
+    """Stage every PDF attachment on a note for review without auto-applying results.
+
+    Posts a Review card when anything was extracted, linking the note so the owner can
+    approve it.
+
+    Args:
+        conn: Database connection.
+        note_id: ID of the note whose attachments should be staged.
+        post_review: If True, create a review item when results were extracted.
+
+    Returns:
+        Dict with keys: doc_type, staged (total result count), analytes, skipped.
+    """
     from . import reviews as reviews_svc
     atts = conn.execute("SELECT id FROM attachments WHERE note_id = ?", (note_id,)).fetchall()
     total = {"doc_type": "unknown", "staged": 0, "analytes": 0, "skipped": 0}

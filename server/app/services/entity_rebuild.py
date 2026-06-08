@@ -47,6 +47,13 @@ run_inline = False
 
 
 def _set_status(conn, st: str, detail: str | None = None) -> None:
+    """Persist the rebuild status and optionally a detail string, then commit.
+
+    Args:
+        conn: SQLite connection.
+        st: Status string to store (e.g. 'idle', 'running', 'error').
+        detail: Optional error detail to store in _LAST_ERROR (truncated to 500 chars).
+    """
     set_meta(conn, _STATUS, st)
     if detail is not None:
         set_meta(conn, _LAST_ERROR, detail[:500])
@@ -54,7 +61,15 @@ def _set_status(conn, st: str, detail: str | None = None) -> None:
 
 
 def status(conn) -> dict:
-    """The UI poll target: is a rebuild owed/in-flight, the completion generation, last error."""
+    """Return the current rebuild status for the UI poll endpoint.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with keys ``rebuilding`` (bool), ``status`` (str), ``generation`` (int),
+        and ``last_error`` (str or None, only set when status is 'error').
+    """
     st = get_meta(_STATUS, "idle", conn=conn) or "idle"
     dirty = (get_meta(_DIRTY, "0", conn=conn) or "0") == "1"
     gen = int(get_meta(_GENERATION, "0", conn=conn) or "0")
@@ -66,8 +81,15 @@ def status(conn) -> dict:
 
 
 def _rebuild_pass(conn) -> None:
-    """One rebuild pass. Clears the dirty flag FIRST (under the lock) so a decision committed
-    mid-rebuild re-dirties and earns a fresh pass, then runs the (slow) entity_index.rebuild."""
+    """Execute one entity_index rebuild pass.
+
+    Clears the dirty flag first (under the lock) so a decision committed mid-rebuild
+    re-dirties and earns a fresh pass. Then runs the (potentially slow)
+    entity_index.rebuild which commits internally.
+
+    Args:
+        conn: SQLite connection owned by the calling thread.
+    """
     from . import entity_index
     with _lock:
         set_meta(conn, _DIRTY, "0")          # claim the owed work for THIS pass
@@ -81,8 +103,13 @@ def _rebuild_pass(conn) -> None:
 
 
 def _worker() -> None:
-    """Background daemon: own thread-local connection. Drains the coalesced rebuild queue —
-    runs a pass, and if another request landed meanwhile (_pending), runs once more."""
+    """Run the background rebuild daemon with its own thread-local connection.
+
+    Drains the coalesced rebuild queue: runs one pass, and if another request arrived
+    while it was running (_pending is True), loops once more to capture that decision.
+    Never lets an exception crash the thread — failures re-dirty the flag and surface
+    the error via _STATUS/_LAST_ERROR for the scheduler backstop.
+    """
     global _running, _pending
     conn = get_conn()
     try:
@@ -109,8 +136,16 @@ def _worker() -> None:
 
 
 def request_rebuild(conn) -> None:
-    """Request thread (called AFTER the decision is committed): mark the index dirty durably,
-    then ensure exactly one worker is/gets running (coalescing concurrent requests)."""
+    """Request an entity index rebuild (called after a decision is committed).
+
+    Marks the index dirty durably (committed before handing off so a crash here still
+    reconciles on the next boot), then ensures exactly one background worker is running
+    or will run (coalescing concurrent requests). In test mode (``run_inline=True``),
+    runs the rebuild synchronously.
+
+    Args:
+        conn: SQLite connection on the request thread.
+    """
     global _running, _pending
     set_meta(conn, _DIRTY, "1")
     conn.commit()                       # durable BEFORE we hand off — survives a crash here
@@ -133,9 +168,15 @@ def request_rebuild(conn) -> None:
 
 
 def reset_on_boot(conn) -> None:
-    """On boot, clear any stale 'running' status from a prior process and re-trigger a rebuild
-    if one was owed (dirty) — so a decision whose rebuild was interrupted by a restart is
-    reconciled. Idempotent; safe to call before the app serves traffic."""
+    """Clear stale state on startup and re-trigger any owed rebuild.
+
+    Clears any 'running' status left by a prior process and calls request_rebuild if
+    the dirty flag is set, so a decision whose rebuild was interrupted by a restart is
+    reconciled. Idempotent; safe to call before the app serves traffic.
+
+    Args:
+        conn: SQLite connection.
+    """
     st = get_meta(_STATUS, "idle", conn=conn) or "idle"
     if st == "running":
         set_meta(conn, _STATUS, "idle")

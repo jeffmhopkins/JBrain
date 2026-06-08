@@ -10,11 +10,27 @@ router = APIRouter(prefix="/api/lists", tags=["lists"], dependencies=[CurrentUse
 
 
 class ListIn(BaseModel):
+    """Input body for creating a new list note."""
+
     title: str
 
 
 @router.post("")
 def create_list(body: ListIn):
+    """Create an empty list note under the lists/ hierarchy, or return the existing one.
+
+    The note is created with kind='list' and a minimal heading body. Idempotent:
+    calling again with the same title returns the existing note's slug.
+
+    Args:
+        body: Title for the new list (will be rooted under 'lists/').
+
+    Returns:
+        Dict with 'slug' and 'title' of the created or existing list note.
+
+    Raises:
+        HTTPException: 422 if the title is blank.
+    """
     conn = get_conn()
     base = body.title.strip()
     if not base:

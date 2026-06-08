@@ -41,9 +41,23 @@ _RO_DENY_PRAGMAS = {
 
 
 def _ro_authorizer(action, arg1, arg2, db_name, trigger):
-    """SQLite authorizer for the read-only ad-hoc connection. Denies schema-recon
-    pragmas and reads of secret tables/columns; everything else is allowed (writes
-    are already blocked by PRAGMA query_only=ON)."""
+    """Enforce read-only access at the SQLite engine level.
+
+    Denies schema-recon pragmas and reads of secret tables/columns; all other
+    operations return SQLITE_OK. Writes are already blocked by
+    ``PRAGMA query_only=ON``; this layer adds defence against the schema-recon
+    bypass tricks the keyword filter can miss.
+
+    Args:
+        action: SQLite authorizer action code.
+        arg1: First action argument (table name, pragma name, etc.).
+        arg2: Second action argument (column name, etc.).
+        db_name: Database name string passed by SQLite.
+        trigger: Trigger or view context string passed by SQLite.
+
+    Returns:
+        SQLITE_DENY for forbidden operations, SQLITE_OK otherwise.
+    """
     if action == sqlite3.SQLITE_PRAGMA and (arg1 or "").lower() in _RO_DENY_PRAGMAS:
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_READ:
@@ -56,6 +70,18 @@ def _ro_authorizer(action, arg1, arg2, db_name, trigger):
 
 
 def _connect(*, query_only: bool = False) -> sqlite3.Connection:
+    """Open and configure a new SQLite connection.
+
+    Loads sqlite-vec, enables WAL mode and foreign keys, and sets a 60-second
+    busy timeout. When ``query_only`` is True also applies ``PRAGMA query_only=ON``
+    and installs the engine-level read-only authorizer.
+
+    Args:
+        query_only: When True, the returned connection is read-only.
+
+    Returns:
+        A fully configured ``sqlite3.Connection``.
+    """
     settings = get_settings()
     Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.db_path, check_same_thread=False)
@@ -63,8 +89,14 @@ def _connect(*, query_only: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     # Wait for a concurrent writer (WAL serialises writes) instead of failing the
-    # request immediately with "database is locked".
-    conn.execute("PRAGMA busy_timeout=5000")
+    # request immediately with "database is locked". A scheduled batch job (KB
+    # synthesis / note-analysis) can hold the write transaction for tens of seconds,
+    # so 5s was too short — an interactive chat's user-turn INSERT would time out and
+    # the whole reply would fail silently. 60s lets such writes WAIT OUT a busy batch
+    # instead (interactive writes are already offloaded off the event loop, so the wait
+    # can't freeze the server). The real cure is keeping batches from holding the lock
+    # across their LLM calls (see the services below); this is the safety net behind it.
+    conn.execute("PRAGMA busy_timeout=60000")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -80,7 +112,15 @@ def _connect(*, query_only: bool = False) -> sqlite3.Connection:
 
 
 def get_conn() -> sqlite3.Connection:
-    """One connection per thread (sqlite connections are not thread-safe)."""
+    """Return the read-write connection for the current thread.
+
+    Opens and caches a new connection on first call; subsequent calls on the
+    same thread return the cached instance (SQLite connections are not
+    thread-safe).
+
+    Returns:
+        The thread-local read-write ``sqlite3.Connection``.
+    """
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = _connect()
@@ -89,8 +129,14 @@ def get_conn() -> sqlite3.Connection:
 
 
 def get_query_conn() -> sqlite3.Connection:
-    """A per-thread READ-ONLY connection for ad-hoc SQL (the SQL console and the
-    research-mode query_sql tool). Writes are impossible through it."""
+    """Return the read-only connection for the current thread.
+
+    Intended for the SQL console and the research-mode ``query_sql`` tool.
+    Writes are structurally impossible through this connection.
+
+    Returns:
+        The thread-local read-only ``sqlite3.Connection``.
+    """
     conn = getattr(_local, "query_conn", None)
     if conn is None:
         conn = _connect(query_only=True)
@@ -99,16 +145,25 @@ def get_query_conn() -> sqlite3.Connection:
 
 
 def has_conn() -> bool:
-    """True if this thread already holds a cached connection. A short-lived worker uses this
-    to tell whether IT created the connection (fresh worker thread → close it on exit) or is
-    running inline on a thread that already had one (tests / the request handler → leave it)."""
+    """Return True if this thread already holds a cached read-write connection.
+
+    Short-lived worker threads use this to decide whether they own the
+    connection (fresh thread → close on exit) or whether it was already
+    present before they ran (test / request-handler thread → leave it).
+
+    Returns:
+        True if a thread-local connection exists, False otherwise.
+    """
     return getattr(_local, "conn", None) is not None
 
 
 def close_conn() -> None:
-    """Close and forget this thread's cached connection(s). Call from short-lived worker
-    threads (per-attachment image analysis, audio transcription) whose thread-local
-    connection would otherwise leak its sqlite handle / file descriptor until GC reaps it."""
+    """Close and forget this thread's cached connection(s).
+
+    Call from short-lived worker threads (per-attachment image analysis,
+    audio transcription) whose thread-local connection would otherwise leak
+    its SQLite handle and file descriptor until GC reaps the thread.
+    """
     for attr in ("conn", "query_conn"):
         c = getattr(_local, attr, None)
         if c is not None:
@@ -120,6 +175,14 @@ def close_conn() -> None:
 
 
 def _embedding_dim() -> int:
+    """Return the configured embedding dimension (e.g. 384 for bge-small-en-v1.5).
+
+    The value is written to the ``meta`` table at init time so the ``vec0``
+    virtual-table declaration always matches the actual model output.
+
+    Returns:
+        Integer embedding dimension from the embeddings service.
+    """
     # bge-small-en-v1.5 = 384. Keep in meta so we never mismatch the vec table.
     from .services.embeddings import EMBEDDING_DIM
     return EMBEDDING_DIM
@@ -129,13 +192,14 @@ SCHEMA_VERSION = 56
 
 
 def init_db() -> None:
-    """Create/upgrade schema + vec tables and seed meta. Idempotent.
+    """Create or upgrade the schema, vec tables, and meta. Idempotent.
 
-    Existing DBs are upgraded by the migration runner FIRST, then schema.sql (the
-    full latest schema, all CREATE ... IF NOT EXISTS) is applied. Order matters:
-    schema.sql carries indexes on columns the migrations add to pre-existing tables,
-    which would fail if the schema ran before those columns existed. On a brand-new
-    DB the runner no-ops and schema.sql lands everything at the latest version.
+    Existing databases are upgraded by the migration runner first, then
+    ``schema.sql`` (all ``CREATE ... IF NOT EXISTS`` at the latest version) is
+    applied. Order matters: ``schema.sql`` carries indexes on columns the
+    migrations add to pre-existing tables; applying it first would fail with
+    "no such column". On a fresh database the migration runner is a no-op and
+    ``schema.sql`` creates everything directly at the latest version.
     """
     global _initialized
     with _init_lock:
@@ -182,22 +246,60 @@ def init_db() -> None:
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True if ``column`` exists in ``table``.
+
+    Args:
+        conn: Active database connection.
+        table: Table name to inspect.
+        column: Column name to look for.
+
+    Returns:
+        True if the column is present, False otherwise.
+    """
     return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """Return True if ``table`` exists in the database.
+
+    Args:
+        conn: Active database connection.
+        table: Table name to check.
+
+    Returns:
+        True if the table exists, False otherwise.
+    """
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Add ``column`` to ``table`` if it does not already exist.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS``; this function provides the
+    equivalent guard.
+
+    Args:
+        conn: Active database connection.
+        table: Table to alter.
+        column: Column name to add.
+        decl: SQL type declaration string (e.g. ``"TEXT NOT NULL DEFAULT ''"``)
+    """
     # SQLite has no ADD COLUMN IF NOT EXISTS, so guard explicitly.
     if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Upgrade an existing DB to SCHEMA_VERSION. Fresh DBs skip (already latest)."""
+    """Upgrade an existing database to ``SCHEMA_VERSION``.
+
+    Each migration step is guarded by ``if current < N`` so it is applied
+    exactly once and in order. Fresh databases (no ``meta`` table yet) skip
+    entirely because ``schema.sql`` creates everything at the latest version.
+
+    Args:
+        conn: Active read-write database connection.
+    """
     try:
         raw = get_meta("schema_version", conn=conn)
     except sqlite3.OperationalError:
@@ -1173,11 +1275,18 @@ CREATE VIEW IF NOT EXISTS v_event_history AS
 
 
 def _migrate_image_summaries(conn: sqlite3.Connection) -> None:
-    """Migration 37 backfill: lift inline AI image-summary blocks out of note bodies into
-    attachments.analysis_md (+ the attachment FTS), then strip them from the body. A block
-    whose attachment no longer exists is LEFT IN PLACE — never silently dropped. Bodies are
-    edited in place (no new version row, no updated_at bump): this only relocates
-    machine-generated cruft, and an affected note simply re-analyzes on its next pass."""
+    """Migration 37 backfill: move inline AI image-summary blocks to attachment sidecars.
+
+    Lifts ``<!-- jbrain:image-summary -->`` blocks from note bodies into
+    ``attachments.analysis_md`` (and the attachment FTS index), then strips
+    them from the body. A block whose attachment no longer exists is left in
+    place — never silently dropped. Note bodies are edited in place with no
+    version row and no ``updated_at`` bump: only machine-generated content is
+    relocated; affected notes simply re-analyse on their next pass.
+
+    Args:
+        conn: Active read-write database connection.
+    """
     import re as _re
     from .services import image_analysis as ia
     from .services import attachments as att_svc
@@ -1213,9 +1322,18 @@ def _migrate_image_summaries(conn: sqlite3.Connection) -> None:
 
 
 def ensure_default_person(conn: sqlite3.Connection) -> None:
-    """Guarantee one default person ('Me') exists — the catch-all any unmatched
-    location `source` (the PWA's 'pwa', the watch's 'wear', a fresh device) rolls up
-    to. Seeded once when the registry is empty; idempotent."""
+    """Guarantee that exactly one default person ('Me') exists.
+
+    The default person is the catch-all that any unmatched location ``source``
+    (the PWA's ``pwa``, the watch's ``wear``, a fresh device) rolls up to.
+    Seeded once when the registry is empty; idempotent on subsequent calls.
+    Also creates the unique index on ``people.location_key`` and the
+    composite index on ``locations(person_id, recorded_at)`` which must be
+    deferred until those columns are guaranteed present.
+
+    Args:
+        conn: Active read-write database connection.
+    """
     # Runs AFTER migrations, so location_key is guaranteed present (schema.sql on a
     # fresh DB, migration 28 on an upgrade) — safe to index here (NULLs stay distinct).
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_location_key ON people(location_key)")
@@ -1236,10 +1354,27 @@ def ensure_default_person(conn: sqlite3.Connection) -> None:
 
 
 def _column_is_not_null(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True if ``column`` in ``table`` has a NOT NULL constraint.
+
+    Args:
+        conn: Active database connection.
+        table: Table name to inspect.
+        column: Column name to check.
+
+    Returns:
+        True if the column exists and carries NOT NULL, False otherwise.
+    """
     return any(r["name"] == column and r["notnull"] for r in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert a key-value pair in the ``meta`` table.
+
+    Args:
+        conn: Active read-write database connection.
+        key: Meta key to set.
+        value: String value to store.
+    """
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1248,12 +1383,26 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def get_meta(key: str, default: str | None = None, conn: sqlite3.Connection | None = None) -> str | None:
+    """Retrieve a value from the ``meta`` table.
+
+    Args:
+        key: Meta key to look up.
+        default: Value to return when the key is absent.
+        conn: Connection to use; defaults to the thread-local read-write connection.
+
+    Returns:
+        The stored string value, or ``default`` if the key does not exist.
+    """
     row = (conn or get_conn()).execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
 
 
 def backup_to_file(dest_path: str) -> None:
-    """Write a consistent snapshot of the whole DB (WAL included) to dest_path."""
+    """Write a consistent snapshot of the whole database (WAL included) to a file.
+
+    Args:
+        dest_path: Filesystem path for the backup file.
+    """
     dst = sqlite3.connect(dest_path)
     try:
         get_conn().backup(dst)
@@ -1262,10 +1411,16 @@ def backup_to_file(dest_path: str) -> None:
 
 
 def restore_from_file(src_path: str) -> None:
-    """Replace the live DB contents with those from src_path (a JBrain backup).
+    """Replace the live database contents with a JBrain backup file.
 
-    Uses the backup API to copy pages into the live connection in-place, then
-    re-runs init/migrations so an older backup is upgraded to the current schema.
+    Uses the SQLite backup API to copy pages into the live connection in-place,
+    then re-runs ``init_db`` so an older backup is upgraded to the current schema.
+
+    Args:
+        src_path: Path to a valid JBrain backup file.
+
+    Raises:
+        ValueError: If ``src_path`` does not contain the expected JBrain tables.
     """
     global _initialized
     src = sqlite3.connect(src_path)

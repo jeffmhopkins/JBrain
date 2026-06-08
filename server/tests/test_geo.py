@@ -1,5 +1,8 @@
 import math
 from app.services import geo
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_haversine_known_distances():

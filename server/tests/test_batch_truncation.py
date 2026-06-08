@@ -18,6 +18,8 @@ import pytest
 pytest.importorskip("sqlite_vec")
 pytest.importorskip("fastapi")
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture()
 def conn(monkeypatch):

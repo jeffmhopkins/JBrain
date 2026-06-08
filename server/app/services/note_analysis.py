@@ -30,7 +30,17 @@ AUTO_ANALYZE_WORKFLOW_KEY = "analyze-new-note"
 
 
 def auto_enabled(conn) -> bool:
-    """Is "auto-analyze new notes" turned on? (See AUTO_ANALYZE_WORKFLOW_KEY.)"""
+    """Return True if the 'auto-analyze new notes' workflow is enabled.
+
+    Reads the enabled flag of the AUTO_ANALYZE_WORKFLOW_KEY row — the single source of
+    truth for the feature gate.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        True when auto-analysis is on, False otherwise.
+    """
     row = conn.execute(
         "SELECT enabled FROM workflows WHERE key = ?", (AUTO_ANALYZE_WORKFLOW_KEY,)
     ).fetchone()
@@ -63,12 +73,27 @@ _DEFAULT_PROMPT = (
 
 
 def content_hash(title: str, content_md: str | None) -> str:
+    """Return a SHA-256 hex digest of title + body, used to detect stale analysis rows.
+
+    Args:
+        title: Note title.
+        content_md: Note body (None treated as empty).
+
+    Returns:
+        Hex digest string.
+    """
     return hashlib.sha256((f"{title}\x00{content_md or ''}").encode("utf-8")).hexdigest()
 
 
 def _parse_obj(text: str) -> dict:
-    """Pull the first complete JSON object out of an LLM reply, tolerating code
-    fences and surrounding prose. Returns {} if none is recoverable."""
+    """Pull the first complete JSON object from an LLM reply, tolerating code fences and prose.
+
+    Args:
+        text: Raw LLM reply text.
+
+    Returns:
+        Parsed dict, or {} if no complete JSON object is recoverable.
+    """
     if not text:
         return {}
     start = text.find("{")
@@ -100,9 +125,15 @@ def _parse_obj(text: str) -> dict:
 
 
 def _ensure_media_transcribed(conn, note_id: int) -> None:
-    """Kick off local transcription for any audio/video attachment on this note that hasn't
-    been transcribed yet. Best-effort and idempotent (start_transcription guards re-runs); on
-    completion the transcript folds back into a re-run of this analysis."""
+    """Kick off local transcription for untranscribed audio/video attachments on a note.
+
+    Best-effort and idempotent (start_transcription guards re-runs). On completion the
+    transcript folds back into a re-run of this analysis.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose attachments should be checked for transcription.
+    """
     from . import audio_transcription
     rows = conn.execute(
         "SELECT id, mime, filename FROM attachments WHERE note_id = ? AND content_blob IS NOT NULL "
@@ -120,7 +151,8 @@ def _ensure_media_transcribed(conn, note_id: int) -> None:
 def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     """(Re)compute the analysis for one note. No-ops (returns False) when the note's
     content is unchanged since the last analysis, when it's gone, or when no LLM key
-    is configured. Returns True when a fresh analysis was stored."""
+    is configured. Returns True when a fresh analysis was stored.
+    """
     row = conn.execute(
         "SELECT id, title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
         (note_id,),
@@ -189,7 +221,16 @@ def analyze(conn, note_id: int, *, force: bool = False) -> bool:
 
 
 def get(conn, note_id: int) -> dict | None:
-    """The stored analysis for a note, with JSON columns decoded, or None."""
+    """Return the stored analysis for a note with JSON columns decoded, or None.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note to retrieve analysis for.
+
+    Returns:
+        Dict with gist, domain, model, analyzed_at, facts, entities, and dates keys,
+        or None when no analysis row exists.
+    """
     row = conn.execute("SELECT * FROM note_analysis WHERE note_id = ?", (note_id,)).fetchone()
     if not row:
         return None
@@ -209,7 +250,8 @@ def pending_ids(conn, limit: int = 60, force: bool = False) -> list[int]:
     changed since last analyzed); with force=True, ALL of them — used to refresh every
     analysis after the analyzer's behaviour or prompt changes (e.g. the time-token fix),
     since hash-keyed analyses are otherwise never recomputed for unchanged notes. kb/*
-    and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it."""
+    and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it.
+    """
     where = "n.deleted_at IS NULL AND n.kind IN ('entry','daily')"
     if not force:
         # Also surface a note whose attachment enrichment (image summary / transcript) landed
@@ -254,7 +296,12 @@ fold_run_inline = False
 
 
 def _fold_once(conn, note_id: int) -> None:
-    """Run a single hash-guarded analysis pass for the note and commit if it produced one."""
+    """Run a single hash-guarded analysis pass for the note and commit if it produced one.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note to (re)analyze.
+    """
     try:
         if auto_enabled(conn) and analyze(conn, note_id):
             conn.commit()
@@ -267,8 +314,14 @@ def _fold_once(conn, note_id: int) -> None:
 
 
 def _fold_worker(note_id: int) -> None:
-    """Background daemon: own thread-local connection. Drains the coalesced fold queue for one
-    note — runs a pass, and if another completion landed meanwhile (_fold_pending), once more."""
+    """Background daemon that drains the coalesced fold queue for one note.
+
+    Uses its own thread-local connection. Runs an analysis pass and, if another
+    attachment completion landed while running (_fold_pending), loops once more.
+
+    Args:
+        note_id: Note to process in this worker.
+    """
     from ..db import close_conn, get_conn
     try:
         conn = get_conn()   # inside the try so a connection failure can't leave the note stuck inflight
@@ -288,10 +341,18 @@ def _fold_worker(note_id: int) -> None:
 
 
 def request_fold(conn, note_id: int) -> None:
-    """Async-enrichment callers (image/audio/video workers) use THIS instead of calling analyze()
-    directly: coalesce a burst of per-attachment completions on one note into ~one re-analysis that
-    includes ALL summaries. No-op when auto-analyze is off. Reads auto_enabled on the CALLER's
-    connection, then hands off to a worker with its own connection (or runs inline under the seam)."""
+    """Request a coalesced re-analysis of a note after attachment enrichment completes.
+
+    Async-enrichment callers (image/audio/video workers) use this instead of calling
+    analyze() directly: coalesces a burst of per-attachment completions into ~one re-analysis
+    that includes ALL summaries. No-op when auto-analyze is off. Reads auto_enabled on the
+    caller's connection, then hands off to a background worker with its own connection
+    (or runs inline under the fold_run_inline test seam).
+
+    Args:
+        conn: Caller's SQLite connection (used only to read the auto-analyze flag).
+        note_id: Note to re-analyze, or None (no-op).
+    """
     if note_id is None or not auto_enabled(conn):
         return
     if fold_run_inline:                       # test seam: reconcile synchronously

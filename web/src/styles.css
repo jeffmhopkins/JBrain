@@ -21,6 +21,7 @@
      the light tiers can darken them for contrast (the dark literals read poorly on
      a white background). */
   --good: #4ade80;                          /* success green — status, approvals */
+  --warn: #d9a441;                          /* caution amber — degraded/limited status */
   --ins-fg: #a9cdb6; --ins-bg: rgba(132,165,145,0.22);   /* inline diff: added */
   --del-fg: #d6a3a3; --del-bg: rgba(192,133,133,0.20);   /* inline diff: removed */
   --radius: 8px;
@@ -52,6 +53,7 @@
   --danger: #b3403f;
   --ok: #2f8f5b;
   --good: #1f9d54;
+  --warn: #a8730e;                          /* darker amber — passes contrast on the light surface */
   --ins-fg: #1d7a45; --ins-bg: rgba(47,143,91,0.16);
   --del-fg: #b3403f; --del-bg: rgba(179,64,63,0.14);
   color-scheme: light;
@@ -73,6 +75,7 @@
   --danger: #962826;
   --ok: #0f6a3c;
   --good: #0f6a3c;
+  --warn: #7a5200;                          /* deep amber — max contrast on the white sunlight surface */
   --ins-fg: #0f6a3c; --ins-bg: rgba(15,106,60,0.18);
   --del-fg: #962826; --del-bg: rgba(150,40,38,0.16);
   color-scheme: light;
@@ -416,6 +419,88 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .version-banner { border-bottom-color: var(--accent); }
 .demo-banner { border-bottom-color: var(--text-dim); }
 .offline-banner { color: var(--danger); }
+
+/* Server/API health indicator (top bar). */
+.status-wrap { position: relative; display: inline-flex; }
+.status-dot-btn { background: transparent; border: none; padding: 6px; cursor: pointer; display: inline-flex; align-items: center; border-radius: 8px; }
+.status-dot-btn:hover { background: var(--bg-elev-2); }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--text-dim); }
+.status-dot.ok { background: var(--good); }
+/* The top-bar summary dot reads as the calm, on-brand resting state (accent), so the
+   louder green/amber/red stay reserved for the per-capability rows. Scoped to the
+   button so the System/Maintenance update-status dots (further down) are untouched. */
+.status-dot-btn .status-dot.ok { background: var(--accent); }
+.status-dot.warn { background: var(--warn); }
+.status-dot.down { background: var(--danger); }
+.status-dot.unknown { background: var(--text-dim); }
+/* Pinned to the viewport's top-right corner (not the mid-header dot): position:fixed
+   escapes the .ushell overflow:hidden clip, and the width clamp + safe-area gutters mean
+   it can never run off the left edge on a narrow phone. z-index sits above the sticky bar. */
+.status-panel {
+  position: fixed; top: calc(48px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right)); left: auto; z-index: 60;
+  width: min(320px, calc(100vw - 24px));
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+.status-rows { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.status-rows li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.status-rows .status-row-icon { flex: none; color: var(--text-dim); }
+.status-refresh { font-size: 12px; padding: 4px 10px; }
+
+/* "Verdict + promote" layout: lead with the verdict, float problems to the top
+   with their reason always visible, and collapse ONLY the healthy remainder
+   (never a reason). The verdict sentence carries meaning so nothing is colour-alone. */
+.status-verdict { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 10px; }
+.status-verdict .status-dot { width: 11px; height: 11px; margin-top: 3px; flex: none; }
+.status-verdict .status-dot.ok { background: var(--good); }   /* semantic green here, unlike the accent trigger dot */
+.status-verdict-title { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.3; }
+.status-verdict-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.status-problems { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.status-problems li { display: flex; align-items: flex-start; gap: 8px; padding: 8px;
+  font-size: 12px; line-height: 1.35; color: var(--text);
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 8px; }
+.status-problems li .icon { flex: none; margin-top: 1px; color: var(--text-dim); }
+.status-problems li.warn { border-left: 3px solid var(--warn); }
+.status-problems li.down { border-left: 3px solid var(--danger); }
+.status-problems li.unknown { border-left: 3px solid var(--text-dim); }
+
+.status-showall { display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: none; cursor: pointer; padding: 6px 2px;
+  color: var(--text-dim); font-size: 12px; min-height: 36px; }
+.status-showall:hover { color: var(--text); }
+.status-showall .icon { margin-left: auto; transition: transform .15s ease; }
+.status-showall[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.status-pips { display: inline-flex; gap: 4px; flex: none; }
+.status-pip { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.status-pip.warn { background: var(--warn); }
+.status-pip.down { background: var(--danger); }
+.status-pip.unknown { background: var(--text-dim); }
+@media (prefers-reduced-motion: reduce) { .status-showall .icon { transition: none; } }
+
+/* Toasts: non-blocking, stacked bottom-centre, auto-expiring. */
+.toaster {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px; width: min(440px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+  background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim); border-radius: 10px; padding: 10px 12px;
+  font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+.toast.error { border-left-color: var(--danger); }
+.toast.success { border-left-color: var(--good); }
+.toast.info { border-left-color: var(--accent); }
+.toast-msg { flex: 1; }
+.toast-x { background: transparent; border: none; color: var(--text-dim); font-size: 18px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.toast-x:hover { color: var(--text); }
+
+/* Inline capability explanation (why a feature is disabled). */
+.cap-note { color: var(--text-dim); font-size: 12px; margin: 4px 0 0; }
 
 .applied-chip { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-2); font-size: 14px; }
 .applied-chip .ghost { margin-left: auto; }

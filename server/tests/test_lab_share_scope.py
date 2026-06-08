@@ -9,6 +9,8 @@ import pytest
 
 from app.services import lab_share_scope as scope
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(__file__).resolve().parents[1] / "app" / "schema.sql"
 
 

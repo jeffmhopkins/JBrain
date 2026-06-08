@@ -29,6 +29,10 @@ services:
       # Local timezone for scheduled jobs (midnight consolidation) and the date
       # bucket dated captures file under (notes/daily/YYYY/MM/DD). Defaults to UTC.
       TZ: ${TZ:-UTC}
+    # Reach an Ollama running on the HOST (Mode B: LLM_LOCAL_BASE_URL=http://host.docker.internal:11434/v1).
+    # Harmless when unused; Mode A (the localllm profile below) uses compose service DNS instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - brain-data:/data
       # Persist the downloaded embedding model across container rebuilds, so an
@@ -80,13 +84,75 @@ services:
     command: sh /repo/updater/run.sh
     environment:
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-jbrain}
+      # Inherit the active profiles so a full `compose up -d` from the updater doesn't
+      # silently drop the localllm/autoupdate services.
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/repo
       - brain-data:/data
+
+  # Optional local LLM (Ollama). Enabled via COMPOSE_PROFILES=localllm in .env.
+  # CPU inference on the SAME box as the API — keep it to the `cheap` tier on a
+  # DDR4 box (see the README "Local LLM" section). The api reaches it by compose
+  # service DNS at http://ollama:11434 (set LLM_LOCAL_BASE_URL=http://ollama:11434/v1).
+  # GPU box later (e.g. Strix Halo): use the ollama/ollama:rocm image and add a
+  # `devices:`/`deploy.resources.reservations.devices` block — the base-URL contract
+  # is unchanged, so no app code changes.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["localllm"]
+    restart: unless-stopped
+    logging: *default-logging
+    # Bound Ollama's RSS so a model can't OOM the host. A 7B q4 resident is ~5-6GB;
+    # leave headroom for the KV cache. Tune per model via OLLAMA_MEM_LIMIT in .env.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-8g}
+    environment:
+      # Keep the model resident between requests so each cold call doesn't re-pay the
+      # multi-second CPU load (the default 5m unload would).
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      # Single-user box: one model, no parallelism — avoids RAM blowups / thrash.
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - ollama-models:/root/.ollama   # named volume → survives rebuilds, resumes pulls
+    expose:
+      - "11434"
+    healthcheck:
+      # `ollama list` exits 0 once the server accepts requests. "Server up" and "model
+      # present" are deliberately separate signals (a model may still be pulling).
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # One-shot: pull the configured model into the shared volume on first boot, then
+  # exit. Resumable (content-addressed blobs), so a restart mid-download continues.
+  # Runs concurrently — the api never waits on it; until the model is present the
+  # local tier falls back to cloud (LLM_LOCAL_FALLBACK).
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["localllm"]
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_LOCAL_MODEL: ${LLM_LOCAL_MODEL:-qwen2.5:7b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "[ollama-pull] pulling $$LLM_LOCAL_MODEL (multi-GB, resumable)…"
+        ollama pull "$$LLM_LOCAL_MODEL" || { echo "[ollama-pull] pull failed; retries next boot"; exit 1; }
+        echo "[ollama-pull] done."
 
 volumes:
   brain-data:
   caddy-data:
   caddy-config:
   model-cache:
+  ollama-models:

@@ -24,12 +24,28 @@ _UA = "JBrain/0.1 (+https://github.com/jeffmhopkins/JBrain; self-hosted personal
 
 
 def _cache_dir() -> Path:
+    """Return the on-disk tile cache directory, sibling to the database file.
+
+    Returns:
+        Path to the tilecache directory (not guaranteed to exist yet).
+    """
     base = getattr(get_settings(), "db_path", None) or tempfile.gettempdir()
     return Path(base).resolve().parent / "tilecache"
 
 
 def _fetch(z: int, x: int, y: int) -> bytes:
-    """Fetch one OSM tile. Factored out so tests can stub it (no network)."""
+    """Fetch one OSM tile from the upstream tile server.
+
+    Factored out so tests can stub the network call.
+
+    Args:
+        z: Zoom level.
+        x: Tile column.
+        y: Tile row.
+
+    Returns:
+        Raw PNG bytes for the tile.
+    """
     url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=10) as r:   # noqa: S310 (fixed OSM host)
@@ -38,6 +54,23 @@ def _fetch(z: int, x: int, y: int) -> bytes:
 
 @router.get("/{z}/{x}/{y}.png")
 def tile(z: int, x: int, y: int):
+    """Serve a cached OpenStreetMap tile, fetching and caching it on first access.
+
+    This route is intentionally unauthenticated: tiles are public map imagery
+    (no user data) and img elements cannot carry the bearer token.
+
+    Args:
+        z: Zoom level (0–19).
+        x: Tile column.
+        y: Tile row.
+
+    Returns:
+        PNG image response with a one-week cache header.
+
+    Raises:
+        HTTPException: 400 if the tile coordinates are out of range.
+        HTTPException: 502 if the upstream tile server is unreachable.
+    """
     n = 1 << z
     if not (0 <= z <= 19) or not (0 <= x < n) or not (0 <= y < n):
         raise HTTPException(status_code=400, detail="bad tile coordinates")

@@ -61,9 +61,17 @@ _ANALYTE_MAP = {
 
 
 def analyte_key(name: str) -> str:
-    """Normalize a printed analyte name to a stable trend-grouping slug. Known CBC names
-    map to a canonical key; anything else falls back to a conservative slug so trends still
-    group exact-name repeats."""
+    """Normalize a printed analyte name to a stable trend-grouping slug.
+
+    Known CBC names map to a canonical key; anything else falls back to a conservative slug
+    so trends still group exact-name repeats.
+
+    Args:
+        name: Raw analyte name as printed in the lab document.
+
+    Returns:
+        Stable slug string suitable for grouping trends.
+    """
     n = re.sub(r"\s+", " ", (name or "").strip().lower())
     n = re.sub(r"^auto\s+", "", n)
     n = re.sub(r"\s+count$", "", n)                   # "white blood cell count" -> "… cell"
@@ -73,9 +81,20 @@ def analyte_key(name: str) -> str:
 
 
 def _iso(year: int, mon: int, day: int) -> str | None:
-    """ISO date string, or None for an impossible calendar date. Uses datetime so day-for-month
-    (and leap years) are validated — '2025-02-30' must never reach the DB, where date() would
-    silently normalize it to a DIFFERENT day than raw-string ORDER BY sees."""
+    """Return an ISO date string, or None for an impossible calendar date.
+
+    Uses datetime so day-for-month (and leap years) are validated — '2025-02-30' must never
+    reach the DB, where date() would silently normalize it to a DIFFERENT day than raw-string
+    ORDER BY sees.
+
+    Args:
+        year: Four-digit year.
+        mon: Month (1–12).
+        day: Day of month.
+
+    Returns:
+        ISO-8601 date string (YYYY-MM-DD), or None if the date is invalid.
+    """
     import datetime
     try:
         return datetime.date(int(year), int(mon), int(day)).isoformat()
@@ -84,7 +103,16 @@ def _iso(year: int, mon: int, day: int) -> str | None:
 
 
 def parse_date(text: str) -> str | None:
-    """'Jul 3, 2022' -> '2022-07-03' (ISO date), or None. The textual month is unambiguous."""
+    """Parse a textual date like 'Jul 3, 2022' to ISO format '2022-07-03', or None.
+
+    The textual month name is unambiguous and avoids MM/DD vs DD/MM confusion.
+
+    Args:
+        text: String potentially containing a date in 'Mon DD, YYYY' format.
+
+    Returns:
+        ISO-8601 date string, or None if no recognizable date is found.
+    """
     m = _DATE_RE.search(text or "")
     if not m:
         return None
@@ -95,10 +123,21 @@ def parse_date(text: str) -> str | None:
 
 
 def mdy_to_iso(a: int, b: int, year: int) -> str | None:
-    """Resolve a numeric 'a/b/year' date to ISO, never trusting MM/DD blindly. If the first
-    field is >12 it can only be a day (DD/MM); if the second is >12 it can only be a day
-    (MM/DD); otherwise default to US MM/DD. Returns None for impossible dates (validated as a
-    real calendar date) rather than emitting a malformed string the DB will silently shift."""
+    """Resolve a numeric 'a/b/year' date to ISO without blindly trusting MM/DD order.
+
+    If the first field is >12 it can only be a day (DD/MM); if the second is >12 it can only
+    be a day (MM/DD); otherwise default to US MM/DD. Returns None for impossible dates
+    (validated as a real calendar date) rather than emitting a malformed string the DB will
+    silently shift.
+
+    Args:
+        a: First numeric field of the date pair.
+        b: Second numeric field of the date pair.
+        year: Four-digit year.
+
+    Returns:
+        ISO-8601 date string, or None if the date is invalid.
+    """
     if a > 12 and b <= 12:           # DD/MM
         day, mon = a, b
     else:                            # MM/DD, or ambiguous (both <=12) -> assume US MM/DD
@@ -107,9 +146,18 @@ def mdy_to_iso(a: int, b: int, year: int) -> str | None:
 
 
 def normalize_dob(raw: str) -> str | None:
-    """Normalize a human-typed or printed DOB ('Jul 4, 1990', '07/04/1990', '1990-07-04') to a
-    validated ISO date, or None. Used to compare a document's patient DOB against the configured
-    owner DOB on a common footing (no false 'different patient' from mere format drift)."""
+    """Normalize a human-typed or printed DOB to a validated ISO date, or None.
+
+    Handles 'Jul 4, 1990', '07/04/1990', and '1990-07-04'. Used to compare a document's
+    patient DOB against the configured owner DOB on a common footing so mere format drift
+    never fabricates a 'different patient' mismatch.
+
+    Args:
+        raw: Raw date-of-birth string in any supported format.
+
+    Returns:
+        ISO-8601 date string, or None if the input is empty or unrecognizable.
+    """
     raw = (raw or "").strip()
     if not raw:
         return None
@@ -127,9 +175,18 @@ _DOB_RE = re.compile(r"(?:Date of Birth|DOB)\s*:?\s*"
 
 
 def parse_identity(text: str) -> dict:
-    """Best-effort extraction of the document's patient identity (name + DOB), so the reviewer
-    can catch a wrong-patient upload before it merges into the single owner's trends (P1). Pure
-    and tolerant: returns {} when nothing recognizable is found — never guesses."""
+    """Extract the document's patient identity (name + DOB) on a best-effort basis.
+
+    Lets the reviewer catch a wrong-patient upload before it merges into the single owner's
+    trends (P1). Pure and tolerant: returns {} when nothing recognizable is found — never
+    guesses.
+
+    Args:
+        text: Full extracted text of the lab document.
+
+    Returns:
+        Dict with optional keys 'name' and 'dob' (ISO date), or {} if nothing was found.
+    """
     out: dict = {}
     m = _DOB_RE.search(text or "")
     if m:
@@ -158,7 +215,14 @@ def parse_range(text: str) -> tuple[float | None, float | None, str | None, str 
     """Parse a 'Normal Range: …' left-column string into (low, high, unit, raw_text).
 
     Handles '3.90 - 11.20 thou/cumm', '0 - 13 %', '0.0 - 0.2 /100 WBC', and one-sided
-    'Less than <=0.40 thou/cumm' (low=None, high=0.40)."""
+    'Less than <=0.40 thou/cumm' (low=None, high=0.40).
+
+    Args:
+        text: Raw range string as found in the left column of the lab document.
+
+    Returns:
+        Tuple of (low, high, unit, raw_text); any element may be None if not present.
+    """
     i = text.find("Normal Range:")
     raw = text[i:].strip() if i >= 0 else text.strip()
     m = _RANGE_RE.search(raw)
@@ -172,7 +236,16 @@ def parse_range(text: str) -> tuple[float | None, float | None, str | None, str 
 
 
 def _is_unit(tok: str) -> bool:
-    """A unit token following a value ('mg/dL', 'thou/cumm', '%', 'U/L', '/100')."""
+    """Return True if tok is a unit token following a numeric value.
+
+    Examples of recognized units: 'mg/dL', 'thou/cumm', '%', 'U/L', '/100'.
+
+    Args:
+        tok: Token string to test.
+
+    Returns:
+        True if the token looks like a unit, False otherwise.
+    """
     if not tok or len(tok) > 12:
         return False
     if _VALUE_RE.match(tok):
@@ -181,8 +254,17 @@ def _is_unit(tok: str) -> bool:
 
 
 def _value(tok: str) -> tuple[str, float | None] | None:
-    """A numeric value cell -> (value_text, value_num). Inequalities ('<0.01') keep the
-    text but have no numeric value (so trend math ignores them rather than guessing)."""
+    """Parse a numeric value cell token into (value_text, value_num).
+
+    Inequalities like '<0.01' keep the text but return None for value_num so trend math
+    ignores them rather than guessing.
+
+    Args:
+        tok: Token string from a value cell.
+
+    Returns:
+        Tuple of (value_text, value_num), or None if the token is not a numeric value.
+    """
     m = _VALUE_RE.match(tok)
     if not m:
         return None
@@ -192,12 +274,21 @@ def _value(tok: str) -> tuple[str, float | None] | None:
 
 
 def is_faithful(value_text: str, text: str) -> bool:
-    """Word-boundary faithfulness (F1): the value must appear in the document as its OWN token,
-    not as a substring of a longer number ('12' must not match inside '120' or '12.5'). Bounded
-    by non-digit/non-decimal on both sides; a leading inequality ('<0.01') is fine. For an OCR
-    corpus we also accept a numerically-equal form (OCR '15' vs model '15.0', or '1,234' vs
-    '1234') so a trailing-zero/separator difference doesn't drop a real value — without ever
-    accepting a DIFFERENT number."""
+    """Check word-boundary faithfulness (F1): the value must appear in the document as its own token.
+
+    The value must not be a substring of a longer number ('12' must not match inside '120' or
+    '12.5'). Bounded by non-digit/non-decimal on both sides; a leading inequality ('<0.01') is
+    fine. For an OCR corpus we also accept a numerically-equal form (OCR '15' vs model '15.0',
+    or '1,234' vs '1234') so a trailing-zero/separator difference doesn't drop a real value —
+    without ever accepting a DIFFERENT number.
+
+    Args:
+        value_text: Value string to verify (e.g. '12.5' or '<0.01').
+        text: Faithfulness corpus (visible words extracted from the document).
+
+    Returns:
+        True if the value appears faithfully in the corpus, or if the corpus is empty.
+    """
     if not text:
         return True                                   # no corpus to check against
     if not value_text:
@@ -222,7 +313,14 @@ def is_faithful(value_text: str, text: str) -> bool:
 
 
 def _lines(words: list[dict]) -> list[list[dict]]:
-    """Group words into visual lines by rounded baseline, each sorted left-to-right."""
+    """Group words into visual lines by rounded baseline, each sorted left-to-right.
+
+    Args:
+        words: List of pdfplumber word dicts (each has 'top', 'x0', 'text').
+
+    Returns:
+        List of lines, each a list of word dicts sorted by x0.
+    """
     rows: dict[int, list[dict]] = {}
     for w in words:
         rows.setdefault(round(w["top"] / 2.0), []).append(w)
@@ -230,14 +328,25 @@ def _lines(words: list[dict]) -> list[list[dict]]:
 
 
 def _parse_page(words: list[dict]) -> list[dict]:
-    """Extract result rows from one page's words. A page may hold several stacked tables,
-    each re-introduced by a 'Component <date> <date> …' header that resets the columns.
+    """Extract result rows from one page's words.
 
-    Two passes: (1) downward, record each analyte ENTRY (anchored on its 'Normal Range:'
-    line, named from the left-column line just above it) and every VALUE cell (mapped to a
-    date by nearest column x); (2) assign each value to the nearest analyte name above it.
-    This is robust to wrapped unit lines and to one analyte printed as two range-variant
-    sub-rows (both share a name -> merge by analyte_key later)."""
+    A page may hold several stacked tables, each re-introduced by a 'Component <date> <date>
+    …' header that resets the columns.
+
+    Two passes: (1) downward, record each analyte ENTRY (anchored on its 'Normal Range:' line,
+    named from the left-column line just above it) and every VALUE cell (mapped to a date by
+    nearest column x); (2) assign each value to the nearest analyte name above it. This is
+    robust to wrapped unit lines and to one analyte printed as two range-variant sub-rows (both
+    share a name -> merge by analyte_key later).
+
+    Args:
+        words: List of pdfplumber word dicts for a single page.
+
+    Returns:
+        List of result row dicts, each with test_name, analyte_key, value_text, value_num,
+        unit, ref_low, ref_high, ref_text, collected_at, collected_time, plus internal
+        _name_margin and _date_margin confidence signals.
+    """
     lines = _lines(words)
     entries: list[dict] = []       # {top, name, range_text}
     cells: list[dict] = []         # {top, date, vt, vn}
@@ -342,8 +451,17 @@ _ONESIDED_RE = re.compile(r"(?:Less than\s*)?([<>])=?\s*([\d.]+)\s*(\S.*)?$")
 
 
 def _report_range(s: str) -> tuple[float | None, float | None, str | None, str | None]:
-    """Parse a single-report range string into (low, high, unit, raw). Handles a two-sided
-    'LOW - HIGH UNIT' and a one-sided '<0.4 BEU' / '>5 x' (the specialty-test form)."""
+    """Parse a single-report range string into (low, high, unit, raw).
+
+    Handles a two-sided 'LOW - HIGH UNIT' and a one-sided '<0.4 BEU' / '>5 x' (the
+    specialty-test form).
+
+    Args:
+        s: Raw range string from a Desired/Reference Range line.
+
+    Returns:
+        Tuple of (low, high, unit, raw); any element may be None.
+    """
     s = (s or "").strip()
     m = _SPAN_RE.match(s)
     if m:
@@ -359,13 +477,24 @@ def _report_range(s: str) -> tuple[float | None, float | None, str | None, str |
 
 def _parse_single_report(pages: list[list[dict]], collected: str | None,
                          collected_time: str | None = None) -> list[dict]:
-    """Single-encounter report (Quest/PWNHealth + specialty single-analyte reports). Each
-    analyte is a 'Name … value [flag]' row plus a 'Desired/Reference Range:' line; the range
-    sits just BELOW its value row (standard CBC) or ABOVE it (specialty). We anchor on the
-    report's own value-column header ('Result' / 'Value') — its x gives the value column and
-    its y separates the patient/address METADATA above from the data rows below, so an address
-    zip can't masquerade as a value. Each range binds to the nearest data row ABOVE it (the
-    standard case), falling back BELOW (specialty). One collection date for the whole report."""
+    """Parse a single-encounter report (Quest/PWNHealth + specialty single-analyte reports).
+
+    Each analyte is a 'Name … value [flag]' row plus a 'Desired/Reference Range:' line; the
+    range sits just BELOW its value row (standard CBC) or ABOVE it (specialty). We anchor on
+    the report's own value-column header ('Result' / 'Value') — its x gives the value column
+    and its y separates the patient/address METADATA above from the data rows below, so an
+    address zip can't masquerade as a value. Each range binds to the nearest data row ABOVE it
+    (the standard case), falling back BELOW (specialty). One collection date for the whole
+    report.
+
+    Args:
+        pages: Per-page lists of pdfplumber word dicts.
+        collected: ISO collection date for the whole report, or None.
+        collected_time: HH:MM collection time string, or None.
+
+    Returns:
+        List of result row dicts in the lab_parse row schema.
+    """
     out: list[dict] = []
     for words in pages:
         lines = _lines(words)
@@ -420,15 +549,20 @@ def _parse_single_report(pages: list[list[dict]], collected: str | None,
 
 
 def _backfill(results: list[dict]) -> None:
-    """Make each analyte's unit/range consistent across its rows. Units don't vary within an
-    analyte, so adopt the modal unit everywhere (fixes per-table wrap quirks like 'U/'). For
-    the reference range, only FILL nulls (the range can legitimately change over time, so a
-    row that parsed its own range keeps it).
+    """Make each analyte's unit/range consistent across its rows in-place.
+
+    Units don't vary within an analyte, so adopt the modal unit everywhere (fixes per-table
+    wrap quirks like 'U/'). For the reference range, only FILL nulls (the range can
+    legitimately change over time, so a row that parsed its own range keeps it).
 
     Magnitude guard (F5): never stamp the modal unit onto a row whose value is orders of
     magnitude off the analyte's median — a raw count (7200) wearing a 'thou/cumm' unit would
     co-plot as a unit-consistent 1000x spike. Such rows keep their own unit and are tagged
-    `_magnitude_outlier` so the confidence pass can flag them instead of silently merging."""
+    _magnitude_outlier so the confidence pass can flag them instead of silently merging.
+
+    Args:
+        results: List of result row dicts; mutated in place.
+    """
     import collections, statistics
     by_key: dict[str, list[dict]] = collections.defaultdict(list)
     for r in results:
@@ -456,17 +590,25 @@ def _backfill(results: list[dict]) -> None:
 
 
 def _score_confidence(results: list[dict]) -> None:
-    """Replace the old hard-coded confidence=1.0 with a PER-ROW trust score (F3). A value can
-    satisfy the verbatim faithfulness check and still be wrong — bound to the wrong analyte or
-    date column, or off by an order of magnitude. We fold the geometry bind margins captured
-    during parsing together with a range-plausibility check into {high, medium, low} + reasons,
-    so the human reviewer's attention lands on the rows that need it. Pure heuristic; never
-    drops a row, only flags it. Margins are in PDF points (lines ~14pt, columns ~50-80px)."""
+    """Assign a per-row trust score (F3) to each result, mutating it in place.
+
+    Replaces a hard-coded confidence=1.0 with {high, medium, low} + reasons. A value can
+    satisfy the verbatim faithfulness check and still be wrong — bound to the wrong analyte
+    or date column, or off by an order of magnitude. We fold the geometry bind margins
+    captured during parsing into a heuristic score so the human reviewer's attention lands
+    on the rows that need it. Pure heuristic; never drops a row, only flags it. Margins are
+    in PDF points (lines ~14pt, columns ~50-80px).
+
+    Args:
+        results: List of result row dicts; 'confidence' and 'confidence_reasons' are added
+            to each row in place.
+    """
     rank = {"high": 2, "medium": 1, "low": 0}
     for r in results:
         conf, reasons = "high", []
 
         def demote(level: str, why: str):
+            """Lower the confidence to ``level`` (if stricter) and record the reason."""
             nonlocal conf
             if rank[level] < rank[conf]:
                 conf = level
@@ -499,9 +641,19 @@ def _score_confidence(results: list[dict]) -> None:
 
 
 def parse_lab_pdf(pdf_bytes: bytes) -> dict:
-    """Parse a lab-result PDF into structured rows. Returns
-    {doc_type, confidence, results:[…], pages}. doc_type is 'lab_trend_export' when the
-    trend-matrix structure is found, else 'unknown' (caller skips it)."""
+    """Parse a lab-result PDF into structured rows.
+
+    Detects whether the document is a trend-matrix export or a single-encounter report and
+    routes to the appropriate sub-parser. Returns 'unknown' when neither structure is found.
+
+    Args:
+        pdf_bytes: Raw PDF file content.
+
+    Returns:
+        Dict with keys: doc_type ('lab_trend_export', 'lab_report', or 'unknown'),
+        confidence (1.0 or 0.0), results (list of row dicts), pages (int),
+        identity (dict), and visible_text (str).
+    """
     import pdfplumber
     results: list[dict] = []
     pages = 0

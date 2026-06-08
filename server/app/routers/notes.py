@@ -20,11 +20,26 @@ entry_router = APIRouter(prefix="/api/notes", tags=["notes"])
 
 
 class NoteIn(BaseModel):
+    """Request body for creating or updating a note."""
+
     title: str
     content_md: str = ""
 
 
 class EntryIn(BaseModel):
+    """Request body for the 'Make entry' dictation capture endpoint.
+
+    Attributes:
+        dest: Entry sub-selector destination; files the note under notes/<root>/<dest>/NN.
+            Ignored when an explicit title is given.
+        root: Capture tree for dest ('medical' | 'financial'); defaults to medical for
+            back-compat. Clamped to a known root.
+        source: Provenance label for the version badge ('user' | 'watch'). Unrecognised
+            values are clamped to 'user' — capture must never 422 over a bad label.
+        lat: Capture latitude, bounded to [-90, 90] so NaN/inf can't break distance math.
+        lon: Capture longitude, bounded to [-180, 180].
+    """
+
     text: str
     title: str | None = None
     # Entry sub-selector capture: file the entry under notes/<root>/<dest>/NN (a preconfigured
@@ -45,11 +60,26 @@ class EntryIn(BaseModel):
 
 
 class RestoreIn(BaseModel):
+    """Request body for restoring a note to a previous version."""
+
     version_id: int
     note: str | None = None
 
 
 def _note_by_slug(conn, slug: str, include_deleted: bool = False):
+    """Fetch a note row by slug, raising 404 if not found.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the note.
+        include_deleted: If True, also return soft-deleted notes.
+
+    Returns:
+        The notes row for the given slug.
+
+    Raises:
+        HTTPException: 404 if no matching note exists.
+    """
     sql = "SELECT * FROM notes WHERE slug = ?"
     if not include_deleted:
         sql += " AND deleted_at IS NULL"
@@ -62,6 +92,20 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 @router.get("")
 def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
                include_hidden: bool = False):
+    """List notes, optionally filtered by title substring and/or kind.
+
+    Redirects and soft-deleted notes are excluded. Protected/system pages (any
+    path segment starting with '_') are hidden unless include_hidden is True.
+
+    Args:
+        q: Optional title substring filter (LIKE match).
+        kind: Optional note kind filter (e.g. 'note', 'kb').
+        limit: Maximum number of results to return (default 200).
+        include_hidden: If True, include protected/system pages in the results.
+
+    Returns:
+        List of note dicts with id, title, slug, kind, kb_ingest, tool_access, updated_at.
+    """
     conn = get_conn()
     # Redirects are decluttered from browse: a merged-away page keeps its UNIQUE title slot
     # live so old [[links]] resolve, but it must not show up in the notes list.
@@ -88,8 +132,18 @@ def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
 
 @router.get("/located")
 def located_notes(since: str | None = None, until: str | None = None, limit: int = 2000):
-    """Notes that carry a capture coordinate — drives the Map's note pins. Declared
-    BEFORE /{slug} so 'located' isn't swallowed as a slug. Owner-only (bearer)."""
+    """Return notes that carry a capture coordinate, for the Map's note pins.
+
+    Declared before /{slug} so 'located' is not swallowed as a slug parameter.
+
+    Args:
+        since: Optional ISO datetime lower bound on created_at.
+        until: Optional ISO datetime upper bound on created_at.
+        limit: Maximum number of results (default 2000, clamped to 5000).
+
+    Returns:
+        List of note dicts with slug, title, lat, lon, location_label, kind, created_at.
+    """
     conn = get_conn()
     sql = ("SELECT slug, title, lat, lon, location_label, kind, created_at FROM notes "
            "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
@@ -107,6 +161,17 @@ def located_notes(since: str | None = None, until: str | None = None, limit: int
 
 @router.get("/{slug}")
 def get_note(slug: str):
+    """Fetch a note by slug, including backlinks, tags, and redirect resolution.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Full note dict with all columns plus backlinks, tags, and redirect_to_slug.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -139,8 +204,17 @@ def get_note(slug: str):
 
 @router.get("/{slug}/preview")
 def note_preview(slug: str):
-    """A tiny title + excerpt for a note, so a [[citation]] in a chat reply can reveal its source on
-    hover (verify the cite without leaving the conversation). Prefers the AI gist; else the lead text."""
+    """Return a small title and excerpt for a note, used to preview [[citations]] on hover.
+
+    Prefers the AI-generated gist; falls back to the leading prose. Returns
+    {found: false} instead of 404 so the caller can degrade gracefully.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Dict with found, and when found: title and excerpt (max 280 chars).
+    """
     conn = get_conn()
     row = conn.execute("SELECT id, title, content_md FROM notes WHERE slug=? AND deleted_at IS NULL",
                        (slug,)).fetchone()
@@ -162,8 +236,20 @@ def note_preview(slug: str):
 
 @router.get("/{slug}/analysis")
 def note_analysis(slug: str):
-    """The read-only AI analysis sidecar for a note (gist, salient facts, entities,
-    domain). {} when none has been computed yet. Never mutates the note."""
+    """Return the read-only AI analysis sidecar for a note.
+
+    Includes gist, salient facts, entities, and domain classification. Returns {}
+    when no analysis has been computed yet. Never mutates the note.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Analysis dict, or {} if none exists.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -176,11 +262,21 @@ def note_analysis(slug: str):
 
 @router.post("/{slug}/analysis")
 def refresh_note_analysis(slug: str):
-    """Force-recompute THIS note's analysis sidecar (ignoring the content-hash cache) — the
-    per-note 'reanalyze' button. Also runs the title check (a bare dated note gets a
-    generated leaf title) so the two passes don't have to be run separately, and re-aggregates
-    the entity index when the analysis changes. Returns the fresh analysis plus the note's
-    (possibly renamed) slug/title."""
+    """Force-recompute a note's AI analysis sidecar, bypassing the content-hash cache.
+
+    Also runs the title-normalization pass (a bare dated note may be renamed) and
+    re-aggregates the entity index when the analysis changes. Returns the fresh
+    analysis plus the note's (possibly renamed) slug and title.
+
+    Args:
+        slug: URL slug of the note to reanalyze.
+
+    Returns:
+        Fresh analysis dict with slug and title fields appended.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -200,19 +296,37 @@ def refresh_note_analysis(slug: str):
 
 
 class TalkIn(BaseModel):
+    """Request body for adding a talk item to an article."""
+
     kind: str = "note"
     body: str
 
 
 class TalkReplyIn(BaseModel):
+    """Request body for replying to a talk item."""
+
     body: str
 
 
 class TalkDismissIn(BaseModel):
+    """Request body for dismissing a talk item."""
+
     reason: str = ""
 
 
 def _note_title(conn, slug: str) -> str:
+    """Return the title of a note by slug, raising 404 if not found.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the note.
+
+    Returns:
+        The note's title string.
+
+    Raises:
+        HTTPException: 404 if no live note with that slug exists.
+    """
     row = conn.execute("SELECT title FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")
@@ -221,8 +335,19 @@ def _note_title(conn, slug: str) -> str:
 
 @router.get("/{slug}/talk")
 def get_talk(slug: str):
-    """The article's 'talk' entries (decisions/conflicts/questions/directives) — the
-    maintenance memory beside the article."""
+    """Return the talk items for an article (decisions, conflicts, questions, directives).
+
+    Talk items are the maintenance memory alongside an article.
+
+    Args:
+        slug: URL slug of the article.
+
+    Returns:
+        List of talk item dicts from article_talk.list_for.
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     return article_talk.list_for(conn, _note_title(conn, slug))
@@ -230,13 +355,26 @@ def get_talk(slug: str):
 
 @router.post("/{slug}/talk")
 def add_talk(slug: str, body: TalkIn):
-    """Add an owner note/directive/question to an article's talk. (There is intentionally
-    no user 'resolve' — open items are addressed through the Review flow / maintenance pass
-    when the underlying issue is actually handled, not by ticking a box.)
+    """Add an owner note, directive, or question to an article's talk.
 
-    A 'correction' is a source-of-truth fix: it's promoted to a dated entry note (the truth
-    layer) and the talk item links to it, so the next maintenance pass rewrites the article
-    from it. Source entries are never modified."""
+    There is intentionally no user 'resolve' — open items are addressed through the
+    Review flow or maintenance pass when the underlying issue is actually handled.
+
+    A 'correction' kind is promoted to a dated entry note (the truth layer), and the
+    talk item links to it so the next maintenance pass rewrites the article. Source
+    entries are never modified.
+
+    Args:
+        slug: URL slug of the article.
+        body: Talk item kind and body text.
+
+    Returns:
+        Dict with 'id' of the new talk item, and 'promoted' (note slug if a correction
+        was promoted to a truth note, else None).
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk, corrections
     article_title = _note_title(conn, slug)
@@ -251,7 +389,22 @@ def add_talk(slug: str, body: TalkIn):
 
 
 def _talk_row(conn, slug: str, talk_id: int):
-    """Fetch a talk row and verify it belongs to THIS article (no cross-article writes)."""
+    """Fetch a talk row and assert it belongs to this article.
+
+    Prevents cross-article writes by comparing article_title on the row.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the article the talk item must belong to.
+        talk_id: Primary key of the article_talk row.
+
+    Returns:
+        The article_talk row.
+
+    Raises:
+        HTTPException: 404 if the note or talk item does not exist, or belongs to
+            a different article.
+    """
     article_title = _note_title(conn, slug)
     row = conn.execute(
         "SELECT id, kind, article_title FROM article_talk WHERE id=?", (talk_id,)).fetchone()
@@ -262,8 +415,23 @@ def _talk_row(conn, slug: str, talk_id: int):
 
 @router.post("/{slug}/talk/{talk_id}/reply")
 def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
-    """Reply to a talk item — the owner↔AI maintenance conversation. The reply is folded into
-    the next maintenance pass over this article (the scheduled pass, or 'maintain-now')."""
+    """Reply to a talk item, contributing to the owner-AI maintenance conversation.
+
+    The reply is folded into the next maintenance pass over this article (scheduled
+    or via 'maintain-now').
+
+    Args:
+        slug: URL slug of the article.
+        talk_id: Primary key of the talk item to reply to.
+        body: Reply text.
+
+    Returns:
+        Dict with 'id' of the new reply.
+
+    Raises:
+        HTTPException: 400 if the reply body is empty.
+        HTTPException: 404 if the article or talk item does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     _talk_row(conn, slug, talk_id)
@@ -276,9 +444,24 @@ def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
 
 @router.post("/{slug}/talk/{talk_id}/dismiss")
 def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
-    """Owner dismissal of a talk item — closes it as 'dismissed by owner' (distinct from a
-    maintenance resolution). Refused on a 'correction': its promoted truth note still heals
-    the article next pass, so hiding the row would mislead — delete that note to undo it."""
+    """Dismiss a talk item as 'dismissed by owner' (distinct from a maintenance resolution).
+
+    Refused for 'correction' items — their promoted truth note still heals the article
+    on the next pass, so hiding the row would mislead. Delete the truth note to undo a
+    correction.
+
+    Args:
+        slug: URL slug of the article.
+        talk_id: Primary key of the talk item to dismiss.
+        body: Optional reason text.
+
+    Returns:
+        Dict with 'ok': True if dismissed, False if already resolved.
+
+    Raises:
+        HTTPException: 409 if the talk item is a correction (cannot be dismissed).
+        HTTPException: 404 if the article or talk item does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     row = _talk_row(conn, slug, talk_id)
@@ -294,8 +477,20 @@ def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
 
 @router.post("/{slug}/talk/maintain-now")
 def maintain_now_talk(slug: str):
-    """Run the surgical maintenance pass on THIS article right now — consumes its open items
-    and the owner's replies without waiting for the nightly batch. Runs under the KB lock."""
+    """Run the surgical KB maintenance pass on this article immediately.
+
+    Consumes open talk items and the owner's replies without waiting for the nightly
+    batch. Runs under the KB write lock.
+
+    Args:
+        slug: URL slug of the article to maintain.
+
+    Returns:
+        Result dict from wiki_build.maintain_now.
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import wiki_build
     article_title = _note_title(conn, slug)
@@ -304,7 +499,11 @@ def maintain_now_talk(slug: str):
 
 @router.get("/kb/dead-links")
 def kb_dead_links():
-    """KB health: dangling cross-links from articles (target doesn't exist)."""
+    """Return KB articles that contain dangling cross-links to non-existent targets.
+
+    Returns:
+        Dict with 'count' and 'items' listing each dead link.
+    """
     from ..services import wiki_build
     items = wiki_build.dead_links(get_conn())
     return {"count": len(items), "items": items}
@@ -312,6 +511,16 @@ def kb_dead_links():
 
 @router.post("")
 def create_or_update(body: NoteIn):
+    """Create a new note or update an existing one by title.
+
+    Fires entry_created hooks after the commit (auto-tag etc.).
+
+    Args:
+        body: Note title and markdown content.
+
+    Returns:
+        Dict with id, title, and slug of the upserted note.
+    """
     conn = get_conn()
     try:
         note_id = notes_svc.upsert_note(conn, body.title, body.content_md, fire_events=False)
@@ -326,9 +535,23 @@ def create_or_update(body: NoteIn):
 
 @router.put("/{slug}")
 def update_note(slug: str, body: NoteIn):
-    """Edit an existing note in place, including RENAMING it. Targets the note by
-    id so a new title renames THIS note (and its slug) rather than creating a
-    duplicate. Use it to move notes under the notes/ or kb/ roots."""
+    """Edit an existing note in place, optionally renaming it.
+
+    Targets the note by id so a new title renames this note and its slug instead of
+    creating a duplicate. Use to move notes between notes/ and kb/ roots.
+
+    Args:
+        slug: URL slug of the note to update.
+        body: New title and markdown content.
+
+    Returns:
+        Dict with id, title, and slug of the updated note.
+
+    Raises:
+        HTTPException: 409 if a note with the new title already exists.
+        HTTPException: 422 if the new title is empty.
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     new_title = body.title.strip()
@@ -350,13 +573,28 @@ def update_note(slug: str, body: NoteIn):
 
 
 class TagsIn(BaseModel):
+    """Request body for replacing a note's tags."""
+
     tags: list[str] = []
 
 
 @router.put("/{slug}/tags")
 def set_note_tags(slug: str, body: TagsIn):
-    """Replace a note's tags directly (the owner editing their own note). The AI path
-    stages a tag change for approval; the owner editing in the UI is a direct edit."""
+    """Replace a note's tags directly (owner UI path, bypasses staging).
+
+    The AI path stages a tag change for approval; the owner editing in the UI writes
+    directly.
+
+    Args:
+        slug: URL slug of the note.
+        body: Complete new tag list.
+
+    Returns:
+        Dict with 'tags' — the updated tag list.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug)
     if note is None:
@@ -367,6 +605,13 @@ def set_note_tags(slug: str, body: TagsIn):
 
 
 class FlagsIn(BaseModel):
+    """Request body for updating a note's governance flags (PATCH semantics).
+
+    Omit a field to leave it unchanged so individual checkboxes toggle independently.
+    Only the three coherent states are permitted: Full (1/1), Research-only (0/1),
+    Private (0/0).
+    """
+
     # PATCH semantics: omit a field to leave it unchanged (so a single checkbox toggles
     # independently). Coherent states only — see set_note_flags.
     kb_ingest: bool | None = None
@@ -375,11 +620,24 @@ class FlagsIn(BaseModel):
 
 @router.put("/{slug}/flags")
 def set_note_flags(slug: str, body: FlagsIn):
-    """Set the per-note governance flags. `kb_ingest`: feed this entry to KB synthesis.
-    `tool_access`: surface it in the assistant's search/research tools. The owner editing
-    their own note directly. Only the three coherent states are allowed — Full (1/1),
-    Research-only (0/1), Private (0/0); kb_ingest=1 with tool_access=0 is rejected, since
-    the KB would otherwise cite a source the assistant is forbidden to read."""
+    """Update the per-note governance flags directly (owner UI path).
+
+    kb_ingest: feed this note to KB synthesis. tool_access: surface it in the
+    assistant's search and research tools. Only three coherent states are allowed:
+    Full (1/1), Research-only (0/1), Private (0/0). kb_ingest=1 with tool_access=0
+    is rejected — the KB would otherwise cite a source the assistant cannot read.
+
+    Args:
+        slug: URL slug of the note.
+        body: kb_ingest and/or tool_access flags (omit to leave unchanged).
+
+    Returns:
+        Dict with 'kb_ingest' and 'tool_access' as booleans.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+        HTTPException: 422 if the requested state is incoherent (kb_ingest=1, tool_access=0).
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id, kb_ingest, tool_access FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -405,12 +663,26 @@ def set_note_flags(slug: str, body: FlagsIn):
 
 @entry_router.post("/entry")
 def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
-    """'Make entry' mode: store text directly as a NEW note (unique title), no LLM.
-    Fires the entry_created hooks (auto-tag, etc.).
+    """Store a dictation or typed capture as a new note with no LLM processing.
 
-    `writer` is None for the full access key (PWA / owner) or a person row when a
-    family phone authenticates with its per-person location key — in which case the
-    dictation is attributed to that person so you can tell whose watch it came from.
+    Routes the note title based on priority: explicit title > dest sub-selector >
+    chronological dated tree. Fires entry_created hooks (auto-tag etc.) after commit
+    so they don't block the 'no-LLM' fast path.
+
+    writer is None for the full access key (PWA/owner) or a person row when a family
+    phone authenticates with its per-person location key — dictation is attributed to
+    that person so you can tell whose watch it came from.
+
+    Args:
+        body: Entry text, optional explicit title, dest, root, source, and coordinates.
+        writer: Injected by require_capture_writer; None for the owner, or a person row
+            for a per-person family capture key.
+
+    Returns:
+        Dict with id, title, and slug of the created note.
+
+    Raises:
+        HTTPException: 422 if both text and title are empty.
     """
     conn = get_conn()
     text = body.text.strip()
@@ -461,6 +733,22 @@ def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
 
 @router.delete("/{slug}")
 def delete_note(slug: str):
+    """Soft-delete a note by slug.
+
+    Returns a user-friendly 503 when the database is busy (e.g. a background
+    analysis is mid-write) instead of a bare 500.
+
+    Args:
+        slug: URL slug of the note to delete.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+        HTTPException: 503 if the database is locked; the caller should retry.
+        HTTPException: 500 for other unexpected failures.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -484,7 +772,20 @@ def delete_note(slug: str):
 
 @router.get("/{slug}/versions")
 def versions(slug: str):
-    """Timeline of authored states, newest first. The newest is the current one."""
+    """Return the version timeline for a note, newest state first.
+
+    The first entry is the current live version.
+
+    Args:
+        slug: URL slug of the note (includes soft-deleted).
+
+    Returns:
+        List of version dicts with version_id, title, source, conversation_id,
+        note, created_at, size, and is_current.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = _note_by_slug(conn, slug, include_deleted=True)
     rows = conn.execute(
@@ -502,6 +803,18 @@ def versions(slug: str):
 
 @router.get("/{slug}/versions/{version_id}")
 def get_version(slug: str, version_id: int):
+    """Fetch a single historical version of a note.
+
+    Args:
+        slug: URL slug of the note.
+        version_id: Primary key of the note_versions row.
+
+    Returns:
+        Full note_versions row as a dict.
+
+    Raises:
+        HTTPException: 404 if the note or version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     v = conn.execute(
@@ -515,10 +828,25 @@ def get_version(slug: str, version_id: int):
 
 @router.get("/{slug}/diff/{from_id}/{to_id}")
 def diff_versions(slug: str, from_id: int, to_id: int):
+    """Return a line diff between two historical versions of a note.
+
+    Args:
+        slug: URL slug of the note.
+        from_id: Primary key of the 'before' version.
+        to_id: Primary key of the 'after' version.
+
+    Returns:
+        Dict with from/to metadata, title_changed flag, before/after raw markdown,
+        and hunks (line-level diff for plain-text consumers).
+
+    Raises:
+        HTTPException: 404 if the note or either version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
 
     def _ver(vid: int):
+        """Load a single note version row scoped to this note."""
         v = conn.execute(
             "SELECT * FROM note_versions WHERE id = ? AND note_id = ?",
             (vid, note["id"]),
@@ -542,12 +870,19 @@ def diff_versions(slug: str, from_id: int, to_id: int):
 
 @router.get("/links/audit")
 def links_audit():
-    """List [[Target|Display]] links whose shortened label names a different article than
-    the target (high-confidence only) — the interactive Wiki link-label audit."""
+    """Return wiki links whose display label names a different article than the target.
+
+    High-confidence mismatches only. Powers the interactive Wiki link-label audit.
+
+    Returns:
+        Dict with 'findings' — list of mismatch records.
+    """
     return {"findings": wikilinks.audit_display_mismatches(get_conn())}
 
 
 class LinkFixIn(BaseModel):
+    """Request body for correcting one flagged wiki link-label mismatch."""
+
     note_id: int
     target: str
     display: str
@@ -555,7 +890,14 @@ class LinkFixIn(BaseModel):
 
 @router.post("/links/audit/fix")
 def links_audit_fix(body: LinkFixIn):
-    """Correct one flagged link (re-derives the right label from the live target)."""
+    """Correct one flagged wiki link, re-deriving the label from the live target.
+
+    Args:
+        body: Source note id, link target title, and current display text to replace.
+
+    Returns:
+        Dict with 'fixed': True if the link was updated, False if unchanged.
+    """
     conn = get_conn()
     changed = wikilinks.fix_note_link(conn, body.note_id, body.target, body.display)
     conn.commit()
@@ -564,7 +906,11 @@ def links_audit_fix(body: LinkFixIn):
 
 @router.post("/links/audit/fix-all")
 def links_audit_fix_all():
-    """Correct every currently-flagged link. Returns how many were changed."""
+    """Correct every currently-flagged wiki link-label mismatch.
+
+    Returns:
+        Dict with 'fixed' — count of links that were updated.
+    """
     conn = get_conn()
     fixed = 0
     for f in wikilinks.audit_display_mismatches(conn):
@@ -576,7 +922,20 @@ def links_audit_fix_all():
 
 @router.post("/{slug}/restore")
 def restore(slug: str, body: RestoreIn):
-    """Restore an old version. Snapshots current first (history is never lost)."""
+    """Restore a note to a previous version, resurrecting it if soft-deleted.
+
+    Always snapshots the current state first so history is never lost.
+
+    Args:
+        slug: URL slug of the note (includes soft-deleted).
+        body: version_id to restore from, and optional version note label.
+
+    Returns:
+        Dict with id, title, and slug of the restored note.
+
+    Raises:
+        HTTPException: 404 if the note or the specified version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     v = conn.execute(

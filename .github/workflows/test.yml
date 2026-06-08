@@ -112,3 +112,40 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with: { name: android-test-report, path: android/app/build/reports/tests, retention-days: 7 }
+
+  # Informational only (never blocks merge): how well a PR's CHANGED lines are tested.
+  # This is the "new features ship with tests" signal — reported to the run summary.
+  diff-coverage:
+    name: diff coverage (informational)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # need the base branch to diff against
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Install deps + diff-cover
+        run: |
+          grep -v '^pywebpush' server/requirements.txt > /tmp/reqs-core.txt
+          pip install -r /tmp/reqs-core.txt -r server/requirements-dev.txt diff-cover
+          pip install pywebpush==2.0.0 || true
+          npm --prefix web ci
+      - name: Generate coverage (backend xml + frontend lcov)
+        run: |
+          ( cd server && python -m pytest -m "not concurrency" --cov=app --cov-report=xml ) || true
+          ( cd web && npx vitest run --coverage --coverage.reporter=lcovonly ) || true
+      - name: Diff coverage of changed lines (never fails — --fail-under=0)
+        run: |
+          base="origin/${{ github.base_ref }}"
+          {
+            echo "## Diff coverage — how well this PR's *changed* lines are tested"
+            echo "_Informational; does not block merge. Aim to keep new code well-covered._"
+            echo "### Backend"; echo '```'
+            diff-cover server/coverage.xml --compare-branch "$base" --fail-under=0 2>/dev/null || echo "(no backend coverage delta)"
+            echo '```'; echo "### Frontend"; echo '```'
+            diff-cover web/coverage/lcov.info --compare-branch "$base" --fail-under=0 2>/dev/null || echo "(no frontend coverage delta)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

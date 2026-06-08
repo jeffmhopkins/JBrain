@@ -6,6 +6,7 @@
 #   ./jt front      frontend vitest run
 #   ./jt unit       the `unit` tier across both domains (one word, one meaning)
 #   ./jt cov        both domains with coverage + per-domain floors
+#   ./jt e2e        system tier: build PWA + Playwright vs a real server (LLM faked)
 #   ./jt watch      frontend vitest watch (TDD loop)
 #
 # The native commands still work too: `cd server && pytest`, `cd web && npm test`.
@@ -23,6 +24,7 @@ case "$cmd" in
   front)  front test ;;
   unit)   back -m unit --no-cov && front test ;;
   cov)    back --cov=app --cov-report=term-missing && front test:cov ;;
+  e2e)    ( cd "$ROOT/web" && npm run build ) && ( cd "$ROOT/e2e" && npx playwright test "$@" ) ;;
   watch)  front test:watch ;;
   -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)      echo "jt: unknown command '$cmd'"; echo "usage: ./jt [all|back|front|unit|cov|watch]"; exit 2 ;;

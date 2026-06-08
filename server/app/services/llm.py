@@ -28,8 +28,23 @@ from ..config import get_settings
 Message = dict[str, Any]
 
 # Cap how long a single LLM request can block (a hung provider must not freeze a
-# scheduled workflow / the request handling it).
+# scheduled workflow / the request handling it). This is the fallback default; the
+# live value is read from settings via _timeout() so a CPU local box can raise it.
 _LLM_TIMEOUT = 120.0
+
+
+def _timeout() -> float:
+    """Return the configured per-request LLM timeout in seconds (LLM_TIMEOUT_SECONDS).
+
+    Falls back to _LLM_TIMEOUT when settings are unavailable or the value is unset.
+
+    Returns:
+        Timeout in seconds.
+    """
+    try:
+        return float(get_settings().llm_timeout_seconds) or _LLM_TIMEOUT
+    except Exception:  # noqa: BLE001 — settings not ready / bad value → safe default
+        return _LLM_TIMEOUT
 
 # LLM SDK clients each own an httpx connection pool (persistent sockets / file descriptors)
 # and are designed to be long-lived and reused. Constructing a fresh one per call leaked FDs,
@@ -268,14 +283,14 @@ class AnthropicProvider:
         from anthropic import Anthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "sync", key),
-                              lambda: Anthropic(api_key=key, timeout=_LLM_TIMEOUT))
+                              lambda: Anthropic(api_key=key, timeout=_timeout()))
 
     def _async_client(self):
         """Return a cached async Anthropic client for the current API key."""
         from anthropic import AsyncAnthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "async", key),
-                              lambda: AsyncAnthropic(api_key=key, timeout=_LLM_TIMEOUT))
+                              lambda: AsyncAnthropic(api_key=key, timeout=_timeout()))
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
         """Return the model's text reply (non-streaming, Anthropic).
@@ -457,7 +472,7 @@ class XAIProvider:
         cls = AsyncOpenAI if async_ else OpenAI
         key, base = self._key(), s.xai_base_url
         return _cached_client(("xai", "async" if async_ else "sync", key, base),
-                              lambda: cls(api_key=key, base_url=base, timeout=_LLM_TIMEOUT))
+                              lambda: cls(api_key=key, base_url=base, timeout=_timeout()))
 
     def has_credentials(self) -> bool:
         """Return True if an xAI (or fallback LLM) API key is configured."""
@@ -698,6 +713,50 @@ class XAIProvider:
             messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
 
 
+# --- Local (Ollama / OpenAI-compatible) adapter ----------------------------
+
+class LocalProvider(XAIProvider):
+    """LLMProvider for a local OpenAI-compatible server (Ollama's /v1 endpoint).
+
+    Reuses the xAI adapter's OpenAI-compatible wire/translate/stream logic, pointed at
+    the local server (LLM_LOCAL_BASE_URL) with a placeholder key (Ollama ignores auth).
+    Intended for the `cheap` tier (tagging/titling/summaries) on CPU-only hardware via
+    plain complete()/complete_with_meta(); the interactive agent stays on the cloud
+    provider. Tool-use and streaming are inherited but best-effort on Ollama — do NOT
+    route the agent here.
+    """
+
+    name = "local"
+
+    def _key(self) -> str:
+        """Return a placeholder key (the local server ignores authentication)."""
+        return "ollama"
+
+    def _client(self, async_: bool = False):
+        """Return a cached OpenAI-compatible client pointed at the local base URL.
+
+        Args:
+            async_: If True, return an AsyncOpenAI client; otherwise OpenAI.
+
+        Returns:
+            Cached sync or async OpenAI-compatible client.
+        """
+        from openai import AsyncOpenAI, OpenAI
+        s = get_settings()
+        cls = AsyncOpenAI if async_ else OpenAI
+        key, base = self._key(), s.llm_local_base_url
+        return _cached_client(("local", "async" if async_ else "sync", key, base),
+                              lambda: cls(api_key=key, base_url=base, timeout=_timeout()))
+
+    def has_credentials(self) -> bool:
+        """Return True when local-LLM support is enabled (no API key is required)."""
+        return bool(get_settings().has_local)
+
+    def default_model(self) -> str:
+        """Return the configured local model id (LLM_LOCAL_MODEL)."""
+        return get_settings().llm_local_model
+
+
 def _record_openai_usage(model: str, u, context: str | None = None) -> None:
     """Log OpenAI-compatible token usage to the meter (best-effort).
 
@@ -749,23 +808,55 @@ _REGISTRY: dict[str, type] = {
     "anthropic": AnthropicProvider,
     "xai": XAIProvider,
     "grok": XAIProvider,   # alias
+    "local": LocalProvider,
+    "ollama": LocalProvider,   # alias
 }
 
 
-def _provider_for_model(model: str | None) -> str | None:
-    """Infer the provider name from a model id prefix, or None if unrecognised.
+def _is_local_model_id(model: str) -> bool:
+    """Return True if a model id should route to the local provider.
+
+    Only when local support is enabled (LLM_LOCAL_ENABLE + a base URL). An Ollama id
+    carries a 'name:tag' colon that cloud ids never have; an explicit prefix list
+    (LLM_LOCAL_PREFIXES) covers tagless local names like 'mistral'. The enable gate
+    means a stray ':' in a cloud id can't silently route into a dead provider on a box
+    with no local server.
 
     Args:
-        model: Model id string, e.g. 'claude-sonnet-4' or 'grok-4.3'.
+        model: Lowercased model id.
 
     Returns:
-        Provider name ('anthropic' or 'xai'), or None.
+        True if the id maps to the local provider.
+    """
+    s = get_settings()
+    if not (getattr(s, "llm_local_enable", False) and getattr(s, "llm_local_base_url", "")):
+        return False
+    if ":" in model:
+        return True
+    prefixes = [p.strip().lower() for p in (getattr(s, "llm_local_prefixes", "") or "").split(",") if p.strip()]
+    return any(model.startswith(p) for p in prefixes)
+
+
+def _provider_for_model(model: str | None) -> str | None:
+    """Infer the provider name from a model id, or None if unrecognised.
+
+    Recognises grok*/claude* by prefix and, when local support is enabled, Ollama-style
+    ids (a 'name:tag' containing ':', or any configured local prefix) as 'local'. Returns
+    None for an unrecognised id, so get_provider falls back to the configured default.
+
+    Args:
+        model: Model id string, e.g. 'claude-sonnet-4', 'grok-4.3', 'qwen2.5:7b'.
+
+    Returns:
+        Provider name ('anthropic', 'xai', 'local'), or None.
     """
     m = (model or "").lower()
     if m.startswith("grok"):
         return "xai"
     if m.startswith("claude"):
         return "anthropic"
+    if m and _is_local_model_id(m):
+        return "local"
     return None
 
 
@@ -811,9 +902,35 @@ def has_credentials() -> bool:
     return get_provider().has_credentials()
 
 
+def _cloud_fallback_provider() -> LLMProvider | None:
+    """Return a non-local cloud provider with credentials, for local-failure fallback.
+
+    Used only when LLM_LOCAL_FALLBACK is on: a local-tier call that errors retries on
+    the configured cloud default so a local outage degrades (costs a cloud call) rather
+    than breaking a background job. Returns None when fallback is off or the cloud
+    default has no credentials (e.g. an all-local install), in which case the caller
+    surfaces the original error.
+
+    Returns:
+        A cloud LLMProvider to retry on, or None.
+    """
+    s = get_settings()
+    if not getattr(s, "llm_local_fallback", False):
+        return None
+    name = (s.llm_provider or "anthropic").lower()
+    if name in ("local", "ollama"):       # all-local: nothing cloud to fall back to
+        return None
+    prov = _REGISTRY.get(name, AnthropicProvider)()
+    return prov if prov.has_credentials() else None
+
+
 def complete(messages: list[Message], *, system: str | None = None,
              model: str | None = None, max_tokens: int = 1024) -> str:
     """Non-streaming text completion via the appropriate provider.
+
+    When the resolved provider is local and the call fails, retries on the cloud default
+    (if LLM_LOCAL_FALLBACK is on and a cloud key exists) so a local outage degrades
+    rather than breaks. The retry uses the cloud provider's own default model.
 
     Args:
         messages: Conversation history.
@@ -824,7 +941,15 @@ def complete(messages: list[Message], *, system: str | None = None,
     Returns:
         Model reply as a plain string.
     """
-    return get_provider(model).complete(messages, system=system, model=model, max_tokens=max_tokens)
+    prov = get_provider(model)
+    try:
+        return prov.complete(messages, system=system, model=model, max_tokens=max_tokens)
+    except Exception:  # noqa: BLE001 — local outage → degrade to cloud when configured
+        fb = _cloud_fallback_provider() if prov.name == "local" else None
+        if fb is None:
+            raise
+        logging.getLogger("jbrain").warning("local LLM failed; falling back to %s", fb.name)
+        return fb.complete(messages, system=system, model=None, max_tokens=max_tokens)
 
 
 def complete_with_meta(messages: list[Message], *, system: str | None = None,
@@ -844,7 +969,15 @@ def complete_with_meta(messages: list[Message], *, system: str | None = None,
     Returns:
         Tuple of (text, stop_reason).
     """
-    return get_provider(model).complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
+    prov = get_provider(model)
+    try:
+        return prov.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
+    except Exception:  # noqa: BLE001 — local outage → degrade to cloud when configured
+        fb = _cloud_fallback_provider() if prov.name == "local" else None
+        if fb is None:
+            raise
+        logging.getLogger("jbrain").warning("local LLM failed; falling back to %s", fb.name)
+        return fb.complete_with_meta(messages, system=system, model=None, max_tokens=max_tokens)
 
 
 def complete_with_tools(messages: list[Message], *, system: str | None = None, tools: list[ToolDef],

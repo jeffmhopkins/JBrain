@@ -37,6 +37,12 @@ def _rates(model: str) -> tuple:
         Tuple of USD per 1M token rates; falls back to _DEFAULT_PRICE if unknown.
     """
     m = (model or "").lower()
+    # Local/Ollama models cost nothing — an Ollama id carries a 'name:tag' colon that
+    # cloud ids never have. Return zero so the meter doesn't bill them at the unknown
+    # default (Sonnet) rate; token counts are still recorded for the "N local calls, $0"
+    # view that is the whole point of running local.
+    if ":" in m or "ollama" in m:
+        return (0.0, 0.0, 0.0, 0.0)
     for key, r in _PRICES.items():
         if key in m:
             return r

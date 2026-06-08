@@ -129,7 +129,7 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         Event dicts of type tool_use, tool_result, sources_proposed, or error.
     """
     from ..db import get_conn
-    from . import search, wiki_build, wiki_guides
+    from . import entity_index, search, wiki_build, wiki_guides
 
     conn = get_conn()
     run.status = "gathering"
@@ -137,6 +137,19 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         run.status = "error"
         yield {"type": "error", "message": "No LLM credentials configured."}
         return
+
+    # Freshen the entity index (cheap, embeddings-free) so a People page created or renamed
+    # since the last full rebuild — and any freshly-seeded nickname alias — is linkable at
+    # draft time. Without this the deterministic add_links backstop and the known-aliases
+    # block work off a stale index and leave a known person plain. Offloaded to a thread (it's
+    # a synchronous DB sweep) so the rebind never blocks the event loop. Best-effort: a rebind
+    # failure must never abort a rebuild — the draft just falls back to the existing index.
+    if not getattr(run, "rebound", False):
+        try:
+            await asyncio.to_thread(entity_index.rebuild, conn, sync_embeddings=False)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("rebuild: entity rebind skipped (%s)", exc)
+        run.rebound = True
 
     art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
     run.known = wiki_build._known_titles(conn)

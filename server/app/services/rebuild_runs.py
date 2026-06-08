@@ -45,6 +45,7 @@ class RebuildRun:
     status: str = "streaming"               # streaming|ready|guiding|accepting|accepted|rejected|error|cancelled
     error: str | None = None
     cancelled: bool = False                 # cooperative cancel flag (polled by the engine)
+    rebound: bool = False                   # entity index freshened once for this session (draft-time linking)
     created_at: float = field(default_factory=time.monotonic)
     touched_at: float = field(default_factory=time.monotonic)
 

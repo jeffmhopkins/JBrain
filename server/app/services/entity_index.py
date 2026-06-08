@@ -260,7 +260,7 @@ def _fold_owner(conn, clusters: dict, mapping: dict) -> None:
             pm[n] = canon
 
 
-def rebuild(conn, limit: int = 20000) -> int:
+def rebuild(conn, limit: int = 20000, *, sync_embeddings: bool = True) -> int:
     """Reaggregate the entity index from note_analysis.
 
     Upserts by (type, normalized_key) so entity IDs are stable across rebuilds.
@@ -270,6 +270,12 @@ def rebuild(conn, limit: int = 20000) -> int:
     Args:
         conn: SQLite connection (commits internally).
         limit: Maximum number of note_analysis rows to scan.
+        sync_embeddings: When False, skip the (CPU/network-bound) entity-embedding
+            refresh — the entity/alias/article-link tables are still rebuilt, which is
+            all the deterministic wiki linkers need. Used on the live request path (a
+            rebuild/suggest session start) so a freshly-created or renamed People page
+            becomes linkable at draft time without paying the embed cost; the next full
+            rebuild (e.g. Accept's finalize) re-syncs the vectors.
 
     Returns:
         Total number of entity (type, canonical_norm) pairs after this rebuild.
@@ -357,7 +363,8 @@ def rebuild(conn, limit: int = 20000) -> int:
         except Exception:
             pass
 
-    _sync_embeddings(conn)            # embed AFTER overrides so vectors use the corrected name
+    if sync_embeddings:
+        _sync_embeddings(conn)        # embed AFTER overrides so vectors use the corrected name
     conn.commit()
     return len(seen_keys)
 

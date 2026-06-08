@@ -363,6 +363,39 @@ def test_gather_append_merges_without_dupes(conn, monkeypatch):
     assert sorted(titles) == ["notes/2026/01/a", "notes/2026/01/b"]   # no duplicate of a
 
 
+def test_entity_rebuild_skips_embeddings_when_flagged(conn, monkeypatch):
+    """rebuild(sync_embeddings=False) rebuilds the tables but skips the embed refresh."""
+    from app.services import entity_index
+    seen = []
+    monkeypatch.setattr(entity_index, "_sync_embeddings", lambda c: seen.append(True))
+    entity_index.rebuild(conn, sync_embeddings=False)
+    assert seen == []                       # the cheap path never touches the embedder
+    entity_index.rebuild(conn)              # default re-syncs
+    assert seen == [True]
+
+
+def test_gather_rebinds_entity_index_once_cheaply(conn, monkeypatch):
+    """A session start freshens the entity index (embeddings-free), and only once per run."""
+    from app.services import rebuild_engine, entity_index
+    _mk(conn, "kb/Things/Truck", "# Truck\n")
+    calls = []
+    monkeypatch.setattr(entity_index, "rebuild",
+                        lambda c, *a, **k: calls.append(k.get("sync_embeddings", True)) or 0)
+
+    async def _passthru(f, *a, **k):        # run the offloaded fn inline so the spy fires
+        return f(*a, **k)
+    monkeypatch.setattr(rebuild_engine.asyncio, "to_thread", _passthru)
+
+    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
+    _install_provider(monkeypatch, prov)
+    run = _new_run()
+    _drain(rebuild_engine.run_gather(run))
+    assert calls == [False]                 # one rebind, embeddings-free
+    assert run.rebound is True
+    _drain(rebuild_engine.run_gather(run, append=True))
+    assert calls == [False]                 # a re-gather does NOT rebind again
+
+
 # =========================================================================================
 # Stage 2 — DRAFT / GUIDE / RE-DRAFT
 # =========================================================================================

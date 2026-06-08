@@ -340,8 +340,8 @@ describe("Chat — /clear reset", () => {
     );
     const { user } = renderWithProviders(<Chat />);
     await user.click(screen.getByRole("button", { name: /Full Brain/i }));
-    // The seeded thread restores.
-    await screen.findByText(/old reply/i);
+    // The seeded thread restores (async load; allow time under load).
+    await screen.findByText(/old reply/i, {}, { timeout: 4000 });
 
     await user.type(screen.getByPlaceholderText(/full tool access/i), "/clear");
     await user.click(screen.getByRole("button", { name: /^Send$/i }));

@@ -26,6 +26,7 @@ data/
 coverage/
 web/coverage/
 coverage.xml
+coverage.json
 
 # E2E (Playwright) artifacts + the built-PWA copy the API serves during e2e
 server/static/

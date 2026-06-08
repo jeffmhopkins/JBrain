@@ -40,15 +40,18 @@ def _wants_propose(body: dict) -> bool:
 
 
 def _propose_args() -> str:
-    # Shape mirrors what the architect's propose_actions tool expects: a list of staged
-    # actions. A single create of a note. Kept minimal/loose on purpose.
+    # Shape mirrors what the architect's propose_actions tool expects (see
+    # server/app/services/architect.py `_TOOL_SCHEMAS["propose_actions"]` and
+    # routers/staging.py `_apply_action`): a list of staged actions. A single CREATE of
+    # a note — `type` is the UPPERCASE enum, `title` + `content` are what apply writes,
+    # and `summary` is required by the tool schema.
     return json.dumps({
         "actions": [{
-            "type": "create",
+            "type": "CREATE",
             "title": "E2E Proposed Note",
-            "content_md": "# E2E Proposed Note\n\nStaged by the end-to-end fake model.",
+            "content": "# E2E Proposed Note\n\nStaged by the end-to-end fake model.",
+            "summary": "Create a note staged by the end-to-end fake model.",
         }],
-        "reply": "I've proposed a note for you to review.",
     })
 
 

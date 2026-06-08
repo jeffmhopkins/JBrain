@@ -335,8 +335,19 @@ def _note_title(conn, slug: str) -> str:
 
 @router.get("/{slug}/talk")
 def get_talk(slug: str):
-    """The article's 'talk' entries (decisions/conflicts/questions/directives) — the
-    maintenance memory beside the article."""
+    """Return the talk items for an article (decisions, conflicts, questions, directives).
+
+    Talk items are the maintenance memory alongside an article.
+
+    Args:
+        slug: URL slug of the article.
+
+    Returns:
+        List of talk item dicts from article_talk.list_for.
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     return article_talk.list_for(conn, _note_title(conn, slug))
@@ -344,13 +355,26 @@ def get_talk(slug: str):
 
 @router.post("/{slug}/talk")
 def add_talk(slug: str, body: TalkIn):
-    """Add an owner note/directive/question to an article's talk. (There is intentionally
-    no user 'resolve' — open items are addressed through the Review flow / maintenance pass
-    when the underlying issue is actually handled, not by ticking a box.)
+    """Add an owner note, directive, or question to an article's talk.
 
-    A 'correction' is a source-of-truth fix: it's promoted to a dated entry note (the truth
-    layer) and the talk item links to it, so the next maintenance pass rewrites the article
-    from it. Source entries are never modified."""
+    There is intentionally no user 'resolve' — open items are addressed through the
+    Review flow or maintenance pass when the underlying issue is actually handled.
+
+    A 'correction' kind is promoted to a dated entry note (the truth layer), and the
+    talk item links to it so the next maintenance pass rewrites the article. Source
+    entries are never modified.
+
+    Args:
+        slug: URL slug of the article.
+        body: Talk item kind and body text.
+
+    Returns:
+        Dict with 'id' of the new talk item, and 'promoted' (note slug if a correction
+        was promoted to a truth note, else None).
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk, corrections
     article_title = _note_title(conn, slug)
@@ -365,7 +389,22 @@ def add_talk(slug: str, body: TalkIn):
 
 
 def _talk_row(conn, slug: str, talk_id: int):
-    """Fetch a talk row and verify it belongs to THIS article (no cross-article writes)."""
+    """Fetch a talk row and assert it belongs to this article.
+
+    Prevents cross-article writes by comparing article_title on the row.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the article the talk item must belong to.
+        talk_id: Primary key of the article_talk row.
+
+    Returns:
+        The article_talk row.
+
+    Raises:
+        HTTPException: 404 if the note or talk item does not exist, or belongs to
+            a different article.
+    """
     article_title = _note_title(conn, slug)
     row = conn.execute(
         "SELECT id, kind, article_title FROM article_talk WHERE id=?", (talk_id,)).fetchone()
@@ -376,8 +415,23 @@ def _talk_row(conn, slug: str, talk_id: int):
 
 @router.post("/{slug}/talk/{talk_id}/reply")
 def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
-    """Reply to a talk item — the owner↔AI maintenance conversation. The reply is folded into
-    the next maintenance pass over this article (the scheduled pass, or 'maintain-now')."""
+    """Reply to a talk item, contributing to the owner-AI maintenance conversation.
+
+    The reply is folded into the next maintenance pass over this article (scheduled
+    or via 'maintain-now').
+
+    Args:
+        slug: URL slug of the article.
+        talk_id: Primary key of the talk item to reply to.
+        body: Reply text.
+
+    Returns:
+        Dict with 'id' of the new reply.
+
+    Raises:
+        HTTPException: 400 if the reply body is empty.
+        HTTPException: 404 if the article or talk item does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     _talk_row(conn, slug, talk_id)
@@ -390,9 +444,24 @@ def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
 
 @router.post("/{slug}/talk/{talk_id}/dismiss")
 def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
-    """Owner dismissal of a talk item — closes it as 'dismissed by owner' (distinct from a
-    maintenance resolution). Refused on a 'correction': its promoted truth note still heals
-    the article next pass, so hiding the row would mislead — delete that note to undo it."""
+    """Dismiss a talk item as 'dismissed by owner' (distinct from a maintenance resolution).
+
+    Refused for 'correction' items — their promoted truth note still heals the article
+    on the next pass, so hiding the row would mislead. Delete the truth note to undo a
+    correction.
+
+    Args:
+        slug: URL slug of the article.
+        talk_id: Primary key of the talk item to dismiss.
+        body: Optional reason text.
+
+    Returns:
+        Dict with 'ok': True if dismissed, False if already resolved.
+
+    Raises:
+        HTTPException: 409 if the talk item is a correction (cannot be dismissed).
+        HTTPException: 404 if the article or talk item does not exist.
+    """
     conn = get_conn()
     from ..services import article_talk
     row = _talk_row(conn, slug, talk_id)
@@ -408,8 +477,20 @@ def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
 
 @router.post("/{slug}/talk/maintain-now")
 def maintain_now_talk(slug: str):
-    """Run the surgical maintenance pass on THIS article right now — consumes its open items
-    and the owner's replies without waiting for the nightly batch. Runs under the KB lock."""
+    """Run the surgical KB maintenance pass on this article immediately.
+
+    Consumes open talk items and the owner's replies without waiting for the nightly
+    batch. Runs under the KB write lock.
+
+    Args:
+        slug: URL slug of the article to maintain.
+
+    Returns:
+        Result dict from wiki_build.maintain_now.
+
+    Raises:
+        HTTPException: 404 if the article does not exist.
+    """
     conn = get_conn()
     from ..services import wiki_build
     article_title = _note_title(conn, slug)

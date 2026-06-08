@@ -152,16 +152,34 @@ def set_scope(conn, link_id: int, scope_json: dict) -> None:
 
 
 def lab_allowed(spec) -> set[str]:
-    """The attached labs allow-list (the lab boundary), or empty if no labs are attached.
-    Delegates to the import-isolated module so there is ONE parser/blank-filter."""
+    """Return the attached analyte allow-list, or an empty set if no labs are attached.
+
+    Delegates to the import-isolated research_labs_ai module so there is one parser
+    and blank-filter for the lab boundary.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Set of permitted analyte key strings.
+    """
     from . import research_labs_ai
     return research_labs_ai.allowed_labs(spec)
 
 
 def set_lab_scope(conn, link_id: int, *, analytes=None, window_from=..., window_to=...) -> None:
-    """Owner-side: attach/adjust a scoped labs allow-list + date window on a research link.
-    Like remove_approved, narrowing takes effect on the next read (mid-session safe). Blank
-    analytes are dropped so an all-blank list can't pass the activation gate."""
+    """Attach or adjust a scoped labs allow-list and date window on a research link.
+
+    Like remove_approved, narrowing takes effect on the next read (mid-session safe).
+    Blank analytes are dropped so an all-blank list can't pass the activation gate.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        analytes: New analyte key list, or None to leave unchanged.
+        window_from: ISO date string for the window start, or Ellipsis to leave unchanged.
+        window_to: ISO date string for the window end, or Ellipsis to leave unchanged.
+    """
     sets, params = [], []
     if analytes is not None:
         clean = sorted({str(a).strip() for a in analytes if str(a).strip()})
@@ -223,11 +241,17 @@ def _save_ids(conn, link_id: int, col: str, ids: set[int]) -> None:
 
 
 def approve(conn, link_id: int, ids: list[int]) -> None:
-    """Add notes to the exposed allowlist (and clear them from 'dismissed').
+    """Add notes to the exposed allowlist and remove them from 'dismissed'.
 
-    Intersect with the link's declared scope so approval can never widen exposure
+    Intersects with the link's declared scope so approval can never widen exposure
     beyond the folders/titles the link was scoped to — a code-enforced guarantee,
-    not just the owner-review UI filtering candidates."""
+    not just a UI constraint.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to approve.
+    """
     spec = get_spec(conn, link_id)
     in_scope = scope.filter_match_ids(conn, scope._scope(spec))
     add = {int(i) for i in ids} & in_scope

@@ -3478,6 +3478,7 @@ def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
     dropped_url = False
 
     def _md(m):
+        """Keep a markdown link if its URL was tool-sourced; otherwise drop the URL."""
         nonlocal dropped_url
         label, url = m.group(1), m.group(2)
         if _norm_url(url) in allowed_urls:
@@ -3486,6 +3487,7 @@ def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
         return label                                   # keep the link text, drop the fabricated URL
 
     def _bare(m):
+        """Keep a bare URL if it was tool-sourced; otherwise remove it."""
         nonlocal dropped_url
         if _norm_url(m.group(0)) in allowed_urls:
             return m.group(0)
@@ -3542,6 +3544,7 @@ def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
     changed = False
 
     def repl(m):
+        """Strip quote marks from a span that cannot be traced to this turn's data."""
         nonlocal changed
         inner = m.group(1).strip()
         if len(inner.split()) < 6:                      # short quotes (a title, a term) — too noisy to police
@@ -3569,10 +3572,19 @@ _ISODATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
 def _verify_values(text: str, corpus: str) -> tuple[str, bool]:
-    """Flag any measurement-shaped figure or ISO date in the reply that does NOT appear in what a
-    tool returned this turn — so a fabricated owner value can't ride in as unquoted analysis prose.
-    Conservative + SOFT: appends an 'unverified figures' notice (never mangles text). Returns
-    (text, changed)."""
+    """Flag measurement-shaped figures or ISO dates not grounded in this turn's tool corpus.
+
+    Prevents a fabricated owner value from riding in as unquoted analysis prose.
+    Conservative and SOFT: appends an 'unverified figures' notice rather than
+    mangling text.
+
+    Args:
+        text: The assistant reply to verify.
+        corpus: All tool results from this turn, concatenated.
+
+    Returns:
+        Tuple (text_with_optional_notice, changed).
+    """
     cn = _norm_quote(corpus)
     bad: list[str] = []
     for m in list(_VALUE_RE.finditer(text)) + list(_ISODATE_RE.finditer(text)):
@@ -3604,8 +3616,18 @@ _RESEARCH_NUDGE = (
 
 
 def _looks_factual(text: str) -> bool:
-    """Conservative: True if the reply ASSERTS something (so a zero-retrieval research answer should be
-    re-grounded), False for short acks, clarifying questions, or an honest 'I don't have it'."""
+    """Return True if the reply appears to assert facts rather than asking or deferring.
+
+    Conservative: True triggers a research-mode re-grounding pass for a
+    zero-retrieval answer. False for short acks, clarifying questions, or an
+    honest 'I don't have it'.
+
+    Args:
+        text: The assistant reply draft.
+
+    Returns:
+        True if the text looks like a factual assertion; False otherwise.
+    """
     t = (text or "").strip()
     if len(t) < 60 or t.endswith("?"):
         return False
@@ -3620,11 +3642,37 @@ def _looks_factual(text: str) -> bool:
 async def run(conversation_id: int, user_text: str, location: dict | None = None,
               mode: str = "assisted", fresh_context: bool = False,
               deep: bool = False) -> AsyncGenerator[dict, None]:
-    """Stream the architect's reply. `mode` = 'assisted' (Full Brain) | 'research' (read-only).
-    `fresh_context` (set by the client when the user left the app / navigated away and back / is
-    resuming after a break) clears prior conversation context so the model re-grounds instead of
-    reusing stale earlier answers. `deep` (read-only only) raises the research budget for a
-    multi-step question without loosening its strict, facts-only posture."""
+    """Stream the architect's reply as SSE-friendly event dicts.
+
+    Drives the full agent loop: persist the user turn, call the LLM, dispatch
+    tool calls, verify the reply, and persist the assistant turn. Yields event
+    dicts to the chat router.
+
+    `mode` = 'assisted' (Full Brain, can propose changes) | 'research'
+    (read-only, strict facts-only posture) | 'analyze' (read-only with a
+    deeper reasoning budget).
+
+    `fresh_context` — set by the client when the user left the app / navigated
+    away and back / is resuming after a break — clears prior conversation
+    context so the model re-grounds instead of reusing stale earlier answers.
+
+    `deep` (read-only modes only) raises the iteration and token budget for a
+    multi-step question without loosening the strict research posture or granting
+    write tools.
+
+    Args:
+        conversation_id: Current conversation primary key.
+        user_text: The user's new message.
+        location: Optional dict with lat/lon/location_label from the client.
+        mode: Agent mode string ('assisted', 'research', or 'analyze').
+        fresh_context: True when the client flags a context reset.
+        deep: True to raise the research budget for a complex question.
+
+    Yields:
+        Event dicts: {'type': 'token', 'text': …}, {'type': 'tool', …},
+        {'type': 'staging'|'applied', …}, {'type': 'replace_text', …},
+        {'type': 'chart', …}, {'type': 'error', …}, {'type': 'done'}.
+    """
     settings = get_settings()
     # Resolve the agent model first so the provider is inferred from it (grok* → xAI,
     # claude* → Anthropic; blank → the LLM_PROVIDER default).
@@ -3642,6 +3690,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     loc = location or {}
 
     def _persist_user_turn():
+        """Write the user message to the DB; offloaded to avoid blocking the event loop."""
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
             "VALUES (?, 'user', ?, ?, ?, ?)",

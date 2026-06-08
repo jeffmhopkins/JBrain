@@ -137,10 +137,18 @@ def add_list_item(
 
 
 def _load_list(conn, list_title: str):
-    """Find a list note: try the title as given, then under the lists/ root (so a
-    list that predates the lists/ convention, or one the model named without the
-    prefix, still resolves). Returns (actual_title, note_or_None) — the actual title
-    so writes target the real note instead of a re-rooted guess."""
+    """Locate a list note by title, trying the as-given form then the lists/ root.
+
+    Handles lists that predate the lists/ convention or were named without the prefix.
+
+    Args:
+        conn: Database connection.
+        list_title: List title to resolve.
+
+    Returns:
+        Tuple of (actual_title, note_row_or_None). actual_title is the resolved
+        title so writes target the real note rather than a re-rooted guess.
+    """
     raw = (list_title or "").strip()
     note = notes_svc.get_by_title(conn, raw) or notes_svc.get_by_title(conn, notes_svc.root_title(raw, "lists"))
     title = note["title"] if note else notes_svc.root_title(raw, "lists")
@@ -148,13 +156,42 @@ def _load_list(conn, list_title: str):
 
 
 def _write_list(conn, title, lines, *, source, version_note, conversation_id=None, location=None):
+    """Write a list note from its lines, joining with newlines.
+
+    Args:
+        conn: Database connection.
+        title: Note title.
+        lines: List of markdown line strings.
+        source: Write source tag.
+        version_note: Version description for the history entry.
+        conversation_id: Optional conversation ID.
+        location: Optional location dict.
+    """
     notes_svc.upsert_note(conn, title, "\n".join(lines), source=source, kind="list",
                           conversation_id=conversation_id, version_note=version_note, **_loc_kwargs(location))
 
 
 def _edit_one(conn, list_title, item, ordinal, make_line, *, version_note,
               source="architect", conversation_id=None, location=None) -> dict:
-    """Locate one item (fail-closed) and replace its line with make_line(it)."""
+    """Locate one item fail-closed and replace its line with make_line(item).
+
+    Args:
+        conn: Database connection.
+        list_title: List note title.
+        item: Exact item text to locate.
+        ordinal: Optional 0-based index hint.
+        make_line: Callable accepting the item dict and returning the new line string.
+        version_note: Version description for the history entry.
+        source: Write source tag.
+        conversation_id: Optional conversation ID.
+        location: Optional location dict.
+
+    Returns:
+        Dict with note_title, old_line, new_line, and index.
+
+    Raises:
+        LookupError: If the list or item is not found.
+    """
     title, note = _load_list(conn, list_title)
     if note is None:
         raise LookupError(f"no list titled '{title}'")
@@ -170,18 +207,57 @@ def _edit_one(conn, list_title, item, ordinal, make_line, *, version_note,
 
 
 def set_item_checked(conn, list_title, item, checked, ordinal=None, **kw) -> dict:
+    """Set the checked state of a checklist item.
+
+    Args:
+        conn: Database connection.
+        list_title: List note title.
+        item: Exact item text.
+        checked: New checked state.
+        ordinal: Optional 0-based index hint.
+        **kw: Forwarded to _edit_one (source, conversation_id, location).
+
+    Returns:
+        Dict with note_title, old_line, new_line, and index.
+    """
     return _edit_one(conn, list_title, item, ordinal,
                      lambda it: _format_item(it["indent"], checked, it["priority"], it["text"]),
                      version_note="checked item", **kw)
 
 
 def set_item_priority(conn, list_title, item, priority, ordinal=None, **kw) -> dict:
+    """Set the priority of a checklist item.
+
+    Args:
+        conn: Database connection.
+        list_title: List note title.
+        item: Exact item text.
+        priority: New priority number, or None to clear.
+        ordinal: Optional 0-based index hint.
+        **kw: Forwarded to _edit_one (source, conversation_id, location).
+
+    Returns:
+        Dict with note_title, old_line, new_line, and index.
+    """
     return _edit_one(conn, list_title, item, ordinal,
                      lambda it: _format_item(it["indent"], it["checked"], priority, it["text"]),
                      version_note="set priority", **kw)
 
 
 def edit_item(conn, list_title, item, new_text, ordinal=None, **kw) -> dict:
+    """Replace the text of a checklist item while preserving its checked state and priority.
+
+    Args:
+        conn: Database connection.
+        list_title: List note title.
+        item: Exact current item text.
+        new_text: Replacement text.
+        ordinal: Optional 0-based index hint.
+        **kw: Forwarded to _edit_one (source, conversation_id, location).
+
+    Returns:
+        Dict with note_title, old_line, new_line, and index.
+    """
     return _edit_one(conn, list_title, item, ordinal,
                      lambda it: _format_item(it["indent"], it["checked"], it["priority"], new_text),
                      version_note="edited item", **kw)
@@ -189,6 +265,23 @@ def edit_item(conn, list_title, item, new_text, ordinal=None, **kw) -> dict:
 
 def remove_item(conn, list_title, item, ordinal=None, *, source="architect",
                 conversation_id=None, location=None) -> dict:
+    """Remove a checklist item by exact text, fail-closed.
+
+    Args:
+        conn: Database connection.
+        list_title: List note title.
+        item: Exact item text to remove.
+        ordinal: Optional 0-based index hint.
+        source: Write source tag.
+        conversation_id: Optional conversation ID.
+        location: Optional location dict.
+
+    Returns:
+        Dict with note_title, removed_line, and index.
+
+    Raises:
+        LookupError: If the list or item is not found.
+    """
     title, note = _load_list(conn, list_title)
     if note is None:
         raise LookupError(f"no list titled '{title}'")

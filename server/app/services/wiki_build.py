@@ -584,6 +584,7 @@ def _neutralize_links(content: str, bad: set[str]) -> str:
         Content with dead links unwrapped and orphaned footnote markers stripped.
     """
     def repl(m):
+        """Unwrap a dead [[link]] to its display text or leaf name."""
         target = m.group(1).strip()
         if target not in bad:
             return m.group(0)
@@ -640,6 +641,7 @@ def _repair_citation_titles(content: str, bad: list[str], source_titles: list[st
         return content, still_bad
 
     def repl(m):
+        """Rewrite a dead [[link]] target to its corrected source title."""
         inner = m.group(0)[2:-2]
         target, sep, disp = inner.partition("|")
         if target.strip() in fixes:

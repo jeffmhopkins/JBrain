@@ -13,6 +13,7 @@ markers = [
     "unit: fast, isolated; no app wiring, DB init, or real network",
     "integration: temp-SQLite + TestClient/service wiring; LLM & embeddings mocked",
     "concurrency: real threads / on-disk WAL contention / background workers; run serially",
+    "flows: validates workflows/*.yaml + actions/*.yaml (schema, cron, primitive registry)",
 ]
 # Kill a wedged async/polling test instead of hanging CI (pytest-timeout; per-test).
 timeout = 120

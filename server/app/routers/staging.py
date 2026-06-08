@@ -19,21 +19,58 @@ router = APIRouter(prefix="/api/staging", tags=["staging"], dependencies=[Curren
 
 
 def _note_content(conn, title: str):
+    """Return the markdown content of a note by title, or None if not found.
+
+    Args:
+        conn: Active database connection.
+        title: Note title to look up (stripped before query).
+
+    Returns:
+        content_md string, or None if the note does not exist.
+    """
     n = notes_svc.get_by_title(conn, (title or "").strip()) if title else None
     return n["content_md"] if n else None
 
 
 def _note_tags(conn, note_id: int) -> list[str]:
+    """Return the sorted tag names for a note.
+
+    Args:
+        conn: Active database connection.
+        note_id: Primary key of the note.
+
+    Returns:
+        Alphabetically sorted list of tag name strings.
+    """
     return [r["name"] for r in conn.execute(
         "SELECT t.name FROM tags t JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=? ORDER BY t.name",
         (note_id,)).fetchall()]
 
 
 def _resolve_basis_note(conn, payload: dict, title: str, *, lists: bool = False):
-    """Resolve a destructive op's target note. If the proposal captured a `_basis`
-    (note_id + content_hash), resolve by ID and REFUSE a stale or identity-swapped
-    target (the note deleted & re-created under the same title between propose and
-    apply). Falls back to title for older rows that have no basis."""
+    """Resolve a destructive staged op's target note, enforcing basis freshness.
+
+    If the proposal captured a _basis (note_id + content_hash), resolves by id and
+    refuses a stale or identity-swapped target (i.e. the note was deleted and
+    re-created under the same title between propose and apply). Falls back to title
+    lookup for older rows that have no basis.
+
+    Args:
+        conn: Active database connection.
+        payload: Staged action payload, optionally containing a '_basis' dict with
+            note_id and content_hash.
+        title: Note title to fall back to when no basis is present.
+        lists: If True, also try resolving under the 'lists/' root when title lookup
+            fails.
+
+    Returns:
+        The matched notes row.
+
+    Raises:
+        HTTPException: 409 if the target note no longer exists or its content has
+            changed since the proposal was created.
+        HTTPException: 404 if the note cannot be found by title.
+    """
     basis = payload.get("_basis") or {}
     if basis.get("note_id"):
         row = conn.execute(
@@ -56,9 +93,21 @@ def _resolve_basis_note(conn, payload: dict, title: str, *, lists: bool = False)
 
 
 def preview_action(conn, t: str, p: dict) -> dict | None:
-    """A uniform before→after for a staged action — what apply WILL change — without
-    writing. Mirrors _apply_action's resolution so the diff matches the real outcome.
-    kind ∈ text | fields | place | tags. `stale` (UPDATE) flags a basis that changed."""
+    """Compute a uniform before/after preview for a staged action without writing.
+
+    Mirrors _apply_action's note resolution so the preview diff matches what apply
+    will actually do. Returns None on any error so a bad action never breaks the list.
+
+    Args:
+        conn: Active database connection.
+        t: Action type string (e.g. 'CREATE', 'UPDATE', 'DELETE', 'RENAME', etc.).
+        p: Action payload dict.
+
+    Returns:
+        Preview dict with kind, before, after, label, and optionally stale/conflict.
+        kind is one of: 'text', 'fields', 'place', 'tags'.
+        Returns None if preview cannot be computed.
+    """
     try:
         if t in ("CREATE", "UPDATE"):
             title = (p.get("title") or "").strip()
@@ -134,6 +183,12 @@ def preview_action(conn, t: str, p: dict) -> dict | None:
 
 @router.get("")
 def list_pending():
+    """List all pending staged actions with previews and warnings.
+
+    Returns:
+        List of staged action dicts, each including payload, preview (before/after diff),
+        and any warnings from staged_verify (dead links, missing targets, citation issues).
+    """
     conn = get_conn()
     rows = conn.execute(
         "SELECT id, conversation_id, type, payload_json, status, created_at "
@@ -156,6 +211,27 @@ def list_pending():
 
 def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | None = None,
                   action_id: int | None = None, source: str = "architect") -> None:
+    """Execute a staged action and record the undo inverse on destructive ops.
+
+    Supports CREATE, UPDATE, LINK, RENAME, LIST_REMOVE_ITEM, LIST_EDIT_ITEM,
+    DELETE_LIST, DELETE, ADD_PLACE, EDIT_PLACE, and SET_TAGS. Architect-applied
+    edits are attributed to 'architect' in version history and stamped with the
+    conversation's capture location when available.
+
+    Args:
+        conn: Active database connection (caller must commit or rollback).
+        action_type: One of the recognised action type strings.
+        payload: Action-specific parameters dict.
+        conversation_id: Conversation that proposed the action; used for location
+            attribution and inserting the approval event message.
+        action_id: staging_actions pk; required to store the undo payload on the row.
+        source: Version history source label (default 'architect').
+
+    Raises:
+        HTTPException: 400 for missing required fields or unknown action type.
+        HTTPException: 404 for missing source/target notes.
+        HTTPException: 409 for stale basis, identity-swapped note, or naming conflicts.
+    """
     # Architect-applied edits are attributed to 'architect' in the version history,
     # and stamped with where the user was when they had this conversation.
     loc = notes_svc.conversation_location(conn, conversation_id)
@@ -357,6 +433,17 @@ def _apply_action(conn, action_type: str, payload: dict, conversation_id: int | 
 
 
 def _applied_summary(action_type: str, payload: dict) -> str:
+    """Return a human-readable summary string for a successfully applied staged action.
+
+    Used as the event message inserted into the conversation after approval.
+
+    Args:
+        action_type: The action type string.
+        payload: The action payload dict.
+
+    Returns:
+        A short markdown summary string (may contain [[wikilinks]]).
+    """
     if action_type == "LINK":
         return f"Linked [[{payload.get('source_title', '')}]] → [[{payload.get('target_title', '')}]]"
     if action_type == "RENAME":

@@ -889,7 +889,14 @@ class LinkFixIn(BaseModel):
 
 @router.post("/links/audit/fix")
 def links_audit_fix(body: LinkFixIn):
-    """Correct one flagged link (re-derives the right label from the live target)."""
+    """Correct one flagged wiki link, re-deriving the label from the live target.
+
+    Args:
+        body: Source note id, link target title, and current display text to replace.
+
+    Returns:
+        Dict with 'fixed': True if the link was updated, False if unchanged.
+    """
     conn = get_conn()
     changed = wikilinks.fix_note_link(conn, body.note_id, body.target, body.display)
     conn.commit()
@@ -898,7 +905,11 @@ def links_audit_fix(body: LinkFixIn):
 
 @router.post("/links/audit/fix-all")
 def links_audit_fix_all():
-    """Correct every currently-flagged link. Returns how many were changed."""
+    """Correct every currently-flagged wiki link-label mismatch.
+
+    Returns:
+        Dict with 'fixed' — count of links that were updated.
+    """
     conn = get_conn()
     fixed = 0
     for f in wikilinks.audit_display_mismatches(conn):
@@ -910,7 +921,20 @@ def links_audit_fix_all():
 
 @router.post("/{slug}/restore")
 def restore(slug: str, body: RestoreIn):
-    """Restore an old version. Snapshots current first (history is never lost)."""
+    """Restore a note to a previous version, resurrecting it if soft-deleted.
+
+    Always snapshots the current state first so history is never lost.
+
+    Args:
+        slug: URL slug of the note (includes soft-deleted).
+        body: version_id to restore from, and optional version note label.
+
+    Returns:
+        Dict with id, title, and slug of the restored note.
+
+    Raises:
+        HTTPException: 404 if the note or the specified version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     v = conn.execute(

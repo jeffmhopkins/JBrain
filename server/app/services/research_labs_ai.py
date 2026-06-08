@@ -222,6 +222,7 @@ def _stat_summary(st) -> str:
     name = st.get("test_name") or st.get("analyte")
 
     def fmt(row):  # slim rows use value_text / collected_at (see lab_series._slim)
+        """Format a slim lab row as 'value unit on date', or '—' if row is None."""
         return f"{row.get('value_text', '')}{(' ' + unit) if unit else ''} on {row.get('collected_at', '')}" if row else "—"
     parts = [f"{name}: {st.get('count', 0)} result(s)"]
     if st.get("latest"):

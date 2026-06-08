@@ -128,10 +128,45 @@ echo
 ask        JBRAIN_DOMAIN  "Public domain (A record must point at this VM)" "brain.example.com"
 ask        ACME_EMAIL     "Email for Let's Encrypt cert notices"
 ask        BRAIN_NAME     "Name for your brain"                            "My Brain"
-ask        LLM_MODEL      "LLM model"                                      "claude-sonnet-4-6"
+echo
+
+# LLM provider — pick one; it sets LLM_PROVIDER and the default model id.
+echo "Which LLM provider?"
+echo "  1) Anthropic (Claude)   [default]"
+echo "  2) xAI (Grok)"
+read -r -p "Choose [1]: " prov_choice
+case "${prov_choice:-1}" in
+  2) LLM_PROVIDER="xai";       LLM_MODEL_DEFAULT="grok-4.3" ;;
+  *) LLM_PROVIDER="anthropic"; LLM_MODEL_DEFAULT="claude-sonnet-4-6" ;;
+esac
+ask        LLM_MODEL      "LLM model"                                      "$LLM_MODEL_DEFAULT"
 ask_secret LLM_API_KEY    "LLM API key (hidden)"
 echo
-ask        TZ             "Timezone"                                       "UTC"
+
+# Timezone — pick a common IANA zone or type your own. Defaults to Florida (Eastern).
+echo "Timezone (IANA name). Common US zones:"
+echo "  1) America/New_York     (Eastern — Florida)   [default]"
+echo "  2) America/Chicago      (Central)"
+echo "  3) America/Denver       (Mountain)"
+echo "  4) America/Phoenix      (Mountain, no DST)"
+echo "  5) America/Los_Angeles  (Pacific)"
+echo "  6) America/Anchorage    (Alaska)"
+echo "  7) Pacific/Honolulu     (Hawaii)"
+echo "  8) UTC"
+echo "  9) Other (type a custom IANA name)"
+read -r -p "Choose [1]: " tz_choice
+case "${tz_choice:-1}" in
+  2) TZ="America/Chicago" ;;
+  3) TZ="America/Denver" ;;
+  4) TZ="America/Phoenix" ;;
+  5) TZ="America/Los_Angeles" ;;
+  6) TZ="America/Anchorage" ;;
+  7) TZ="Pacific/Honolulu" ;;
+  8) TZ="UTC" ;;
+  9) ask TZ "Enter IANA timezone (e.g. Europe/London)" "America/New_York" ;;
+  *) TZ="America/New_York" ;;
+esac
+info "Timezone: $TZ"
 echo
 echo "Automatic updates run an 'updater' sidecar that applies updates you trigger"
 echo "from the app — it mounts the Docker socket and the project directory."
@@ -149,7 +184,7 @@ umask 077
 cat > .env <<EOF
 JBRAIN_DOMAIN=$JBRAIN_DOMAIN
 ACME_EMAIL=$ACME_EMAIL
-LLM_PROVIDER=anthropic
+LLM_PROVIDER=$LLM_PROVIDER
 LLM_API_KEY=$LLM_API_KEY
 LLM_MODEL=$LLM_MODEL
 BRAIN_NAME=$BRAIN_NAME

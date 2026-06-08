@@ -857,7 +857,8 @@ export interface RebuildSkipped { note_id: number; title: string; date: string; 
 
 // SSE events from the rebuild engine — same wire envelope as streamChat.
 export type RebuildEvent =
-  | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string }
+  | { type: "run_started"; run_id: string; slug: string; title: string; base_rev: string;
+      kind?: "rebuild" | "suggest"; draft?: string }
   | { type: "tool_use"; tool: string; query?: string }                 // Stage 1: gather agent
   | { type: "tool_result"; tool: string; summary: string; items?: string[] }
   | { type: "sources_proposed"; candidates: RebuildCandidate[]; skipped: RebuildSkipped[] }
@@ -929,8 +930,16 @@ function streamSSE(path: string, body: unknown, onEvent: (e: RebuildEvent) => vo
 }
 
 // Stage 1: gather sources (streams the agent's tool use, ends with sources_proposed).
-export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>
-  streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}`, {}, onEvent);
+// mode "suggest" seeds the current article so the conversational edit loop revises FROM it.
+export const rebuildStream = (slug: string, onEvent: (e: RebuildEvent) => void,
+                              mode: "rebuild" | "suggest" = "rebuild"): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/start/${encodeURIComponent(slug)}?mode=${mode}`, {}, onEvent);
+
+// First conversational-edit turn (suggest mode): revise the current article per the owner's
+// guidance, grounded in the curated sources + read-only backlinks. Follow-ups use guideStream.
+export const suggestStream = (runId: string, sourceIds: number[], text: string,
+                              onEvent: (e: RebuildEvent) => void): SSEHandle =>
+  streamSSE(`/api/kb/rebuild/${runId}/suggest`, { source_ids: sourceIds, text }, onEvent);
 
 // Stage 1 again: find more sources for a hint, appended to the current set.
 export const regatherStream = (runId: string, hint: string, onEvent: (e: RebuildEvent) => void): SSEHandle =>

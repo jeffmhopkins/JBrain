@@ -39,12 +39,14 @@ vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
   return {
     ...actual,
-    rebuildStream: vi.fn((slug: string, onEvent: any) =>
-      fakeStream("rebuild", onEvent, [slug])),
+    rebuildStream: vi.fn((slug: string, onEvent: any, mode?: string) =>
+      fakeStream("rebuild", onEvent, [slug, mode])),
     regatherStream: vi.fn((runId: string, hint: string, onEvent: any) =>
       fakeStream("regather", onEvent, [runId, hint])),
     draftStream: vi.fn((runId: string, sourceIds: number[], onEvent: any) =>
       fakeStream("draft", onEvent, [runId, sourceIds])),
+    suggestStream: vi.fn((runId: string, sourceIds: number[], text: string, onEvent: any) =>
+      fakeStream("suggest", onEvent, [runId, sourceIds, text])),
     redraftStream: vi.fn((runId: string, maxTokens: number, onEvent: any) =>
       fakeStream("redraft", onEvent, [runId, maxTokens])),
     guideStream: vi.fn((runId: string, text: string, onEvent: any) =>
@@ -312,5 +314,89 @@ describe("RebuildPanel — accept / reject", () => {
 
     await screen.findByText(/changed since the rebuild started/i);
     expect(onAccepted).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------- //
+// (e) suggest mode — the conversational targeted-edit loop ("Edit with AI")
+// ---------------------------------------------------------------------------- //
+describe("RebuildPanel — suggest mode", () => {
+  // gather for a suggest run: run_started carries kind + the seeded current article.
+  function suggestGather(): Script {
+    return (onEvent) => {
+      onEvent({ type: "run_started", run_id: RUN_ID, slug: SLUG, title: "kb/Bread",
+                base_rev: "r1", kind: "suggest", draft: NOTE.content_md });
+      onEvent({
+        type: "sources_proposed",
+        candidates: [
+          { note_id: 1, title: "notes/Sourdough", date: "2024-01-01", reason: "core", on: true, private: false },
+          { note_id: 2, title: "notes/Rye", date: "2024-02-01", reason: "variant", on: true, private: false },
+        ],
+        skipped: [],
+      });
+    };
+  }
+
+  async function gotoEditing() {
+    scripts.rebuild = suggestGather();
+    const utils = renderPanel({ mode: "suggest" });
+    await screen.findByRole("button", { name: /Edit with 2 sources/i });
+    await utils.user.click(screen.getByRole("button", { name: /Edit with 2 sources/i }));
+    return utils;
+  }
+
+  it("opens the start stream in suggest mode and offers Edit + Rebuild-from-scratch on curate", async () => {
+    scripts.rebuild = suggestGather();
+    renderPanel({ mode: "suggest" });
+
+    await waitFor(() => expect(calls.some((c) => c.kind === "rebuild")).toBe(true));
+    expect(calls.find((c) => c.kind === "rebuild")!.args[1]).toBe("suggest");   // mode forwarded
+    // Suggest curate offers a primary "Edit with N sources" and the in-panel rebuild escape hatch.
+    await screen.findByRole("button", { name: /Edit with 2 sources/i });
+    expect(screen.getByRole("button", { name: /Rebuild from scratch/i })).toBeInTheDocument();
+  });
+
+  it("first message opens the edit loop via /suggest; a follow-up continues via /guide", async () => {
+    scripts.suggest = (onEvent) => onEvent({ type: "done", draft: "# Bread\n\nEdited body." });
+    scripts.guide = (onEvent) => onEvent({ type: "done", draft: "# Bread\n\nEdited again." });
+    const { user } = await gotoEditing();
+
+    // Talk first → the first turn fires /suggest with the curated source ids + the text.
+    const box = await screen.findByPlaceholderText(/Tell me what to change/i);
+    await user.type(box, "Add a note about hydration.");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(calls.some((c) => c.kind === "suggest")).toBe(true));
+    const s = calls.find((c) => c.kind === "suggest")!;
+    expect(s.args[1]).toEqual([1, 2]);
+    expect(s.args[2]).toBe("Add a note about hydration.");
+    // After the turn the loop returns to guiding (the "💬 Guide" footer action reappears).
+    await waitFor(() => expect(footBtn(/Guide/)).toBeTruthy());
+
+    // A follow-up edit continues the SAME transcript via /guide (not another /suggest).
+    await user.click(footBtn(/Guide/));
+    const box2 = await screen.findByPlaceholderText(/Tell me what to change/i);
+    await user.type(box2, "Make it shorter.");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(calls.some((c) => c.kind === "guide")).toBe(true));
+    expect(calls.filter((c) => c.kind === "suggest")).toHaveLength(1);   // only the first turn
+  });
+
+  it("sources are optional — Start editing works with zero selected", async () => {
+    scripts.rebuild = suggestGather();
+    scripts.suggest = (onEvent) => onEvent({ type: "done", draft: "# Bread\n\nTidied." });
+    const { user } = renderPanel({ mode: "suggest" });
+    await screen.findByText("Sourdough");
+    // Turn both sources off → the primary button still starts editing (no block).
+    await user.click(screen.getByText("Sourdough"));
+    await user.click(screen.getByText("Rye"));
+    await user.click(screen.getByRole("button", { name: /Start editing/i }));
+
+    const box = await screen.findByPlaceholderText(/Tell me what to change/i);
+    await user.type(box, "Fix the heading.");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(calls.some((c) => c.kind === "suggest")).toBe(true));
+    expect(calls.find((c) => c.kind === "suggest")!.args[1]).toEqual([]);   // no sources
   });
 });

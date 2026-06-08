@@ -4,8 +4,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   RebuildEvent, RebuildCandidate, RebuildSkipped, SSEHandle, ApiError,
-  rebuildStream, regatherStream, draftStream, guideStream, redraftStream, searchRebuildSources,
-  acceptRebuild, rejectRebuild,
+  rebuildStream, regatherStream, draftStream, suggestStream, guideStream, redraftStream,
+  searchRebuildSources, acceptRebuild, rejectRebuild,
 } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Modal from "./Modal";
@@ -21,6 +21,9 @@ interface Props {
   note: { title: string; content_md: string };
   onClose: () => void;
   onAccepted: (slug: string) => void;
+  // "suggest" (default entry): a conversational targeted edit FROM the current article.
+  // "rebuild": write the article from scratch (reachable from inside the suggest panel too).
+  mode?: "rebuild" | "suggest";
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -30,8 +33,9 @@ const TOOL_LABEL: Record<string, string> = {
 const leaf = (t: string) => t.split("/").pop() || t;
 
 // Two-stage live rebuild: gather (agent tool use) → curate (pick sources) → draft (write).
-export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props) {
+export default function RebuildPanel({ slug, note, onClose, onAccepted, mode = "rebuild" }: Props) {
   const navigate = useNavigate();
+  const suggest = mode === "suggest";
   const currentLeaf = note.title.split("/").pop() || note.title;
   const parent = note.title.includes("/") ? note.title.slice(0, note.title.lastIndexOf("/")) : "kb";
 
@@ -58,7 +62,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   const [draft, setDraft] = useState("");
   const [draftSources, setDraftSources] = useState<string[]>([]);
   const [warn, setWarn] = useState<string | null>(null);
-  const [showDiff, setShowDiff] = useState(false);
+  const [showDiff, setShowDiff] = useState(suggest);   // suggest mode shows the change by default
   const [thread, setThread] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [guideInput, setGuideInput] = useState("");
   const [accepting, setAccepting] = useState(false);
@@ -71,6 +75,10 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   const runId = useRef<string | null>(null);
   const sse = useRef<SSEHandle | null>(null);
   const sawContent = useRef(false);
+  // Suggest mode: the first edit turn calls /suggest (seeds BASE + sources + backlinks); every
+  // later turn reuses /guide on the same transcript. These survive re-renders.
+  const suggestStarted = useRef(false);
+  const suggestIds = useRef<number[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   // A STABLE onClose for Modal: its focus effect keys on the onClose identity, so passing a
   // fresh requestClose each render re-ran it on every keystroke — stealing focus from the
@@ -81,7 +89,10 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   // ---- gather (Stage 1) --------------------------------------------------------
   function handleGather(e: RebuildEvent) {
     switch (e.type) {
-      case "run_started": runId.current = e.run_id; break;
+      case "run_started":
+        runId.current = e.run_id;
+        if (e.kind === "suggest" && e.draft) setDraft(e.draft);   // show the current article now
+        break;
       case "tool_use":
         setGatherStatus(TOOL_LABEL[e.tool] || "Working…");
         setSteps((s) => [...s, { tool: e.tool, query: e.query, running: true }]);
@@ -107,7 +118,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
   }
 
   useEffect(() => {
-    sse.current = rebuildStream(slug, handleGather);
+    sse.current = rebuildStream(slug, handleGather, mode);
     sse.current.done.catch(() => {});
     return () => { sse.current?.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,6 +193,18 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     sse.current = h; h.done.catch(() => {});
   }
 
+  // Suggest mode: enter the conversational edit loop showing the CURRENT article. No LLM call
+  // yet — the owner talks first; the first message fires /suggest (see sendGuide). Sources are
+  // optional (a pure formatting/structure fix needs none).
+  function startEditing() {
+    if (!runId.current) return;
+    const chosen = candidates.filter((c) => c.on);
+    suggestIds.current = chosen.map((c) => c.note_id);
+    setDraftSources(chosen.map((c) => c.title));
+    setStage("draft"); setPhase("guiding"); setTab("guide"); setStatus("Ready");
+    setBusy(false); setActivityOpen(false);
+  }
+
   // Re-run the last drafting turn at a larger budget after a truncation (server re-asks the
   // same prompt — no auto-continue — and clamps the ceiling).
   function reDraft() {
@@ -231,15 +254,21 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     setGuideInput("");
     setThread((t) => [...t, { role: "user", text }]);
     setTab("draft"); setDraft(""); sawContent.current = false; setBudget(6000);
-    setBusy(true); setStatus("Revising…"); setPhase("guiding-streaming"); setActivityOpen(false);
-    const h = guideStream(runId.current, text, handleDraft);
+    setBusy(true); setStatus(suggest ? "Editing…" : "Revising…"); setPhase("guiding-streaming"); setActivityOpen(false);
+    // Suggest mode's FIRST turn opens the edit loop (/suggest, seeds BASE + sources + backlinks);
+    // every later turn — and all of rebuild's Guide turns — continue via /guide.
+    const first = suggest && !suggestStarted.current;
+    const h = first
+      ? suggestStream(runId.current, suggestIds.current, text, handleDraft)
+      : guideStream(runId.current, text, handleDraft);
+    if (first) suggestStarted.current = true;
     sse.current = h;
-    h.done.then(() => setThread((t) => [...t, { role: "ai", text: "Updated the draft — take a look." }]))
+    h.done.then(() => setThread((t) => [...t, { role: "ai", text: suggest ? "Done — see the updated page." : "Updated the draft — take a look." }]))
       .catch(() => {});
   }
 
   // ---- render ------------------------------------------------------------------
-  const title = stage === "curate" ? "Review sources" : "Rebuild page";
+  const title = stage === "curate" ? "Review sources" : suggest ? "Edit with AI" : "Rebuild page";
   const guiding = phase === "guiding" || phase === "guiding-streaming";
   const reviewish = phase === "review" || phase === "truncated" || phase === "stale";
 
@@ -256,6 +285,13 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
     }
     if (stage === "curate") {
       const n = selectedIds.length;
+      if (suggest)
+        return (<>
+          <button className="ghost rb-foot-btn" onClick={startDraft} disabled={!n}
+                  title="Rewrite the whole article from scratch instead of editing it">Rebuild from scratch</button>
+          <button className="primary rb-foot-btn" onClick={startEditing}>
+            {n ? `Edit with ${n} source${n !== 1 ? "s" : ""}` : "Start editing"}</button>
+        </>);
       return <button className="primary rb-foot-btn" onClick={startDraft} disabled={!n}>
         {n ? `Draft from ${n} source${n !== 1 ? "s" : ""}` : "Pick at least one source"}</button>;
     }
@@ -281,7 +317,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
       if (tab === "guide")
         return (
           <div className="rb-composer">
-            <textarea value={guideInput} placeholder="Steer the rewrite…"
+            <textarea value={guideInput} placeholder={suggest ? "Tell me what to change…" : "Steer the rewrite…"}
                       onChange={(e) => setGuideInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendGuide(); } }} />
             <button className="rb-send" onClick={sendGuide} disabled={busy || !guideInput.trim()} aria-label="Send">
@@ -308,7 +344,7 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
             <span key={s} className={"rb-pip" + (stage === s ? " on" : (["gather", "curate", "draft"].indexOf(stage) > i ? " done" : ""))} />
           ))}
           <span className="rb-pip-lbl">
-            {stage === "gather" ? "1 · Gathering context" : stage === "curate" ? "2 · Review sources" : "3 · Drafting"}
+            {stage === "gather" ? "1 · Gathering context" : stage === "curate" ? "2 · Review sources" : suggest ? "3 · Editing" : "3 · Drafting"}
           </span>
         </div>
 
@@ -338,7 +374,9 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
         {/* ---- STAGE 2: curate ---- */}
         {stage === "curate" && (
           <>
-            <div className="rb-hint">The AI picked these from your notes. Uncheck anything you don't want shaping the article — or add your own. Sources are notes only; links to existing KB pages are added automatically.</div>
+            <div className="rb-hint">{suggest
+              ? "Pick the notes the AI may draw facts from while editing (optional — a formatting or wording fix needs none). Then start the conversation."
+              : "The AI picked these from your notes. Uncheck anything you don't want shaping the article — or add your own. Sources are notes only; links to existing KB pages are added automatically."}</div>
             <div className="rb-act-h">Sources found ({candidates.length})</div>
             {candidates.map((c) => (
               <div key={c.note_id} className={"rb-src" + (c.on ? " on" : " off")} onClick={() => toggle(c.note_id)}>
@@ -428,9 +466,9 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
 
             {!(guiding && tab === "guide") ? (
               <div>
-                {reviewish && draft && (
+                {(reviewish || (suggest && guiding)) && draft && (
                   <div className="rb-draft-bar">
-                    <span className="rb-phase">{showDiff ? "Changes" : "New draft"}</span>
+                    <span className="rb-phase">{showDiff ? "Changes" : (suggest ? "Edited page" : "New draft")}</span>
                     <button className="rb-seechg" onClick={() => setShowDiff((s) => !s)}>{showDiff ? "Hide changes" : "See changes"}</button>
                   </div>
                 )}
@@ -463,7 +501,9 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted }: Props)
             ) : (
               <div className="rb-guide">
                 <div className="rb-thread">
-                  <div className="rb-msg ai">Tell me how to revise this — I'll rewrite from your chosen sources (no new lookups).</div>
+                  <div className="rb-msg ai">{suggest
+                    ? "Tell me what to change — I'll edit the page and keep everything else, drawing facts from your chosen sources."
+                    : "Tell me how to revise this — I'll rewrite from your chosen sources (no new lookups)."}</div>
                   {thread.map((m, i) => <div key={i} className={"rb-msg " + (m.role === "user" ? "user" : "ai")}>{m.text}</div>)}
                 </div>
                 {draftSources.length > 0 && (

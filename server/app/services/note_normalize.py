@@ -1,4 +1,4 @@
-"""Bulk note-title normalization — two owner-run passes that tidy loose notes:
+"""Bulk note-title normalization — two owner-run passes that tidy loose notes.
 
   redate_batch()  — file every non-conforming entry note under the flat dated tree
                     notes/YYYY/MM/DD/N (N = next per-day sequence). Deterministic, no LLM.
@@ -58,7 +58,8 @@ def _day_of(conn, title: str, created_at: str | None) -> str:
 def redate_batch(conn, limit: int = 2000, dry_run: bool = False) -> dict:
     """Move loose entry notes — plus the PWA daily captures and day-summary rollups — into
     notes/YYYY/MM/DD/N (by capture day, in created order). Returns the plan + count; with
-    dry_run it only previews."""
+    dry_run it only previews.
+    """
     cands = conn.execute(
         "SELECT id, title, created_at FROM notes WHERE kind IN ('entry','daily') AND deleted_at IS NULL "
         "AND title NOT LIKE 'kb/%' "
@@ -125,7 +126,8 @@ def _gen_title(content: str) -> str:
 
 def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
     """Add a generated leaf title to bare dated notes: notes/<date>/N -> notes/<date>/N - title.
-    One cheap LLM call per note; bounded by limit; idempotent (titled notes are skipped)."""
+    One cheap LLM call per note; bounded by limit; idempotent (titled notes are skipped).
+    """
     if not llm.has_credentials():
         return {"count": 0, "skipped": "no LLM credentials"}
     cands = conn.execute(
@@ -151,7 +153,8 @@ def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
 def title_one(conn, note_id: int) -> str | None:
     """Title ONE note if it's a bare dated leaf (notes/YYYY/MM/DD/N -> '… - generated title').
     The per-note version of title_batch (for the note-view reanalyze button). No-op (returns
-    None) for an already-titled note, a non-dated/kb note, or with no LLM. Does NOT commit."""
+    None) for an already-titled note, a non-dated/kb note, or with no LLM. Does NOT commit.
+    """
     if not llm.has_credentials():
         return None
     r = conn.execute(

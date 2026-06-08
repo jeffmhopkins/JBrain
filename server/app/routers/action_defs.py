@@ -3,7 +3,8 @@ validate + a primitive catalog. Recipes live in the action_defs table (repo-
 seeded; user edits set source='user', locked=1). Shipped (source='repo')
 recipes are READ-ONLY — duplicate to a custom action to edit. The server is the
 YAML parser: get/validate return a parsed step tree so the PWA can visualise a
-pipeline without a client-side YAML library."""
+pipeline without a client-side YAML library.
+"""
 import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel

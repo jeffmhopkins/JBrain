@@ -68,10 +68,12 @@ def _sse(agen) -> StreamingResponse:
         StreamingResponse with ``text/event-stream`` media type.
     """
     async def event_stream():
+        """Yield the rebuild run's SSE events, interleaving keepalive comments."""
         queue: asyncio.Queue = asyncio.Queue()
         _DONE = object()
 
         async def pump():
+            """Drain the rebuild async generator into the queue."""
             try:
                 async for event in agen:
                     await queue.put(("event", event))
@@ -155,6 +157,7 @@ def start(slug: str):
     run = rebuild_runs.create(slug, title, llm.model_for("synthesis"), note["content_md"] or "")
 
     async def gen():
+        """Stream the initial gather + draft run as Server-Sent Events."""
         yield {"type": "run_started", "run_id": run.run_id, "slug": slug,
                "title": title, "base_rev": run.base_hash}
         async for ev in rebuild_engine.run_gather(run):
@@ -200,6 +203,7 @@ def regather(run_id: str, body: RegatherIn):
     run = _live_run(run_id)
 
     async def gen():
+        """Stream the re-gather pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_gather(run, hint=(body.hint or None), append=True):
             yield ev
 
@@ -247,6 +251,7 @@ def draft(run_id: str, body: DraftIn):
     run = _live_run(run_id)
 
     async def gen():
+        """Stream the draft pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_draft(run, body.source_ids):
             yield ev
 
@@ -274,6 +279,7 @@ def redraft(run_id: str, body: RedraftIn):
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
 
     async def gen():
+        """Stream the redraft pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_redraft(run, body.max_tokens):
             yield ev
 
@@ -306,6 +312,7 @@ def guide(run_id: str, body: GuideIn):
         raise HTTPException(status_code=400, detail="Empty guidance.")
 
     async def gen():
+        """Stream the guided-revision pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_guide(run, text):
             yield ev
 

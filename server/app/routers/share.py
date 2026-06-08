@@ -1108,6 +1108,7 @@ async def chat_stream(token: str, request: Request, after: int = 0):
     persist = bool(ch["persist"])
 
     async def gen():
+        """Stream the guest's encrypted-chat relay events as Server-Sent Events."""
         hub, sub = await chat_relay.subscribe(link_id, "guest")
         chat_svc.handle_presence(conn, link_id)
         try:

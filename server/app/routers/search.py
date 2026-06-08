@@ -1,5 +1,6 @@
 """Hybrid search over notes, attachments AND canonical entities: FTS5 keyword +
-sqlite-vec semantic (entities by name/alias)."""
+sqlite-vec semantic (entities by name/alias).
+"""
 import logging
 
 from fastapi import APIRouter

@@ -67,6 +67,7 @@ def _attribute(conn):
     cache: dict[str, int | None] = {}
 
     def pid(source: str | None) -> int | None:
+        """Resolve and cache a source name to its person id."""
         key = (source or "").strip().lower()
         if key not in cache:
             p = people_svc.resolve(conn, source or "")

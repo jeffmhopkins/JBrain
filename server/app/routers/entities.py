@@ -1,6 +1,7 @@
 """Browse the canonical entity index (people/orgs/places/things aggregated from the
 per-note AI analysis): list/filter entities, the notes that mention one, and the durable
-identity controls (merge / split / alias) that survive every entity_index.rebuild()."""
+identity controls (merge / split / alias) that survive every entity_index.rebuild().
+"""
 from fastapi import APIRouter, Body, HTTPException
 
 from ..auth import CurrentUser

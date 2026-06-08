@@ -107,9 +107,9 @@ def embed_many(texts: Iterable[str]) -> list[list[float]]:
 
 def upsert_note_embedding(conn, note_id: int, title: str, content_md: str) -> None:
     """(Re)compute and store BOTH representations of a note:
-      - vec_notes: one whole-note vector (research_scope reads this directly), and
-      - vec_note_chunks: one vector per content window, so a long note's body — past
-        the embedder's ~512-token truncation — is still reachable by semantic_search.
+    - vec_notes: one whole-note vector (research_scope reads this directly), and
+    - vec_note_chunks: one vector per content window, so a long note's body — past
+      the embedder's ~512-token truncation — is still reachable by semantic_search.
     """
     full = f"{title}\n\n{content_md}".strip()
     vec = embed(full)
@@ -123,7 +123,8 @@ def upsert_note_embedding(conn, note_id: int, title: str, content_md: str) -> No
 
 def upsert_note_chunk_embeddings(conn, note_id: int, full_text: str) -> None:
     """Replace a note's chunk vectors. `full_text` is the same 'title\\n\\ncontent'
-    string used for the whole-note vector, so a one-chunk note matches identically."""
+    string used for the whole-note vector, so a one-chunk note matches identically.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     delete_note_chunk_embeddings(conn, note_id)
     chunks = chunk_text(full_text)
@@ -174,7 +175,8 @@ def delete_note_embedding(conn, note_id: int) -> None:
 def reindex_missing_note_chunks(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for notes that have none yet (e.g. after the migration
     that introduced them). Returns how many notes were indexed. Commits if it did
-    work. `batch` caps the pass; None does all remaining."""
+    work. `batch` caps the pass; None does all remaining.
+    """
     # Redirect rows carry only a one-line marker and must stay out of semantic search.
     sql = ("SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL AND redirect_to IS NULL "
            "AND id NOT IN (SELECT DISTINCT note_id FROM note_chunks)")
@@ -195,7 +197,8 @@ def reindex_missing_attachment_analysis(conn, batch: int | None = None) -> int:
     """Backfill chunk vectors for analyzed attachments whose sidecar was never embedded
     (e.g. images analyzed before image analysis started embedding its summary). Their text
     is already in attachments_fts, so keyword search worked all along — this adds the
-    SEMANTIC half. Returns how many attachments were indexed; commits if it did work."""
+    SEMANTIC half. Returns how many attachments were indexed; commits if it did work.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     sql = ("SELECT id, note_id, analysis_md FROM attachments "
            "WHERE analysis_md IS NOT NULL AND analysis_md != '' "
@@ -218,7 +221,8 @@ def reindex_all_chunks(conn) -> int:
     chunk_index values read_attachment trusts) were built by the old splitter. Notes are
     rebuilt from their stored title+body, attachments from their stored content_text — no
     re-extraction. Commits as it goes so a crash resumes from roughly where it stopped.
-    Returns the number of items reprocessed."""
+    Returns the number of items reprocessed.
+    """
     from .attachments import chunk_text  # lazy: attachments imports this module
     n = 0
     for r in conn.execute(
@@ -248,7 +252,8 @@ def reindex_all_chunks(conn) -> int:
 def run_pending_rechunk(conn) -> int | None:
     """If a chunking-strategy migration flagged a full re-chunk ('rechunk:pending'), run
     it ONCE, clear the flag, and return the count. Returns None when nothing is pending.
-    Called from the startup warm task so re-embedding the corpus never blocks boot."""
+    Called from the startup warm task so re-embedding the corpus never blocks boot.
+    """
     from ..db import get_meta, set_meta
     if get_meta("rechunk:pending", conn=conn) != "1":
         return None
@@ -269,7 +274,8 @@ def relevant_note_excerpt(conn, note_id: int, query: str, budget_chars: int) -> 
     slice — unless some buried chunk is MORE on-subject than the note's own head. That keeps
     the head's behaviour wherever it was already capturing the relevant content, so the change
     can only help the off-topic-head case it targets (and can't fire on a vocabulary mismatch
-    where nothing buried stands out)."""
+    where nothing buried stands out).
+    """
     import numpy as np
     from .attachments import CHUNK_MAX_CHARS  # lazy: avoid an import cycle at module load
     rows = conn.execute(
@@ -319,14 +325,16 @@ def embed_attachment_chunks(chunks: list[str]) -> list[list[float]]:
     so a background worker can compute vectors BEFORE it opens its write transaction. Holding the
     single WAL write lock across multi-second fastembed inference wedges every other writer within
     busy_timeout (5s) — including the owner chat persisting its turn — so the embed must never run
-    under a lock. Pair with write_attachment_embeddings(), which does the fast row writes."""
+    under a lock. Pair with write_attachment_embeddings(), which does the fast row writes.
+    """
     return embed_many(chunks) if chunks else []
 
 
 def write_attachment_embeddings(conn, attachment_id: int, note_id: int | None,
                                 chunks: list[str], vectors: list[list[float]]) -> None:
     """Pure-SQL write of PRE-COMPUTED attachment chunk vectors (fast; safe inside a write txn).
-    Replaces the attachment's chunk rows. Pair with embed_attachment_chunks() for the slow half."""
+    Replaces the attachment's chunk rows. Pair with embed_attachment_chunks() for the slow half.
+    """
     delete_attachment_embeddings(conn, attachment_id)
     if not chunks:
         return
@@ -346,7 +354,8 @@ def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, 
     """Compute-then-write in one call (multi-vector). Convenience wrapper for callers ALREADY
     outside a hot write lock (backfills, the upload path); background workers that hold a write
     txn should instead embed_attachment_chunks() before the lock and write_attachment_embeddings()
-    inside it, so the slow embed never holds the lock."""
+    inside it, so the slow embed never holds the lock.
+    """
     write_attachment_embeddings(conn, attachment_id, note_id, chunks, embed_attachment_chunks(chunks))
 
 
@@ -379,7 +388,8 @@ ATT_SNIPPET_CHARS = 600    # cap on the expanded snippet
 def _expanded_snippet(conn, attachment_id: int, chunk_index, matched_text: str,
                       cap: int = ATT_SNIPPET_CHARS) -> str:
     """The matched chunk WITH ±ATT_SNIPPET_WINDOW neighbours from the same attachment,
-    concatenated and capped. Falls back to the matched chunk alone when it has no index."""
+    concatenated and capped. Falls back to the matched chunk alone when it has no index.
+    """
     if chunk_index is None:
         return matched_text[:cap]
     rows = conn.execute(
@@ -396,7 +406,8 @@ def semantic_search_attachments(conn, query: str, limit: int = 10, *,
     """Semantic search over attachment chunks, collapsed to best chunk per attachment.
     Each hit's snippet is neighbour-expanded (see _expanded_snippet) for context. The
     governance gates mirror semantic_search: an attachment hit credits its parent note,
-    so a parent the owner hid from the assistant must not surface here either."""
+    so a parent the owner hid from the assistant must not surface here either.
+    """
     qvec = embed(query)
     rows = conn.execute(
         """
@@ -464,7 +475,8 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
     """Canonical entities most similar in meaning to the query (vec_entities), filtered to a
     relevance floor. Entities are embedded from their name + type + aliases + KB-article
     lead, so a descriptive query ('my dog') can surface a named entity ('Buddy'). Returns
-    rows with distance, nearest first, dropping anything farther than `max_distance`."""
+    rows with distance, nearest first, dropping anything farther than `max_distance`.
+    """
     qvec = embed(query)
     rows = conn.execute(
         "SELECT e.id, e.type, e.canonical_name, e.note_count, e.article_title, v.distance "
@@ -506,7 +518,8 @@ def semantic_search(conn, query: str, limit: int = 10, *,
 
     `require_tool_access` / `require_kb_ingest`: caller-aware governance gates — the
     assistant's research tools pass tool_access; KB synthesis passes kb_ingest. Default
-    off so owner-facing search is unchanged."""
+    off so owner-facing search is unchanged.
+    """
     qvec = embed(query)
     # Over-fetch chunks so several distinct notes survive even when one long note
     # contributes many near-neighbour chunks; then collapse to best-per-note.

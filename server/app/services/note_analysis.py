@@ -151,7 +151,8 @@ def _ensure_media_transcribed(conn, note_id: int) -> None:
 def analyze(conn, note_id: int, *, force: bool = False) -> bool:
     """(Re)compute the analysis for one note. No-ops (returns False) when the note's
     content is unchanged since the last analysis, when it's gone, or when no LLM key
-    is configured. Returns True when a fresh analysis was stored."""
+    is configured. Returns True when a fresh analysis was stored.
+    """
     row = conn.execute(
         "SELECT id, title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
         (note_id,),
@@ -249,7 +250,8 @@ def pending_ids(conn, limit: int = 60, force: bool = False) -> list[int]:
     changed since last analyzed); with force=True, ALL of them — used to refresh every
     analysis after the analyzer's behaviour or prompt changes (e.g. the time-token fix),
     since hash-keyed analyses are otherwise never recomputed for unchanged notes. kb/*
-    and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it."""
+    and protected pages are always excluded — analysis FEEDS the KB, it isn't part of it.
+    """
     where = "n.deleted_at IS NULL AND n.kind IN ('entry','daily')"
     if not force:
         # Also surface a note whose attachment enrichment (image summary / transcript) landed

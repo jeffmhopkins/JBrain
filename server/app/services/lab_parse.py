@@ -608,6 +608,7 @@ def _score_confidence(results: list[dict]) -> None:
         conf, reasons = "high", []
 
         def demote(level: str, why: str):
+            """Lower the confidence to ``level`` (if stricter) and record the reason."""
             nonlocal conf
             if rank[level] < rank[conf]:
                 conf = level

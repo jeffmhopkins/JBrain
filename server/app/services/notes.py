@@ -73,7 +73,8 @@ def _fire_entry_created(conn, note_id: int, title: str, *, commit: bool = False)
 def flush_entry_events(conn) -> None:
     """Fire entry_created for notes created with fire_events=False, AFTER the
     caller has committed. Run post-commit so a slow (LLM-backed) workflow doesn't
-    hold the note's write transaction open and block other writers."""
+    hold the note's write transaction open and block other writers.
+    """
     pending = getattr(_state, "pending", None) or []
     _state.pending = []
     for note_id, title in pending:
@@ -246,7 +247,8 @@ def max_dated_n(conn, day_path: str) -> int:
     ('NN - cardiology invoice') notes, and counts ALL rows including soft-deleted ones
     — `notes.title` is UNIQUE across every row, so reissuing a deleted note's number
     would hit that constraint. Numbering is therefore gap-tolerant (a deleted /3 is
-    never reused). 0 when the day is empty."""
+    never reused). 0 when the day is empty.
+    """
     prefix = f"notes/{day_path}/"
     n = 0
     for r in conn.execute("SELECT title FROM notes WHERE title LIKE ?", (prefix + "%",)).fetchall():
@@ -262,7 +264,8 @@ def next_dated_title(conn, day) -> str:
     This is the standard location every 'Make entry' capture lands in. NN is the day's
     highest existing leading number + 1, zero-padded to ≥2 digits so a day's notes sort
     right (.../01 … /10). Single-writer SQLite means no retry loop is needed; `day` is a
-    date in the caller's local timezone."""
+    date in the caller's local timezone.
+    """
     day_path = f"{day:%Y/%m/%d}"
     return f"notes/{day_path}/{max_dated_n(conn, day_path) + 1:02d}"
 
@@ -590,7 +593,8 @@ def restore(conn, note_id: int) -> None:
     the keyword index, its OUTGOING links (from its content's [[wiki-links]]), the
     INBOUND links other notes had to it (nulled on delete), and its embedding.
     Without this a restored/undeleted note comes back as a graph orphan and is
-    missing from search."""
+    missing from search.
+    """
     row = conn.execute("SELECT title, content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
     if row is None:
         return

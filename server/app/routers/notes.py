@@ -846,6 +846,7 @@ def diff_versions(slug: str, from_id: int, to_id: int):
     note = _note_by_slug(conn, slug, include_deleted=True)
 
     def _ver(vid: int):
+        """Load a single note version row scoped to this note."""
         v = conn.execute(
             "SELECT * FROM note_versions WHERE id = ? AND note_id = ?",
             (vid, note["id"]),

@@ -51,7 +51,8 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False,
         names — and never on an ambiguous term, so common words / bare heuristic first names
         do NOT expand into a corpus.
     Both share the ambiguity guard and the same modest fixed-rank bump (surfaces a note but
-    can't dominate a genuine FTS/vector hit), and a no-name sentence expands nothing."""
+    can't dominate a genuine FTS/vector hit), and a no-name sentence expands nothing.
+    """
     q = (q or "").strip()
     if not q:
         return []

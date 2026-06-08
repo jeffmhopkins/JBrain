@@ -1,5 +1,6 @@
 """People registry — owner-only. People label/colour location trails and can be
-linked to a KB page; they are NOT auth accounts (JBrain stays single access key)."""
+linked to a KB page; they are NOT auth accounts (JBrain stays single access key).
+"""
 import secrets
 import sqlite3
 

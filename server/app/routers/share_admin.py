@@ -137,6 +137,7 @@ def list_shares():
         "WHERE s.end_reason IS NOT NULL AND ri.status='pending' ORDER BY s.completed_at DESC"
     ).fetchall()
     def _gp(r):
+        """Shape a pending guided-session row for the owner review payload."""
         d = dict(r)
         # The raw chat is for OWNER REVIEW ONLY — surfaced here, never written to a
         # note or embedded, so it stays out of brain search. Deleted on accept/reject.
@@ -154,6 +155,7 @@ def list_shares():
         "ORDER BY s.completed_at DESC LIMIT 50"
     ).fetchall()
     def _disp(r):
+        """Shape a resolved guided-session history row with its disposition label."""
         er = r["end_reason"] or ""
         disp = ("ended" if er.startswith("abuse") else "distress" if er == "distress"
                 else "approved" if r["status"] == "submitted"
@@ -171,6 +173,7 @@ def list_shares():
     ).fetchall()
 
     def _rl(r):
+        """Shape a research-link row with its counts and share URL."""
         d = dict(r)
         d["approved_count"] = len(json.loads(d.pop("approved_ids_json") or "[]"))
         d["lab_count"] = len(json.loads(d.pop("lab_analytes_json") or "[]"))
@@ -187,6 +190,7 @@ def list_shares():
     ).fetchall()
 
     def _ll(r):
+        """Shape a lab-share link row with its analyte count and share URL."""
         d = dict(r)
         d["analyte_count"] = len(json.loads(d.pop("analytes_json") or "[]"))
         d["url"] = share_svc.share_url(d["token"])
@@ -1060,6 +1064,7 @@ async def chat_owner_stream(link_id: int, after: int = 0):
     persist = bool(ch["persist"])
 
     async def gen():
+        """Stream the owner's encrypted-chat relay events as Server-Sent Events."""
         hub, sub = await chat_relay.subscribe(link_id, "owner")
         chat_svc.handle_presence(conn, link_id)
         try:

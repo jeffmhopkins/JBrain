@@ -601,6 +601,7 @@ def expand_rrule(rrule: str, start: str, window_from: str, window_to: str,
     date_only = _is_date_only(start)
 
     def _fmt(dt: datetime) -> str:
+        """Format a datetime as a date-only or full ISO string per the event's grain."""
         return dt.strftime("%Y-%m-%d") if date_only else dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     try:

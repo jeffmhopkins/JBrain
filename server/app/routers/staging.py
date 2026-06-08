@@ -471,6 +471,22 @@ def _applied_summary(action_type: str, payload: dict) -> str:
 
 @router.post("/{action_id}/apply")
 def apply_action(action_id: int):
+    """Apply a single pending staged action atomically.
+
+    Claims the row first to prevent a concurrent apply from applying the same
+    action twice. Rolls back both the claim and any partial write on failure.
+
+    Args:
+        action_id: Primary key of the pending staging_actions row.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the action is not found or not pending.
+        HTTPException: 409 if the action is no longer pending (concurrent apply).
+        HTTPException: 400/404/409 from _apply_action if the action itself fails.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM staging_actions WHERE id = ? AND status = 'pending'", (action_id,)
@@ -497,6 +513,18 @@ def apply_action(action_id: int):
 
 @router.post("/apply-all")
 def apply_all():
+    """Apply all pending staged actions in id order, all-or-nothing.
+
+    A failing action rolls back the entire batch so no rows are left in a
+    partially-applied state. Actions already claimed by a concurrent single-apply
+    are skipped.
+
+    Returns:
+        Dict with 'ok': True and 'applied' count of actions that were applied.
+
+    Raises:
+        HTTPException: 400/404/409 from _apply_action if any action fails.
+    """
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM staging_actions WHERE status = 'pending' ORDER BY id"
@@ -524,6 +552,14 @@ def apply_all():
 
 @router.post("/{action_id}/reject")
 def reject_action(action_id: int):
+    """Reject a pending staged action, marking it as rejected without applying it.
+
+    Args:
+        action_id: Primary key of the pending staging_actions row.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     conn.execute(
         "UPDATE staging_actions SET status = 'rejected' WHERE id = ? AND status = 'pending'",
@@ -535,7 +571,23 @@ def reject_action(action_id: int):
 
 @router.post("/{action_id}/undo")
 def undo_action(action_id: int):
-    """Undo an auto-applied additive op by applying its recorded inverse."""
+    """Undo a previously applied staged action by executing its recorded inverse.
+
+    Only actions that recorded an undo payload at apply time can be undone. The
+    supported inverse operations are: remove_line, replace_line, insert_line,
+    set_tags, revoke_share, reactivate_share, restore_note, delete_place, edit_place.
+
+    Args:
+        action_id: Primary key of the applied staging_actions row.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the action is not found or not in 'applied' state.
+        HTTPException: 409 if the target line/item was already changed or removed.
+        HTTPException: 400 if the action has no recorded undo payload.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM staging_actions WHERE id = ? AND status = 'applied'", (action_id,)

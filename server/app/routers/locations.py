@@ -154,6 +154,7 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
     pts = sorted(body.points or [], key=lambda p: _parse(p.recorded_at) or now)[:5000]
     _pid_cache: dict[str, int | None] = {}
     def _pid(src: str):
+        """Resolve and cache a source name to its person id."""
         if src not in _pid_cache:
             pr = people_svc.resolve(conn, src)
             _pid_cache[src] = pr["id"] if pr else None
@@ -163,6 +164,7 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
     # device's burst never dedups against another person's fixes.
     last_by_src: dict[str, tuple] = {}    # source -> (lat, lon, datetime)
     def _seed(src: str, rec_str: str):
+        """Seed a source's last-kept fix from its temporal predecessor in the DB."""
         if src in last_by_src:
             return
         r = conn.execute(

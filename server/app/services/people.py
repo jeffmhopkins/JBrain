@@ -1,6 +1,7 @@
 """People registry helpers. People attribute/colour location trails (and can be
 linked to a KB page); they are NOT auth accounts. A location fix's `source` is
-matched to a person by name or alias, falling back to the default ("Me")."""
+matched to a person by name or alias, falling back to the default ("Me").
+"""
 
 
 def _aliases(row) -> set[str]:

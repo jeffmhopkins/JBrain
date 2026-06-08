@@ -116,7 +116,8 @@ def unsubscribe(h: Hub, sub: _Sub) -> None:
 
 def publish(link_id: int, event: dict, *, exclude: _Sub | None = None) -> None:
     """Fan an event out to every subscriber (optionally excluding one). Safe to call
-    from any thread; deliveries are marshalled onto the channel's event loop."""
+    from any thread; deliveries are marshalled onto the channel's event loop.
+    """
     with _glock:
         h = _hubs.get(link_id)
     if h is None or h.loop is None:
@@ -139,7 +140,8 @@ def reset() -> None:
 def next_seq(link_id: int, seed: Callable[[], int]) -> int:
     """Allocate the next monotonic sequence number for the channel. `seed` is called
     once (under the hub lock) to read the persisted MAX(seq) the first time the hub is
-    used after a restart, so ordering survives across processes for persisted channels."""
+    used after a restart, so ordering survives across processes for persisted channels.
+    """
     h = hub(link_id)
     with h.lock:
         if h.seq is None:

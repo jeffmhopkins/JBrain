@@ -212,6 +212,7 @@ def send_message(conversation_id: int, body: MessageIn):
     mode = normalize_mode(body.mode)
 
     async def event_stream():
+        """Yield architect SSE events, interleaving periodic keepalive comments."""
         # Bridge the architect's async generator through a queue so we can interleave a
         # periodic keepalive while the real work is silent. A ': keepalive' comment line
         # carries no `data:` field, so the client safely ignores it — but every byte
@@ -221,6 +222,7 @@ def send_message(conversation_id: int, body: MessageIn):
         _DONE = object()
 
         async def pump():
+            """Drain the architect's async generator into the queue."""
             try:
                 async for event in architect.run(conversation_id, body.text, location, mode,
                                                  fresh_context=body.fresh_context, deep=body.deep):

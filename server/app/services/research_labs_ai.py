@@ -108,7 +108,8 @@ _SCHEMAS = {
 
 def allowed_labs(spec) -> set[str]:
     """The attached analyte allow-list — THE lab boundary. Blank entries are dropped so a
-    `['',' ']` list can never pass an activation gate or expose anything."""
+    `['',' ']` list can never pass an activation gate or expose anything.
+    """
     if "lab_analytes_json" not in spec.keys():
         return set()
     try:
@@ -152,7 +153,8 @@ def _range_window(rng) -> tuple[str | None, str | None]:
 def _clamp(wfrom, wto, rng) -> tuple[str | None, str | None]:
     """Intersect the owner window [wfrom,wto] with the model's optional `range`. ISO dates sort
     lexicographically, so max()/min() is a correct date intersection. The result can only ever be
-    a SUBSET of the owner window — a model `range` cannot reach data outside it."""
+    a SUBSET of the owner window — a model `range` cannot reach data outside it.
+    """
     rf, rt = _range_window(rng)
     froms = [x for x in (wfrom, rf) if x]
     tos = [x for x in (wto, rt) if x]
@@ -299,7 +301,8 @@ def assert_dispatch_safe() -> None:
     """Release-blocker (called at boot): the dispatch table — the ONLY tools the recipient model can
     invoke — must be EXACTLY the declared scoped lab tools, hold none of the forbidden owner tools,
     and match the tool defs handed to the model. Makes the (previously guard-only) RECIPIENT_TOOLS
-    contract non-vacuous."""
+    contract non-vacuous.
+    """
     keys = set(_DISPATCH)
     declared = set(sc.RECIPIENT_TOOLS)
     if keys != declared:

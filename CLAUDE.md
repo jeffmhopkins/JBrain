@@ -79,5 +79,6 @@ done without it.
   only when the fields aren't self-evident.
 - Types live in the **signature** (PEP 484 hints), not the prose — docstrings describe
   meaning/behaviour, not types.
-- Machine-check (honor-system, like the tests): `cd server && ruff check --select D app`
-  (config: `[tool.ruff.lint.pydocstyle] convention = "google"` in `pyproject.toml`).
+- Machine-check (honor-system, like the tests): `cd server && ruff check app`
+  (config: `[tool.ruff.lint.pydocstyle] convention = "google"` in `pyproject.toml`;
+  `D205`/`D301` are relaxed for the repo's compact multi-line headers).

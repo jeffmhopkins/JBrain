@@ -187,7 +187,8 @@ def create_guided_link(conn, note_id: int | None = None, label: str | None = Non
                         ttl_days: int | None = 14, bind: bool = False) -> tuple[str, int]:
     """Mint a guided AI intake link (scope='view', kind='guided'). Returns (token, link_id).
     The interview spec is attached separately via guided.create_spec; the link is inert
-    to recipients until the owner activates the spec (approval #1)."""
+    to recipients until the owner activates the spec (approval #1).
+    """
     token = mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     cur = conn.execute(
@@ -202,7 +203,8 @@ def create_research_link(conn, note_id: int | None = None, label: str | None = N
                          ttl_days: int | None = None, bind: bool = False) -> tuple[str, int]:
     """Mint a research Q&A link (scope='view', kind='research'). Returns (token, link_id).
     Backs NO note (note_id stays NULL) — it answers from the owner-approved notes; the
-    scope spec is attached via research.create_spec and the link is inert until activated."""
+    scope spec is attached via research.create_spec and the link is inert until activated.
+    """
     token = mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     cur = conn.execute(
@@ -218,7 +220,8 @@ def create_labshare_link(conn, label: str | None = None, ttl_days: int = 14,
     """Mint a lab-share link (scope='view', kind='labs'). Backs NO note; it serves an
     owner-approved scoped set of lab trends (spec attached via labshare.create), inert until
     activated. PHI hardening: bind defaults ON and the TTL is ALWAYS finite (a medical link is
-    never a permanent bearer credential) — ttl_days<=0 falls back to 14."""
+    never a permanent bearer credential) — ttl_days<=0 falls back to 14.
+    """
     token = mint_token()
     days = int(ttl_days) if ttl_days and int(ttl_days) > 0 else 14
     cur = conn.execute(

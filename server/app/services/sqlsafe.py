@@ -1,5 +1,6 @@
 """Guarded read-only SQL execution (SELECT/WITH only). Shared by the SQL console
-and the architect's research-mode query_sql tool."""
+and the architect's research-mode query_sql tool.
+"""
 from __future__ import annotations
 
 import re

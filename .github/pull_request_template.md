@@ -11,7 +11,7 @@
 - [ ] No real network/LLM/secrets in tests; mocked at the module seam.
 
 ## Conventions
-- [ ] New/changed Python has **Google-style docstrings** (summary + `Args:`/`Returns:`/`Raises:` as applicable; see CLAUDE.md → "Docstrings"). `ruff check --select D app` is clean.
+- [ ] New/changed Python has **Google-style docstrings** (summary + `Args:`/`Returns:`/`Raises:` as applicable; see CLAUDE.md → "Docstrings"). `cd server && ruff check app` is clean.
 
 ## Notes for reviewers
 

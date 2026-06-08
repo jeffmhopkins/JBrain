@@ -71,6 +71,7 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     mime = att_svc.resolve_mime(filename or "", file.content_type)
 
     def _store_and_enrich() -> dict:
+        """Store the upload and run text-extraction + embedding off the event loop."""
         # Off the event loop: add_attachment text-extracts + embeds (multi-second), and the
         # document path below runs a full note-analysis LLM call — doing either inline on the
         # single event loop would block every other request. The connection is the event-loop

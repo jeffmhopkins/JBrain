@@ -230,6 +230,7 @@ def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
     seen: set[int] = set()
 
     def mk(t: str, reason: str, added: bool = False):
+        """Build a candidate dict for a note title, looking it up in pool or the DB."""
         m = pool.get((t or "").lower())
         if not m:
             row = conn.execute(

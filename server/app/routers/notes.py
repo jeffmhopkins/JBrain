@@ -499,7 +499,11 @@ def maintain_now_talk(slug: str):
 
 @router.get("/kb/dead-links")
 def kb_dead_links():
-    """KB health: dangling cross-links from articles (target doesn't exist)."""
+    """Return KB articles that contain dangling cross-links to non-existent targets.
+
+    Returns:
+        Dict with 'count' and 'items' listing each dead link.
+    """
     from ..services import wiki_build
     items = wiki_build.dead_links(get_conn())
     return {"count": len(items), "items": items}
@@ -507,6 +511,16 @@ def kb_dead_links():
 
 @router.post("")
 def create_or_update(body: NoteIn):
+    """Create a new note or update an existing one by title.
+
+    Fires entry_created hooks after the commit (auto-tag etc.).
+
+    Args:
+        body: Note title and markdown content.
+
+    Returns:
+        Dict with id, title, and slug of the upserted note.
+    """
     conn = get_conn()
     try:
         note_id = notes_svc.upsert_note(conn, body.title, body.content_md, fire_events=False)
@@ -521,9 +535,23 @@ def create_or_update(body: NoteIn):
 
 @router.put("/{slug}")
 def update_note(slug: str, body: NoteIn):
-    """Edit an existing note in place, including RENAMING it. Targets the note by
-    id so a new title renames THIS note (and its slug) rather than creating a
-    duplicate. Use it to move notes under the notes/ or kb/ roots."""
+    """Edit an existing note in place, optionally renaming it.
+
+    Targets the note by id so a new title renames this note and its slug instead of
+    creating a duplicate. Use to move notes between notes/ and kb/ roots.
+
+    Args:
+        slug: URL slug of the note to update.
+        body: New title and markdown content.
+
+    Returns:
+        Dict with id, title, and slug of the updated note.
+
+    Raises:
+        HTTPException: 409 if a note with the new title already exists.
+        HTTPException: 422 if the new title is empty.
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     new_title = body.title.strip()
@@ -545,13 +573,28 @@ def update_note(slug: str, body: NoteIn):
 
 
 class TagsIn(BaseModel):
+    """Request body for replacing a note's tags."""
+
     tags: list[str] = []
 
 
 @router.put("/{slug}/tags")
 def set_note_tags(slug: str, body: TagsIn):
-    """Replace a note's tags directly (the owner editing their own note). The AI path
-    stages a tag change for approval; the owner editing in the UI is a direct edit."""
+    """Replace a note's tags directly (owner UI path, bypasses staging).
+
+    The AI path stages a tag change for approval; the owner editing in the UI writes
+    directly.
+
+    Args:
+        slug: URL slug of the note.
+        body: Complete new tag list.
+
+    Returns:
+        Dict with 'tags' — the updated tag list.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug)
     if note is None:
@@ -562,6 +605,13 @@ def set_note_tags(slug: str, body: TagsIn):
 
 
 class FlagsIn(BaseModel):
+    """Request body for updating a note's governance flags (PATCH semantics).
+
+    Omit a field to leave it unchanged so individual checkboxes toggle independently.
+    Only the three coherent states are permitted: Full (1/1), Research-only (0/1),
+    Private (0/0).
+    """
+
     # PATCH semantics: omit a field to leave it unchanged (so a single checkbox toggles
     # independently). Coherent states only — see set_note_flags.
     kb_ingest: bool | None = None
@@ -570,11 +620,24 @@ class FlagsIn(BaseModel):
 
 @router.put("/{slug}/flags")
 def set_note_flags(slug: str, body: FlagsIn):
-    """Set the per-note governance flags. `kb_ingest`: feed this entry to KB synthesis.
-    `tool_access`: surface it in the assistant's search/research tools. The owner editing
-    their own note directly. Only the three coherent states are allowed — Full (1/1),
-    Research-only (0/1), Private (0/0); kb_ingest=1 with tool_access=0 is rejected, since
-    the KB would otherwise cite a source the assistant is forbidden to read."""
+    """Update the per-note governance flags directly (owner UI path).
+
+    kb_ingest: feed this note to KB synthesis. tool_access: surface it in the
+    assistant's search and research tools. Only three coherent states are allowed:
+    Full (1/1), Research-only (0/1), Private (0/0). kb_ingest=1 with tool_access=0
+    is rejected — the KB would otherwise cite a source the assistant cannot read.
+
+    Args:
+        slug: URL slug of the note.
+        body: kb_ingest and/or tool_access flags (omit to leave unchanged).
+
+    Returns:
+        Dict with 'kb_ingest' and 'tool_access' as booleans.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+        HTTPException: 422 if the requested state is incoherent (kb_ingest=1, tool_access=0).
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id, kb_ingest, tool_access FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)

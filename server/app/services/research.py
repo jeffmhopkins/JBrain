@@ -272,7 +272,13 @@ def dismiss(conn, link_id: int, ids: list[int]) -> None:
 
 
 def remove_approved(conn, link_id: int, ids: list[int]) -> None:
-    """Pull notes back out of the allowlist — instantly out of scope, even mid-session."""
+    """Remove notes from the allowlist, taking effect instantly even mid-session.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to remove from the allowlist.
+    """
     spec = get_spec(conn, link_id)
     _save_ids(conn, link_id, "approved_ids_json", scope.approved_ids(spec) - {int(i) for i in ids})
 
@@ -296,7 +302,17 @@ def _titles(conn, ids: set[int]) -> list[dict]:
 
 
 def list_candidates(conn, link_id: int) -> list[dict]:
-    """Owner-only: filter matches not yet approved/dismissed (titles allowed here)."""
+    """Return id+title pairs for filter matches not yet approved or dismissed.
+
+    Owner-only endpoint — titles are safe here because the owner configured the filter.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        List of {id, title} dicts.
+    """
     return _titles(conn, scope.candidate_ids(conn, get_spec(conn, link_id)))
 
 
@@ -403,10 +419,20 @@ def _global_budget_ok(conn) -> bool:
 
 
 def _pre_turn_guard(conn, spec, session) -> dict | None:
-    """Shared per-turn gate for BOTH research paths (notes-only RAG and attached-labs tools):
-    end on the per-session turn cap, atomically bill ONE reply against the per-link cap (so a
-    multi-tool labs turn still counts once), then the global daily backstop. Returns an early-exit
-    dict, or None to proceed."""
+    """Shared per-turn gate for both the notes-only RAG and attached-labs research paths.
+
+    Ends the session on the per-session turn cap, atomically bills ONE reply against the
+    per-link cap (so a multi-tool labs turn still counts once), then checks the global
+    daily backstop.
+
+    Args:
+        conn: Database connection.
+        spec: The research_specs row.
+        session: The research_sessions row.
+
+    Returns:
+        An early-exit response dict if a cap is hit, or None to proceed with the turn.
+    """
     if session["turn_count"] >= spec["max_turns"]:
         return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
     if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
@@ -424,9 +450,21 @@ def _pre_turn_guard(conn, spec, session) -> dict | None:
 
 
 def answer(conn, link, spec, session, question: str) -> dict:
-    """One Q&A turn. Server-driven RAG over the approved allowlist; tool-less model.
-    Returns {phase: 'answer'|'ended', message, retrieved}. Enforces per-session,
-    per-link (atomic), and global daily caps."""
+    """Process one Q&A turn with server-driven RAG over the approved allowlist.
+
+    Uses a tool-less model for notes-only links; delegates to research_labs_ai when
+    labs are attached. Enforces per-session, per-link (atomic), and global daily caps.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The research_specs row.
+        session: The research_sessions row.
+        question: Raw question text from the recipient.
+
+    Returns:
+        Dict with phase ('answer' or 'ended') and message fields.
+    """
     if not llm.has_credentials():
         return {"phase": "answer", "message": _UNAVAILABLE}
 
@@ -511,8 +549,18 @@ def _record(conn, session, transcript, question, reply, retrieved_ids) -> None:
 # --- candidate nudge (owner) ------------------------------------------------
 
 def post_candidate_nudges(conn) -> int:
-    """Daily sweep: for each active research link with new candidate notes, post a
-    review-inbox nudge so the owner can include them. Returns links nudged."""
+    """Daily sweep: post review-inbox nudges for active research links with new candidate notes.
+
+    For each active research link that has filter-matching notes the owner hasn't yet
+    approved or dismissed, posts a nudge so the owner can include them. Nothing new is
+    exposed to recipients until the owner approves.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        Number of links for which a nudge was posted.
+    """
     from . import reviews as reviews_svc
     n = 0
     rows = conn.execute(

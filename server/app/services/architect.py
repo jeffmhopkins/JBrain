@@ -3842,6 +3842,15 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
         if dropped or q_changed or v_changed:
             yield {"type": "replace_text", "text": final_text}
         def _persist_reply():
+            """Write the assistant reply and its tool-step records in one offloaded DB commit.
+
+            Keeping the INSERT, step inserts, and commit together ensures the
+            write lock is never held across an await, which would re-introduce
+            the event-loop freeze.
+
+            Returns:
+                The new messages.id for the persisted reply row.
+            """
             # The reply INSERT, the tool-step inserts, and the commit are ONE offloaded unit so the
             # write lock is never held across an await (which would re-introduce the loop-freeze).
             cur = conn.execute(

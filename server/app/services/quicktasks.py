@@ -296,8 +296,22 @@ def remove_item(conn, list_title, item, ordinal=None, *, source="architect",
 
 def add_sublist(conn, parent_list, child_name, items=None, *, source="architect",
                 conversation_id=None, location=None) -> dict:
-    """Create a child list under lists/<Parent>/<child> and link it from the parent
-    with a "[[lists/…]]" checklist line."""
+    """Create a child list under lists/<Parent>/<child> and link it from the parent.
+
+    The link is added to the parent as a '[[lists/...]]' checklist line.
+
+    Args:
+        conn: Database connection.
+        parent_list: Parent list title.
+        child_name: Name of the child list to create.
+        items: Optional initial item texts to populate the child list.
+        source: Write source tag.
+        conversation_id: Optional conversation ID.
+        location: Optional location dict.
+
+    Returns:
+        Dict with parent_title, child_title, and parent_line.
+    """
     parent = notes_svc.root_title(parent_list, "lists")
     child = notes_svc.root_title(f"{parent}/{child_name}", "lists")
     for it in (items or []):
@@ -314,7 +328,22 @@ def append_log(
     conn, target: str, text: str, date: str | None = None, *,
     source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
-    """Append a dated bullet to a log/journal note, creating it if absent."""
+    """Append a dated bullet to a log/journal note, creating it if absent.
+
+    Uses the local day (not UTC) so a late-evening log does not roll to tomorrow.
+
+    Args:
+        conn: Database connection.
+        target: Note title of the log.
+        text: Bullet text to append.
+        date: ISO date string; defaults to today in the app timezone.
+        source: Write source tag.
+        conversation_id: Optional conversation ID.
+        location: Optional location dict.
+
+    Returns:
+        Dict with note_title, block (the appended line), and created.
+    """
     date = date or clock.today_iso()   # local day, not UTC (a late-evening log must not roll to tomorrow)
     note = notes_svc.get_by_title(conn, target)
     created = note is None
@@ -331,7 +360,17 @@ def append_log(
 # --- Undo helpers (used by the staging /undo endpoint) ----------------------
 
 def remove_line_from_note(conn, title: str, line: str, *, source: str = "user") -> bool:
-    """Remove the first exact occurrence of `line` from a note. Returns success."""
+    """Remove the first exact occurrence of a line from a note.
+
+    Args:
+        conn: Database connection.
+        title: Note title.
+        line: Exact line string to remove.
+        source: Write source tag.
+
+    Returns:
+        True if the line was found and removed; False if the note or line was not found.
+    """
     note = notes_svc.get_by_title(conn, title)
     if not note:
         return False
@@ -345,7 +384,18 @@ def remove_line_from_note(conn, title: str, line: str, *, source: str = "user") 
 
 
 def replace_line_in_note(conn, title: str, from_line: str, to_line: str, *, source: str = "user") -> bool:
-    """Replace the first exact occurrence of from_line with to_line. Fail-closed."""
+    """Replace the first exact occurrence of from_line with to_line in a note. Fail-closed.
+
+    Args:
+        conn: Database connection.
+        title: Note title.
+        from_line: Exact line to replace.
+        to_line: Replacement line.
+        source: Write source tag.
+
+    Returns:
+        True if the replacement was made; False if the note or line was not found.
+    """
     note = notes_svc.get_by_title(conn, title)
     if not note:
         return False
@@ -360,7 +410,18 @@ def replace_line_in_note(conn, title: str, from_line: str, to_line: str, *, sour
 
 
 def insert_line_in_note(conn, title: str, index: int, line: str, *, source: str = "user") -> bool:
-    """Re-insert a line at `index` (used to undo a remove)."""
+    """Re-insert a line at the given index (used to undo a remove).
+
+    Args:
+        conn: Database connection.
+        title: Note title.
+        index: 0-based position to insert the line at (clamped to valid range).
+        line: Line string to insert.
+        source: Write source tag.
+
+    Returns:
+        True if the insertion was made; False if the note was not found.
+    """
     note = notes_svc.get_by_title(conn, title)
     if not note:
         return False

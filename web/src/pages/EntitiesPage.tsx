@@ -6,6 +6,7 @@ import {
   addEntityAlias, removeEntityAlias, listEntityDecisions, getEntityRebuildStatus,
 } from "../api";
 import { leaf, slugify } from "../util";
+import { useCapability } from "../capabilities";
 
 const ICON: Record<string, string> = {
   person: "👤", animal: "🐾", org: "🏢", place: "📍", thing: "📦", work: "🎬",
@@ -63,6 +64,9 @@ export default function EntitiesPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  // Identity edits are saved immediately but defer an embeddings-backed index rebuild —
+  // warn when semantic search isn't ready so the user knows the fold will be delayed.
+  const embeddings = useCapability("embeddings");
   // The mutating ops record their decision synchronously but defer the (slow) index rebuild
   // to a coalesced background worker. While it runs we show a "Refreshing…" badge and poll
   // /status; when the rebuild generation advances we re-fetch so the fold is reflected.
@@ -219,6 +223,9 @@ export default function EntitiesPage() {
             {/* ── Identity controls ── */}
             <div className="card" style={{ marginTop: 12 }}>
               <h4 style={{ marginTop: 0 }}>Identity</h4>
+              {!embeddings.ready && (
+                <p className="cap-note">Changes are saved now, but won’t re-index until semantic search is ready ({embeddings.reason})</p>
+              )}
               {err && <p style={{ color: "var(--danger,#e66)", fontSize: 13 }}>{err}</p>}
 
               <label className="muted" style={{ fontSize: 12 }}>Add an alias (a nickname/variant that links here)</label>

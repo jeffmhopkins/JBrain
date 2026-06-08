@@ -36,12 +36,14 @@ export interface CapStatus {
   providers?: { anthropic: boolean; xai: boolean };   // llm only, informational
 }
 
-// Reads three primitive/stable slices (never returns a fresh object from the store
-// selector, which would break useSyncExternalStore) and assembles the status here.
+// Selects primitive slices (reachability, the cap's state string) so the common path
+// doesn't re-render unrelated consumers. The `providers` slice returns the server's
+// object, which is rebuilt each poll — fine (no infinite loop: getSnapshot returns the
+// cached `current`, stable within a render), it just re-renders llm consumers per poll.
 export function useCapability(id: CapId): CapStatus {
   const reachability = useHealth((m) => m.reachability);
   const state = useHealth((m) => (m.caps?.[id]?.state ?? "unknown")) as CapState;
-  const providers = useHealth((m) => (id === "llm" ? m.caps?.llm.providers : undefined));
+  const providers = useHealth((m) => (id === "llm" ? m.caps?.llm?.providers : undefined));
 
   // Everything runs on the server, so if the server isn't reachable, nothing is usable —
   // disable-and-explain rather than letting the action fail.

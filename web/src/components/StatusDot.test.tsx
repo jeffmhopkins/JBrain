@@ -6,9 +6,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 vi.mock("./App", () => ({ useAuth: () => ({ brainName: "Test Brain" }) }));
 
-import StatusDot from "./components/StatusDot";
-import { __reset, applyPoll, ingestVerify, setOnline } from "./health";
-import { setAccessKey, clearAccessKey } from "./api";
+import StatusDot from "./StatusDot";
+import { __reset, applyPoll, ingestVerify, setOnline } from "../health";
+import { setAccessKey, clearAccessKey } from "../api";
 
 function fullCaps(over: Record<string, any> = {}): any {
   return { capabilities: {

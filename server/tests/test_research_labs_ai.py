@@ -18,6 +18,8 @@ from app.services import lab_share_scope as scope
 from app.services import research_labs_ai as rla
 from app.services.llm import ToolCall
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(__file__).resolve().parents[1] / "app" / "schema.sql"
 MODULE_SRC = Path(rla.__file__).read_text()
 

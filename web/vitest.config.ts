@@ -14,5 +14,23 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    restoreMocks: true, // auto vi.restoreAllMocks() between tests
+    unstubGlobals: true, // auto vi.unstubAllGlobals() between tests
+    unstubEnvs: true,
+    coverage: {
+      provider: "v8", // @vitest/coverage-v8 (pinned to the vitest version)
+      reporter: ["text-summary", "html", "lcov"],
+      reportsDirectory: "./coverage",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.{test,spec}.{ts,tsx}",
+        "src/test/**",
+        "src/main.tsx", // bootstrap; exercised by e2e, not units
+        "src/**/*.d.ts",
+      ],
+      // FLOOR, not a target — pinned just under today's ~7.8% so CI is green on day
+      // one and can only ratchet UP. Raise as feature components get covered.
+      thresholds: { lines: 74, functions: 74, statements: 74, branches: 74 },
+    },
   },
 });

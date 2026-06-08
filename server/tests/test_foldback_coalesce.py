@@ -14,6 +14,8 @@ import pytest
 
 pytest.importorskip("sqlite_vec")
 
+pytestmark = pytest.mark.concurrency
+
 TEST_KEY = "test-access-key-1234567890"
 
 

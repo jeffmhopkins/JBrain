@@ -12,6 +12,8 @@ from datetime import datetime
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 TEST_KEY = "k" * 40
 
 

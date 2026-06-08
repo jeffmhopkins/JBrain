@@ -1,0 +1,114 @@
+name: Tests
+
+# The cross-domain test gate (see docs/testing-plan/PLAN.md §5). Two parallel,
+# per-domain jobs — each enforces its OWN coverage floor (backend fail_under in
+# server/pyproject.toml; frontend thresholds in web/vitest.config.ts). There is no
+# combined gate: a backend-dominated combined number would be meaningless across the
+# 15.6k/9k statement split. Locally the same checks run via `./jt cov`.
+#
+# Existing pages.yml / android-apk.yml workflows are untouched.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  back:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            server/requirements.txt
+            server/requirements-dev.txt
+      - name: Install backend deps
+        # fastapi/pydantic MUST be installed before pytest collects, or import fails.
+        # pywebpush (-> py-vapid/http-ece) is split out and best-effort: it doesn't always
+        # build, the push module is import-guarded, and it must never fail the gate.
+        run: |
+          python -m pip install -U pip
+          grep -v '^pywebpush' requirements.txt > /tmp/reqs-core.txt
+          pip install -r /tmp/reqs-core.txt -r requirements-dev.txt
+          pip install pywebpush==2.0.0 || echo "::warning::pywebpush unavailable; push tests will skip"
+      - name: Test + coverage gate
+        # Full suite (incl. the `concurrency` tier) so coverage is the true number;
+        # fail_under=75 lives in pyproject.toml. Locally `./jt` default skips the
+        # concurrency tier for a faster inner loop; CI keeps those regression tests in.
+        run: python -m pytest --cov=app --cov-report=term-missing
+
+  front:
+    name: frontend (vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Typecheck (part of the gate)
+        run: npx tsc -b
+      - name: Test + coverage gate
+        # thresholds (floor 7) live in vitest.config.ts.
+        run: npm run test:cov
+
+  e2e:
+    name: system / e2e (playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Install API deps (pywebpush best-effort) + build the PWA
+        run: |
+          python -m pip install -U pip
+          grep -v '^pywebpush' server/requirements.txt > /tmp/reqs-core.txt
+          pip install -r /tmp/reqs-core.txt -r server/requirements-dev.txt
+          pip install pywebpush==2.0.0 || echo "::warning::pywebpush unavailable"
+          npm --prefix web ci && npm --prefix web run build
+      - name: Install Playwright (chromium + system deps)
+        run: cd e2e && npm ci && npx playwright install --with-deps chromium
+      - name: Run system tests (real PWA + API, LLM faked at the boundary)
+        run: cd e2e && CI=1 npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with: { name: playwright-report, path: e2e/playwright-report, retention-days: 7 }
+
+  android:
+    name: android (jvm unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17", cache: gradle }
+      - uses: android-actions/setup-android@v3
+      - name: Robolectric JVM unit tests (no emulator)
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with: { name: android-test-report, path: android/app/build/reports/tests, retention-days: 7 }

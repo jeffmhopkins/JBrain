@@ -1,5 +1,8 @@
 """Unit tests for the static nickname lexicon (no DB / no app fixtures needed)."""
 from app.services import nickname_lexicon as nl
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_canon_token_is_bidirectional():

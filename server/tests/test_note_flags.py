@@ -30,6 +30,8 @@ pytest.importorskip("fastapi")
 
 import app.db as db
 
+pytestmark = pytest.mark.integration
+
 SCHEMA = Path(db.__file__).parent / "schema.sql"
 TEST_KEY = "test-access-key-1234567890"
 

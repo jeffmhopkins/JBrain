@@ -3,6 +3,9 @@ boxes (no PDF, no PHI) that reproduce the real-world quirks: values mapped to da
 x, a wrapped high/unit line, a missing cell, and one analyte printed as two range-variant
 sub-rows that must merge by analyte_key."""
 from app.services import lab_parse
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def W(text, x, top):

@@ -5,6 +5,9 @@ from app.services.wikilinks import (
     extract_links,
     wiki_label,
 )
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_extracts_simple_links():

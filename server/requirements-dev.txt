@@ -3,3 +3,5 @@
 # These are intentionally NOT in the runtime Docker image.
 pytest==8.3.4
 httpx==0.28.1
+pytest-cov==6.0.0        # coverage measurement + the fail_under floor (pyproject.toml)
+pytest-timeout==2.3.1    # per-test timeout so a wedged async/polling test can't hang CI

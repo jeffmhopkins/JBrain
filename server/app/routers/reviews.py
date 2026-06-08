@@ -162,11 +162,26 @@ def _dismiss(conn, review_id: int) -> None:
 
 @router.post("/{review_id}/approve")
 def approve_merge(review_id: int):
-    """Approve a PENDING 'same person?' card: record a durable MERGE (survives every rebuild),
-    rebuild the index, fold the articles (with a redirect) when both sides have one, refresh
-    the AKA lines, and stash the decision id so it can be undone. The entity merge always
-    applies; if the (LLM) article fold fails the card is LEFT PENDING with the reason so the
-    owner can retry, rather than reporting a false success."""
+    """Approve a pending entity-merge card, recording a durable merge decision.
+
+    Records a durable MERGE (survives every rebuild), rebuilds the index, folds the
+    articles (with a redirect) when both sides have one, refreshes AKA lines, and stashes
+    the decision id so it can be undone. The entity merge always applies; if the article
+    fold fails the card is left PENDING with the reason so the owner can retry rather than
+    reporting a false success.
+
+    Args:
+        review_id: ID of the pending entity_merge review item.
+
+    Returns:
+        Dict with 'ok', 'decision_id', and optionally 'merged_entities'/'reason' on
+        partial failure.
+
+    Raises:
+        HTTPException: 400 if the payload is missing source/into fields.
+        HTTPException: 404 if the review item is not found.
+        HTTPException: 409 if the item is not in 'pending' status.
+    """
     import json
     from ..services import entity_decisions, entity_index, wiki_build
     conn = get_conn()
@@ -202,8 +217,21 @@ def approve_merge(review_id: int):
 
 @router.post("/{review_id}/reject")
 def reject_merge(review_id: int):
-    """Reject a PENDING 'same person?' card: record a durable SPLIT so the pair is never
-    re-proposed (and the heuristic won't auto-merge them), then dismiss the card."""
+    """Reject a pending entity-merge card, recording a durable split decision.
+
+    Records a durable SPLIT so the pair is never re-proposed (the heuristic won't
+    auto-merge them), then dismisses the card.
+
+    Args:
+        review_id: ID of the pending entity_merge review item.
+
+    Returns:
+        Dict with key 'ok' set to True.
+
+    Raises:
+        HTTPException: 404 if the review item is not found.
+        HTTPException: 409 if the item is not in 'pending' status.
+    """
     from ..services import entity_decisions, entity_index
     conn = get_conn()
     _, p = _load_entity_merge(conn, review_id, require_status="pending")
@@ -221,9 +249,22 @@ def reject_merge(review_id: int):
 
 @router.post("/{review_id}/undo")
 def undo_merge(review_id: int):
-    """Undo an APPROVED merge: delete the recorded decision and rebuild, so the entities split
-    back apart. Requires a dismissed card that still carries its decision id; clears the id so
-    a second undo can't act on a stale decision."""
+    """Undo an approved entity merge by deleting the recorded decision and rebuilding.
+
+    Requires a dismissed card that still carries its decision id. Clears the stored id so
+    a second undo cannot act on a stale decision.
+
+    Args:
+        review_id: ID of the dismissed entity_merge review item to undo.
+
+    Returns:
+        Dict with key 'ok' set to True.
+
+    Raises:
+        HTTPException: 400 if the card has no stored decision id to undo.
+        HTTPException: 404 if the review item is not found.
+        HTTPException: 409 if the item is not in 'dismissed' status.
+    """
     import json
     from ..services import entity_decisions, entity_index
     conn = get_conn()

@@ -36,12 +36,31 @@ _LIVE_NOTE = "(note_id IS NULL OR note_id NOT IN (SELECT id FROM notes WHERE del
 
 
 def _unit_norm(unit: str | None) -> str:
+    """Normalize a unit string for alias-based co-plotting.
+
+    Args:
+        unit: Raw unit string, or None.
+
+    Returns:
+        Canonical lower-case unit token with whitespace removed; aliased forms are
+        collapsed to a single token so cosmetically different units co-plot.
+    """
     s = re.sub(r"\s+", "", (unit or "").lower())
     return _UNIT_ALIASES.get(s, s)
 
 
 def _status(flag: str | None, vnum, low, high) -> str:
-    """Point status with the lab's flag authoritative: high|low|normal|abnormal|unknown."""
+    """Determine a point's status with the lab's own flag taking priority.
+
+    Args:
+        flag: Lab-reported flag string (e.g. 'H', 'L', 'N'), or None.
+        vnum: Numeric result value, or None for censored values.
+        low: Reference range lower bound, or None.
+        high: Reference range upper bound, or None.
+
+    Returns:
+        One of 'high', 'low', 'normal', 'abnormal', or 'unknown'.
+    """
     f = (flag or "").strip().upper()
     if f in _FLAG_HIGH:
         return "high"
@@ -63,7 +82,16 @@ def _status(flag: str | None, vnum, low, high) -> str:
 
 
 def _modal(conn, analyte: str, col: str) -> str | None:
-    """The most common non-null value of a column for an analyte (col is a fixed identifier)."""
+    """Return the most common non-null value of a column for an analyte.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug key.
+        col: Column name (a fixed, trusted identifier — never user-supplied).
+
+    Returns:
+        Modal value as a string, or None if no rows exist.
+    """
     r = conn.execute(
         f"SELECT {col} AS v, COUNT(*) AS c FROM lab_results "
         f"WHERE analyte_key = ? AND {col} IS NOT NULL GROUP BY {col} ORDER BY c DESC, {col} LIMIT 1",
@@ -72,8 +100,18 @@ def _modal(conn, analyte: str, col: str) -> str | None:
 
 
 def list_analytes(conn) -> list[dict]:
-    """One entry per analyte that has dated results: display name (modal test_name), unit,
-    point count, date span, and the latest value + its status — for the picker."""
+    """Return one entry per analyte that has dated results.
+
+    Each entry contains the display name (modal test_name), unit, point count, date span,
+    and the latest value with its status — for the analyte picker.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        List of analyte dicts sorted by test_name, each with keys: analyte, test_name,
+        unit, n, first_at, last_at, last_value, last_status.
+    """
     # COUNT DISTINCT (date,value): identical points from an overlapping re-export must not
     # inflate the picker count — match the read-time dedup series()/stat() already apply (F2).
     rows = conn.execute(
@@ -102,8 +140,17 @@ def list_analytes(conn) -> list[dict]:
 
 
 def _segments(points: list[dict]) -> list[dict]:
-    """Stepped reference band: a segment per contiguous run of points sharing (low, high).
-    A point with no range (both None) breaks the band — never borrow a neighbour's range."""
+    """Build a stepped reference band as a list of contiguous segments.
+
+    A segment is created per contiguous run of points sharing the same (ref_low, ref_high).
+    A point with no range (both None) breaks the band — never borrow a neighbour's range.
+
+    Args:
+        points: Ordered list of series point dicts.
+
+    Returns:
+        List of segment dicts with keys: from, to, low, high.
+    """
     segs: list[dict] = []
     cur: dict | None = None
     for p in points:
@@ -120,6 +167,17 @@ def _segments(points: list[dict]) -> list[dict]:
 
 
 def _encounters_in(conn, dfrom: str | None, dto: str | None) -> list[dict]:
+    """Return encounters whose date range overlaps [dfrom, dto].
+
+    Args:
+        conn: Database connection.
+        dfrom: Start of the window (ISO date), or None.
+        dto: End of the window (ISO date), or None.
+
+    Returns:
+        List of encounter dicts with keys: id, kind, label, from, to.
+        Empty if either bound is None.
+    """
     if not dfrom or not dto:
         return []
     rows = conn.execute(
@@ -133,10 +191,22 @@ def _encounters_in(conn, dfrom: str | None, dto: str | None) -> list[dict]:
 
 
 def abnormal_analytes(conn, dfrom: str | None = None, dto: str | None = None, limit: int = 8) -> list[dict]:
-    """Analytes with >=1 non-censored result whose status is high/low/abnormal in the window,
-    ranked most-recently-abnormal first (then by count). Reads lab_results directly and uses
-    the SAME _status the chart colours by — so 'what was abnormal' and the chart always agree.
-    A censored row counts only if the lab itself flagged it (else it's unknown, never swept in)."""
+    """Return analytes with at least one high/low/abnormal result in the date window.
+
+    Ranked most-recently-abnormal first, then by count. Reads lab_results directly and uses
+    the same _status the chart colors by — so 'what was abnormal' and the chart always agree.
+    A censored row counts only if the lab itself flagged it (else it's unknown, never swept in).
+
+    Args:
+        conn: Database connection.
+        dfrom: Window start (ISO date), or None for no lower bound.
+        dto: Window end (ISO date), or None for no upper bound.
+        limit: Maximum number of analytes to return (clamped to 1–12).
+
+    Returns:
+        List of analyte summary dicts with keys: analyte, count, last_at, last_status,
+        test_name.
+    """
     where = f"collected_at IS NOT NULL AND {_LIVE_NOTE}"
     params: list = []
     if dfrom:
@@ -167,8 +237,20 @@ def abnormal_analytes(conn, dfrom: str | None = None, dto: str | None = None, li
 
 
 def series(conn, analyte: str, unit: str | None = None) -> dict:
-    """One analyte's full series: points (incl. censored), stepped band segments, the date
-    domain + value range, overlapping encounters, and any other units it was recorded in."""
+    """Return one analyte's full series for chart rendering.
+
+    Includes all points (including censored), stepped reference-band segments, date domain,
+    value range, overlapping encounters, and any other units the analyte was recorded in.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug key.
+        unit: Target unit string to filter by; defaults to the modal unit when None.
+
+    Returns:
+        Dict with keys: analyte, test_name, unit, points, segments, domain, value_range,
+        encounters, other_units.
+    """
     name = _modal(conn, analyte, "test_name") or analyte
     target_unit = unit or _modal(conn, analyte, "unit")
     target_norm = _unit_norm(target_unit)
@@ -215,8 +297,20 @@ def series(conn, analyte: str, unit: str | None = None) -> dict:
 
 
 def series_from_results(results: list[dict], analyte: str, unit: str | None = None) -> dict:
-    """Build the same series payload as series() but from STAGED parser results (no DB) — for
-    previewing a lab import before it's approved. No flag/encounter/note context is available."""
+    """Build the same series payload as series() from staged parser results (no DB).
+
+    Used for previewing a lab import before it's approved. No flag, encounter, or note
+    context is available in this path.
+
+    Args:
+        results: List of raw parser result dicts (from parse_lab_pdf or parse_lab_image).
+        analyte: Analyte slug key to filter.
+        unit: Target unit string; defaults to the modal unit among matching rows when None.
+
+    Returns:
+        Dict with the same shape as series(): analyte, test_name, unit, points, segments,
+        domain, value_range, encounters (always []), other_units.
+    """
     rows = [r for r in results if r.get("analyte_key") == analyte and r.get("collected_at")]
     rows.sort(key=lambda r: (r["collected_at"], r.get("collected_time") or ""))
     import collections
@@ -263,6 +357,15 @@ _OUT = ("high", "low", "abnormal")
 
 
 def _slim(p: dict | None) -> dict | None:
+    """Project a full series point to the flat stat/point_at return schema.
+
+    Args:
+        p: Series point dict, or None.
+
+    Returns:
+        Flat dict with value, value_text, unit, collected_at, collected_time, source,
+        status, ref_low, ref_high, ref_text, flag, note_slug, note_title; or None.
+    """
     if p is None:
         return None
     return {"value": p["v"], "value_text": p["vtext"], "unit": p["unit"], "collected_at": p["t"],
@@ -273,13 +376,38 @@ def _slim(p: dict | None) -> dict | None:
 
 
 def _window(points: list[dict], dfrom: str | None, dto: str | None) -> list[dict]:
+    """Filter a series point list to an inclusive date window.
+
+    Args:
+        points: Ordered list of series point dicts.
+        dfrom: Start of the window (ISO date), or None for no lower bound.
+        dto: End of the window (ISO date), or None for no upper bound.
+
+    Returns:
+        Filtered list of points within [dfrom, dto].
+    """
     return [p for p in points if (not dfrom or p["t"] >= dfrom) and (not dto or p["t"] <= dto)]
 
 
 def stat(conn, analyte: str, unit: str | None = None, dfrom: str | None = None, dto: str | None = None) -> dict:
-    """Scalar summary for ONE analyte over a window: min/max/latest/first/mean/count and the
-    out-of-range count — each extreme is the WHOLE row (value + its date + status), numeric
-    extremes exclude censored values (which are counted separately)."""
+    """Return a scalar summary for one analyte over an optional date window.
+
+    Covers min/max/latest/first/mean/count and the out-of-range count. Each extreme is the
+    whole row (value + its date + status); numeric extremes exclude censored values, which
+    are counted separately.
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug key.
+        unit: Target unit string; defaults to modal unit when None.
+        dfrom: Window start (ISO date), or None.
+        dto: Window end (ISO date), or None.
+
+    Returns:
+        Dict with keys: analyte, test_name, unit, window, count, numeric_count,
+        censored_count, out_of_range_count, min, min_dates, max, max_dates, latest,
+        first, mean, other_units, domain.
+    """
     s = series(conn, analyte, unit)
     pts = _window(s["points"], dfrom, dto)
     numeric = [p for p in pts if p["v"] is not None]
@@ -302,9 +430,24 @@ def stat(conn, analyte: str, unit: str | None = None, dfrom: str | None = None, 
 
 def point_at(conn, analyte: str, which: str, *, unit: str | None = None, threshold: float | None = None,
              direction: str = "above", dfrom: str | None = None, dto: str | None = None) -> dict | None:
-    """A single point selected from the series: latest | first | first_out_of_range |
-    last_out_of_range | first_cross | last_cross (with threshold/direction). Returns the whole
-    row (value + date + status) or None."""
+    """Return a single point selected from an analyte's series.
+
+    Selector options: 'latest', 'first', 'first_out_of_range', 'last_out_of_range',
+    'first_cross', 'last_cross' (cross requires threshold and direction).
+
+    Args:
+        conn: Database connection.
+        analyte: Analyte slug key.
+        which: Point selector; one of the options listed above.
+        unit: Target unit string; defaults to modal unit when None.
+        threshold: Threshold value for cross selectors.
+        direction: 'above' or 'below' for cross selectors.
+        dfrom: Window start (ISO date), or None.
+        dto: Window end (ISO date), or None.
+
+    Returns:
+        Slim row dict (value + date + status), or None if no matching point exists.
+    """
     pts = _window(series(conn, analyte, unit)["points"], dfrom, dto)
     if not pts:
         return None

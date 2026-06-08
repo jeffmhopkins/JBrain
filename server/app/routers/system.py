@@ -378,7 +378,11 @@ def export_original_notes():
 
 @router.get("/backup")
 def backup():
-    """Download a consistent snapshot of the entire database (one .db file)."""
+    """Download a consistent snapshot of the entire database as a single .db file.
+
+    Returns:
+        Binary .db file attachment with a timestamped filename.
+    """
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     db_mod.backup_to_file(tmp.name)
@@ -391,7 +395,18 @@ def backup():
 
 @router.post("/restore")
 async def restore(file: UploadFile = File(...)):
-    """Replace the entire database from an uploaded JBrain backup (.db)."""
+    """Replace the entire database from an uploaded JBrain backup file.
+
+    Args:
+        file: A SQLite .db file previously produced by the /backup endpoint.
+
+    Returns:
+        JSON ``{"ok": true, "message": "Database restored."}``.
+
+    Raises:
+        HTTPException: 400 if the file is not a valid SQLite database or
+            the restore fails validation.
+    """
     raw = await file.read()
     if raw[:16] != b"SQLite format 3\x00":
         raise HTTPException(status_code=400, detail="Not a SQLite database file.")
@@ -420,6 +435,8 @@ from pydantic import BaseModel as _BaseModel   # noqa: E402
 
 
 class MediaSettingsIn(_BaseModel):
+    """Input schema for updating media/transcription settings."""
+
     audio_model: str | None = None
     audio_compute_type: str | None = None
     video_frame_interval: str | None = None
@@ -427,6 +444,12 @@ class MediaSettingsIn(_BaseModel):
 
 
 def _media_settings() -> dict:
+    """Collect current media/transcription settings plus allowed option lists.
+
+    Returns:
+        Dict with ``audio_model``, ``audio_compute_type``, ``video_frame_interval``,
+        ``video_frame_max``, ``audio_model_options``, and ``compute_type_options``.
+    """
     from ..services import audio_transcription as at
     return {
         "audio_model": at.audio_model(),
@@ -443,11 +466,18 @@ def _media_settings() -> dict:
 
 
 class AutoAnalyzeIn(_BaseModel):
+    """Input schema for the auto-analyze toggle."""
+
     enabled: bool
 
 
 @router.get("/settings/auto-analyze")
 def get_auto_analyze():
+    """Return whether auto-analysis of new notes is currently enabled.
+
+    Returns:
+        JSON ``{"enabled": bool}``.
+    """
     from ..db import get_conn
     from ..services import note_analysis as na
     return {"enabled": na.auto_enabled(get_conn())}
@@ -455,10 +485,21 @@ def get_auto_analyze():
 
 @router.put("/settings/auto-analyze")
 def set_auto_analyze(body: AutoAnalyzeIn):
-    """Toggle "auto-analyze new notes". Flips the analyze-new-note workflow's enabled
-    flag (the feature switch) and sets locked=1 so a repo re-ingest won't reset the
-    owner's choice. Seeds the workflow from repo if it isn't present yet (e.g. before
-    the first boot ingest)."""
+    """Toggle auto-analysis of new notes.
+
+    Flips the analyze-new-note workflow's enabled flag and sets ``locked=1`` so
+    a repo re-ingest cannot reset the owner's choice. Seeds the workflow from the
+    repo if it is not yet present (e.g. before the first boot ingest).
+
+    Args:
+        body: ``{"enabled": bool}`` — the desired state.
+
+    Returns:
+        JSON ``{"enabled": bool}`` reflecting the new state.
+
+    Raises:
+        HTTPException: 500 if the underlying workflow cannot be found or seeded.
+    """
     from ..db import get_conn
     from ..services import note_analysis as na
     from ..services import workflows as wf_svc
@@ -480,11 +521,28 @@ def set_auto_analyze(body: AutoAnalyzeIn):
 
 @router.get("/settings/media")
 def get_media_settings():
+    """Return current media and transcription settings with available option lists.
+
+    Returns:
+        JSON with ``audio_model``, ``audio_compute_type``, ``video_frame_interval``,
+        ``video_frame_max``, ``audio_model_options``, and ``compute_type_options``.
+    """
     return _media_settings()
 
 
 @router.put("/settings/media")
 def set_media_settings(body: MediaSettingsIn):
+    """Persist media and transcription settings overrides to the DB.
+
+    Only fields present in the request body are updated; absent fields are
+    left unchanged.
+
+    Args:
+        body: Partial or complete set of media settings to apply.
+
+    Returns:
+        Updated settings dict (same shape as GET /settings/media).
+    """
     from ..db import get_conn, set_meta
     conn = get_conn()
     if body.audio_model is not None:

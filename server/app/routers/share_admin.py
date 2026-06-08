@@ -385,6 +385,8 @@ def guided_reset_bind(link_id: int):
 
 
 class GuidedDetailsIn(BaseModel):
+    """Request body for editing a guided link's interview brief and expiry."""
+
     goal: str = ""
     intro: str = ""
     sub_prompt: str = ""
@@ -393,9 +395,22 @@ class GuidedDetailsIn(BaseModel):
 
 @router.post("/guided/{link_id}/details")
 def guided_set_details(link_id: int, body: GuidedDetailsIn):
-    """Edit a guided link's interview brief + expiry post-creation (parity with
-    research). The sensitive-content guard runs here too, so an edit can't slip in
-    a request for passwords/IDs."""
+    """Edit a guided link's interview brief and expiry post-creation.
+
+    The sensitive-content guard runs on every edit, so a post-creation change cannot
+    slip in a request for passwords or personal identifiers.
+
+    Args:
+        link_id: Primary key of the guided share link.
+        body: Goal, intro text, interview sub-prompt, and TTL in days.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 400 if the text matches the sensitive-content guard.
+        HTTPException: 422 if sub_prompt is empty.
+    """
     conn = get_conn()
     from ..services import guided as guided_svc
     bad = guided_svc.sensitive_reason(f"{body.goal}\n{body.intro}\n{body.sub_prompt}")
@@ -411,7 +426,14 @@ def guided_set_details(link_id: int, body: GuidedDetailsIn):
 
 @router.post("/guided/{link_id}/activate")
 def guided_activate(link_id: int):
-    """Approval #1: make a draft guided link live for recipients."""
+    """Activate a draft guided link so recipients can start sessions (approval step 1).
+
+    Args:
+        link_id: Primary key of the guided share link.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     from ..services import guided as guided_svc
     guided_svc.activate_spec(conn, link_id)
@@ -421,7 +443,22 @@ def guided_activate(link_id: int):
 
 @router.post("/guided/sessions/{sid}/accept")
 def guided_accept(sid: int):
-    """Approval #2: write the AI-drafted document into the destination note."""
+    """Write the AI-drafted guided document into the destination note (approval step 2).
+
+    Creates the note if it did not exist at link-mint time; appends contributor
+    provenance so the analyzer links the person entity. Retains the session
+    transcript and draft as a record.
+
+    Args:
+        sid: Primary key of the submitted guided session.
+
+    Returns:
+        Dict with 'ok': True and 'note_slug' of the written note.
+
+    Raises:
+        HTTPException: 404 if no submitted session is found.
+        HTTPException: 409 if the destination note no longer exists.
+    """
     conn = get_conn()
     s = conn.execute(
         "SELECT s.*, sl.note_id, gs.goal, gs.dest_title FROM guided_sessions s "
@@ -463,8 +500,20 @@ def guided_accept(sid: int):
 
 @router.post("/guided/sessions/{sid}/reject")
 def guided_reject(sid: int):
-    """Discard a guided response (nothing is written to a note). The conversation + the
-    drafted document are KEPT as a record — use 'Delete conversation' to purge them."""
+    """Discard a guided response without writing anything to a note.
+
+    The conversation and drafted document are kept as a record; use
+    'Delete conversation' to purge them entirely.
+
+    Args:
+        sid: Primary key of the submitted guided session.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if no submitted session is found.
+    """
     conn = get_conn()
     s = conn.execute("SELECT review_item_id FROM guided_sessions s WHERE id=? AND status='submitted'", (sid,)).fetchone()
     if not s:
@@ -480,6 +529,16 @@ def guided_reject(sid: int):
 # --- Research links -----------------------------------------------------------
 
 class LabShareIn(BaseModel):
+    """Request body for minting a lab-share link.
+
+    Attributes:
+        analytes: Allow-listed analyte keys to expose. Must be non-empty.
+        window_from: Earliest date (ISO) of results to include; None = no lower bound.
+        window_to: Latest date (ISO) of results to include; None = no upper bound.
+        bind: Lock the link to the first browser that accepts it (default True for PHI).
+        ttl_days: Days until expiry from now; a finite TTL is always enforced for PHI links.
+    """
+
     analytes: list[str] = []
     window_from: str | None = None
     window_to: str | None = None
@@ -497,8 +556,20 @@ class LabShareIn(BaseModel):
 
 @router.post("/labs")
 def create_lab_share(body: LabShareIn):
-    """Mint + ACTIVATE a lab-share link in one step. The analyte allow-list is the boundary;
-    refusing an empty list is enforced in labshare.activate (default-deny)."""
+    """Mint and activate a lab-share link in one step.
+
+    The analyte allow-list is the PHI boundary: an empty list is refused (default-deny).
+    bind is on and a finite TTL is required — a lab link is never a permanent bearer credential.
+
+    Args:
+        body: Analyte allow-list, date window, intro, label, bind/TTL/rate-limit options.
+
+    Returns:
+        Dict with token, link_id, and full share URL.
+
+    Raises:
+        HTTPException: 400 if analytes is empty or activation fails.
+    """
     conn = get_conn()
     analytes = [a for a in (body.analytes or []) if a]
     if not analytes:
@@ -517,11 +588,20 @@ def create_lab_share(body: LabShareIn):
 
 @router.get("/labs/{link_id}/audit")
 def lab_share_audit(link_id: int):
-    """Owner audit: per recipient session, which analytes were shown and when."""
+    """Return the per-session analyte access audit log for a lab-share link.
+
+    Args:
+        link_id: Primary key of the labs share link.
+
+    Returns:
+        Dict with key 'sessions' listing which analytes were shown and when per session.
+    """
     return {"sessions": labshare_svc.audit(get_conn(), link_id)}
 
 
 class MintResearchIn(BaseModel):
+    """Request body for minting a research (scoped Q&A) link."""
+
     label: str | None = None
     prefixes: list[str] = []
     kinds: list[str] = []
@@ -535,14 +615,37 @@ class MintResearchIn(BaseModel):
 
 
 def _clean_scope(prefixes, kinds) -> dict:
+    """Normalise raw scope inputs into the canonical scope dict stored in research_specs.
+
+    Args:
+        prefixes: Raw folder-prefix strings; blank entries and leading/trailing slashes
+            are stripped and empty results are dropped.
+        kinds: Note kind filter strings; falsy entries are dropped.
+
+    Returns:
+        Dict with 'prefixes' (list[str]) and 'kinds' (list[str]).
+    """
     return {"prefixes": [p.strip().strip("/") for p in (prefixes or []) if p and p.strip().strip("/")],
             "kinds": [k for k in (kinds or []) if k]}
 
 
 @router.post("/research/mint")
 def research_mint(body: MintResearchIn):
-    """Mint a DRAFT research link: an anchor/audit note + the scope spec. Nothing is
-    exposed yet — the owner approves candidate notes, then activates."""
+    """Mint a draft research link with an anchor note and scope spec.
+
+    Nothing is exposed to recipients yet — the owner must approve candidate notes
+    and activate the link separately.
+
+    Args:
+        body: Label, folder prefixes, note kinds, TTL, bind/single-use flags,
+            persona voice, intro, and rate-limit caps.
+
+    Returns:
+        Dict with link_id, token, share URL, and initial candidate note list.
+
+    Raises:
+        HTTPException: 400 if no folder prefixes are provided.
+    """
     conn = get_conn()
     scope = _clean_scope(body.prefixes, body.kinds)
     if not scope["prefixes"]:
@@ -563,6 +666,18 @@ def research_mint(body: MintResearchIn):
 
 @router.get("/research/{link_id}")
 def research_detail(link_id: int):
+    """Return the full spec, sessions, candidate/approved note lists, and labs scope for a research link.
+
+    Args:
+        link_id: Primary key of the research share link.
+
+    Returns:
+        Dict with spec, expires_at, bound flag, scope, candidates, approved, labs
+        metadata (analyte keys + window, never values), and session summaries.
+
+    Raises:
+        HTTPException: 404 if the link or spec does not exist.
+    """
     conn = get_conn()
     spec = research_svc.get_spec(conn, link_id)
     if not spec:
@@ -593,8 +708,20 @@ def research_detail(link_id: int):
 
 @router.get("/research/{link_id}/sessions/{sid}")
 def research_session_transcript(link_id: int, sid: int):
-    """Owner-only: read a recipient's Q&A transcript for this link (parity with
-    guided). It's the owner's own notes being queried, so the exchange is visible."""
+    """Fetch a recipient's Q&A transcript for a research session (owner view).
+
+    The owner's own notes are being queried, so the exchange is visible in full.
+
+    Args:
+        link_id: Primary key of the research share link.
+        sid: Primary key of the research session.
+
+    Returns:
+        Dict with name and transcript (parsed list).
+
+    Raises:
+        HTTPException: 404 if no session with that id exists under this link.
+    """
     conn = get_conn()
     row = conn.execute("SELECT name, transcript_json FROM research_sessions WHERE id=? AND share_link_id=?",
                        (sid, link_id)).fetchone()
@@ -605,7 +732,18 @@ def research_session_transcript(link_id: int, sid: int):
 
 @router.delete("/research/{link_id}/sessions/{sid}")
 def research_delete_session(link_id: int, sid: int):
-    """Permanently delete one research Q&A conversation (owner choice)."""
+    """Permanently delete one research Q&A conversation.
+
+    Args:
+        link_id: Primary key of the research share link.
+        sid: Primary key of the session to purge.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the session does not exist under this link.
+    """
     conn = get_conn()
     if conn.execute("SELECT 1 FROM research_sessions WHERE id=? AND share_link_id=?", (sid, link_id)).fetchone() is None:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -615,12 +753,23 @@ def research_delete_session(link_id: int, sid: int):
 
 
 class ResearchScopeIn(BaseModel):
+    """Request body for updating the folder-prefix and kind scope on a research link."""
+
     prefixes: list[str] = []
     kinds: list[str] = []
 
 
 @router.post("/research/{link_id}/scope")
 def research_set_scope(link_id: int, body: ResearchScopeIn):
+    """Update the folder-prefix and note-kind scope for a research link.
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: New prefixes and kinds for the scope filter.
+
+    Returns:
+        Dict with 'ok': True and the updated candidate note list.
+    """
     conn = get_conn()
     research_svc.set_scope(conn, link_id, _clean_scope(body.prefixes, body.kinds))
     conn.commit()
@@ -628,6 +777,8 @@ def research_set_scope(link_id: int, body: ResearchScopeIn):
 
 
 class ResearchLabsIn(BaseModel):
+    """Request body for attaching or adjusting a labs allow-list on a research link."""
+
     analytes: list[str] = []
     window_from: str | None = None
     window_to: str | None = None
@@ -635,9 +786,22 @@ class ResearchLabsIn(BaseModel):
 
 @router.post("/research/{link_id}/labs")
 def research_set_labs(link_id: int, body: ResearchLabsIn):
-    """Attach/adjust the scoped LABS allow-list + date window on an assisted (research) link.
-    An empty list detaches labs. Default-deny: nothing is exposed until the link is activated,
-    and the same research_specs.status gate governs it. Narrowing takes effect on the next read."""
+    """Attach or adjust the scoped labs allow-list and date window on a research link.
+
+    An empty analytes list detaches labs entirely. Default-deny: nothing is exposed until
+    the link is activated, and research_specs.status governs access. Narrowing takes effect
+    on the next recipient read.
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: Analyte allow-list and optional date window.
+
+    Returns:
+        Dict with 'ok': True and the normalised list of allowed analyte keys.
+
+    Raises:
+        HTTPException: 404 if the research spec does not exist.
+    """
     conn = get_conn()
     if research_svc.get_spec(conn, link_id) is None:
         raise HTTPException(status_code=404, detail="Not found.")
@@ -648,6 +812,8 @@ def research_set_labs(link_id: int, body: ResearchLabsIn):
 
 
 class ResearchDetailsIn(BaseModel):
+    """Request body for updating a research link's persona, topics, and rate-limit settings."""
+
     persona_voice: str = ""
     topics: str = ""
     intro: str = ""
@@ -660,6 +826,17 @@ class ResearchDetailsIn(BaseModel):
 
 @router.post("/research/{link_id}/details")
 def research_set_details(link_id: int, body: ResearchDetailsIn):
+    """Update the persona voice, topics, intro, and rate-limit settings for a research link.
+
+    Resets the expiry clock on each save (ttl_days=0 clears expiry).
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: Persona voice, topics, intro, bind/single-use flags, TTL, and reply caps.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, topics=body.topics,
                              intro=body.intro, bind=body.bind, single_use=body.single_use,
@@ -671,9 +848,18 @@ def research_set_details(link_id: int, body: ResearchDetailsIn):
 
 @router.post("/research/{link_id}/reset-bind")
 def research_reset_bind(link_id: int):
-    """Forget the device a lock-to-browser research link bound to, so it can be
-    re-opened on a different device. Research binds via the first ACTIVE session's
-    secret (not share_links), so abandon active sessions — mirrors guided reset-bind."""
+    """Forget the device a lock-to-browser research link bound to.
+
+    Research binds via the first active session's secret rather than share_links, so
+    this abandons active sessions, allowing the link to be claimed on a different device.
+    Mirrors the behaviour of guided reset-bind.
+
+    Args:
+        link_id: Primary key of the research share link.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     conn.execute("UPDATE research_sessions SET status='ended' "
                  "WHERE share_link_id=? AND status='active'", (link_id,))
@@ -682,11 +868,22 @@ def research_reset_bind(link_id: int):
 
 
 class IdsIn(BaseModel):
+    """Request body carrying a list of note ids for approve/dismiss/remove operations."""
+
     ids: list[int] = []
 
 
 @router.post("/research/{link_id}/approve")
 def research_approve(link_id: int, body: IdsIn):
+    """Add note ids to the approved allowlist for a research link.
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: List of note ids to approve.
+
+    Returns:
+        Dict with 'ok': True, updated candidates list, and updated approved list.
+    """
     conn = get_conn()
     research_svc.approve(conn, link_id, body.ids)
     conn.commit()
@@ -696,6 +893,15 @@ def research_approve(link_id: int, body: IdsIn):
 
 @router.post("/research/{link_id}/dismiss")
 def research_dismiss(link_id: int, body: IdsIn):
+    """Dismiss candidate note ids so they no longer appear in the candidate list.
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: List of note ids to dismiss.
+
+    Returns:
+        Dict with 'ok': True and the updated candidates list.
+    """
     conn = get_conn()
     research_svc.dismiss(conn, link_id, body.ids)
     conn.commit()
@@ -704,6 +910,15 @@ def research_dismiss(link_id: int, body: IdsIn):
 
 @router.post("/research/{link_id}/remove")
 def research_remove(link_id: int, body: IdsIn):
+    """Remove note ids from the approved allowlist for a research link.
+
+    Args:
+        link_id: Primary key of the research share link.
+        body: List of note ids to remove from the approved set.
+
+    Returns:
+        Dict with 'ok': True and the updated approved list.
+    """
     conn = get_conn()
     research_svc.remove_approved(conn, link_id, body.ids)
     conn.commit()

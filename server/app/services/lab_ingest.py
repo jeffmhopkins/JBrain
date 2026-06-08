@@ -31,25 +31,51 @@ _INSERT = (
 
 
 def _identity_key(r: dict, source_sha: str) -> str:
-    """Stable per-result dedup hash (analyte|date|value|unit|source-sha)."""
+    """Return a stable per-result dedup hash (analyte|date|value|unit|source-sha).
+
+    Args:
+        r: Result row dict with at least analyte_key, collected_at, value_text, unit.
+        source_sha: SHA-256 hex digest of the source attachment.
+
+    Returns:
+        SHA-256 hex string uniquely identifying this result within the source file.
+    """
     raw = "|".join([r.get("analyte_key") or "", r.get("collected_at") or "",
                     r.get("value_text") or "", r.get("unit") or "", source_sha])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _is_pdf(att) -> bool:
+    """Return True if the attachment record looks like a PDF by MIME type or filename.
+
+    Args:
+        att: Attachment row with 'mime' and 'filename' fields.
+
+    Returns:
+        True if the attachment appears to be a PDF.
+    """
     return "pdf" in (att["mime"] or "").lower() or (att["filename"] or "").lower().endswith(".pdf")
 
 
 def _identity_state(conn, identity: dict) -> str:
-    """Three-state patient check against the configured owner (P1):
-      * 'mismatch'   — owner DOB set AND the document's DOB differs → wrong patient, warn loudly.
-      * 'unverified' — owner DOB set but the document has no comparable DOB → cannot confirm, say
-                       so (never let 'not contradicted' read as 'verified same patient').
-      * ''           — no owner configured (feature off), or owner set and DOBs agree.
+    """Return a three-state patient check against the configured owner (P1).
+
+    - 'mismatch': owner DOB set AND the document's DOB differs — wrong patient, warn loudly.
+    - 'unverified': owner DOB set but the document has no comparable DOB — cannot confirm;
+      never let 'not contradicted' read as 'verified same patient'.
+    - '': no owner configured (feature off), or owner set and DOBs agree.
+
     DOB is the only field compared (names like 'DOE,JANE' vs 'Jane Doe' are too fuzzy
-    to assert on); both sides are normalized to ISO so mere format drift never fabricates a
-    mismatch."""
+    to assert on); both sides are normalized to ISO so mere format drift never fabricates
+    a mismatch.
+
+    Args:
+        conn: Database connection (used to read the medical_owner meta key).
+        identity: Identity dict extracted from the document (may have a 'dob' key).
+
+    Returns:
+        One of 'mismatch', 'unverified', or '' (empty string).
+    """
     try:
         from ..db import get_meta
         owner = json.loads(get_meta("medical_owner") or "{}")
@@ -65,6 +91,14 @@ def _identity_state(conn, identity: dict) -> str:
 
 
 def _is_image(att) -> bool:
+    """Return True if the attachment is an image by MIME type or filename extension.
+
+    Args:
+        att: Attachment row with 'mime' and 'filename' fields.
+
+    Returns:
+        True if the attachment is a recognized image format.
+    """
     return (att["mime"] or "").lower().startswith("image/") or bool(
         re.search(r"\.(png|jpe?g|gif|webp|heic|tiff?|bmp)$", (att["filename"] or "").lower()))
 

@@ -25,12 +25,24 @@ _PUB_META = "vapid_public_key"     # base64url uncompressed P-256 point (applica
 
 
 def _b64url(b: bytes) -> str:
+    """Encode bytes as unpadded base64url.
+
+    Args:
+        b: Bytes to encode.
+
+    Returns:
+        URL-safe base64 string without padding characters.
+    """
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
 def _generate_keypair() -> tuple[str, str]:
-    """Return (private scalar b64url, public applicationServerKey b64url) — the
-    standard Web Push VAPID key formats that pywebpush/py_vapid consume."""
+    """Generate a new VAPID P-256 keypair in Web Push wire format.
+
+    Returns:
+        Tuple of (private scalar b64url, public applicationServerKey b64url) in the
+        standard Web Push VAPID formats consumed by pywebpush/py_vapid.
+    """
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -43,9 +55,11 @@ def _generate_keypair() -> tuple[str, str]:
 
 
 def ensure_vapid() -> None:
-    """Seed the VAPID keypair on boot: env override is authoritative; else reuse a
-    valid DB-stored pair; else generate one. Regenerates an old PEM-format key from
-    a pre-fix build (pywebpush can't consume it). Idempotent."""
+    """Seed the VAPID keypair on first boot, idempotent.
+
+    Priority: env override > valid DB-stored pair > generate new pair. Regenerates
+    an old PEM-format key from a pre-fix build (pywebpush cannot consume it).
+    """
     conn = get_conn()
     s = get_settings()
     if s.vapid_private_key.strip() and s.vapid_public_key.strip():
@@ -65,12 +79,26 @@ def ensure_vapid() -> None:
 
 
 def public_key() -> str:
+    """Return the stored VAPID public key (applicationServerKey), or '' if absent.
+
+    Returns:
+        Base64url-encoded uncompressed P-256 public key, or ''.
+    """
     return get_meta(_PUB_META) or ""
 
 
 # --- Subscriptions ----------------------------------------------------------
 
 def upsert_subscription(conn, endpoint: str, p256dh: str, auth: str, ua: str | None) -> None:
+    """Insert or update a push subscription by endpoint.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        endpoint: Push endpoint URL, used as the unique key.
+        p256dh: Client public key (ECDH P-256, base64url).
+        auth: Client auth secret (base64url).
+        ua: User-agent string for display, or None.
+    """
     conn.execute(
         "INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth, "

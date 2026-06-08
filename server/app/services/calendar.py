@@ -745,8 +745,19 @@ def _parse_obj(text: str) -> dict:
 
 
 def classify_dates(conn, note: dict) -> list[dict]:
-    """LLM-classify one note's dated commitments into event dicts. No-op (returns [])
-    without an LLM key. The LLM-touching seam — stubbed in tests."""
+    """LLM-classify one note's dated commitments into event dicts.
+
+    No-op (returns []) without an LLM key. Gated on note_analysis detected dates: if
+    no dates were found, returns [] with no LLM call. This is the LLM-touching seam —
+    stubbed in tests.
+
+    Args:
+        conn: SQLite connection.
+        note: Note dict with at least ``id``, ``title``, and ``content_md`` keys.
+
+    Returns:
+        List of raw event dicts extracted by the LLM, or an empty list.
+    """
     if not llm.has_credentials():
         return []
     body = (note.get("content_md") or "")[:6000]
@@ -771,9 +782,18 @@ def classify_dates(conn, note: dict) -> list[dict]:
 
 
 def _parse_cursor(since: str) -> tuple[str, int]:
-    """A watermark is a composite "<updated_at>|<id>" cursor so notes that share an
-    updated_at are never starved by batch_limit (a bare timestamp + strict `>` would
-    drop the ones past the cap). Legacy/empty values parse to the very beginning."""
+    """Parse a composite ``updated_at|id`` watermark cursor.
+
+    The composite form ensures notes sharing the same ``updated_at`` are never
+    starved by a batch limit (a bare timestamp with strict ``>`` would drop entries
+    beyond the cap). Legacy or empty values parse to the very beginning of time.
+
+    Args:
+        since: Watermark string, either ``"<updated_at>|<id>"`` or a bare timestamp.
+
+    Returns:
+        Tuple of (timestamp_string, last_id).
+    """
     s = since or ""
     if "|" in s:
         ts, _, rid = s.rpartition("|")
@@ -785,8 +805,17 @@ def _parse_cursor(since: str) -> tuple[str, int]:
 
 
 def cursor_for(rows: list[dict]) -> str:
-    """The composite watermark to store after processing `rows` (ordered by
-    (updated_at, id)): the last row's cursor. '' if nothing was processed."""
+    """Return the composite watermark to store after processing ``rows``.
+
+    Rows must be ordered by ``(updated_at, id)``. Returns the last row's cursor
+    string, or an empty string if no rows were processed.
+
+    Args:
+        rows: List of note dicts ordered by (updated_at, id).
+
+    Returns:
+        Cursor string ``"<updated_at>|<id>"``, or ``''`` when rows is empty.
+    """
     if not rows:
         return ""
     last = rows[-1]
@@ -794,13 +823,23 @@ def cursor_for(rows: list[dict]) -> str:
 
 
 def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
-    """Entry/daily notes changed since the watermark that need a calendar pass — those
-    that have a detected date, OR already have calendar rows (so a note whose dates were
-    all removed is revisited and its orphaned rows swept), OR carry a supersession marker
-    (so a pure-cancellation note with no date of its own still gets consolidated).
-    classify_dates is gated on detected dates, so dateless notes cost no LLM call.
-    Paged by the composite (updated_at, id) cursor; carries content_md for the
-    supersession scan."""
+    """Return entry/daily notes changed since the watermark that need a calendar pass.
+
+    Includes notes that have a detected date, already have calendar rows (so a note
+    whose dates were removed is revisited and its orphaned rows swept), or carry a
+    supersession marker (so a pure-cancellation note with no date still gets
+    consolidated). ``classify_dates`` is gated on detected dates so dateless notes
+    incur no LLM call. Paged by the composite (updated_at, id) cursor; includes
+    ``content_md`` for the supersession scan.
+
+    Args:
+        conn: SQLite connection.
+        since: Composite watermark cursor from the last processed batch.
+        limit: Maximum number of notes to return (clamped to 1–1000).
+
+    Returns:
+        List of note dicts ordered by (updated_at, id).
+    """
     ts, rid = _parse_cursor(since)
     rows = conn.execute(
         "SELECT n.id, n.title, n.content_md, n.updated_at "
@@ -827,10 +866,20 @@ _WEEKDAY_RR = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
 
 def infer_rrule(dates: list[str]) -> str | None:
-    """Infer an iCal RRULE from a cluster's DISTINCT occurrence days. Only REGULAR
-    cadences promote (so irregular chatter doesn't become a fake recurring event):
-    WEEKLY (all gaps 6–8 days; BYDAY = the dominant weekday), DAILY (all gaps 1),
-    MONTHLY (all gaps 27–31). Needs >= 3 distinct days. Returns None when irregular."""
+    """Infer an iCal RRULE from a cluster of distinct occurrence dates.
+
+    Only regular cadences promote so irregular chatter doesn't become a fake recurring
+    event. Recognizes DAILY (all gaps 1), WEEKLY (gaps 6–8, BYDAY = dominant weekday),
+    and MONTHLY (gaps 27–31). Requires at least 3 distinct days. Refuses when any
+    input date is malformed to avoid computing the cadence from a partial set.
+
+    Args:
+        dates: List of ISO date strings (YYYY-MM-DD) for the cluster's occurrences.
+
+    Returns:
+        iCal RRULE string (e.g. ``'FREQ=WEEKLY;BYDAY=TH'``), or None when the
+        cadence is irregular or the input is insufficient.
+    """
     from datetime import date as _date
     days = sorted({(str(d) or "").strip()[:10] for d in (dates or []) if str(d).strip()})
     # Strict: every non-empty input must be a real ISO date. A malformed token would
@@ -861,15 +910,26 @@ def infer_rrule(dates: list[str]) -> str | None:
 
 
 def emit_recurrence(conn, cluster: dict) -> dict:
-    """Promote ONE recurring chatter cluster into a kind='recurring' calendar row. No-op
-    unless a regular cadence is inferable. Does not sweep (other workflow rows on the
-    anchor note must survive).
+    """Promote one recurring chatter cluster into a kind='recurring' calendar row.
 
-    Idempotency across re-runs is the tricky part: a chatter cluster can gain an EARLIER
-    member on a later run, which would move a naive "earliest member" anchor to a new
-    note and (with sweep off) leave a duplicate. So we first look for an EXISTING workflow
-    recurring row of the same normalized title ON ANY of the cluster's member notes and
-    update THAT in place; only if none exists do we anchor on the earliest dated member."""
+    No-op unless a regular cadence is inferable from the cluster entries. Does not
+    sweep so other workflow rows on the anchor note survive.
+
+    Idempotency across re-runs: a chatter cluster can gain an earlier member on a
+    later run, which would move a naive "earliest member" anchor to a new note and
+    (with sweep off) leave a duplicate. Instead we first look for an existing workflow
+    recurring row of the same normalized title on ANY cluster member note and update
+    that in place; only when none exists do we anchor on the earliest dated member.
+
+    Args:
+        conn: SQLite connection.
+        cluster: Cluster dict with an ``entries`` list of note dicts
+            (each having ``id``, ``title``, and ``created_at``).
+
+    Returns:
+        Dict with key ``emitted`` (1 on success, 0 when skipped), plus ``rrule``,
+        ``title``, and ``anchor_note_id`` on success, or ``reason`` on skip.
+    """
     entries = [e for e in (cluster or {}).get("entries", [])
                if e.get("id") is not None and _norm_dt(e.get("created_at"))]
     if not entries:
@@ -904,9 +964,23 @@ def emit_recurrence(conn, cluster: dict) -> dict:
 # --- reminders (Phase 3): Review cards + Web Push, deduped per instance ------
 
 def _reminder_due(starts_at: str, all_day, midnight, horizon, today_s: str, horizon_s: str) -> bool:
-    """Is this occurrence within the reminder window? The lower bound is the START OF
-    TODAY (not 'now'), so a timed event that already slipped past between daily runs
-    still reminds once; the upper bound is the lead horizon. All-day rows compare by date."""
+    """Return True when this occurrence falls within the reminder window.
+
+    The lower bound is the start of today (not 'now') so a timed event that slipped
+    past between daily runs still reminds once. The upper bound is the lead horizon.
+    All-day rows compare by date string.
+
+    Args:
+        starts_at: ISO date or datetime string of the occurrence.
+        all_day: Truthy when the event has no clock time.
+        midnight: Naive datetime for the start of today.
+        horizon: Naive datetime for the upper reminder boundary.
+        today_s: ISO date string for today.
+        horizon_s: ISO date string for the horizon day.
+
+    Returns:
+        True when the occurrence is within the reminder window.
+    """
     if all_day:
         return today_s <= starts_at[:10] <= horizon_s
     from dateutil.parser import isoparse
@@ -920,6 +994,7 @@ def _reminder_due(starts_at: str, all_day, midnight, horizon, today_s: str, hori
 
 
 def _already_fired(conn, workflow_id, marker: str, kind: str = "reminder") -> bool:
+    """Return True when this (workflow_id, kind, marker) combination is already recorded."""
     return conn.execute(
         "SELECT 1 FROM calendar_fired WHERE workflow_id=? AND kind=? AND marker=?",
         (workflow_id, kind, marker),
@@ -928,6 +1003,7 @@ def _already_fired(conn, workflow_id, marker: str, kind: str = "reminder") -> bo
 
 def _record_fire(conn, workflow_id, marker, title, when, slug,
                  kind: str = "reminder", verb: str = "Upcoming") -> None:
+    """Create a Review card and record the dedup marker so this firing never repeats."""
     from . import reviews as reviews_svc
     msg = f"Scheduled for {when}." if verb == "Upcoming" else f"Starts {when}."
     reviews_svc.create_review_item(conn, workflow_id, f"{verb}: {title}", msg, slug)
@@ -938,13 +1014,26 @@ def _record_fire(conn, workflow_id, marker, title, when, slug,
 
 
 def due_reminders(conn, workflow_id, lead_hours: int = 48, push: bool = True) -> dict:
-    """Post a Review card (+ optional Web Push) for each live event whose next occurrence
-    falls within the lead window, deduped per instance via calendar_fired so it fires
-    once. One-off events and the NEXT instance(s) of recurring series are both covered.
+    """Post Review cards and optional Web Pushes for events due within the lead window.
 
-    Requires a real workflow_id: calendar_fired.workflow_id is NOT NULL, so a None would
-    make INSERT OR IGNORE silently drop the dedup row and the reminder would re-fire every
-    run. Pushes are fired AFTER all DB writes (post-state), never interleaved."""
+    Covers both one-off events and the next instance(s) of recurring series. Deduped
+    per occurrence via calendar_fired so each fires exactly once. Pushes are sent after
+    all DB writes, never interleaved. Requires a real workflow_id because
+    calendar_fired.workflow_id is NOT NULL — passing None would cause INSERT OR IGNORE
+    to silently drop the dedup row, making the reminder re-fire every run.
+
+    Args:
+        conn: SQLite connection.
+        workflow_id: Non-None workflow ID used as the dedup scope.
+        lead_hours: Number of hours ahead to look for upcoming events.
+        push: When True, also send Web Push notifications for fired reminders.
+
+    Returns:
+        Dict with key ``fired`` counting reminders that were posted.
+
+    Raises:
+        ValueError: When ``workflow_id`` is None.
+    """
     if workflow_id is None:
         raise ValueError("due_reminders requires a workflow_id (dedup integrity)")
     from datetime import timedelta
@@ -1005,12 +1094,14 @@ _ALLDAY_ANCHOR_HOUR = 9   # all-day reminders are measured from 9am on the event
 _MAX_FIRES_PER_TICK = 500   # backstop: never emit more than this many alarms in one pass
 
 def is_dismissed(conn, identity_key: str) -> bool:
+    """Return True when the event has been dismissed (revoked) by the owner."""
     return conn.execute(
         "SELECT 1 FROM calendar_dismissed WHERE identity_key=?", (identity_key,)
     ).fetchone() is not None
 
 
 def get_reminders(conn, identity_key: str) -> list[dict]:
+    """Return the per-event reminder offsets for the given identity key, ordered by anchor then offset."""
     return [dict(r) for r in conn.execute(
         "SELECT offset_minutes, anchor, enabled FROM calendar_reminders "
         "WHERE identity_key=? ORDER BY anchor, offset_minutes", (identity_key,))]
@@ -1019,11 +1110,21 @@ def get_reminders(conn, identity_key: str) -> list[dict]:
 _MAX_OFFSET_MIN = 43200   # 30 days — bounds expansion so one reminder can't storm
 
 def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
-    """Replace an event's reminder set. items: [{offset_minutes, anchor}]. Empty = none.
-    Offsets are clamped to [0, 30 days] (a negative or absurd lead is rejected — it would
-    either never fire or expand into a notification storm). The anchor is NORMALIZED from
-    the event's own all_day, never trusted from the client (a 'start' offset on an all-day
-    event is meaningless)."""
+    """Replace an event's reminder set.
+
+    Offsets are clamped to [0, 30 days]; negative or absurd leads are silently dropped.
+    The anchor is normalized from the event's own ``all_day`` flag, never trusted from
+    the client (a 'start' offset on an all-day event is meaningless). Pass an empty
+    list to clear all reminders.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the target event.
+        items: List of dicts with an ``offset_minutes`` key (anchor is ignored).
+
+    Returns:
+        Dict with keys ``identity_key`` and ``count`` (number of reminders stored).
+    """
     row = conn.execute("SELECT all_day FROM calendar_events WHERE identity_key=? LIMIT 1",
                        (identity_key,)).fetchone()
     anchor = "day_of" if (row and row["all_day"]) else "start"
@@ -1044,10 +1145,19 @@ def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
 
 
 def dismiss_event(conn, identity_key: str) -> dict:
-    """Remove an event from the calendar (the review banner's Revoke, or the detail
-    sheet's "Remove from calendar"): snapshot it (so Undo can restore instantly), drop
-    the row + its fired markers, and remember the removal so re-derivation never
-    re-creates it. The note's text is never touched."""
+    """Remove an event from the calendar and prevent re-derivation.
+
+    Snapshots the row (so Undo can restore instantly), drops the event row and its
+    fired markers, and records the identity key in calendar_dismissed so re-extraction
+    never recreates the event. The note's text is never modified.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the event to dismiss.
+
+    Returns:
+        Dict with keys ``identity_key`` and ``dismissed`` (True).
+    """
     row = conn.execute("SELECT * FROM calendar_events WHERE identity_key=?", (identity_key,)).fetchone()
     conn.execute("INSERT OR REPLACE INTO calendar_dismissed (identity_key, payload_json) VALUES (?,?)",
                  (identity_key, json.dumps(dict(row)) if row else None))
@@ -1062,8 +1172,17 @@ _RESTORE_COLS = ["note_id", "title", "detail", "kind", "starts_at", "ends_at", "
 
 
 def undismiss_event(conn, identity_key: str) -> dict:
-    """Undo a revoke: re-insert the snapshotted row and clear the dismissal so extraction
-    treats the event normally again."""
+    """Undo a revoke: re-insert the snapshotted event row and clear the dismissal.
+
+    After this call, extraction treats the event normally again.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the event to restore.
+
+    Returns:
+        Dict with keys ``identity_key`` and ``dismissed`` (False).
+    """
     d = conn.execute("SELECT payload_json FROM calendar_dismissed WHERE identity_key=?", (identity_key,)).fetchone()
     conn.execute("DELETE FROM calendar_dismissed WHERE identity_key=?", (identity_key,))
     if d and d["payload_json"] and not conn.execute(
@@ -1080,8 +1199,18 @@ def undismiss_event(conn, identity_key: str) -> dict:
 
 
 def recently_added(conn, since: str = "", limit: int = 100) -> list[dict]:
-    """Auto-created events (extracted + recurring promotions) added since the watermark,
-    for the in-calendar review — excludes dismissed/superseded and the owner's quick-adds."""
+    """Return auto-created events added since the watermark for in-calendar review.
+
+    Excludes dismissed events, superseded events, and owner quick-adds (source='manual').
+
+    Args:
+        conn: SQLite connection.
+        since: ISO datetime watermark; only events created after this are returned.
+        limit: Maximum number of events to return (clamped to 1–500).
+
+    Returns:
+        List of event dicts ordered by created_at descending.
+    """
     rows = conn.execute(
         "SELECT e.id, e.identity_key, e.title, e.kind, e.starts_at, e.all_day, e.source, "
         "e.created_at, n.slug AS note_slug, n.title AS note_title "
@@ -1096,9 +1225,21 @@ def recently_added(conn, since: str = "", limit: int = 100) -> list[dict]:
 
 
 def _alarm_window(occ_start_iso: str, all_day, offset_minutes: int, anchor: str):
-    """(fire_at, cap) naive-local datetimes for one (occurrence, offset). Fire when
-    fire_at <= now < cap. Timed: fire offset minutes before the start; cap = start.
-    All-day: anchor at 9am on the event day; cap = end of that day. None if unparseable."""
+    """Compute the (fire_at, cap) naive-local datetimes for one occurrence/offset pair.
+
+    Fire when ``fire_at <= now < cap``. For timed events: fire ``offset_minutes``
+    before the start; cap is the start. For all-day events: anchor at 9am on the event
+    day; cap is end of that day.
+
+    Args:
+        occ_start_iso: ISO date or datetime string of the occurrence.
+        all_day: Truthy when the event is all-day.
+        offset_minutes: Number of minutes before the anchor to fire.
+        anchor: Anchor type string ('start' or 'day_of').
+
+    Returns:
+        Tuple (fire_at, cap) as naive datetimes, or (None, None) if unparseable.
+    """
     from datetime import datetime, timedelta
     from dateutil.parser import isoparse
     try:
@@ -1117,6 +1258,7 @@ def _alarm_window(occ_start_iso: str, all_day, offset_minutes: int, anchor: str)
 
 
 def _alarm_label(cap, all_day) -> str:
+    """Format a human-readable alarm label from the event cap datetime."""
     return cap.strftime("%Y-%m-%d") if all_day else cap.strftime("%Y-%m-%d %H:%M")
 
 

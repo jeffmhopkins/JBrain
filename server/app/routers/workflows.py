@@ -15,6 +15,8 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"], dependencies=[Cu
 
 
 class WorkflowIn(BaseModel):
+    """Input body for creating or updating a workflow."""
+
     name: str
     trigger_type: str            # 'event' | 'schedule'
     trigger_config: dict = {}
@@ -24,6 +26,18 @@ class WorkflowIn(BaseModel):
 
 
 def _row(conn, wf_id: int):
+    """Fetch a workflow row by id, raising 404 if not found.
+
+    Args:
+        conn: Active database connection.
+        wf_id: Workflow id to look up.
+
+    Returns:
+        The raw workflow database row.
+
+    Raises:
+        HTTPException: 404 if the workflow does not exist.
+    """
     row = conn.execute("SELECT * FROM workflows WHERE id = ?", (wf_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -31,6 +45,17 @@ def _row(conn, wf_id: int):
 
 
 def _public(row) -> dict:
+    """Convert a raw workflow db row to a JSON-serializable public dict.
+
+    Deserializes trigger_config and action_config from JSON strings and coerces
+    boolean fields.
+
+    Args:
+        row: Raw database row for a workflow.
+
+    Returns:
+        Dict with deserialized config fields and bool-typed enabled/locked.
+    """
     d = dict(row)
     d["trigger_config"] = json.loads(d.get("trigger_config") or "{}")
     d["action_config"] = json.loads(d.get("action_config") or "{}")
@@ -41,13 +66,22 @@ def _public(row) -> dict:
 
 @router.get("")
 def list_workflows():
+    """List all workflows, ordered by name.
+
+    Returns:
+        List of public workflow dicts.
+    """
     rows = get_conn().execute("SELECT * FROM workflows ORDER BY name").fetchall()
     return [_public(r) for r in rows]
 
 
 @router.get("/action-types")
 def action_types():
-    """The catalog of action types + config-form schemas (data-driven picker)."""
+    """Return the catalog of action types with config-form schemas (data-driven picker).
+
+    Returns:
+        Action catalog dict keyed by type name.
+    """
     return wf_svc.action_catalog()
 
 

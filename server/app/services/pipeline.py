@@ -545,6 +545,7 @@ def _p_wiki_write_batch(ctx, articles, instructions=None):
     from . import wiki_build
 
     def on_article(i, n, title):
+        """Forward per-article progress to the run-modal step callback (best-effort)."""
         if ctx.on_step:
             try:
                 ctx.on_step(f"wiki_write:{i}/{n}:{title}")
@@ -796,6 +797,7 @@ def _p_cluster_chatter(ctx, entries, tau=0.35, min_days=3, neighbours=16, promot
     parent = {i: i for i in by_id}
 
     def find(x):
+        """Return the root of x's union-find component using path-halving compression."""
         while parent[x] != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
@@ -935,6 +937,14 @@ def _p_kb_audit(ctx, limit=1000):
 
 
 def _strip_code_fence(s: str) -> str:
+    """Strip a leading/trailing markdown code fence from a string, if present.
+
+    Args:
+        s: String that may be wrapped in a triple-backtick code block.
+
+    Returns:
+        The unwrapped string with surrounding whitespace removed.
+    """
     s = (s or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
@@ -1152,6 +1162,16 @@ def _p_call_action(ctx, action, config=None, trigger=None):
 # (e.g. notes/SomeThought). Dated daily captures/rollups (notes/daily/…) are
 # never touched — they stay as the chronological log.
 def _is_loose_title(title: str) -> bool:
+    """Return True when a title has no folder or sits only one level under notes/.
+
+    Dated daily entries (notes/daily/...) are never considered loose.
+
+    Args:
+        title: Note title string to evaluate.
+
+    Returns:
+        True if the title is a bare segment or lives directly under notes/.
+    """
     t = (title or "").strip()
     if not t or t == "notes/daily" or t.startswith("notes/daily/"):
         return False
@@ -1800,7 +1820,13 @@ def primitive_catalog() -> list[dict]:
 
 class _Stop(Exception):
     """Carries an early-return message out of nested steps."""
+
     def __init__(self, message: str):
+        """Initialise with the stop message to surface in the pipeline summary.
+
+        Args:
+            message: Human-readable reason for the early stop.
+        """
         self.message = message
 
 
@@ -1815,6 +1841,22 @@ def _commit_step(ctx):
 
 
 def _run_steps(ctx, steps, scope, trace):
+    """Execute a list of recipe steps, mutating scope and appending to trace.
+
+    Handles when/stop_when guards, for_each sub-loops, primitive dispatch, and the
+    stop_when_empty short-circuit. Raises _Stop for early exits and RuntimeError
+    when the step budget is exceeded.
+
+    Args:
+        ctx: Pipeline execution context (budget, conn, etc.).
+        steps: List of step dicts from the recipe.
+        scope: Mutable Jinja2 variable scope (updated with each step's id output).
+        trace: List to append each executed primitive name to.
+
+    Raises:
+        _Stop: When a stop_when guard or stop_when_empty condition triggers.
+        RuntimeError: When the step budget is exhausted or an unknown primitive is used.
+    """
     for step in steps:
         when = step.get("when")
         if when is not None and not _truthy(_eval(when, scope)):
@@ -1864,6 +1906,21 @@ def _run_steps(ctx, steps, scope, trace):
 
 def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None, *,
                  on_step=None, commit_steps=False) -> str:
+    """Execute a YAML recipe and return a human-readable summary string.
+
+    Args:
+        conn: Active SQLite connection for the run.
+        recipe: Parsed recipe dict (must have a 'steps' list).
+        cfg: Workflow configuration dict (available as `config` in templates).
+        workflow_id: Database id of the triggering workflow.
+        context: Trigger-event payload (available as `trigger` in templates).
+        on_step: Optional callback invoked with each primitive name before it runs.
+        commit_steps: When True, commit after each step (for scheduled runs).
+
+    Returns:
+        A short summary string, e.g. "ran 3 step(s): write_note, create_review, ..."
+        or the early-exit message from a stop_when / stop_when_empty guard.
+    """
     ctx = _Ctx(conn, workflow_id, context, on_step=on_step, commit_steps=commit_steps)
     scope = {
         "config": cfg or {},
@@ -1883,15 +1940,30 @@ class _PromptsProxy:
     """Read-only `prompts.<section>.<key>` access inside templates (DB-override
     aware), so recipes can reference the shared prompt store."""
     def __init__(self, prefix: str = ""):
+        """Initialise the proxy with an optional dot-separated key prefix.
+
+        Args:
+            prefix: Dot-terminated prefix prepended to every attribute lookup.
+        """
         self._prefix = prefix
 
     def __getattr__(self, name):
+        """Return the stored prompt string, or a deeper proxy for further chaining.
+
+        Args:
+            name: Next key segment to append to the current prefix.
+
+        Returns:
+            The stored prompt string if the composed key exists, otherwise a new
+            _PromptsProxy with the key extended by name.
+        """
         from . import prompts as _prompts
         key = f"{self._prefix}{name}"
         val = _prompts.get(key)
         return val if val else _PromptsProxy(key + ".")
 
     def __str__(self):
+        """Return the prompt string for the current prefix, or an empty string."""
         from . import prompts as _prompts
         return _prompts.get(self._prefix.rstrip(".")) or ""
 
@@ -1909,6 +1981,11 @@ _cache = threading.local()
 
 
 def _actions_dir() -> Path | None:
+    """Locate the actions YAML directory, checking env override, repo root, and container path.
+
+    Returns:
+        Path to the actions directory, or None if none of the candidates exists.
+    """
     for c in (
         os.environ.get("JBRAIN_ACTIONS_DIR"),
         Path(__file__).resolve().parents[3] / "actions",  # repo root
@@ -1941,6 +2018,11 @@ def _load_repo() -> dict:
 
 
 def _repo_defs() -> dict:
+    """Return the cached repo action definitions, loading them on first access.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     if _REPO_DEFS is None:
         _load_repo()
     return _REPO_DEFS
@@ -1948,10 +2030,20 @@ def _repo_defs() -> dict:
 
 # Public names kept for tests/validation that operate on the repo files.
 def load_action_defs() -> dict:
+    """Load (or reload) action definitions from the repo YAML files.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     return _load_repo()
 
 
 def reload_action_defs() -> dict:
+    """Force a reload of action definitions from the repo YAML files.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     return _load_repo()
 
 
@@ -2047,6 +2139,14 @@ def _expr_names(text) -> set:
 
 
 def _value_names(val) -> set:
+    """Collect all top-level variable names referenced in a with: value (recursively).
+
+    Args:
+        val: A string, dict, or list from a step's with: block.
+
+    Returns:
+        Set of variable name strings found in any embedded {{ }} expressions.
+    """
     if isinstance(val, str):
         return _expr_names(val) if "{{" in val else set()
     if isinstance(val, dict):
@@ -2070,6 +2170,12 @@ def validate_recipe(recipe) -> list[str]:
         return warnings + ["'steps' must be a list"]
 
     def walk(steps, scope: set):
+        """Recursively walk a step list, accumulating warnings into the outer list.
+
+        Args:
+            steps: List of step dicts to inspect.
+            scope: Set of variable names currently in scope at this nesting level.
+        """
         scope = set(scope)
         for step in steps:
             if not isinstance(step, dict):

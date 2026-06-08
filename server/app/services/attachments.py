@@ -335,6 +335,16 @@ def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: byt
 
 
 def delete_attachment(conn, att_id: int) -> None:
+    """Delete an attachment and clean up its FTS rows, embeddings, and note summary.
+
+    If the attachment had an AI image summary appended to its owning note, the summary
+    block is stripped from the note (versioned) before deletion so there is no dangling
+    reference.
+
+    Args:
+        conn: SQLite connection (caller owns commit).
+        att_id: Attachment primary key to delete.
+    """
     # If this attachment had an AI image summary appended to its note, strip that
     # block (versioned) so deleting the image cleanly removes its summary.
     row = conn.execute(
@@ -361,8 +371,19 @@ def delete_attachment(conn, att_id: int) -> None:
 
 
 def _att_label(mime: str | None, filename: str | None) -> str:
-    """Human label for an attachment's text in an LLM context block (so the model knows
-    what each block is, and transcripts/PDF text aren't mislabeled as image summaries)."""
+    """Return a human-readable label for an attachment's text in an LLM context block.
+
+    Ensures the model knows what each block is so transcripts and PDF text are not
+    mislabelled as image summaries.
+
+    Args:
+        mime: MIME type of the attachment (may be None).
+        filename: Original filename of the attachment (may be None).
+
+    Returns:
+        One of: 'AI image summary', 'video transcript', 'audio transcript', or
+        'attachment text'.
+    """
     from . import audio_transcription  # lazy: avoids an import cycle
     if (mime or "").startswith("image/"):
         return "AI image summary"
@@ -374,11 +395,22 @@ def _att_label(mime: str | None, filename: str | None) -> str:
 
 
 def context_block_for_note(conn, note_id: int | None, cap: int = 2500, per_att_cap: int = 1500) -> str:
-    """A bounded, labelled text digest of a note's attachments for feeding an analyzer/LLM.
-    Per attachment, prefer the rich enrichment sidecar (image vision summary or audio/video
-    transcript in analysis_md); otherwise fall back to extracted content_text (PDF, text,
-    office). Returns "" if the note has no attachment text. This is what makes the note-analysis
-    sidecar (and the KB synthesis it feeds) aware of PDFs, transcripts, and text files."""
+    """Build a bounded, labelled text digest of a note's attachments for an LLM context window.
+
+    Per attachment, prefers the rich enrichment sidecar (image vision summary or
+    audio/video transcript from analysis_md); falls back to extracted content_text
+    (PDF, text, office). This is what makes the note-analysis sidecar (and the KB
+    synthesis it feeds) aware of PDFs, transcripts, and text files.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Owning note id; returns '' immediately when None.
+        cap: Maximum total characters across all attachment blocks.
+        per_att_cap: Maximum characters per individual attachment.
+
+    Returns:
+        Labelled, newline-separated attachment text, or '' if no attachment text exists.
+    """
     if note_id is None:
         return ""
     rows = conn.execute(
@@ -396,6 +428,16 @@ def context_block_for_note(conn, note_id: int | None, cap: int = 2500, per_att_c
 
 
 def list_for_note(conn, note_id: int) -> list[dict]:
+    """Return metadata rows for all attachments belonging to a note, newest first.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Owning note primary key.
+
+    Returns:
+        List of dicts with attachment metadata (id, filename, mime, byte_size,
+        created_at, analysis_status, analysis_detail, analyzed_at, analysis_md).
+    """
     rows = conn.execute(
         "SELECT id, filename, mime, byte_size, created_at, "
         "analysis_status, analysis_detail, analyzed_at, analysis_md FROM attachments "

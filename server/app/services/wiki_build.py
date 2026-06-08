@@ -159,9 +159,10 @@ def _seam_separator(partial: str, remainder: str) -> str:
 
 
 def _join_continuation(partial: str, remainder: str) -> str:
-    """Stitch a truncated draft's RAW partial with its RAW continuation. The model is told to
-    resume EXACTLY at the cutoff, so we glue with no separator by default — but we first guard
-    two real hazards:
+    """Stitch a truncated draft's RAW partial with its RAW continuation.
+
+    The model is told to resume EXACTLY at the cutoff, so we glue with no separator by default —
+    but we first guard two real hazards:
       * DUPLICATION — a model that RESTATES instead of resuming. _drop_duplicate_title removes a
         repeated "# Title" heading; _trim_restated_overlap then drops the longest restated
         run (capped at _OVERLAP_WINDOW) so the join isn't garbled/doubled.
@@ -170,7 +171,15 @@ def _join_continuation(partial: str, remainder: str) -> str:
         stripped "## References" heading keeps its own line (a word/word seam is left raw — see
         _seam_separator for why a space there would risk splitting a mid-word resume).
     Extraction (_strip_fence / _extract_talk) still runs ONCE on this joined string in the
-    CALLER, so a fence split across the boundary re-forms before parsing."""
+    CALLER, so a fence split across the boundary re-forms before parsing.
+
+    Args:
+        partial: The already-produced portion of the truncated draft.
+        remainder: The raw continuation text returned by the model.
+
+    Returns:
+        The stitched full draft string.
+    """
     partial = partial or ""
     remainder = remainder or ""
     remainder = _drop_duplicate_title(partial, remainder)
@@ -179,8 +188,14 @@ def _join_continuation(partial: str, remainder: str) -> str:
 
 
 def _extract_talk(text: str):
-    """Pull a trailing ```talk JSON block out of the writer's output. Returns
-    (article_without_block, [entries])."""
+    """Pull a trailing ```talk JSON block out of the writer's output.
+
+    Args:
+        text: Raw writer output, possibly containing a trailing ```talk block.
+
+    Returns:
+        Tuple of (article_text_without_block, list_of_talk_entry_dicts).
+    """
     m = _TALK_RE.search(text or "")
     if not m:
         return text, []
@@ -194,10 +209,18 @@ def _extract_talk(text: str):
 
 
 def reset(conn) -> dict:
-    """Soft-delete all kb/ articles except protected kb/_* pages (guides, index), and
-    clear the synthesis watermark + per-entry evaluated markers. Undoable (soft delete +
-    versioning). Returns {deleted, kept}. Disambiguation pages (kb/_disambig/*) are DERIVED
-    build artifacts, not static guides, so they're cleared here too (and regenerated)."""
+    """Soft-delete all kb/ articles except protected kb/_* pages, and clear synthesis markers.
+
+    Clears the synthesis watermark + per-entry evaluated markers so a fresh build re-reads
+    everything. Undoable (soft delete + versioning). Disambiguation pages (kb/_disambig/*) are
+    DERIVED build artifacts, not static guides, so they're cleared here too (and regenerated).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with keys ``deleted`` and ``kept``.
+    """
     from . import notes as notes_svc
     rows = conn.execute(
         "SELECT id, title, redirect_to FROM notes WHERE kind = 'kb' AND deleted_at IS NULL"
@@ -222,9 +245,18 @@ def reset(conn) -> dict:
 
 
 def corpus_digest(conn, limit: int = 3000) -> list[dict]:
-    """The survey the outline reads: one compact record per entry/daily note —
-    {id, title, gist, domain, entities}. Uses the analysis sidecar; falls back to a
-    content snippet for notes not yet analyzed."""
+    """Build the compact survey the outline reads: one record per entry/daily note.
+
+    Each record is {id, title, gist, domain, entities}. Uses the analysis sidecar; falls
+    back to a content snippet for notes not yet analyzed.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of notes to include, ordered by most recently updated.
+
+    Returns:
+        List of compact note-summary dicts.
+    """
     rows = conn.execute(
         "SELECT n.id, n.title, n.content_md, a.gist, a.domain, a.entities_json "
         "FROM notes n LEFT JOIN note_analysis a ON a.note_id = n.id "
@@ -249,6 +281,15 @@ def corpus_digest(conn, limit: int = 3000) -> list[dict]:
 
 
 def _survey_text(digest: list[dict], cap: int = 800) -> str:
+    """Render a corpus digest as a plain-text survey for the outline prompt.
+
+    Args:
+        digest: Output of corpus_digest.
+        cap: Maximum number of entries to include.
+
+    Returns:
+        Newline-joined survey string, one line per note.
+    """
     lines = []
     for d in digest[:cap]:
         ents = ", ".join(d.get("entities") or [])
@@ -260,8 +301,16 @@ def _survey_text(digest: list[dict], cap: int = 800) -> str:
 
 
 def build_index_md(articles: list[dict]) -> str:
-    """The kb/_index org map — articles grouped by domain, linked. Protected, so the
-    rebuild never deletes it and synthesis never feeds it back."""
+    """Build the kb/_index org map: articles grouped by domain with wikilinks.
+
+    Protected, so the rebuild never deletes it and synthesis never feeds it back.
+
+    Args:
+        articles: List of article dicts with ``title``, ``domain``, and ``scope`` keys.
+
+    Returns:
+        Markdown string for the kb/_index page.
+    """
     by_dom: dict[str, list[dict]] = {}
     for a in articles:
         by_dom.setdefault(a.get("domain") or "Other", []).append(a)
@@ -282,6 +331,7 @@ def build_index_md(articles: list[dict]) -> str:
 
 
 def _isint(x) -> bool:
+    """Return True if x can be converted to int, False otherwise."""
     try:
         int(x); return True
     except (TypeError, ValueError):
@@ -289,11 +339,23 @@ def _isint(x) -> bool:
 
 
 def outline(conn, digest: list[dict], instructions: str | None = None) -> dict:
-    """Survey → taxonomy. Returns {articles: [{title, domain, scope, sources}], index_md}.
+    """Derive the entity-first KB taxonomy from a corpus digest via the LLM.
+
     The canonical entity roster (recurring people/orgs/places + co-occurrence) is fed in
     alongside the per-note survey so the outline reliably makes one article per entity and
     clusters co-occurring people into Groups; entity mentions then backfill each article's
-    sources so no note about an entity is missed."""
+    sources so no note about an entity is missed.
+
+    Args:
+        conn: SQLite connection.
+        digest: Output of corpus_digest — compact per-note survey.
+        instructions: Optional freeform guidance appended to the outline prompt.
+
+    Returns:
+        Dict with keys ``articles`` (list of {title, domain, scope, sources}),
+        ``index_md`` (pre-built index markdown), and ``dropped`` (count of
+        ungrounded articles removed).
+    """
     if not llm.has_credentials() or not digest:
         return {"articles": [], "index_md": ""}
     from . import entity_index
@@ -348,6 +410,21 @@ SOURCE_BUDGET = 2000   # chars of note body fed to the writer per source note
 
 
 def _load_sources(conn, ids: list[int], query: str = "") -> list[dict]:
+    """Load source notes by id, trimming each to SOURCE_BUDGET chars for the writer.
+
+    Passes RAW content (never expands @t[...] tokens) so the writer can carry live tokens
+    through into the evergreen article. Uses embeddings to pick relevant passages when a
+    subject query is given and the note exceeds the budget. Folds in attachment text
+    (image summaries, transcripts, document text) after the body.
+
+    Args:
+        conn: SQLite connection.
+        ids: Note ids to load; non-integer values are silently dropped.
+        query: Subject query used to relevance-select passages from long notes.
+
+    Returns:
+        List of {title, date, content} dicts, one per resolved live note.
+    """
     ids = [int(i) for i in ids if _isint(i)]
     if not ids:
         return []
@@ -386,10 +463,26 @@ def _load_sources(conn, ids: list[int], query: str = "") -> list[dict]:
 
 
 def _sources_text(srcs: list[dict]) -> str:
+    """Render loaded source notes as a single block for inclusion in a writer prompt.
+
+    Args:
+        srcs: List of {title, date, content} dicts from _load_sources.
+
+    Returns:
+        Double-newline-separated string with each note prefixed by its title and date.
+    """
     return "\n\n".join(f"[{s['title']}] ({s['date']})\n{s['content']}" for s in srcs)
 
 
 def _strip_fence(text: str) -> str:
+    """Strip a wrapping ```markdown or ``` code fence from model output, if present.
+
+    Args:
+        text: Raw model output string.
+
+    Returns:
+        The content inside the fence, or the original text stripped if no fence matched.
+    """
     m = _FENCE_RE.match(text or "")
     return (m.group(1) if m else (text or "")).strip()
 
@@ -398,24 +491,32 @@ _WRAPPER_OPEN_RE = re.compile(r"^\s*```(?:markdown|md)?[ \t]*\n", re.IGNORECASE)
 
 
 def _clean_wrapper_fence(text: str) -> str:
-    """EDGE-ANCHORED cleanup of a ```markdown WRAPPER-fence artifact left by an auto-continued
-    LIVE draft, run AFTER the single _strip_fence. The only artifact we touch is the verified
-    leak case (b): the partial CLOSED the whole-document wrapper at the cap, the appended
-    remainder then pushed text PAST the trailing ```, so the closing fence is no longer terminal
-    and the anchored _FENCE_RE leaves the WHOLE wrapper (a leading ```/```markdown/```md opener
-    plus its now-orphaned ``` closer) in the body. We drop that leading opener line AND the
-    matching orphaned closer so the wrapper doesn't half-survive.
+    """Remove a leftover ```markdown wrapper-fence artifact from an auto-continued live draft.
+
+    Run AFTER the single _strip_fence. The only artifact we touch is the verified leak case (b):
+    the partial CLOSED the whole-document wrapper at the cap, the appended remainder then pushed
+    text PAST the trailing ```, so the closing fence is no longer terminal and the anchored
+    _FENCE_RE leaves the WHOLE wrapper (a leading ```/```markdown/```md opener plus its
+    now-orphaned ``` closer) in the body. We drop that leading opener line AND the matching
+    orphaned closer so the wrapper doesn't half-survive.
 
     Deliberately conservative — anchored to the DOCUMENT EDGE only:
       * We act ONLY when the document STARTS with a bare ```/```markdown/```md opener (the
         wrapper's own edge), never on a close-then-reopen pair in mid-document prose. A
-        mid-document ```\n```markdown can be two LEGITIMATE adjacent code blocks in prose that
+        mid-document ```\\n```markdown can be two LEGITIMATE adjacent code blocks in prose that
         is ABOUT fences, so collapsing it could silently merge real content — we leave it for
         the human to catch in live review instead.
       * A document opening with a fenced *code* block (```python …) is untouched: we only match
         a bare ``` or ```markdown / ```md opener (no language tag), and only at the edge.
       * We drop the orphaned closer ONLY when the fences before it are balanced and none follow
-        it, so we never break a real inner code block; if we can't be sure, we leave it."""
+        it, so we never break a real inner code block; if we can't be sure, we leave it.
+
+    Args:
+        text: Article text after _strip_fence.
+
+    Returns:
+        Text with the wrapper fence artifact removed, or text stripped if no artifact.
+    """
     if not text:
         return text
     m = _WRAPPER_OPEN_RE.match(text)
@@ -443,8 +544,19 @@ def _clean_wrapper_fence(text: str) -> str:
 
 
 def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
-    """[[targets]] in `content` that point nowhere — neither an allowed article title nor
-    an existing live note. These are the dead links we refuse to save."""
+    """Return [[wikilink]] targets in content that resolve to nothing.
+
+    A target is dead if it is neither in the allowed set nor an existing live note.
+    These are the dead links we refuse to save.
+
+    Args:
+        conn: SQLite connection.
+        content: Article markdown to scan.
+        allowed: Set of article titles that are valid targets for this build.
+
+    Returns:
+        List of dead-link target strings.
+    """
     bad = []
     for t in wikilinks.extract_links(content):
         if t in allowed:
@@ -457,11 +569,20 @@ def _bad_links(conn, content: str, allowed: set[str]) -> list[str]:
 
 
 def _neutralize_links(content: str, bad: set[str]) -> str:
-    """Remove dead links so they can't reach a saved article. A dead link in a FOOTNOTE
-    DEFINITION (a citation to a now-missing source) drops the whole definition line — and
-    any inline [^marker] left without a definition is then stripped — rather than leaving a
-    mangled '[^s1]: Ghost — DATE'. Dead links in PROSE unwrap to plain text. Live links and
-    valid footnotes are untouched."""
+    """Unwrap dead [[wikilinks]] to plain text so they can't reach a saved article.
+
+    A dead link in a FOOTNOTE DEFINITION (a citation to a now-missing source) drops the whole
+    definition line — and any inline [^marker] left without a definition is then stripped —
+    rather than leaving a mangled '[^s1]: Ghost — DATE'. Dead links in PROSE unwrap to plain
+    text. Live links and valid footnotes are untouched.
+
+    Args:
+        content: Article markdown to clean.
+        bad: Set of dead-link target strings from _bad_links.
+
+    Returns:
+        Content with dead links unwrapped and orphaned footnote markers stripped.
+    """
     def repl(m):
         target = m.group(1).strip()
         if target not in bad:
@@ -481,12 +602,22 @@ def _neutralize_links(content: str, bad: set[str]) -> str:
 
 
 def _repair_citation_titles(content: str, bad: list[str], source_titles: list[str]):
-    """Fix a writer typo before _neutralize_links would delete the citation: a footnote
-    [[title]] that is a NORMALISED near-miss of exactly one CURATED source title is rewritten
-    to that exact title (so a single mistyped source can't leave a bare '## References'
-    heading). Conservative: only rewrites a target already deemed 'dead', only against THIS
-    run's curated sources, and refuses when ≥2 distinct sources normalise-equal (ambiguous).
-    Returns (content, still_bad)."""
+    """Correct a writer-typo citation title before _neutralize_links would delete it.
+
+    A footnote [[title]] that is a NORMALISED near-miss of exactly one CURATED source title is
+    rewritten to that exact title (so a single mistyped source can't leave a bare
+    '## References' heading). Conservative: only rewrites a target already deemed 'dead', only
+    against THIS run's curated sources, and refuses when ≥2 distinct sources normalise-equal
+    (ambiguous).
+
+    Args:
+        content: Article markdown to repair.
+        bad: Dead-link targets from _bad_links.
+        source_titles: Titles of the source notes used for this article.
+
+    Returns:
+        Tuple of (repaired_content, still_bad_list).
+    """
     from . import entity_index
     if not bad or not source_titles:
         return content, bad
@@ -519,7 +650,17 @@ def _repair_citation_titles(content: str, bad: list[str], source_titles: list[st
 
 
 def _apply_link_props(body: str, props: list[dict]) -> str:
-    """Insert [[target|surface]] for each prop, right-to-left so earlier offsets stay valid."""
+    """Insert [[target|surface]] wikilinks into body at the given character offsets.
+
+    Applies right-to-left so earlier offsets stay valid after each insertion.
+
+    Args:
+        body: Article text to modify.
+        props: List of {target, surface, at} dicts; ``at`` is the character offset.
+
+    Returns:
+        Body with all wikilinks inserted.
+    """
     for p in sorted(props, key=lambda x: -x["at"]):
         s, e = p["at"], p["at"] + len(p["surface"])
         body = body[:s] + f"[[{p['target']}|{p['surface']}]]" + body[e:]
@@ -527,12 +668,23 @@ def _apply_link_props(body: str, props: list[dict]) -> str:
 
 
 def _alias_link_props(conn, body: str, title: str, surface_map: dict) -> list[dict]:
-    """Props for prose surfaces that match a REGISTERED ALIAS (entity_index.alias_surface),
-    linked to the alias's canonical article. The link displays the matched prose text
-    ([[canonical|Jeff Hopkins]]) and the match is round-trip verified — normalize(surface) ==
-    alias_norm — so the label-hygiene allow-list (which keys on normalize(display)) protects
-    exactly these links. Masks code/links/footnotes; never re-links an already-linked target;
-    one link per target. No DB write."""
+    """Build link props for prose surfaces that match a registered entity alias.
+
+    Links the matched surface to the alias's canonical article, displaying the matched prose
+    text ([[canonical|Jeff Hopkins]]). The match is round-trip verified —
+    normalize(surface) == alias_norm — so the label-hygiene allow-list protects exactly these
+    links. Masks code/links/footnotes; never re-links an already-linked target; one link per
+    canonical target. No DB write.
+
+    Args:
+        conn: SQLite connection (passed through to entity_index).
+        body: Article text to scan.
+        title: Title of the article being written (to avoid self-linking).
+        surface_map: Output of entity_index.alias_surface — {alias_norm: (article, display)}.
+
+    Returns:
+        List of {target, surface, at} props for _apply_link_props.
+    """
     from . import entity_index
     spans = _mask_spans(body)
     linked = {x.lower() for x in wikilinks.extract_links(body)}

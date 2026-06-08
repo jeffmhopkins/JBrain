@@ -6,6 +6,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables and the ``.env`` file."""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     brain_name: str = "My Brain"
@@ -69,28 +71,38 @@ class Settings(BaseSettings):
 
     @property
     def has_anthropic(self) -> bool:
+        """Return True if an Anthropic/LLM API key is configured."""
         return bool(self.llm_api_key)
 
     @property
     def has_xai(self) -> bool:
+        """Return True if xAI (Grok) is available via an explicit key or provider setting."""
         # An explicit xAI key, or the legacy single-key path (LLM_PROVIDER=xai).
         return bool(self.xai_api_key) or self.llm_provider.lower() in ("xai", "grok")
 
     @property
     def has_llm(self) -> bool:
+        """Return True if any LLM provider (Anthropic or xAI) is configured."""
         return self.has_anthropic or self.has_xai
 
     # Backward-compatible aliases (read-only) for the old Anthropic-specific
     # names, so any not-yet-migrated reader keeps working.
     @property
     def anthropic_api_key(self) -> str:
+        """Return the LLM API key (backward-compatible alias for ``llm_api_key``)."""
         return self.llm_api_key
 
     @property
     def anthropic_model(self) -> str:
+        """Return the LLM model name (backward-compatible alias for ``llm_model``)."""
         return self.llm_model
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the cached application settings singleton.
+
+    Returns:
+        The ``Settings`` instance, constructed once and cached for the process lifetime.
+    """
     return Settings()

@@ -32,13 +32,35 @@ _TIME_RE = _re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 def _sanitize_title(title: str) -> str:
-    """Keep a user title on one line and out of marker syntax when it lands in a note
-    body (so a crafted title can't inject a supersession marker)."""
+    """Sanitize a user-supplied title for safe embedding in a note body.
+
+    Strips newlines and collapses ``[[...]]`` so a crafted title cannot inject
+    a supersession marker.
+
+    Args:
+        title: Raw user-supplied title string.
+
+    Returns:
+        Single-line, stripped title safe for note body insertion.
+    """
     return (title or "").replace("\n", " ").replace("\r", " ").replace("[[", "[").replace("]]", "]").strip()
 
 
 def _compose_starts(date: str, time: str | None) -> tuple[str, int]:
-    """(starts_at, all_day) from a validated date + optional HH:MM. 422 on bad format."""
+    """Build a ``(starts_at, all_day)`` pair from a validated date and optional time.
+
+    Args:
+        date: Date string in ``YYYY-MM-DD`` format.
+        time: Optional time string in ``HH:MM`` (24 h) format.
+
+    Returns:
+        Tuple of ``(starts_at, all_day)`` where ``starts_at`` is either
+        ``"YYYY-MM-DD"`` (all-day) or ``"YYYY-MM-DDTHH:MM:00"`` (timed), and
+        ``all_day`` is 1 or 0 accordingly.
+
+    Raises:
+        HTTPException: 422 if ``date`` or ``time`` does not match the expected format.
+    """
     date = (date or "").strip()[:10]
     if not _DATE_RE.match(date):
         raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
@@ -52,8 +74,18 @@ def _compose_starts(date: str, time: str | None) -> tuple[str, int]:
 
 @router.get("/upcoming")
 def upcoming(within_days: int = 90, limit: int = 100):
-    """Live, future events (one-offs from v_upcoming + the next occurrence of each
-    recurring series), soonest first. The read side for the calendar UI."""
+    """Return live upcoming events, soonest first.
+
+    Combines one-offs from ``v_upcoming`` with the next occurrence of each
+    recurring series. This is the read side for the calendar UI.
+
+    Args:
+        within_days: Look-ahead window in days (1–3650, default 90).
+        limit: Maximum number of events to return (1–500, default 100).
+
+    Returns:
+        List of event dicts ordered by ``starts_at``.
+    """
     conn = get_conn()
     within = max(1, min(int(within_days or 90), 3650))
     limit = max(1, min(int(limit or 100), 500))
@@ -96,6 +128,14 @@ def upcoming(within_days: int = 90, limit: int = 100):
 
 @router.get("/history")
 def history(limit: int = 100):
+    """Return past events in reverse chronological order.
+
+    Args:
+        limit: Maximum number of events to return (1–500, default 100).
+
+    Returns:
+        List of event dicts ordered by ``starts_at`` descending.
+    """
     conn = get_conn()
     limit = max(1, min(int(limit or 100), 500))
     rows = conn.execute(
@@ -111,11 +151,24 @@ _MAX_RANGE_RESULTS = 2000   # bound the payload even with many recurring series
 
 @router.get("/range")
 def range_events(start: str, end: str):
-    """LIVE events whose occurrence falls in [start, end] (inclusive) — the read side
-    for the Day/Week/Month grids. One-offs + every recurring occurrence in the window,
-    with TRUE times preserved (not forced all-day). Excludes superseded/cancelled rows
-    (a reschedule/cancel is a supersession edge); includes done/tentative so a past
-    month still shows what happened. Validates ISO + start<=end and clamps the span."""
+    """Return all event occurrences within a date range, inclusive.
+
+    The read side for Day/Week/Month grids. Returns one-offs and every
+    recurring occurrence in the window with true times preserved. Excludes
+    superseded/cancelled rows; includes done/tentative so past months still
+    show what happened.
+
+    Args:
+        start: Range start date in ``YYYY-MM-DD`` format.
+        end: Range end date in ``YYYY-MM-DD`` format (inclusive).
+
+    Returns:
+        List of event dicts ordered by ``starts_at``, capped at 2000 entries.
+
+    Raises:
+        HTTPException: 422 if dates are not ISO format, ``start > end``, or
+            the range exceeds 366 days.
+    """
     start = (start or "").strip()[:10]
     end = (end or "").strip()[:10]
     if not _DATE_RE.match(start) or not _DATE_RE.match(end):
@@ -171,6 +224,8 @@ def range_events(start: str, end: str):
 
 
 class QuickAddIn(BaseModel):
+    """Input schema for the quick-add calendar endpoint."""
+
     title: str
     date: str                       # YYYY-MM-DD
     time: str | None = None         # HH:MM (optional)
@@ -181,9 +236,24 @@ class QuickAddIn(BaseModel):
 
 @router.post("/quick-add")
 def quick_add(body: QuickAddIn):
-    """Write a dated note for the event AND project its structured row (source='manual').
-    The note is the durable record; the row is its (deterministic) projection. Optional
-    per-event reminders are attached to the projected event's identity_key."""
+    """Create a dated note and project its structured calendar event.
+
+    Writes a dated note for the event and deterministically projects its
+    structured row with ``source='manual'``. The note is the durable record;
+    the event row is its projection. The LLM extractor skips manual-projected
+    notes so there is no duplicate derivation. Optional per-event reminders
+    are attached via the projected event's identity_key.
+
+    Args:
+        body: Event details including title, date, optional time/kind/detail,
+            and optional reminder list.
+
+    Returns:
+        JSON with ``note_id``, ``note_title``, and the created ``event`` dict.
+
+    Raises:
+        HTTPException: 422 if title is empty or date/time format is invalid.
+    """
     title = _sanitize_title(body.title)
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
@@ -217,7 +287,18 @@ _REVIEW_WATERMARK = "calendar.review:seen"
 
 
 def _event_ik(conn, event_id: int) -> str:
-    """The stable identity_key for an event row id (any kind), or 404."""
+    """Return the stable identity_key for an event row.
+
+    Args:
+        conn: Active DB connection.
+        event_id: Primary key of the calendar_events row.
+
+    Returns:
+        The non-null ``identity_key`` string for the event.
+
+    Raises:
+        HTTPException: 404 if the event does not exist or has no identity_key.
+    """
     row = conn.execute("SELECT identity_key FROM calendar_events WHERE id=?", (event_id,)).fetchone()
     if not row or not row["identity_key"]:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -225,18 +306,45 @@ def _event_ik(conn, event_id: int) -> str:
 
 
 class RemindersIn(BaseModel):
+    """Input schema for setting event reminders."""
+
     reminders: list[dict] = []          # [{offset_minutes:int, anchor:'start'|'day_of'}]
 
 
 @router.get("/events/{event_id}/reminders")
 def get_event_reminders(event_id: int):
+    """Return the reminders configured for a calendar event.
+
+    Args:
+        event_id: Primary key of the calendar event.
+
+    Returns:
+        JSON ``{"reminders": [...]}`` with each reminder's offset and anchor.
+
+    Raises:
+        HTTPException: 404 if the event does not exist.
+    """
     conn = get_conn()
     return {"reminders": cal.get_reminders(conn, _event_ik(conn, event_id))}
 
 
 @router.post("/events/{event_id}/reminders")
 def set_event_reminders(event_id: int, body: RemindersIn):
-    """Replace an event's reminders (config keyed by the stable identity_key)."""
+    """Replace all reminders for a calendar event.
+
+    Configuration is keyed by the event's stable identity_key so reminders
+    survive rescheduling.
+
+    Args:
+        event_id: Primary key of the calendar event.
+        body: New reminder list; an empty list clears all reminders.
+
+    Returns:
+        Updated reminder configuration from the service layer.
+
+    Raises:
+        HTTPException: 404 if the event does not exist.
+    """
     conn = get_conn()
     ik = _event_ik(conn, event_id)
     try:
@@ -250,7 +358,13 @@ def set_event_reminders(event_id: int, body: RemindersIn):
 
 @router.get("/recently-added")
 def recently_added():
-    """Auto-created events added since the last review — feeds the in-calendar review banner."""
+    """Return auto-created events added since the last review.
+
+    Feeds the in-calendar review banner so the owner knows what the AI added.
+
+    Returns:
+        JSON with ``since`` (watermark ISO string) and ``events`` (list).
+    """
     conn = get_conn()
     since = get_meta(_REVIEW_WATERMARK, "", conn=conn) or ""
     return {"since": since, "events": cal.recently_added(conn, since)}
@@ -258,7 +372,11 @@ def recently_added():
 
 @router.post("/reviewed")
 def mark_reviewed():
-    """Advance the review watermark to now — clears the 'recently added' banner."""
+    """Advance the review watermark to now, clearing the recently-added banner.
+
+    Returns:
+        JSON ``{"ok": true}``.
+    """
     conn = get_conn()
     now = conn.execute("SELECT datetime('now')").fetchone()[0]
     set_meta(conn, _REVIEW_WATERMARK, now)
@@ -268,9 +386,20 @@ def mark_reviewed():
 
 @router.post("/events/{event_id}/dismiss")
 def dismiss_event_route(event_id: int):
-    """Remove an event from the calendar WITHOUT writing a note: hide the row and stop
-    re-derivation from re-creating it. Reversible via /undismiss with the returned
-    identity_key."""
+    """Remove an event from the calendar without writing a note.
+
+    Hides the row and prevents re-derivation from re-creating it. Reversible
+    via ``POST /undismiss`` using the returned identity_key.
+
+    Args:
+        event_id: Primary key of the calendar event to dismiss.
+
+    Returns:
+        Dict including the event's ``identity_key`` needed to undo the action.
+
+    Raises:
+        HTTPException: 404 if the event does not exist.
+    """
     conn = get_conn()
     ik = _event_ik(conn, event_id)
     try:
@@ -283,12 +412,21 @@ def dismiss_event_route(event_id: int):
 
 
 class UndismissIn(BaseModel):
+    """Input schema for undismissing a previously dismissed calendar event."""
+
     identity_key: str
 
 
 @router.post("/undismiss")
 def undismiss_event_route(body: UndismissIn):
-    """Undo a revoke — restore the snapshotted event and let extraction treat it normally."""
+    """Undo a dismiss — restore the snapshotted event and allow normal re-extraction.
+
+    Args:
+        body: ``{"identity_key": str}`` identifying the event to restore.
+
+    Returns:
+        Restored event dict from the service layer.
+    """
     conn = get_conn()
     try:
         out = cal.undismiss_event(conn, body.identity_key)

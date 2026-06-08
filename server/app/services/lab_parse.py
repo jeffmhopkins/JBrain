@@ -549,15 +549,20 @@ def _parse_single_report(pages: list[list[dict]], collected: str | None,
 
 
 def _backfill(results: list[dict]) -> None:
-    """Make each analyte's unit/range consistent across its rows. Units don't vary within an
-    analyte, so adopt the modal unit everywhere (fixes per-table wrap quirks like 'U/'). For
-    the reference range, only FILL nulls (the range can legitimately change over time, so a
-    row that parsed its own range keeps it).
+    """Make each analyte's unit/range consistent across its rows in-place.
+
+    Units don't vary within an analyte, so adopt the modal unit everywhere (fixes per-table
+    wrap quirks like 'U/'). For the reference range, only FILL nulls (the range can
+    legitimately change over time, so a row that parsed its own range keeps it).
 
     Magnitude guard (F5): never stamp the modal unit onto a row whose value is orders of
     magnitude off the analyte's median — a raw count (7200) wearing a 'thou/cumm' unit would
     co-plot as a unit-consistent 1000x spike. Such rows keep their own unit and are tagged
-    `_magnitude_outlier` so the confidence pass can flag them instead of silently merging."""
+    _magnitude_outlier so the confidence pass can flag them instead of silently merging.
+
+    Args:
+        results: List of result row dicts; mutated in place.
+    """
     import collections, statistics
     by_key: dict[str, list[dict]] = collections.defaultdict(list)
     for r in results:
@@ -585,12 +590,19 @@ def _backfill(results: list[dict]) -> None:
 
 
 def _score_confidence(results: list[dict]) -> None:
-    """Replace the old hard-coded confidence=1.0 with a PER-ROW trust score (F3). A value can
-    satisfy the verbatim faithfulness check and still be wrong — bound to the wrong analyte or
-    date column, or off by an order of magnitude. We fold the geometry bind margins captured
-    during parsing together with a range-plausibility check into {high, medium, low} + reasons,
-    so the human reviewer's attention lands on the rows that need it. Pure heuristic; never
-    drops a row, only flags it. Margins are in PDF points (lines ~14pt, columns ~50-80px)."""
+    """Assign a per-row trust score (F3) to each result, mutating it in place.
+
+    Replaces a hard-coded confidence=1.0 with {high, medium, low} + reasons. A value can
+    satisfy the verbatim faithfulness check and still be wrong — bound to the wrong analyte
+    or date column, or off by an order of magnitude. We fold the geometry bind margins
+    captured during parsing into a heuristic score so the human reviewer's attention lands
+    on the rows that need it. Pure heuristic; never drops a row, only flags it. Margins are
+    in PDF points (lines ~14pt, columns ~50-80px).
+
+    Args:
+        results: List of result row dicts; 'confidence' and 'confidence_reasons' are added
+            to each row in place.
+    """
     rank = {"high": 2, "medium": 1, "low": 0}
     for r in results:
         conf, reasons = "high", []
@@ -628,9 +640,19 @@ def _score_confidence(results: list[dict]) -> None:
 
 
 def parse_lab_pdf(pdf_bytes: bytes) -> dict:
-    """Parse a lab-result PDF into structured rows. Returns
-    {doc_type, confidence, results:[…], pages}. doc_type is 'lab_trend_export' when the
-    trend-matrix structure is found, else 'unknown' (caller skips it)."""
+    """Parse a lab-result PDF into structured rows.
+
+    Detects whether the document is a trend-matrix export or a single-encounter report and
+    routes to the appropriate sub-parser. Returns 'unknown' when neither structure is found.
+
+    Args:
+        pdf_bytes: Raw PDF file content.
+
+    Returns:
+        Dict with keys: doc_type ('lab_trend_export', 'lab_report', or 'unknown'),
+        confidence (1.0 or 0.0), results (list of row dicts), pages (int),
+        identity (dict), and visible_text (str).
+    """
     import pdfplumber
     results: list[dict] = []
     pages = 0

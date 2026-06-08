@@ -69,11 +69,24 @@ _REDIRECT = "I can only answer questions about the specific records {owner} has 
 
 
 def _owner() -> str:
+    """Return the brain owner's display name, or 'the owner' if unset.
+
+    Returns:
+        Owner name string for prompt interpolation.
+    """
     from ..config import get_settings
     return get_settings().brain_name or "the owner"
 
 
 def _sanitize(text: str) -> str:
+    """Strip URLs, wikilinks, and control tokens from model output; clamp to 2000 chars.
+
+    Args:
+        text: Raw model output to sanitize.
+
+    Returns:
+        Cleaned, length-clamped reply string.
+    """
     text = _URL_RE.sub(lambda m: m.group(2) or "", text or "")
     text = _WIKILINK_RE.sub("", text)
     text = _CTRL_RE.sub("", text).strip()
@@ -83,12 +96,38 @@ def _sanitize(text: str) -> str:
 # --- spec lifecycle (owner side) -------------------------------------------
 
 def get_spec(conn, link_id: int):
+    """Fetch the research_specs row for a share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        The research_specs row, or None if not found.
+    """
     return conn.execute("SELECT * FROM research_specs WHERE share_link_id = ?", (link_id,)).fetchone()
 
 
 def create_spec(conn, link_id: int, *, scope_json: dict, persona_voice: str = "", intro: str = "",
                 topics: str = "", bind: bool = False, single_use: bool = False, max_turns: int = 30,
                 max_total_replies: int = 200) -> int:
+    """Create a research spec in 'draft' status for the given share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id this spec belongs to.
+        scope_json: Candidate filter dict (prefixes/titles/kinds).
+        persona_voice: Optional tone/persona for the assistant.
+        intro: Optional intro text shown to the recipient.
+        topics: Optional discussion-scope constraint for the assistant.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Block a second session after the first.
+        max_turns: Per-session turn cap.
+        max_total_replies: Total-reply budget across all sessions.
+
+    Returns:
+        The new research_specs.id.
+    """
     cur = conn.execute(
         "INSERT INTO research_specs (share_link_id, status, scope_json, approved_ids_json, "
         "dismissed_ids_json, persona_voice, topics, intro, bind, single_use, max_turns, max_total_replies) "
@@ -101,6 +140,13 @@ def create_spec(conn, link_id: int, *, scope_json: dict, persona_voice: str = ""
 
 
 def set_scope(conn, link_id: int, scope_json: dict) -> None:
+    """Replace the candidate-filter scope on an existing research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        scope_json: New candidate filter dict (prefixes/titles/kinds).
+    """
     conn.execute("UPDATE research_specs SET scope_json=? WHERE share_link_id=?",
                  (json.dumps(scope_json or {}), link_id))
 
@@ -132,6 +178,19 @@ def set_lab_scope(conn, link_id: int, *, analytes=None, window_from=..., window_
 
 def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: bool,
                 single_use: bool, max_turns: int, max_total_replies: int, topics: str = "") -> None:
+    """Update persona, intro, discussion scope, and session-limit settings on a research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        persona_voice: Tone/role instruction for the assistant.
+        intro: Intro text shown to the recipient.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Block a second session after the first.
+        max_turns: Per-session turn cap.
+        max_total_replies: Total-reply budget across all sessions.
+        topics: Optional discussion-scope constraint for the assistant.
+    """
     conn.execute(
         "UPDATE research_specs SET persona_voice=?, topics=?, intro=?, bind=?, single_use=?, max_turns=?, "
         "max_total_replies=? WHERE share_link_id=?",
@@ -141,10 +200,24 @@ def set_details(conn, link_id: int, *, persona_voice: str, intro: str, bind: boo
 
 
 def activate_spec(conn, link_id: int) -> None:
+    """Transition a research spec from 'draft' to 'active', making the link live.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id whose spec to activate.
+    """
     conn.execute("UPDATE research_specs SET status='active' WHERE share_link_id=?", (link_id,))
 
 
 def _save_ids(conn, link_id: int, col: str, ids: set[int]) -> None:
+    """Persist a set of note ids to a JSON column on the research spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        col: Column name to update (e.g. 'approved_ids_json').
+        ids: Set of note ids to serialize and store.
+    """
     conn.execute(f"UPDATE research_specs SET {col}=? WHERE share_link_id=?",
                  (json.dumps(sorted(ids)), link_id))
 
@@ -163,6 +236,13 @@ def approve(conn, link_id: int, ids: list[int]) -> None:
 
 
 def dismiss(conn, link_id: int, ids: list[int]) -> None:
+    """Add notes to the dismissed set, hiding them from the candidate tray.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec.
+        ids: List of note ids to dismiss.
+    """
     spec = get_spec(conn, link_id)
     _save_ids(conn, link_id, "dismissed_ids_json", scope._ids(spec, "dismissed_ids_json") | {int(i) for i in ids})
 
@@ -174,6 +254,15 @@ def remove_approved(conn, link_id: int, ids: list[int]) -> None:
 
 
 def _titles(conn, ids: set[int]) -> list[dict]:
+    """Fetch id+title pairs for a set of live note ids, sorted by title.
+
+    Args:
+        conn: Database connection.
+        ids: Set of note ids to look up.
+
+    Returns:
+        List of {id, title} dicts for non-deleted notes.
+    """
     if not ids:
         return []
     rows = conn.execute(
@@ -188,6 +277,15 @@ def list_candidates(conn, link_id: int) -> list[dict]:
 
 
 def list_approved(conn, link_id: int) -> list[dict]:
+    """Return id+title pairs for all owner-approved notes on a research link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        List of {id, title} dicts.
+    """
     return _titles(conn, scope.approved_ids(get_spec(conn, link_id)))
 
 
@@ -195,6 +293,23 @@ def list_approved(conn, link_id: int) -> list[dict]:
 
 def start_session(conn, link, spec, name: str | None, client_ip: str | None,
                   my_secret: str | None = None) -> tuple[int, str]:
+    """Create a recipient session, honoring the link's bind and single_use options.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The research_specs row.
+        name: Recipient's display name (truncated to 80 chars).
+        client_ip: Originating IP for audit purposes.
+        my_secret: Existing session secret if the caller already has one.
+
+    Returns:
+        A (session_id, secret) tuple for the new session.
+
+    Raises:
+        HTTPException: 409 if the link is single_use and has already been used.
+        HTTPException: 403 if the link is bound to a different device.
+    """
     from fastapi import HTTPException
     if spec["single_use"] and conn.execute(
         "SELECT 1 FROM research_sessions WHERE share_link_id=? AND turn_count>0 LIMIT 1",
@@ -215,6 +330,16 @@ def start_session(conn, link, spec, name: str | None, client_ip: str | None,
 
 
 def find_session(conn, link_id: int, secret: str | None):
+    """Look up a research session by link and secret cookie.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to scope the search.
+        secret: Session secret from the recipient's cookie.
+
+    Returns:
+        The research_sessions row, or None if secret is missing or not found.
+    """
     if not secret:
         return None
     return conn.execute("SELECT * FROM research_sessions WHERE share_link_id=? AND secret=?",

@@ -43,6 +43,18 @@ _client_cache: dict[tuple, Any] = {}
 
 
 def _cached_client(key: tuple, factory):
+    """Return a cached SDK client, constructing it via factory on first use.
+
+    Double-checked locking so only one client is ever constructed per cache key,
+    even under concurrent first-call races.
+
+    Args:
+        key: Hashable cache key (provider, sync/async, credentials...).
+        factory: Zero-argument callable that constructs the client.
+
+    Returns:
+        Cached (or newly constructed) SDK client.
+    """
     cli = _client_cache.get(key)
     if cli is None:
         with _client_lock:
@@ -55,6 +67,8 @@ def _cached_client(key: tuple, factory):
 
 @dataclass
 class ToolDef:
+    """Definition of a tool the LLM may call."""
+
     name: str
     description: str
     json_schema: dict
@@ -62,6 +76,8 @@ class ToolDef:
 
 @dataclass
 class ToolCall:
+    """A single tool-use invocation requested by the model."""
+
     id: str
     name: str
     args: dict
@@ -69,6 +85,8 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
+    """The caller's answer to one ToolCall, keyed by the call's id."""
+
     tool_call_id: str
     content: str
 
@@ -76,6 +94,8 @@ class ToolResult:
 # --- Neutral streaming events ----------------------------------------------
 @dataclass
 class TextDelta:
+    """A streamed chunk of the model's text output."""
+
     text: str
 
 
@@ -85,19 +105,32 @@ class TextDelta:
 # verbatim inside the assistant turn the adapter appends to `messages`.
 @dataclass
 class ThinkingDelta:
+    """A streamed chunk of the model's extended-thinking (reasoning) text."""
+
     text: str
 
 
 @dataclass
 class ToolCallEvent:
+    """Streaming event carrying a single completed ToolCall."""
+
     call: ToolCall
 
 
 @dataclass
 class TurnEnd:
-    tool_calls: list[ToolCall]  # empty => the model is done (no tools requested)
-    usage: dict | None = None   # {"input_tokens", "output_tokens"} if the provider reports it
-    stop_reason: str | None = None  # provider's finish reason; "max_tokens"/"length" => truncated
+    """Final streaming event signalling the end of an assistant turn.
+
+    Attributes:
+        tool_calls: Tool calls requested this turn; empty means the model is done.
+        usage: Token counts {"input_tokens", "output_tokens"} if the provider reports them.
+        stop_reason: Provider finish reason; "max_tokens"/"length" means the output was
+            truncated at the token cap.
+    """
+
+    tool_calls: list[ToolCall]
+    usage: dict | None = None
+    stop_reason: str | None = None
 
 
 StreamEvent = TextDelta | ThinkingDelta | ToolCallEvent | TurnEnd
@@ -110,64 +143,171 @@ _ANTHROPIC_THINKING = {"type": "adaptive", "display": "summarized"}
 
 @runtime_checkable
 class LLMProvider(Protocol):
+    """Protocol all LLM provider adapters must satisfy.
+
+    Attributes:
+        name: Short provider identifier (e.g. 'anthropic', 'xai').
+    """
+
     name: str
 
-    def has_credentials(self) -> bool: ...
-    def default_model(self) -> str: ...
-    def supports_tools(self) -> bool: ...
+    def has_credentials(self) -> bool:
+        """Return True if an API key for this provider is configured."""
+        ...
+
+    def default_model(self) -> str:
+        """Return the default model id for this provider."""
+        ...
+
+    def supports_tools(self) -> bool:
+        """Return True if the provider supports tool-use (function calling)."""
+        ...
 
     def complete(self, messages: list[Message], *, system: str | None = None,
-                 model: str | None = None, max_tokens: int = 1024) -> str: ...
+                 model: str | None = None, max_tokens: int = 1024) -> str:
+        """Return the model's text reply for the given messages (non-streaming).
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses provider default when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Model reply as a plain string.
+        """
+        ...
 
     def complete_with_meta(self, messages: list[Message], *, system: str | None = None,
                            model: str | None = None,
-                           max_tokens: int = 1024) -> tuple[str, str | None]: ...
+                           max_tokens: int = 1024) -> tuple[str, str | None]:
+        """Like complete(), but also returns the provider's finish reason.
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses provider default when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, stop_reason). stop_reason is "max_tokens"/"length" when
+            the output was truncated.
+        """
+        ...
 
     def complete_with_tools(self, messages: list[Message], *, system: str | None,
                             tools: list[ToolDef], model: str | None,
-                            max_tokens: int) -> tuple[str, list[ToolCall], dict | None]: ...
+                            max_tokens: int) -> tuple[str, list[ToolCall], dict | None]:
+        """One synchronous tool-capable turn; appends the assistant turn to messages.
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses provider default when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, tool_calls, usage_dict).
+        """
+        ...
 
     def stream_turn(self, messages: list[Message], *, system: str | None,
                     tools: list[ToolDef], model: str | None,
-                    max_tokens: int, thinking: bool = False) -> AsyncGenerator[StreamEvent, None]: ...
+                    max_tokens: int, thinking: bool = False) -> AsyncGenerator[StreamEvent, None]:
+        """Stream one assistant turn, yielding StreamEvent instances.
 
-    def append_tool_results(self, messages: list[Message], results: list[ToolResult]) -> None: ...
+        Appends the completed assistant turn to messages. Yields TextDelta / ThinkingDelta
+        / ToolCallEvent / TurnEnd events. The caller loops, dispatching tool calls and
+        calling append_tool_results, until TurnEnd.tool_calls is empty.
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses provider default when None.
+            max_tokens: Maximum output tokens.
+            thinking: Whether to request extended thinking (Anthropic only).
+
+        Yields:
+            StreamEvent instances in order.
+        """
+        ...
+
+    def append_tool_results(self, messages: list[Message], results: list[ToolResult]) -> None:
+        """Append tool-result messages to the conversation history.
+
+        Args:
+            messages: Conversation history to mutate.
+            results: Tool call answers to append.
+        """
+        ...
 
 
 # --- Anthropic adapter ------------------------------------------------------
 
 class AnthropicProvider:
+    """LLMProvider adapter for the Anthropic API (Claude models)."""
+
     name = "anthropic"
 
     def has_credentials(self) -> bool:
+        """Return True if an Anthropic API key is configured."""
         return bool(get_settings().llm_api_key)
 
     def default_model(self) -> str:
+        """Return the configured default Anthropic model id."""
         return get_settings().llm_model
 
     def supports_tools(self) -> bool:
+        """Return True; Anthropic supports tool use."""
         return True
 
     def _sync_client(self):
+        """Return a cached synchronous Anthropic client for the current API key."""
         from anthropic import Anthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "sync", key),
                               lambda: Anthropic(api_key=key, timeout=_LLM_TIMEOUT))
 
     def _async_client(self):
+        """Return a cached async Anthropic client for the current API key."""
         from anthropic import AsyncAnthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "async", key),
                               lambda: AsyncAnthropic(api_key=key, timeout=_LLM_TIMEOUT))
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
+        """Return the model's text reply (non-streaming, Anthropic).
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Model reply as a plain string.
+        """
         text, _ = self.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
         return text
 
     def complete_with_meta(self, messages, *, system=None, model=None, max_tokens=1024) -> tuple[str, str | None]:
-        """Like complete(), but also returns the provider's finish reason. "max_tokens"
-        means the body was cut off (the trailing ## References block is the first casualty)
-        — batch writers use this to fail rather than save a half-written article."""
+        """Like complete(), but also returns the Anthropic finish reason.
+
+        "max_tokens" means the body was cut off (the trailing ## References block is the
+        first casualty) — batch writers use this to fail rather than save a half-written
+        article.
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, stop_reason).
+        """
         client = self._sync_client()
         kwargs: dict = {"model": model or self.default_model(), "max_tokens": max_tokens, "messages": messages}
         if system:
@@ -178,11 +318,23 @@ class AnthropicProvider:
         return text, getattr(msg, "stop_reason", None)
 
     def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
-        """One SYNCHRONOUS tool-capable turn (non-streaming). Appends the model's turn to
-        `messages` (opaque SDK blocks, re-sent next iteration) and returns
-        (text, tool_calls, usage). The caller dispatches the calls and hands answers back
-        via append_tool_results — the same loop shape as stream_turn, minus streaming.
-        Used by the recipient labs assistant, which can't run the async stream."""
+        """One synchronous tool-capable turn (non-streaming) via Anthropic.
+
+        Appends the model's turn to messages (opaque SDK blocks, re-sent next iteration)
+        and returns (text, tool_calls, usage). The caller dispatches the calls and hands
+        answers back via append_tool_results — the same loop shape as stream_turn, minus
+        streaming. Used by the recipient labs assistant, which can't run the async stream.
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, tool_calls, usage_dict).
+        """
         client = self._sync_client()
         wire_tools = [
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}
@@ -204,6 +356,22 @@ class AnthropicProvider:
         return text, calls, usage
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens, thinking=False):
+        """Stream one assistant turn via the Anthropic API, yielding StreamEvent instances.
+
+        Appends the completed assistant turn to messages. Optionally enables extended
+        thinking (adaptive summarized mode), which yields ThinkingDelta events.
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+            thinking: If True, request extended thinking (Anthropic adaptive mode).
+
+        Yields:
+            TextDelta, ThinkingDelta, ToolCallEvent, and TurnEnd events.
+        """
         client = self._async_client()
         wire_tools = [
             {"name": t.name, "description": t.description, "input_schema": t.json_schema}

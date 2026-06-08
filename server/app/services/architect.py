@@ -556,10 +556,20 @@ def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
 
 
 def _searchable_text(conn, note_id: int) -> str:
-    """The note body PLUS its AI image-analysis sidecars, as one string for snippet/passage
-    extraction — so a hit that lives ONLY in a photo's vision summary (e.g. an address read
-    off a storefront image) still yields a relevant excerpt instead of a blind head slice.
-    @t[...] tokens are expanded so the excerpt reads like the rendered note."""
+    """Return the note body plus AI image-analysis sidecars as one string.
+
+    Merging both ensures a hit that lives only in a photo's vision summary
+    (e.g. an address read off a storefront image) still yields a relevant
+    excerpt instead of a blind head slice. @t[...] tokens are expanded so
+    the excerpt reads like the rendered note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Primary key of the note.
+
+    Returns:
+        Combined expanded text suitable for snippet/passage extraction.
+    """
     from . import image_analysis
     c = conn.execute("SELECT content_md FROM notes WHERE id = ?", (note_id,)).fetchone()
     body = clock.expand_tokens(c["content_md"] if c else "")
@@ -571,9 +581,21 @@ def _searchable_text(conn, note_id: int) -> str:
 
 
 def _tool_find(conn, query: str, limit: int = 6) -> str:
-    """One-shot find-and-quote: the best-matching notes, each with a sentence-bounded QUOTABLE passage
-    + its [[Title]] — so the model can answer with a real citation in a single call (no separate
-    read_note round-trip). The passages are exactly what it should quote verbatim."""
+    """Implement the find tool: best-matching notes with a quotable passage each.
+
+    Returns each hit with a sentence-bounded passage and its [[Title]] so the
+    model can answer with a real citation in a single call without a separate
+    read_note round-trip. The passages are exactly what the model should quote
+    verbatim.
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of notes to return (capped to 12).
+
+    Returns:
+        Untrusted-fenced block of passages, or a 'no results' string.
+    """
     from . import search as search_svc
     rows = search_svc.hybrid_notes(conn, query, max(1, min(int(limit or 6), 12)),
                                    entity_expand=True, require_tool_access=True)
@@ -593,9 +615,20 @@ _REFERENCE_PREFIX = "kb/reference/"
 
 
 def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
-    """FIRST-LINE reference: search ONLY the owner's curated reference library (kb/Reference/…) and
-    return the best articles each with a quotable passage + [[Title]]. The owner's trusted, curated
-    sources — consulted before any external lookup. Read-only."""
+    """Implement the reference_lookup tool: search only the owner's curated reference library.
+
+    Searches kb/Reference/… only and returns the best articles each with a
+    quotable passage and [[Title]]. These are the owner's trusted, curated
+    sources — consulted before any external lookup. Read-only.
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of reference articles to return (capped to 10).
+
+    Returns:
+        Untrusted-fenced block of passages, or a 'no results' string.
+    """
     from . import search as search_svc
     rows = search_svc.hybrid_notes(conn, query, 24, require_tool_access=True)
     hits = [r for r in rows if (r["title"] or "").lower().startswith(_REFERENCE_PREFIX)][:max(1, min(int(limit or 6), 10))]
@@ -612,6 +645,21 @@ def _tool_reference_lookup(conn, query: str, limit: int = 6) -> str:
 
 
 def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
+    """Implement the search_notes tool: hybrid keyword + semantic note search.
+
+    One call covers exact terms AND meaning. Each hit carries a query-relevant
+    snippet so the model can judge relevance without read_note'ing every result
+    (titles alone — especially dated daily paths — give no clue what the note
+    is about).
+
+    Args:
+        conn: SQLite connection.
+        query: The search query.
+        limit: Maximum number of results.
+
+    Returns:
+        Untrusted-fenced list of title + snippet lines, or 'no results'.
+    """
     from . import search as search_svc
     # Hybrid: keyword (FTS) + semantic, fused — so one call covers exact terms AND
     # meaning. Each hit carries a query-relevant snippet so the model can judge
@@ -629,10 +677,21 @@ def _tool_search_notes(conn, query: str, limit: int = 8) -> str:
 
 
 def _note_extras(conn, note_id: int) -> str:
-    """The note's AI-derived sidecars — image summaries, the analysis (gist/facts/dates) and
-    its entities — so a tool reading a note gets the WHOLE picture, not just the prose. Each
-    piece is bounded so a batch read (up to 12 notes) can't blow the budget. @t[...] tokens
-    are expanded for consistency with the body."""
+    """Return the note's AI-derived sidecars as a formatted string.
+
+    Includes image summaries, the analysis block (gist/facts/dates) and
+    entities, so a tool reading a note gets the whole picture, not just the
+    prose. Each piece is bounded so a batch read of up to 12 notes cannot blow
+    the context budget. @t[...] tokens are expanded for consistency with the
+    body.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Primary key of the note.
+
+    Returns:
+        Newline-separated sidecar text prefixed with a blank line, or '' if none.
+    """
     from . import image_analysis, note_analysis
     out = []
     img = image_analysis.block_for_note(conn, note_id, cap=1500)
@@ -656,6 +715,19 @@ def _note_extras(conn, note_id: int) -> str:
 
 
 def _render_note_body(conn, row) -> str:
+    """Render a note row to the full text the model reads, including sidecars.
+
+    Expands @t[...] live values, appends stored geolocation if present, and
+    appends AI-derived sidecars via _note_extras.
+
+    Args:
+        conn: SQLite connection (needed for sidecar lookup).
+        row: A notes table row with at minimum title, content_md, lat, lon,
+            location_label, and id columns.
+
+    Returns:
+        Formatted markdown string starting with a level-1 heading.
+    """
     # Expand @t[...] live values so the agent reads "40", not the raw token.
     body = f"# {row['title']}\n\n{clock.expand_tokens(row['content_md'])}"
     if row["lat"] is not None and row["lon"] is not None:   # surface stored geolocation
@@ -667,6 +739,15 @@ def _render_note_body(conn, row) -> str:
 
 
 def _tool_read_note(conn, title: str) -> str:
+    """Implement the read_note tool: return one note's full rendered body.
+
+    Args:
+        conn: SQLite connection.
+        title: Exact note title.
+
+    Returns:
+        Untrusted-fenced rendered body, or an error string if not found.
+    """
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
@@ -674,8 +755,19 @@ def _tool_read_note(conn, title: str) -> str:
 
 
 def _tool_read_notes(conn, titles: list[str]) -> str:
-    """Batch read — pull several notes' full text in ONE turn (search returns
-    snippets; this expands the promising hits without one round-trip per title)."""
+    """Implement the read_notes tool: batch-read several notes in one turn.
+
+    Search returns snippets; this expands the promising hits without one
+    round-trip per title. Capped at 12 titles.
+
+    Args:
+        conn: SQLite connection.
+        titles: Exact note titles to read (max 12; extras are dropped).
+
+    Returns:
+        Untrusted-fenced block of rendered bodies separated by '---', including
+        a list of any titles not found.
+    """
     titles = [t for t in (titles or []) if (t or "").strip()][:12]
     if not titles:
         return "Give one or more note titles to read."
@@ -695,8 +787,19 @@ def _tool_read_notes(conn, titles: list[str]) -> str:
 
 
 def _tool_related_notes(conn, title: str, limit: int = 8) -> str:
-    """Traverse OUT from one note instead of re-searching: its outgoing [[links]],
-    its backlinks (what links TO it), and its nearest semantic neighbours."""
+    """Implement the related_notes tool: traverse out from one note.
+
+    Returns outgoing [[links]], backlinks (notes that link to it), and the
+    nearest semantic neighbours — without re-searching.
+
+    Args:
+        conn: SQLite connection.
+        title: Exact title of the note to traverse from.
+        limit: Maximum number of semantic neighbours (capped to 25).
+
+    Returns:
+        Untrusted-fenced sections, or a 'no links' message if isolated.
+    """
     row = notes_svc.get_by_title(conn, title)
     if not row:
         return f"No note titled '{title}'."
@@ -748,9 +851,19 @@ _COORD_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 def _resolve_point(conn, ref: str):
-    """Resolve a geo endpoint given as 'lat,lon', a SAVED PLACE name, or a note title.
-    A place that shows on the map keeps its coordinates in the places (geofence) table,
-    NOT on its loc/ note, so we consult both. Returns (lat, lon, label) or an error str."""
+    """Resolve a geo endpoint to (lat, lon, label) or an error string.
+
+    Accepts 'lat,lon', a saved place name, or a note title. A place that shows
+    on the map keeps its coordinates in the places (geofence) table, NOT on its
+    loc/ note, so both are consulted.
+
+    Args:
+        conn: SQLite connection.
+        ref: The endpoint reference string.
+
+    Returns:
+        Tuple (lat, lon, label) on success, or an error string on failure.
+    """
     ref = (ref or "").strip()
     m = _COORD_RE.match(ref)
     if m:
@@ -782,8 +895,18 @@ def _resolve_point(conn, ref: str):
 
 
 def _tool_current_location(conn, conversation_id):
-    """The device's live GPS — the location stamped on the user's latest message
-    in this conversation (the app attaches it when location sharing is on)."""
+    """Implement the current_location tool: return the device's live GPS fix.
+
+    Returns the location stamped on the user's latest message in this
+    conversation; the app attaches it when location sharing is on.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+
+    Returns:
+        Untrusted-fenced location string, or a 'not available' message.
+    """
     loc = notes_svc.conversation_location(conn, conversation_id)
     if not loc or loc["lat"] is None:
         return ("No current location available — the user hasn't shared GPS in this "
@@ -795,10 +918,20 @@ def _tool_current_location(conn, conversation_id):
 
 
 def _resolve_person(conn, person):
-    """Map an optional person name/alias to (person_id, display_name, explicit, error).
-    No name → the DEFAULT person (so 'where was I' means the owner, not everyone).
-    Unknown name → an error string for the agent to relay. Empty registry → (None, …)
-    which leaves the trail tools unscoped (legacy single-user behaviour)."""
+    """Map an optional person name/alias to a (person_id, display_name, explicit, error) tuple.
+
+    No name → the DEFAULT person, so 'where was I' means the owner, not
+    everyone. Unknown name → error string for the agent to relay. Empty
+    registry → (None, …) which leaves trail tools unscoped (legacy single-user
+    behaviour).
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias string, or None/empty for the default person.
+
+    Returns:
+        Tuple of (person_id, display_name, explicit, error_or_None).
+    """
     from . import people as people_svc
     if person and person.strip():
         p = people_svc.by_name(conn, person)
@@ -811,7 +944,16 @@ def _resolve_person(conn, person):
 
 
 def _ago(recorded_at: str) -> str:
-    """Humanised age of a 'YYYY-MM-DD HH:MM:SS' UTC timestamp (for 'where is X now')."""
+    """Return a humanised age of a 'YYYY-MM-DD HH:MM:SS' UTC timestamp.
+
+    Used for 'where is X now' phrasing (e.g. '5 min ago', '3 h ago').
+
+    Args:
+        recorded_at: UTC timestamp string in 'YYYY-MM-DD HH:MM:SS' format.
+
+    Returns:
+        Human-readable elapsed-time string.
+    """
     from datetime import datetime, timezone
     try:
         t = datetime.strptime(recorded_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -828,8 +970,19 @@ def _ago(recorded_at: str) -> str:
 
 
 def _tool_locate_person(conn, person=None):
-    """Most recent known location for a registered person (or the owner if unnamed),
-    from the location trail — answers 'where is Allan right now / last seen'."""
+    """Implement the locate_person tool: return the most recent known location.
+
+    Looks up the last fix for a registered person (or the owner when no name
+    is given) from the location trail — answers 'where is Allan right now /
+    last seen'.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+
+    Returns:
+        Untrusted-fenced location string or an error message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -843,9 +996,20 @@ def _tool_locate_person(conn, person=None):
 
 
 def _is_owner_person(conn, pid, explicit) -> bool:
-    """True when the resolved person is the owner/default (privacy boundary for raw
-    coordinates). No name (explicit=False) or an empty registry = the owner; a named
-    person counts as the owner only if it resolves to the default person's id."""
+    """Return True when the resolved person is the owner/default.
+
+    Enforces the privacy boundary for raw coordinates. No name (explicit=False)
+    or an empty registry counts as the owner; a named person counts as the
+    owner only if it resolves to the default person's id.
+
+    Args:
+        conn: SQLite connection.
+        pid: Resolved person_id, or None.
+        explicit: Whether the caller supplied an explicit name.
+
+    Returns:
+        True if the person is the owner; False for any named third party.
+    """
     if not explicit:
         return True
     from . import people as people_svc
@@ -854,10 +1018,25 @@ def _is_owner_person(conn, pid, explicit) -> bool:
 
 
 def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, limit=20):
-    """EXACT fixes for the OWNER (full-precision lat/lon + timestamp), because the owner
-    is entitled to the precise data in their own brain. For any OTHER registered person
-    this degrades to place LABELS (no consent layer exists for third-party raw GPS).
-    `when` → the single nearest fix; otherwise a window (capped/evenly-sampled by `limit`)."""
+    """Implement the location_fixes tool: return exact fixes for the owner or place labels for others.
+
+    The owner is entitled to full-precision lat/lon + timestamps from their own
+    brain. For any other registered person this degrades to place LABELS — no
+    consent layer exists for third-party raw GPS. `when` returns the single
+    nearest fix; otherwise a window is returned, capped and evenly sampled by
+    `limit`.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+        when: Single moment (owner's local time) → nearest fix.
+        since: Window start in owner's local time (optional).
+        until: Window end in owner's local time (optional).
+        limit: Max fixes to return for a window (evenly sampled; hard cap 500).
+
+    Returns:
+        Untrusted-fenced fix list or an error message.
+    """
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:
         return err
@@ -903,6 +1082,14 @@ def _tool_location_fixes(conn, person=None, when=None, since=None, until=None, l
 
 
 def _dur(s: int | None) -> str:
+    """Format a duration in seconds as a compact 'XhYYm' or 'Xm' string.
+
+    Args:
+        s: Duration in seconds, or None (treated as 0).
+
+    Returns:
+        Formatted string such as '1h05m' or '42m'.
+    """
     s = int(s or 0)
     if s < 3600:
         return f"{s // 60}m"
@@ -910,6 +1097,14 @@ def _dur(s: int | None) -> str:
 
 
 def _trip_line(t: dict) -> str:
+    """Format a trip row as a single summary line for the model.
+
+    Args:
+        t: Trip dict as returned by trips_svc.query_trips / trip_detail.
+
+    Returns:
+        One-line string: '#id datetime: from → to · dist · duration [speed]'.
+    """
     a, b = t["start_place"] or "?", t["end_place"] or "?"
     spd = f", max {t['max_speed_kmh']:.0f} km/h" if t.get("max_speed_kmh") else ""
     live = " [in progress]" if t.get("status") == "open" else ""
@@ -918,10 +1113,22 @@ def _trip_line(t: dict) -> str:
 
 
 def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
-    """Upcoming calendar events (live, soonest first). One-off future events come from
-    the v_upcoming projection; RECURRING series are expanded to their NEXT occurrence
-    within the window (a recurring row's stored starts_at is its first, past, occurrence,
-    so it wouldn't otherwise surface). Read-only; reports only what's derived from notes."""
+    """Implement the list_upcoming tool: upcoming calendar events, soonest first.
+
+    One-off future events come from the v_upcoming projection; RECURRING series
+    are expanded to their NEXT occurrence within the window (a recurring row's
+    stored starts_at is its first, past occurrence, so it wouldn't otherwise
+    surface). Read-only; reports only what's derived from notes.
+
+    Args:
+        conn: SQLite connection.
+        within_days: Only include events starting within this many days from today.
+        kind: Optional filter to one event kind ('appointment', 'deadline', etc.).
+        limit: Max events to return (soonest first; capped 100).
+
+    Returns:
+        Untrusted-fenced event list or a 'no events' message.
+    """
     from datetime import timedelta
     from . import clock
     limit = max(1, min(int(limit or 20), 100))
@@ -984,8 +1191,20 @@ def _tool_list_upcoming(conn, within_days=90, kind=None, limit=20) -> str:
 
 
 def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
-    """Past / terminal calendar events from v_event_history (most recent first) — for
-    'when did I last…' / 'how often…'. Read-only."""
+    """Implement the event_history tool: past/terminal events, most recent first.
+
+    Reads from v_event_history — useful for 'when did I last…' / 'how
+    often…'. Read-only.
+
+    Args:
+        conn: SQLite connection.
+        since: Optional ISO lower bound on event date.
+        until: Optional ISO upper bound on event date.
+        limit: Max events (most recent first; capped 100).
+
+    Returns:
+        Untrusted-fenced event list or a 'no events' message.
+    """
     limit = max(1, min(int(limit or 20), 100))
     params: list = []
     where = ""
@@ -1016,8 +1235,20 @@ def _tool_event_history(conn, since=None, until=None, limit=20) -> str:
 
 
 def _tool_list_trips(conn, person=None, since=None, until=None, limit=20) -> str:
-    """Precomputed trips for the owner or a registered person — the server already
-    segmented and measured them, so this is cheap and exact."""
+    """Implement the list_trips tool: precomputed trips for the owner or a registered person.
+
+    The server already segmented and measured them, so this is cheap and exact.
+
+    Args:
+        conn: SQLite connection.
+        person: Name/alias, or None for the owner.
+        since: Optional lower bound in owner's local time.
+        until: Optional upper bound in owner's local time.
+        limit: Max trips to return (newest first; capped 200).
+
+    Returns:
+        Untrusted-fenced trip list or a 'no trips' message.
+    """
     from . import trips as trips_svc
     pid, who, explicit, err = _resolve_person(conn, person)
     if err:

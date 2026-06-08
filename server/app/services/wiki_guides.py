@@ -49,26 +49,66 @@ _REL_TIME_RE = re.compile(
 
 
 def guide_key(domain: str | None) -> str:
+    """Return the prompts.yaml key for a domain's guide.
+
+    Args:
+        domain: Taxonomy domain name, or None for the general style guide.
+
+    Returns:
+        Dotted key string suitable for prompts.get().
+    """
     return "actions.wiki_guide.general" if not domain else f"actions.wiki_guide.{domain.lower()}"
 
 
 def guide_title(domain: str | None) -> str:
+    """Return the wiki page title for a domain's guide.
+
+    Args:
+        domain: Taxonomy domain name, or None for the general style guide.
+
+    Returns:
+        Page title string (e.g. 'kb/_Style Guide' or 'kb/People/_Guide').
+    """
     return "kb/_Style Guide" if not domain else f"kb/{domain}/_Guide"
 
 
 def guide_text(domain: str | None) -> str:
+    """Return the guide prose for a domain from the prompt store.
+
+    Args:
+        domain: Taxonomy domain name, or None for the general style guide.
+
+    Returns:
+        Guide text string, or '' if not found.
+    """
     return prompts.get(guide_key(domain), "")
 
 
 def is_protected(title: str) -> bool:
-    """A protected system page — any path segment starts with '_' (e.g. kb/_index,
-    kb/_Style Guide, kb/People/_Guide). Never deleted by a rebuild, never fed back as a
-    synthesis source, never overwritten by the article writer."""
+    """Return True if a wiki page is a protected system page.
+
+    A page is protected when any path segment starts with '_' (e.g. kb/_index,
+    kb/_Style Guide, kb/People/_Guide). Protected pages are never deleted by a rebuild,
+    never fed back as a synthesis source, and never overwritten by the article writer.
+
+    Args:
+        title: Wiki page title (slash-separated path).
+
+    Returns:
+        True if the title contains a '_'-prefixed segment.
+    """
     return any(seg.startswith("_") for seg in (title or "").split("/"))
 
 
 def domain_for_title(title: str) -> str | None:
-    """The taxonomy domain a kb article belongs to, from its path (kb/<Domain>/…)."""
+    """Return the taxonomy domain for a kb article from its path (kb/<Domain>/...).
+
+    Args:
+        title: Wiki page title (slash-separated path).
+
+    Returns:
+        Matched domain string (e.g. 'People'), or None if unrecognised.
+    """
     parts = (title or "").split("/")
     if len(parts) >= 2 and parts[0].lower() == "kb":
         for d in DOMAINS:
@@ -85,7 +125,14 @@ HEALTH_PREFIX = "kb/health/"
 
 
 def is_health_title(title: str) -> bool:
-    """True for a personal-health page (kb/Health/<Person>) — case-insensitive prefix match."""
+    """Return True for a personal-health page (kb/Health/<Person>) via case-insensitive prefix match.
+
+    Args:
+        title: Wiki page title to test.
+
+    Returns:
+        True if the title is under the kb/Health/ prefix.
+    """
     return (title or "").lower().startswith(HEALTH_PREFIX)
 
 
@@ -99,21 +146,46 @@ _PRIVATE_PREFIXES = tuple(f"kb/{d.lower()}/" for d in PRIVATE_DOMAINS)
 
 
 def is_private_title(title: str) -> bool:
-    """True for any sensitive-domain page (kb/Health/… or kb/Finance/…) — the single firewall
-    predicate reused by the share layer, research scope, the structure lint, and the entity index."""
+    """Return True for any sensitive-domain page (kb/Health/... or kb/Finance/...).
+
+    This is the single firewall predicate reused by the share layer, research scope,
+    the structure lint, and the entity index.
+
+    Args:
+        title: Wiki page title to test.
+
+    Returns:
+        True if the title falls under any private-domain prefix.
+    """
     t = (title or "").lower()
     return any(t.startswith(p) for p in _PRIVATE_PREFIXES)
 
 
 def private_domain_for(title: str) -> str | None:
-    """The private domain a title belongs to, or None. (Returns a domain only once it's also in
-    DOMAINS — i.e. fully wired with a guide; before that domain_for_title won't recognise it.)"""
+    """Return the private domain a title belongs to, or None.
+
+    Returns a domain name only once it is also in DOMAINS (i.e. fully wired with a
+    guide); before that, domain_for_title will not recognise it.
+
+    Args:
+        title: Wiki page title to inspect.
+
+    Returns:
+        Private domain string (e.g. 'Health'), or None.
+    """
     d = domain_for_title(title)
     return d if d in PRIVATE_DOMAINS else None
 
 
 def parse_spec(text: str) -> dict:
-    """Extract and parse the fenced ```spec YAML block from a guide. {} if absent."""
+    """Extract and parse the fenced ```spec YAML block from a guide.
+
+    Args:
+        text: Raw guide text that may contain a fenced spec block.
+
+    Returns:
+        Parsed spec dict, or {} if absent or unparseable.
+    """
     m = _SPEC_RE.search(text or "")
     if not m:
         return {}
@@ -125,7 +197,16 @@ def parse_spec(text: str) -> dict:
 
 
 def spec_for(domain: str | None) -> dict:
-    """Effective spec for a domain: defaults ← general guide spec ← domain guide spec."""
+    """Return the effective spec for a domain by layering defaults, general guide, and domain guide.
+
+    Merge order: _DEFAULTS <- general guide spec <- domain guide spec.
+
+    Args:
+        domain: Taxonomy domain name, or None for the general spec only.
+
+    Returns:
+        Merged spec dict.
+    """
     spec = dict(_DEFAULTS)
     spec.update(parse_spec(guide_text(None)))
     if domain:
@@ -134,13 +215,27 @@ def spec_for(domain: str | None) -> dict:
 
 
 def _links(text: str) -> list[str]:
+    """Return all wikilink targets found in text.
+
+    Args:
+        text: Markdown text to scan.
+
+    Returns:
+        List of link target strings.
+    """
     from . import wikilinks
     return wikilinks.extract_links(text or "")
 
 
 def _references_slice(body: str) -> str:
-    """The text under the '## References' heading up to the next '## ' (or EOF). '' if the
-    article has no References section."""
+    """Return the text under the '## References' heading, up to the next section or EOF.
+
+    Args:
+        body: Full article markdown text.
+
+    Returns:
+        Text content of the References section, or '' if the article has none.
+    """
     m = _REFS_HEAD_RE.search(body or "")
     if not m:
         return ""
@@ -150,11 +245,20 @@ def _references_slice(body: str) -> str:
 
 
 def validate_structure(title: str, content_md: str) -> dict:
-    """Lint one article against its domain guide's spec. Returns
-    {ok, errors, warnings, stub, domain}. `errors` are blocking (an article with any
-    is quarantined, not saved); `warnings` are advisory (the revise pass can act on
-    them). A short, section-less article is a 'stub' — allowed, and exempt from the
-    lead/section requirements so a thin entity page isn't rejected."""
+    """Lint one article against its domain guide's spec.
+
+    Checks for a lead paragraph, required/recommended sections, citation integrity,
+    the Reference PII firewall, and frozen relative-time values. A short, section-less
+    article is classified as a 'stub' and is exempt from lead/section requirements.
+
+    Args:
+        title: Wiki page title, used to determine the domain and its spec.
+        content_md: Article markdown content to validate.
+
+    Returns:
+        Dict with keys: ok (bool), errors (list), warnings (list), stub (bool),
+        domain (str | None). ``errors`` are blocking; ``warnings`` are advisory.
+    """
     domain = domain_for_title(title)
     spec = spec_for(domain)
     body = content_md or ""
@@ -224,9 +328,18 @@ def validate_structure(title: str, content_md: str) -> dict:
 
 
 def seed_guides(conn) -> int:
-    """Seed/update the read-only guide pages (kb/_Style Guide + kb/<Domain>/_Guide)
-    from the prompt blocks. Idempotent — only writes when missing or changed, so it
-    won't churn a new version on every restart. Returns how many were written."""
+    """Seed or update the read-only guide pages from the prompt blocks.
+
+    Writes kb/_Style Guide and kb/<Domain>/_Guide for every domain. Idempotent —
+    only writes when a guide is missing or its text has changed, so it does not churn
+    a new version on every restart.
+
+    Args:
+        conn: SQLite connection (commits internally when anything is written).
+
+    Returns:
+        Number of guide pages written or updated.
+    """
     from . import notes as notes_svc
     written = 0
     for domain in [None, *DOMAINS]:

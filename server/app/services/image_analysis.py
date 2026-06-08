@@ -333,10 +333,18 @@ def vision_summary_frames(frames: list[bytes], filename: str = "") -> str:
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
     """Update the analysis status and detail for an attachment row.
 
-    analyzed_at is stamped on EVERY status transition, incl. 'pending' — for a pending row it is
-    # the "analysis started at" clock the stale-pending watchdog (reset_stale) measures from; for
-    # done/error it is the completion time. (Without stamping pending, a re-analyze of an old
-    # attachment would carry a stale done-era timestamp and be reaped instantly.)
+    analyzed_at is stamped on EVERY status transition including 'pending' — for a
+    pending row it is the "analysis started at" clock the stale-pending watchdog
+    (reset_stale) measures from; for done/error it is the completion time. Without
+    stamping pending, a re-analyze of an old attachment would carry a stale
+    done-era timestamp and be reaped instantly.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to update.
+        status: New status string ('pending', 'done', or 'error').
+        detail: Optional human-readable detail or error message.
+    """
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
         "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
@@ -346,7 +354,15 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
 
 
 def analyze(att_id: int) -> None:
-    """Background worker (own thread → own thread-local connection)."""
+    """Run image analysis for an attachment on a background worker thread.
+
+    Runs on its own thread with its own thread-local database connection. Calls
+    the vision model, writes the summary sidecar to the attachment row, updates
+    the FTS index and chunk embeddings, and requests a note-analysis fold-back.
+
+    Args:
+        att_id: Attachment row ID to analyze.
+    """
     from ..db import close_conn, has_conn
     owns_conn = not has_conn()   # fresh worker thread created it → we close it; inline call → leave it
     conn = get_conn()
@@ -453,6 +469,13 @@ def analyze(att_id: int) -> None:
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:
+    """Set an attachment's analysis status to 'error' and commit, ignoring failures.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to mark as errored.
+        detail: Error description to store.
+    """
     try:
         _set_status(conn, att_id, "error", detail)
         conn.commit()
@@ -461,8 +484,18 @@ def _mark_error(conn, att_id: int, detail: str) -> None:
 
 
 def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
-    """Request thread: guard against double-runs, mark pending, spawn the worker.
-    Returns the resulting status dict ({"status": ...})."""
+    """Guard against double-runs, mark pending, and spawn the analysis worker.
+
+    Called on the request thread. Returns immediately with the current status.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to analyze.
+        force: If True, restart even a pending or already-done analysis.
+
+    Returns:
+        Status dict with at least a "status" key.
+    """
     row = conn.execute(
         "SELECT mime, analysis_status FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()
@@ -493,13 +526,26 @@ STALE_PENDING_SECONDS = 1800   # 30 min
 
 
 def reset_stale(conn, older_than_seconds: int | None = None) -> int:
-    """Fail analyses left 'pending'. On boot (older_than_seconds=None) reset ALL pending — a prior
-    process died mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
-    stuck past it (a worker that hung without ever reaching done/error), never a recent, legitimately
-    in-flight one. analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
-    created_at defends any legacy row that went pending before that stamp existed. One short UPDATE,
-    so it never holds the write lock long. Covers image AND audio/video (shared columns). Returns the
-    number of rows reset."""
+    """Fail analyses left in the 'pending' state.
+
+    On boot (older_than_seconds=None) resets ALL pending rows — a prior process died
+    mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
+    stuck past it (a worker that hung without ever reaching done/error), never a
+    recent, legitimately in-flight one.
+
+    analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
+    created_at defends any legacy row that went pending before that stamp existed.
+    One short UPDATE, so it never holds the write lock long. Covers image AND
+    audio/video (shared columns).
+
+    Args:
+        conn: Database connection.
+        older_than_seconds: Reap only rows pending longer than this many seconds.
+            Pass None on boot to reap all pending rows regardless of age.
+
+    Returns:
+        Number of rows reset to 'error'.
+    """
     if older_than_seconds is None:
         cur = conn.execute(
             "UPDATE attachments SET analysis_status = 'error', "

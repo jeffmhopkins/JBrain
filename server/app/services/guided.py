@@ -384,14 +384,39 @@ def first_message(conn, link, spec, session) -> dict:
 
 
 def advance(conn, link, spec, session, message: str) -> dict:
+    """Process one recipient message and return the next interview turn.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        message: Raw text submitted by the recipient.
+
+    Returns:
+        Turn result dict from _run_turn (phase, message, progress).
+    """
     msg = _scrub_control((message or "")[:MAX_RECIPIENT_CHARS])
     return _run_turn(conn, link, spec, session, user_message=msg)
 
 
 def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
-    """One interview turn. Returns {phase, message, document?, progress}. phase is
-    'asking' (keep going) or 'review' (AI drafted the document, awaiting recipient
-    confirm). Enforces per-session and per-link (atomic) caps."""
+    """Execute one interview turn against the LLM and persist the result.
+
+    Returns a dict with keys phase, message, and optionally document/progress.
+    Phase is 'asking' (keep going) or 'review' (AI drafted the document, awaiting
+    recipient confirmation). Enforces per-session and per-link (atomic) caps.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        user_message: Scrubbed recipient message, or None for the opening turn.
+
+    Returns:
+        Dict with phase, message, and optional document/progress fields.
+    """
     if not llm.has_credentials():
         return {"phase": "error", "message": "This link isn’t available right now."}
 
@@ -460,8 +485,18 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
 
 
 def _signal(raw: str, user_message: str | None):
-    """Classify the turn from the model's OWN output (+ a deterministic injection
-    backstop on the recipient's text). Returns (kind, reason)."""
+    """Classify the turn from the model's own output plus a deterministic injection backstop.
+
+    The injection check on the recipient text is a deterministic non-severe backstop
+    (counts as a mild strike). Only the model's own signals gate severe/distress paths.
+
+    Args:
+        raw: Raw model output for the current turn.
+        user_message: Recipient text for the injection backstop check, or None.
+
+    Returns:
+        A (kind, reason) tuple where kind is 'distress', 'severe', 'mild', or None.
+    """
     if _CLOSE_RE.search(raw or ""):
         return ("distress", None)
     m = _END_RE.search(raw or "")
@@ -476,8 +511,22 @@ def _signal(raw: str, user_message: str | None):
 
 
 def _handle_mild(conn, link, spec, session, transcript, reason):
-    """De-escalation ladder: strike 1 = redirect, 2 = warn, 3 = end. Server-counted,
-    so it never relies on the model remembering how many warnings it gave."""
+    """Apply the de-escalation ladder for a mild-abuse signal.
+
+    Strike 1 redirects, strike 2 warns, strike 3 ends the session. Server-counted so
+    the ladder never relies on the model remembering how many warnings it gave.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        transcript: Current transcript list (mutated with the new assistant turn).
+        reason: The abuse reason string, or None for a generic redirect.
+
+    Returns:
+        Turn result dict (phase, message, progress).
+    """
     s = (session["strike_count"] or 0) + 1
     if s >= _STRIKE_END:
         return _terminate_abuse(conn, link, spec, session, transcript, reason or "misconduct", strikes=s)
@@ -491,8 +540,23 @@ def _handle_mild(conn, link, spec, session, transcript, reason):
 
 
 def _terminate_abuse(conn, link, spec, session, transcript, reason, strikes=None):
-    """End the session for abuse and LOCK the link (owner's choice). The transcript is
-    preserved for owner review; the owner can re-open the link if it was a mistake."""
+    """End the session for abuse, lock the link, and alert the owner.
+
+    The transcript is preserved for owner review; the owner can re-open the link if
+    the lock was a mistake.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        transcript: Current transcript list (mutated with the ending message).
+        reason: Abuse reason string (e.g. 'hate', 'threats', 'jailbreak').
+        strikes: Current strike count if already tracked; None uses the session value.
+
+    Returns:
+        Turn result dict with phase='ended'.
+    """
     from . import share as share_svc        # link management only — no brain access
     transcript.append({"role": "assistant", "content": _ENDED_MSG})
     conn.execute(
@@ -516,8 +580,21 @@ def _terminate_abuse(conn, link, spec, session, transcript, reason, strikes=None
 
 
 def _close_distress(conn, link, spec, session, transcript):
-    """Gentle, non-abuse close for a distress/safety disclosure. The link is NOT
-    locked (they may want to return); the owner is alerted to reach out."""
+    """Close the session gently for a distress or safety disclosure.
+
+    The link is NOT locked (the recipient may want to return); the owner is alerted
+    to reach out. This is not treated as abuse and does not increment the strike count.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        transcript: Current transcript list (mutated with the distress message).
+
+    Returns:
+        Turn result dict with phase='ended'.
+    """
     msg = _DISTRESS_MSG.format(owner=_owner_label())
     transcript.append({"role": "assistant", "content": msg})
     conn.execute(
@@ -538,10 +615,23 @@ def _close_distress(conn, link, spec, session, transcript):
 
 
 def _reason_label(reason: str) -> str:
+    """Map an internal abuse reason code to a human-readable label.
+
+    Args:
+        reason: Internal reason code such as 'hate' or 'jailbreak'.
+
+    Returns:
+        Human-readable label, or 'the conversation policy' for unknown codes.
+    """
     return _REASON_LABELS.get(reason, "the conversation policy")
 
 
 def _notify(body: str) -> None:
+    """Send a push notification to the owner; silently swallowed if push is unavailable.
+
+    Args:
+        body: Notification body text.
+    """
     try:
         from . import push
         push.notify_review_created("JBrain", body)
@@ -550,8 +640,21 @@ def _notify(body: str) -> None:
 
 
 def _begin_review(conn, link, spec, session, transcript, lead_message: str) -> dict:
-    """Synthesize the document and hand it to the recipient to confirm before it
-    goes to the owner."""
+    """Synthesize the document and move the session to the 'drafting' review phase.
+
+    The recipient sees the document and must confirm it before it goes to the owner.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+        transcript: Complete transcript list used to synthesize the document.
+        lead_message: The AI's closing message shown alongside the document.
+
+    Returns:
+        Turn result dict with phase='review', message, and document fields.
+    """
     doc = _synthesize(spec, session, transcript)
     conn.execute(
         "UPDATE guided_sessions SET status='drafting', document_md = ?, transcript_json = ? WHERE id = ?",
@@ -562,6 +665,19 @@ def _begin_review(conn, link, spec, session, transcript, lead_message: str) -> d
 
 
 def _synthesize(spec, session, transcript) -> str:
+    """Generate a clean Markdown document from the completed interview transcript.
+
+    Falls back to a plain transcript block if the LLM call fails, so the
+    recipient's effort is never lost.
+
+    Args:
+        spec: The guided_specs row (goal and preamble source).
+        session: The guided_sessions row (recipient name).
+        transcript: Full list of {role, content} turn dicts.
+
+    Returns:
+        Synthesized Markdown document string.
+    """
     owner, name = _owner_label(), (session["name"] or "they")
     convo = "\n".join(
         ("AI: " if t["role"] == "assistant" else f"{name}: ") + t["content"] for t in transcript
@@ -577,7 +693,17 @@ def _synthesize(spec, session, transcript) -> str:
 
 
 def submit(conn, link, spec, session) -> dict:
-    """Recipient confirms the drafted document → create the owner's review (approval #2)."""
+    """Confirm the drafted document and create the owner's review item (approval #2).
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row with the synthesized document_md.
+
+    Returns:
+        Dict with ok=True, and already=True if already submitted.
+    """
     if session["status"] == "submitted":
         return {"ok": True, "already": True}
     who = session["name"] or "Someone"

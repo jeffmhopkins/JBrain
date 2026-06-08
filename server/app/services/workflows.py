@@ -589,8 +589,14 @@ def run_progress(run_id: int) -> dict | None:
 
 
 def _execute_manual_run(wf_id: int, run_id: int) -> None:
-    """Background worker: run the pipeline on its OWN connection, then update the
-    pre-created run row + the workflow's last_status."""
+    """Background worker that runs the pipeline on its own connection and updates the run row.
+
+    Runs the pipeline, then updates the pre-created run row and the workflow's last_status.
+
+    Args:
+        wf_id: Workflow ID to execute.
+        run_id: Pre-created workflow_runs row ID to update with the outcome.
+    """
     from ..db import get_conn
     from . import pipeline
     conn = get_conn()  # this thread's own sqlite connection
@@ -621,6 +627,18 @@ def _execute_manual_run(wf_id: int, run_id: int) -> None:
 
 
 def run_workflow(conn, wf, context: dict | None = None, commit: bool = True) -> tuple[str, str]:
+    """Execute a workflow's action pipeline and log the outcome.
+
+    Args:
+        conn: SQLite connection.
+        wf: Workflow DB row.
+        context: Optional trigger context dict passed to the pipeline.
+        commit: Whether to commit after the run (False when the caller manages
+            the transaction, e.g. the entry_created hook).
+
+    Returns:
+        Tuple of (status, detail) where status is 'ok' or 'error'.
+    """
     from . import pipeline
 
     cfg = json.loads(wf["action_config"] or "{}")
@@ -649,10 +667,18 @@ def run_workflow(conn, wf, context: dict | None = None, commit: bool = True) -> 
 
 
 def fire_event(conn, event: str, context: dict | None = None, commit: bool = True) -> None:
-    """Run enabled event-workflows whose trigger matches `event` (+ optional match).
+    """Run all enabled event-workflows whose trigger matches the given event name.
 
-    `commit=False` when fired from inside another write transaction so the
-    workflow's writes are flushed by the caller's commit (atomicity)."""
+    Also checks optional per-workflow match conditions. `commit=False` when fired
+    from inside another write transaction so the workflow's writes are flushed by the
+    caller's commit (atomicity).
+
+    Args:
+        conn: SQLite connection.
+        event: Event name to match against trigger_config.event.
+        context: Optional context dict for match conditions and pipeline steps.
+        commit: Whether to commit after each matching workflow runs.
+    """
     rows = conn.execute(
         "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'event'"
     ).fetchall()
@@ -667,6 +693,14 @@ def fire_event(conn, event: str, context: dict | None = None, commit: bool = Tru
 
 
 def _parse_utc(ts: str | None):
+    """Parse a 'YYYY-MM-DD HH:MM:SS' UTC timestamp string into an aware datetime, or None.
+
+    Args:
+        ts: Timestamp string or None.
+
+    Returns:
+        UTC-aware datetime, or None if ts is absent or malformed.
+    """
     if not ts:
         return None
     try:
@@ -676,8 +710,19 @@ def _parse_utc(ts: str | None):
 
 
 def schedule_due(last_run_at: str | None, tc: dict, now: datetime | None = None) -> bool:
-    """Is a scheduled workflow due? Supports cron ("0 7 * * *", in the server's
-    TZ) and interval_seconds. Cron never fires immediately on first enable."""
+    """Return True if a scheduled workflow is due to run now.
+
+    Supports cron expressions ("0 7 * * *", evaluated in the server's timezone) and
+    interval_seconds. Cron never fires immediately on first enable.
+
+    Args:
+        last_run_at: UTC timestamp of the last successful run, or None if never run.
+        tc: Trigger config dict with optional 'cron' and/or 'interval_seconds' keys.
+        now: Current time; defaults to utcnow() when None.
+
+    Returns:
+        True when the workflow should fire now.
+    """
     now = now or datetime.now(timezone.utc)
     last = _parse_utc(last_run_at)
     cron = tc.get("cron")
@@ -703,7 +748,14 @@ def schedule_due(last_run_at: str | None, tc: dict, now: datetime | None = None)
 
 
 def run_due_scheduled(conn) -> int:
-    """Run scheduled workflows (cron or interval) that are due. Returns count run."""
+    """Run all scheduled workflows (cron or interval) that are currently due.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Number of workflows that were run.
+    """
     rows = conn.execute(
         "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'schedule'"
     ).fetchall()
@@ -723,9 +775,21 @@ def run_due_scheduled(conn) -> int:
 # to every workflow sharing the event name regardless of which place it watches.
 
 def _loc_place_decision(conn, kind: str, tc: dict, now: datetime):
-    """For a place-bound location trigger, return (marker, context) when it should
-    fire now, else (None, None). `marker` makes the firing idempotent per visit/
-    departure (location_fired stores the last marker per workflow+kind)."""
+    """Return (marker, context) when a place-bound location trigger should fire, else (None, None).
+
+    `marker` makes firing idempotent per visit/departure — location_fired stores the last
+    marker per workflow+kind.
+
+    Args:
+        conn: SQLite connection.
+        kind: Trigger kind: 'arrived', 'left', 'dwell', or 'away'.
+        tc: Trigger config dict with a 'place' name and optional 'minutes' threshold.
+        now: Current UTC datetime.
+
+    Returns:
+        Tuple of (marker_str, context_dict) when the trigger condition is met,
+        or (None, None) otherwise.
+    """
     name = (tc.get("place") or "").strip()
     if not name:
         return None, None
@@ -768,8 +832,19 @@ def _loc_place_decision(conn, kind: str, tc: dict, now: datetime):
 
 
 def _loc_new_place(conn, tc: dict, now: datetime):
-    """An unlabeled stay (not near any saved place / coord-note) held long enough,
-    in the last ~2 days. Marker = coarse coords so each distinct spot fires once."""
+    """Return (marker, context) for the most recent unlabeled stay, or (None, None).
+
+    An unlabeled stay is one not near any saved place or coord-note, held long enough
+    (within the last ~2 days). Marker = coarse coords so each distinct spot fires once.
+
+    Args:
+        conn: SQLite connection.
+        tc: Trigger config dict with optional 'minutes' minimum dwell threshold.
+        now: Current UTC datetime.
+
+    Returns:
+        Tuple of (coarse_coord_marker, context_dict) or (None, None).
+    """
     from . import geotrail
     min_min = float(tc.get("minutes", 30) or 30)
     since = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
@@ -783,8 +858,17 @@ def _loc_new_place(conn, tc: dict, now: datetime):
 
 
 def evaluate_location_triggers(conn) -> int:
-    """Fire due location:* event workflows. Called from the scheduler loop on its
-    own connection (LLM-capable actions run here, where latency is fine)."""
+    """Fire due location:* event workflows, deduplicating via location_fired.
+
+    Called from the scheduler loop on its own connection (LLM-capable actions run
+    here, where latency is fine).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Number of location workflows successfully fired this pass.
+    """
     rows = conn.execute(
         "SELECT * FROM workflows WHERE enabled = 1 AND trigger_type = 'event'"
     ).fetchall()

@@ -306,8 +306,19 @@ def audit_display_mismatches(conn) -> list[dict]:
 
 
 def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
-    """Drop the alias on one [[Target|Display]] in a note so it renders the target's clean
-    short name. Versioned/undoable. Returns whether anything changed."""
+    """Drop the alias on one [[Target|Display]] link so it renders the target's clean short name.
+
+    The change is versioned and undoable via the note's version history.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note containing the link to fix.
+        target: Exact target title of the link to rewrite.
+        display: Current display alias to remove.
+
+    Returns:
+        True if the link was found and rewritten, False otherwise.
+    """
     from . import notes as notes_svc  # lazy — notes imports this module
 
     row = conn.execute(
@@ -339,8 +350,17 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
 
 
 def normalize_all_link_labels(conn, limit: int = 5000) -> dict:
-    """Drop redundant/mismatched aliases across the whole wiki (deterministic, no LLM).
-    Used by the nightly sweep and the post-write KB maintenance/build passes."""
+    """Drop redundant and mismatched aliases across the whole wiki (deterministic, no LLM).
+
+    Used by the nightly sweep and the post-write KB maintenance/build passes.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of findings to fix in this pass.
+
+    Returns:
+        Dict with 'fixed', 'mismatches', and 'verbose' counts.
+    """
     mism = verb = 0
     for f in scan_link_labels(conn)[: int(limit)]:
         if fix_note_link(conn, f["source_id"], f["target"], f["display"]):

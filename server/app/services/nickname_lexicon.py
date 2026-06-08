@@ -132,18 +132,40 @@ _CANON: dict[str, str] = _build_canon()
 
 
 def canon_token(tok: str) -> str:
-    """The group's canonical token for `tok`, or `tok` unchanged if it's in no group."""
+    """Return the canonical token for ``tok``, or ``tok`` unchanged if it is in no group.
+
+    Args:
+        tok: Lowercase token to look up.
+
+    Returns:
+        The formal group token, or the input token if it has no mapping.
+    """
     if not tok:
         return tok
     return _CANON.get(tok.lower(), tok)
 
 
 def map_tokens(tokens) -> frozenset[str]:
-    """Map an iterable of tokens through canon_token, returning the canonical token set
-    (suffix tokens are mapped through unchanged like any non-name token)."""
+    """Map an iterable of tokens through canon_token and return the canonical token set.
+
+    Suffix tokens (jr/sr/iii/...) pass through unchanged like any non-name token.
+
+    Args:
+        tokens: Iterable of lowercase token strings.
+
+    Returns:
+        Frozenset of canonical token strings.
+    """
     return frozenset(canon_token(t) for t in tokens)
 
 
 def suffixes(tokens) -> set[str]:
-    """The generational-suffix tokens (jr/sr/iii/...) present in `tokens`."""
+    """Return the generational-suffix tokens present in ``tokens``.
+
+    Args:
+        tokens: Iterable of token strings (any case).
+
+    Returns:
+        Set of lowercased suffix tokens (e.g. ``{'jr'}``) found in the input.
+    """
     return {t.lower() for t in tokens if t and t.lower() in SUFFIXES}

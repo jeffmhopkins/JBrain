@@ -270,12 +270,21 @@ def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
 
 
 def dismiss(conn, talk_id: int, reason: str | None = None) -> bool:
-    """Owner terminal close — the same DB state as a maintenance resolution (resolved_at +
-    resolution) but LABELLED 'dismissed by owner' so the audit trail distinguishes owner
-    judgement from work the loop actually did. Guarded on resolved_at IS NULL (a harmless
-    no-op against a concurrent maintenance resolve). Returns whether a row was closed.
-    The caller must refuse this on 'correction' items (their truth note still heals the
-    article next pass, so hiding the row would mislead)."""
+    """Owner terminal close — same DB state as a maintenance resolve but labelled 'dismissed by owner'.
+
+    The label distinguishes owner judgement from work the maintenance loop actually did.
+    Guarded on resolved_at IS NULL (a harmless no-op against a concurrent maintenance
+    resolve). The caller must refuse dismissal of 'correction' items — their truth note
+    still heals the article on the next pass, so hiding the row would mislead.
+
+    Args:
+        conn: Database connection.
+        talk_id: The article_talk.id to dismiss.
+        reason: Optional reason appended to the 'dismissed by owner' label.
+
+    Returns:
+        True if a row was closed, False if it was already resolved.
+    """
     reason = (reason or "").strip()
     label = "dismissed by owner" + (f": {reason}" if reason else "")
     cur = conn.execute(
@@ -285,9 +294,19 @@ def dismiss(conn, talk_id: int, reason: str | None = None) -> bool:
 
 
 def open_for(conn, article_title: str) -> list[dict]:
-    """Unresolved entries — what the maintenance pass reads to target its work.
-    `is_correction`/`source_note_id` let the pass treat an owner correction as
-    authoritative and feed its promoted note in as a source."""
+    """Return unresolved talk entries for an article, ordered by creation time.
+
+    This is what the maintenance pass reads to target its work. The
+    is_correction/source_note_id fields let the pass treat an owner correction as
+    authoritative and feed its promoted note in as a source.
+
+    Args:
+        conn: Database connection.
+        article_title: Title of the KB article.
+
+    Returns:
+        List of open talk entry dicts.
+    """
     rows = conn.execute(
         "SELECT id, kind, body, author, created_at, is_correction, source_note_id "
         "FROM article_talk WHERE article_title=? AND resolved_at IS NULL ORDER BY created_at",
@@ -297,5 +316,11 @@ def open_for(conn, article_title: str) -> list[dict]:
 
 
 def resolve(conn, talk_id: int) -> None:
+    """Resolve an open talk item without recording how it was addressed.
+
+    Args:
+        conn: Database connection.
+        talk_id: The article_talk.id to resolve.
+    """
     conn.execute("UPDATE article_talk SET resolved_at=datetime('now') WHERE id=? AND resolved_at IS NULL",
                  (talk_id,))

@@ -20,8 +20,18 @@ from . import notes as notes_svc
 
 
 def verify_content(conn, content: str) -> tuple[str, list[str]]:
-    """Neutralize every [[Title]] in `content` that resolves to no live note — the nightly
-    dead-link backstop, applied to interactively-staged content. Returns (clean, dropped_titles)."""
+    """Neutralize every [[Title]] that resolves to no live note in interactively-staged content.
+
+    Applies the nightly dead-link backstop to staged content so fabricated wikilinks
+    can never reach a saved note.
+
+    Args:
+        conn: Database connection.
+        content: Markdown content string to verify.
+
+    Returns:
+        A (clean_content, dropped_titles) tuple where dropped_titles lists neutralized link targets.
+    """
     from . import wiki_build
     if not content:
         return content, []
@@ -32,6 +42,18 @@ def verify_content(conn, content: str) -> tuple[str, list[str]]:
 
 
 def _is_kb(conn, title: str, payload: dict) -> bool:
+    """Return True if the staged action targets a KB article.
+
+    Checks the payload's kind field, the title prefix, and the existing note's kind.
+
+    Args:
+        conn: Database connection.
+        title: Note title from the staged action payload.
+        payload: The full staged action payload dict.
+
+    Returns:
+        True if the target is a KB article, False otherwise.
+    """
     if (payload.get("kind") or "") == "kb" or (title or "").lower().startswith("kb/"):
         return True
     note = notes_svc.get_by_title(conn, (title or "").strip()) if title else None
@@ -39,9 +61,20 @@ def _is_kb(conn, title: str, payload: dict) -> bool:
 
 
 def warnings(conn, action_type: str, payload: dict) -> list[str]:
-    """Read-only warnings for a staged action (never blocks): links that will be stripped on save
-    because their target doesn't exist, a LINK to a missing target (apply refuses it), and — for a
-    kb/ article — footnote/citation integrity. Surfaced to the model (propose) and the user (preview)."""
+    """Generate read-only warnings for a staged action without blocking it.
+
+    Warns about: wikilinks that will be stripped on save (target missing), a LINK action
+    to a missing target (apply will refuse it), and — for kb/ articles — footnote/citation
+    integrity issues. Surfaced to the model at propose time and to the user in the preview.
+
+    Args:
+        conn: Database connection.
+        action_type: Staged action type string (e.g. 'CREATE', 'UPDATE', 'LINK').
+        payload: The staged action payload dict.
+
+    Returns:
+        List of human-readable warning strings (empty if none).
+    """
     out: list[str] = []
     if action_type in ("CREATE", "UPDATE"):
         content = payload.get("content") or ""

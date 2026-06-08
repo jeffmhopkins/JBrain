@@ -2478,19 +2478,27 @@ def _now_sec(conn) -> str:
 
 
 def maintain_batch(conn, limit: int = 20) -> dict:
-    """Run the maintenance pass — but only over articles with a talk item raised SINCE the
-    last pass (a watermark), not every article with any open item. This is the compute gate:
-    an article whose only open items are old unsettled ones with no new directive gets
-    skipped (its sources changing is update_batch's job — that pass re-examines all its open
-    items). So maintenance specifically picks up NEW owner directives / writer-raised items.
+    """Run the scheduled maintenance pass over articles with new talk items since the last run.
 
-    Applies each valid revision (versioned), closes the items the model genuinely settled
-    (recording HOW), records any new items, and advances the watermark.
+    The compute gate: an article whose only open items are old unsettled ones with no new
+    directive gets skipped (its sources changing is update_batch's job). So maintenance
+    specifically picks up NEW owner directives / writer-raised items. Applies each valid
+    revision (versioned), closes genuinely settled items (recording HOW), records new items,
+    and advances the watermark.
 
-    Watermark discipline (mirrors update_batch): advance only over the LEADING run of new
+    Watermark discipline (mirrors update_batch): advances only over the LEADING run of new
     items whose article succeeded — a failed (or deferred-by-cap) article holds the watermark
     at that item, so nothing is silently skipped; the next run retries from there. First run
-    drains the whole existing backlog of open items once, then gates on newness thereafter."""
+    drains the whole existing backlog once, then gates on newness thereafter.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of distinct articles to maintain per run.
+
+    Returns:
+        Dict with keys ``articles``, ``changed``, ``resolved``, ``examined``,
+        ``kept_open``, ``failed``, and optionally ``deferred`` or ``skipped``.
+    """
     from ..db import get_meta, set_meta
     since = get_meta(_MAINT_WATERMARK)
     if since is None:
@@ -2569,7 +2577,15 @@ def maintain_batch(conn, limit: int = 20) -> dict:
 
 
 def _articles_citing(conn, note_id: int) -> set[str]:
-    """kb articles that cite a given source note (via the links table)."""
+    """Return titles of kb articles that cite a given source note via the links table.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Id of the source note to look up.
+
+    Returns:
+        Set of kb article titles.
+    """
     rows = conn.execute(
         "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
         "WHERE l.target_note_id=? AND s.kind='kb' AND s.deleted_at IS NULL", (note_id,)).fetchall()
@@ -2577,10 +2593,20 @@ def _articles_citing(conn, note_id: int) -> set[str]:
 
 
 def _articles_citing_title(conn, title: str) -> set[str]:
-    """kb articles that cite a note by TITLE. Used for DELETED sources: soft_delete nulls
-    links.target_note_id (so the id-based lookup finds nothing), but it leaves target_title
-    intact — so we match on that to still route a deletion to the articles that cited it
-    and let them purge claims whose only source just disappeared."""
+    """Return titles of kb articles that cite a note by its title string.
+
+    Used for DELETED sources: soft_delete nulls links.target_note_id (so the id-based lookup
+    finds nothing), but it leaves target_title intact — so we match on that to still route a
+    deletion to the articles that cited it and let them purge claims whose only source just
+    disappeared.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the (possibly deleted) source note.
+
+    Returns:
+        Set of kb article titles.
+    """
     rows = conn.execute(
         "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
         "WHERE lower(l.target_title)=lower(?) AND s.kind='kb' AND s.deleted_at IS NULL", (title,)).fetchall()
@@ -2588,7 +2614,17 @@ def _articles_citing_title(conn, title: str) -> set[str]:
 
 
 def _articles_for_note_entities(conn, note_id: int) -> set[str]:
-    """kb articles whose entities this note mentions (so a new fact routes to its subject)."""
+    """Return kb article titles whose entities are mentioned by the given note.
+
+    Used so a new or updated note routes to the articles about its subjects.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Id of the changed note.
+
+    Returns:
+        Set of kb article titles.
+    """
     rows = conn.execute(
         "SELECT DISTINCT e.article_title AS t FROM entity_mentions m JOIN entities e ON e.id=m.entity_id "
         "WHERE m.note_id=? AND e.article_title IS NOT NULL", (note_id,)).fetchall()
@@ -2596,11 +2632,22 @@ def _articles_for_note_entities(conn, note_id: int) -> set[str]:
 
 
 def _route_medical_to_health(conn, note_title: str, targets: set[str]) -> set[str]:
-    """Keep a person's medical captures out of their (now medical-free) People article once the
+    """Redirect medical notes from a person's People article to their Health article.
+
+    Keeps a person's medical captures out of their (now medical-free) People article once the
     health split has run: a notes/medical/… note that routes to kb/People/<X> is retargeted to
     kb/Health/<X> WHEN that health page exists. Existence-gated, so before the one-time split
     (no health page yet) behaviour is unchanged — there is never a half-split state. General
-    medical that routes to a Reference article is left alone."""
+    medical that routes to a Reference article is left alone.
+
+    Args:
+        conn: SQLite connection.
+        note_title: Title of the changed note.
+        targets: Current routing target set.
+
+    Returns:
+        Adjusted target set with People→Health redirections applied where applicable.
+    """
     if not (note_title or "").lower().startswith("notes/medical/"):
         return targets
     from . import health_split

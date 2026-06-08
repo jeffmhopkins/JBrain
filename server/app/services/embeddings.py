@@ -351,6 +351,15 @@ def upsert_attachment_embeddings(conn, attachment_id: int, note_id: int | None, 
 
 
 def delete_attachment_embeddings(conn, attachment_id: int) -> None:
+    """Delete all chunk rows and vectors for an attachment.
+
+    vec_chunks is a virtual table — FK CASCADE on attachment_chunks won't reach it,
+    so vectors are deleted explicitly before removing the chunk rows.
+
+    Args:
+        conn: SQLite connection.
+        attachment_id: Attachment whose chunks and vectors should be removed.
+    """
     # vec_chunks is a virtual table: the FK CASCADE on attachment_chunks won't
     # reach it, so delete the vectors explicitly first.
     for r in conn.execute(

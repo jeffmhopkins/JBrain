@@ -20,6 +20,8 @@ entry_router = APIRouter(prefix="/api/notes", tags=["notes"])
 
 
 class NoteIn(BaseModel):
+    """Request body for creating or updating a note."""
+
     title: str
     content_md: str = ""
 

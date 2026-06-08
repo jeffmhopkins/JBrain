@@ -3015,12 +3015,34 @@ def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
 def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None, notes=None, intro="",
                                 persona_voice="", topics="", lab_analytes=None, lab_from=None, lab_to=None,
                                 ttl_days=0, bind=False, single_use=False):
-    """Mint a DRAFT scoped, read-only research Q&A link — the INVERSE of guided intake
-    (it ANSWERS from the owner's notes instead of collecting). `prefixes` (folders) and
-    `notes` (exact titles) only FIND candidate notes; the owner approves exactly which
-    are exposed and activates the link in Shares. Never expose a root/whole-brain scope.
-    Optionally `lab_analytes` ALSO lets the assistant look up & chart specific labs (still
-    owner-approved & activated). A labs-only assisted link is allowed (no folder/note needed)."""
+    """Implement the create_research_share tool: mint a DRAFT scoped read-only research Q&A link.
+
+    The inverse of guided intake: answers from the owner's notes instead of
+    collecting. `prefixes` (folders) and `notes` (exact titles) only FIND
+    candidate notes; the owner approves exactly which are exposed and activates
+    the link in Shares. Never exposes a root/whole-brain scope. Optionally
+    `lab_analytes` also lets the assistant look up and chart specific labs
+    (still owner-approved). A labs-only link is allowed (no folder/note needed).
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        label: Short label for the owner's reference.
+        prefixes: Folder path(s) to draw candidate notes from.
+        notes: Exact note titles to expose.
+        intro: Optional greeting the recipient sees.
+        persona_voice: Optional tone/role for the answering AI.
+        topics: Hard scope the AI must follow.
+        lab_analytes: Optional analyte_key(s) to also expose.
+        lab_from: Optional ISO lower bound clamping the shared labs window.
+        lab_to: Optional ISO upper bound clamping the shared labs window.
+        ttl_days: Link TTL in days (0 = never).
+        bind: Lock to the first device that opens it.
+        single_use: Allow only one recipient session.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import share as share_svc
     from . import research as research_svc
     from . import research_scope as rscope
@@ -3055,10 +3077,25 @@ def _tool_create_research_share(conn, conversation_id, label=None, prefixes=None
 
 def _tool_create_chat_share(conn, conversation_id, label=None, owner_name=None, persist=True,
                             otp_required=False, ttl_days=0):
-    """Mint a DRAFT end-to-end-encrypted chat link. Because the channel key is generated in the
-    owner's browser (the server never sees it), the AI can only set it up — the owner FINALIZES
-    it in one tap under Advanced → Shares, which mints the key and reveals the link (+ one-time
-    code, if required) to send."""
+    """Implement the create_chat_share tool: mint a DRAFT end-to-end-encrypted chat link.
+
+    The channel key is generated in the owner's browser (the server never sees
+    it), so the AI can only set the link up — the owner FINALIZES it in one tap
+    under Advanced → Shares, which mints the key and reveals the link (and a
+    one-time code, if required) to send.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        label: Short label for the owner's reference.
+        owner_name: Display name the recipient sees.
+        persist: Keep an encrypted backlog; False = ephemeral relay only.
+        otp_required: Require a one-time code delivered out-of-band.
+        ttl_days: Expiry in days (0 = never).
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import chat_share as chat_svc
     token, link_id = chat_svc.create_pending_channel(
         conn, persist=bool(persist), otp_required=bool(otp_required),
@@ -3085,6 +3122,14 @@ def _tool_create_chat_share(conn, conversation_id, label=None, owner_name=None, 
 
 
 def _tool_list_share_links(conn):
+    """Implement the list_share_links tool: return all active share links.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Untrusted-fenced list of active links, or 'no active share links'.
+    """
     from . import share as share_svc
     rows = conn.execute(
         "SELECT sl.token, sl.scope, sl.kind, sl.label, n.title FROM share_links sl "
@@ -3098,6 +3143,20 @@ def _tool_list_share_links(conn):
 
 
 def _tool_revoke_share_link(conn, conversation_id, token=None, title=None):
+    """Implement the revoke_share_link tool: deactivate share links by token or note title.
+
+    Captures the exact links being revoked so (a) the message can name the kinds
+    affected and (b) Undo reactivates only these tokens.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        token: Specific link token to revoke, or None.
+        title: Note title whose active links should all be revoked, or None.
+
+    Returns:
+        Tuple (applied_message_or_error, applied_event_or_None).
+    """
     # Capture the exact links being revoked so (a) the message can name the kinds
     # affected (revoking by title can hit view/edit/guided/research at once) and
     # (b) Undo reactivates ONLY these tokens, not every link the note ever had.
@@ -3126,7 +3185,24 @@ def _tool_revoke_share_link(conn, conversation_id, token=None, title=None):
 
 
 def _run_tool(conn, conversation_id, name: str, args: dict, mode: str = "assisted"):
-    """Returns (result_text, event_or_None). event is an SSE dict to surface."""
+    """Dispatch a named tool call and return (result_text, event_or_None).
+
+    Enforces a hard mode boundary (fail closed): never dispatches a tool the
+    current mode doesn't advertise, even if a replayed or injected turn names
+    it. This is the real enforcement of research mode's read-only guarantee,
+    not just omission from the tool list.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        name: Tool name the model requested.
+        args: Parsed argument dict from the model's tool call.
+        mode: Current agent mode ('assisted', 'research', or 'analyze').
+
+    Returns:
+        Tuple (result_text, event_or_None) where event is an SSE dict to
+        surface to the client (e.g. staging or applied events).
+    """
     # Hard mode boundary (fail closed): never dispatch a tool the current mode
     # doesn't advertise, even if a replayed/injected turn names it. This is the
     # real enforcement of research mode's read-only guarantee, not just omission.
@@ -3288,10 +3364,26 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 
 
 def _norm_url(u: str) -> str:
+    """Strip trailing punctuation from a URL for comparison.
+
+    Args:
+        u: Raw URL string, possibly followed by sentence punctuation.
+
+    Returns:
+        URL with trailing '.,;:)\"\'' characters removed.
+    """
     return u.rstrip(".,;:)\"'")
 
 
 def _extract_urls(text: str) -> set[str]:
+    """Return the set of normalised URLs found in text.
+
+    Args:
+        text: Arbitrary text, possibly containing URLs.
+
+    Returns:
+        Set of stripped URL strings.
+    """
     return {_norm_url(u) for u in _URL_RE.findall(text or "")}
 
 

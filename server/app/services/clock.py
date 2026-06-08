@@ -125,6 +125,17 @@ def _humanize(seconds: float) -> str:
 
 
 def _to_dt(arg: str, tz: ZoneInfo) -> datetime | None:
+    """Parse an ISO date/datetime string into a timezone-aware datetime.
+
+    Naive datetimes are assumed to be in the given timezone.
+
+    Args:
+        arg: ISO 8601 date or datetime string.
+        tz: Timezone to apply to naive datetimes.
+
+    Returns:
+        Timezone-aware datetime, or None if parsing fails.
+    """
     s = arg.strip().replace(" ", "T")
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
@@ -136,11 +147,22 @@ def _to_dt(arg: str, tz: ZoneInfo) -> datetime | None:
 
 
 def expand_tokens(text: str, *, snapshot: bool = False, now: datetime | None = None) -> str:
-    """Replace @t[...] tokens with their live value. A malformed/parse-failed
-    token is left VERBATIM (never throws, never blanks). `snapshot=True` renders
-    a dated, self-explaining value for the evergreen KB (e.g.
-    '40 (as of 2026-06-01; born 1986-03-01)') instead of a bare live value.
-    `now` (an aware datetime) is injectable for deterministic tests."""
+    """Replace @t[...] tokens in text with their live computed values.
+
+    A malformed or parse-failed token is left verbatim — this function never
+    raises and never blanks a token.
+
+    Args:
+        text: Source text that may contain @t[age:DATE], @t[until:ISO], or
+            @t[since:ISO] tokens.
+        snapshot: If True, renders a dated self-explaining value for the evergreen
+            KB, e.g. '40 (as of 2026-06-01; born 1986-03-01)', instead of a bare
+            live value.
+        now: Injection point for a known aware datetime, used for deterministic tests.
+
+    Returns:
+        Text with all recognised @t[...] tokens replaced.
+    """
     if not text or "@t[" not in text:
         return text
     tz = app_tz()

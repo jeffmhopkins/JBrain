@@ -18,6 +18,16 @@ from . import embeddings
 
 
 def _fts_query(q: str) -> str:
+    """Build an FTS5 query string that prefix-matches every token in q.
+
+    Tokens are quoted to neutralise FTS operators (AND, OR, NOT, etc.).
+
+    Args:
+        q: Raw search query.
+
+    Returns:
+        FTS5 query string safe for a MATCH clause.
+    """
     # Prefix-match each token; quote to neutralise FTS operators.
     toks = [t for t in (q or "").replace('"', " ").split() if t]
     return " ".join(f'"{t}"*' for t in toks) or '""'

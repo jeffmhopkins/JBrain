@@ -223,6 +223,18 @@ def _apply_person(conn, plan: dict, on_conflict: str) -> dict:
 
 
 def _scan(conn, *, dry_run: bool, limit: int, on_conflict: str) -> dict:
+    """Scan all kb/People/* articles and apply (or plan) health splits.
+
+    Args:
+        conn: Database connection.
+        dry_run: If True, plan splits without writing anything.
+        limit: Maximum number of splits to apply in a live run.
+        on_conflict: Conflict resolution for existing health pages ('skip' or 'append').
+
+    Returns:
+        Report dict with keys: ok, dry_run, scanned, extracted, conflicts, borderline,
+        errors, people (list of split records), flagged (list of issue records).
+    """
     rep = {"ok": True, "dry_run": dry_run, "scanned": 0, "extracted": 0,
            "conflicts": 0, "borderline": 0, "errors": 0, "people": [], "flagged": []}
     rows = conn.execute(
@@ -260,9 +272,24 @@ def _scan(conn, *, dry_run: bool, limit: int, on_conflict: str) -> dict:
 
 
 def extract_health(conn, *, dry_run: bool = True, limit: int = 200, on_conflict: str = "skip") -> dict:
-    """Scan kb/People/* for personal medical sections and (unless dry_run) move each into a
-    kb/Health/<Person> page. Apply runs under the KB write lock so it can't interleave with the
-    nightly incremental update / maintenance. dry_run reports what WOULD move and writes nothing."""
+    """Scan kb/People/* for personal medical sections and move them to kb/Health/<Person> pages.
+
+    When dry_run is True, reports what would be moved without writing anything. Live runs
+    hold the KB write lock so they can't interleave with the nightly incremental update or
+    maintenance jobs.
+
+    Args:
+        conn: Database connection.
+        dry_run: If True, plan and report without writing (default True).
+        limit: Maximum splits to apply in a live run.
+        on_conflict: 'skip' (default) to leave existing health pages untouched, or
+            'append' to merge new sections onto them.
+
+    Returns:
+        Report dict from _scan with ok, dry_run, scanned, extracted, conflicts, borderline,
+        errors, people, flagged keys; or {'ok': False, 'skipped': reason} if the KB lock
+        is held.
+    """
     dry_run = _truthy(dry_run)
     if dry_run:
         return _scan(conn, dry_run=True, limit=int(limit), on_conflict=str(on_conflict))
@@ -276,9 +303,19 @@ def extract_health(conn, *, dry_run: bool = True, limit: int = 200, on_conflict:
 
 
 def health_page_for(conn, people_title: str) -> str | None:
-    """The kb/Health/<leaf> page that holds this person's medical record, if one exists — used
-    by the incremental builder to route a person's medical captures to their health page instead
-    of their (now medical-free) People article. Existence-gated: no health page → no rerouting."""
+    """Return the kb/Health page that holds this person's medical record, if one exists.
+
+    Used by the incremental builder to route new medical captures to the person's health
+    page instead of their (now medical-free) People article. Existence-gated: no health
+    page means no rerouting.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the People article (must start with 'kb/People/').
+
+    Returns:
+        The kb/Health/* title string, or None if no health page exists for this person.
+    """
     if not (people_title or "").lower().startswith("kb/people/"):
         return None
     target = "kb/Health/" + people_title.split("/")[-1]

@@ -15,10 +15,27 @@ from . import geo, entity_index
 
 
 def _loc_title(name: str) -> str:
+    """Return the canonical 'loc/<name>' note title for a place name.
+
+    Args:
+        name: Place name.
+
+    Returns:
+        Title string in 'loc/<name>' form.
+    """
     return f"loc/{name.strip().strip('/')}"
 
 
 def _note_by_slug(conn, slug: str):
+    """Return a non-deleted note row by slug, or None.
+
+    Args:
+        conn: Database connection.
+        slug: Note slug to look up.
+
+    Returns:
+        Note row with id, slug, and content_md, or None.
+    """
     if not slug:
         return None
     return conn.execute(
@@ -27,7 +44,18 @@ def _note_by_slug(conn, slug: str):
 
 
 def ensure_note(conn, place_id: int) -> str | None:
-    """Create/find/restore the loc/<name> note backing this place and link it back."""
+    """Create, find, or restore the loc/<name> note backing a place and link it back.
+
+    Callers own the transaction: this function never commits and raises on error so
+    the caller's rollback unwinds cleanly.
+
+    Args:
+        conn: Database connection.
+        place_id: ID of the place whose note should be ensured.
+
+    Returns:
+        Note slug string, or None if no such place exists.
+    """
     place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         return None
@@ -64,10 +92,19 @@ _LOC_RE = re.compile(r"(?m)^<!-- kbplace -->.*$")
 
 
 def geofence_for(conn, name: str) -> dict | None:
-    """The saved geofence (a `places` row) that a place name refers to, or None. Matches by
-    normalized name/alias first; else by COORDINATES — the place entity's coord-stamped
-    mention-notes that fall inside a geofence vote for it (handles name drift like
-    'the house' -> the saved 'Home')."""
+    """Return the saved geofence row that a place name refers to, or None.
+
+    Matches by normalised name/alias first; else by coordinates — coord-stamped
+    mention-notes for the entity that fall inside a geofence vote for it, handling
+    name drift like 'the house' -> the saved 'Home'.
+
+    Args:
+        conn: Database connection.
+        name: Place name or alias to resolve.
+
+    Returns:
+        Places row dict, or None if no geofence matches.
+    """
     places = [dict(p) for p in conn.execute(
         "SELECT id, name, lat, lon, radius_m, note_slug FROM places").fetchall()]
     if not places or not (name or "").strip():
@@ -95,8 +132,19 @@ def geofence_for(conn, name: str) -> dict | None:
 
 
 def _apply_box(conn, art_title: str, gf: dict, addr: dict | None) -> bool:
-    """Ensure the kb/Places article carries a single marked location box (idempotent; replaces
-    a stale one). Versioned. Returns True if the body changed."""
+    """Ensure a kb/Places article carries exactly one marked location box.
+
+    Idempotent: replaces a stale box if present. Versioned.
+
+    Args:
+        conn: Database connection.
+        art_title: Title of the kb/Places knowledge article.
+        gf: Geofence row dict with lat, lon, and name.
+        addr: Optional reverse-geocode result dict; may be None.
+
+    Returns:
+        True if the article body was changed.
+    """
     row = conn.execute(
         "SELECT id, content_md FROM notes WHERE title=? AND deleted_at IS NULL AND kind='kb'",
         (art_title,)).fetchone()

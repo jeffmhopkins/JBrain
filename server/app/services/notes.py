@@ -99,6 +99,7 @@ def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int)
     old_forms = _path_forms(old_title)   # {'jeff', 'people/jeff', 'kb/people/jeff'}
 
     def _rewrite(m: "re.Match") -> str:
+        """Rewrite one [[old_title|alias]] match, dropping a stale echo alias."""
         alias = m.group(1) or ""           # includes leading "|", or ""
         label = alias[1:].strip() if alias else ""
         if label and label.lower() in old_forms:

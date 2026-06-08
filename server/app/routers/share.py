@@ -1036,8 +1036,26 @@ class ChatJoinIn(BaseModel):
 
 @router.post("/{token}/chat/join")
 def chat_join(token: str, body: ChatJoinIn, request: Request, response: Response):
-    """Claim the (1:1) chat link to THIS browser and return the wrapped key so the
-    recipient can derive the channel key from the URL fragment [+ OTP] client-side."""
+    """Claim a 1:1 encrypted-chat link to this browser and return the wrapped channel key.
+
+    The recipient derives the channel key from the URL fragment [+ OTP] client-side.
+    The raw key never reaches the server. Rejects cross-site forged POSTs.
+
+    Args:
+        token: Share link token from the URL path.
+        body: Optional recipient display name.
+        request: The incoming request (sec-fetch-site and bind cookie).
+        response: Used to set the bind cookie.
+
+    Returns:
+        Dict with guest_wrap, persist flag, guest_name, and status 'active'.
+
+    Raises:
+        HTTPException: 403 if the request is cross-site, or the channel is already
+            open on another browser.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     if request.headers.get("sec-fetch-site") == "cross-site":
         raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
     conn = get_conn()
@@ -1066,8 +1084,23 @@ def chat_join(token: str, body: ChatJoinIn, request: Request, response: Response
 
 @router.get("/{token}/chat/stream")
 async def chat_stream(token: str, request: Request, after: int = 0):
-    """Recipient SSE: replay the (persisted) backlog after `after`, then live messages +
-    presence. Cookie-bound to the browser that joined."""
+    """Stream recipient-side SSE events: backlog replay, live messages, and presence updates.
+
+    Cookie-bound to the browser that joined the channel.
+
+    Args:
+        token: Share link token from the URL path.
+        after: Sequence number to resume from; replays persisted messages with seq > after.
+        request: The incoming request (bind cookie and disconnect check).
+
+    Returns:
+        StreamingResponse (text/event-stream) with presence, message, and closed events.
+
+    Raises:
+        HTTPException: 403 if the bind check fails.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     conn = get_conn()
     link, ch = _resolve_chat(conn, request, token)
     _require_access(link, request)
@@ -1103,12 +1136,31 @@ async def chat_stream(token: str, request: Request, after: int = 0):
 
 
 class ChatSendIn(BaseModel):
+    """Request body for sending one encrypted chat message."""
+
     iv: str = Field(max_length=64)
     ct: str = Field(max_length=700_000)
 
 
 @router.post("/{token}/chat/send")
 def chat_send(token: str, body: ChatSendIn, request: Request):
+    """Send one encrypted message as the recipient on a chat channel.
+
+    Rejects cross-site forged POSTs.
+
+    Args:
+        token: Share link token from the URL path.
+        body: AES-GCM iv and ciphertext of the message.
+        request: The incoming request (sec-fetch-site and bind cookie).
+
+    Returns:
+        Dict with 'ok': True and the assigned sequence number.
+
+    Raises:
+        HTTPException: 403 if the request is cross-site or the bind check fails.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     if request.headers.get("sec-fetch-site") == "cross-site":
         raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
     conn = get_conn()
@@ -1120,8 +1172,25 @@ def chat_send(token: str, body: ChatSendIn, request: Request):
 
 @router.post("/{token}/chat/file")
 def chat_file_upload(token: str, request: Request, iv: str = Form(...), file: UploadFile = File(...)):
-    """Upload one ENCRYPTED file blob. The sender then references its id inside an encrypted
-    message, so the filename/mime never reach the server."""
+    """Upload one encrypted file blob as the recipient on a chat channel.
+
+    The sender references the returned file_id inside an encrypted message, so the
+    filename and MIME type never reach the server. Rejects cross-site forged POSTs.
+
+    Args:
+        token: Share link token from the URL path.
+        iv: AES-GCM initialisation vector (form field, max 64 chars).
+        file: Encrypted file blob.
+        request: The incoming request (sec-fetch-site and bind cookie).
+
+    Returns:
+        Dict with 'ok': True and the assigned file_id.
+
+    Raises:
+        HTTPException: 403 if the request is cross-site or the bind check fails.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     if request.headers.get("sec-fetch-site") == "cross-site":
         raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
     conn = get_conn()
@@ -1134,6 +1203,21 @@ def chat_file_upload(token: str, request: Request, iv: str = Form(...), file: Up
 
 @router.get("/{token}/chat/file/{file_id}")
 def chat_file_download(token: str, file_id: int, request: Request):
+    """Download an encrypted file blob as the recipient on a chat channel.
+
+    Args:
+        token: Share link token from the URL path.
+        file_id: Primary key of the stored file.
+        request: The incoming request (bind cookie check).
+
+    Returns:
+        Opaque octet-stream with X-Chat-IV header, nosniff, sandbox CSP, and no-store.
+
+    Raises:
+        HTTPException: 403 if the bind check fails.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     conn = get_conn()
     link, _ = _resolve_chat(conn, request, token)
     _require_access(link, request)

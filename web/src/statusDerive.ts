@@ -3,7 +3,18 @@
 import type { Capabilities, HealthModel } from "./health";
 
 export type Level = "ok" | "warn" | "down" | "unknown";
-export interface Row { key: string; label: string; level: Level }
+export interface Row { key: string; label: string; level: Level; icon: string }
+
+// Subsystem → line-icon name (keys from Icon.tsx) for the per-capability rows.
+// Plain strings, so this stays React-free and the module remains pure/testable.
+export const SUBSYS_ICON: Record<keyof Capabilities, string> = {
+  llm: "robot",
+  embeddings: "search",
+  transcription: "mic",
+  push: "bell",
+  geocoder: "pin",
+  db: "sql",
+};
 
 const SUBSYS_LABEL: Record<keyof Capabilities, Partial<Record<string, string>>> = {
   llm: {
@@ -44,7 +55,7 @@ function deriveRows(caps: Capabilities | undefined): Row[] {
   return (Object.keys(caps) as (keyof Capabilities)[]).map((k) => {
     const state = (caps[k] as any).state as string;
     const label = SUBSYS_LABEL[k]?.[state] ?? `${k}: ${state}`;
-    return { key: k, label, level: stateLevel(state) };
+    return { key: k, label, level: stateLevel(state), icon: SUBSYS_ICON[k] };
   });
 }
 

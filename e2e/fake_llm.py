@@ -22,7 +22,46 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI()
 
 REPLY = os.environ.get("FAKE_LLM_REPLY", "This is a deterministic end-to-end test reply.")
+# The KB "Edit with AI" / rebuild draft turns ask for a FULL article body (Markdown starting
+# with "# "). Returning the default chat reply would not look like an article, so detect those
+# prompts and stream a deterministic article instead.
+ARTICLE_REPLY = os.environ.get(
+    "FAKE_LLM_ARTICLE",
+    "# Edited by E2E\n\nThis article was revised by the end-to-end fake model. Pal enjoys sailing.\n")
 MODEL = "grok-e2e"
+
+
+def _last_user_text(body: dict) -> str:
+    """Return the text of the most recent user message (string or content-parts shape).
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        The user message text, or '' if none.
+    """
+    for m in reversed(body.get("messages", [])):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return ""
+
+
+def _wants_article(body: dict) -> bool:
+    """Return True when the prompt asks for a full KB article body (rebuild draft / suggest edit).
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        True if the latest user turn is an article-writing/edit prompt.
+    """
+    t = _last_user_text(body)
+    return ("CURRENT ARTICLE:" in t) or ("revised article" in t) or ("corrected article" in t)
 
 
 def _tool_names(body: dict) -> set[str]:
@@ -131,6 +170,11 @@ def _sse(body: dict):
               "function": {"name": "propose_actions", "arguments": _propose_args()}}
         yield chunk({"role": "assistant", "tool_calls": [tc]})
         yield chunk({}, finish="tool_calls")
+    elif _wants_article(body):
+        yield chunk({"role": "assistant", "content": ""})
+        for line in ARTICLE_REPLY.splitlines(keepends=True):
+            yield chunk({"content": line})
+        yield chunk({}, finish="stop")
     else:
         yield chunk({"role": "assistant", "content": ""})
         for word in REPLY.split(" "):

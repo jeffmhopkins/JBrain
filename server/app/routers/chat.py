@@ -35,8 +35,11 @@ class MessageIn(BaseModel):
 
 # Canonical chat modes the architect understands. `mode` is request-scoped only — never
 # persisted (there is no `mode` column on conversations/messages), so the wire vocabulary
-# can evolve freely as long as both ends agree.
-_CANONICAL_MODES = ("assisted", "research", "analyze")
+# can evolve freely as long as both ends agree. Keep RETIRED modes OUT of this tuple — a
+# canonical match short-circuits normalize_mode() before the alias table, so listing a
+# retired mode here would make it resolve to itself and bypass its read-only fold (the
+# "analyze" regression).
+_CANONICAL_MODES = ("assisted", "research")
 # Legacy / forward-incompatible wire strings mapped to a canonical mode. The invariant:
 # read-only strings MUST map to a read-only mode and write strings to a write mode — never
 # cross the boundary. (Populated when a mode is retired, e.g. "analyze" -> "research".)

@@ -57,12 +57,12 @@ _OVERLAP_FLOOR = 12            # an overlap shorter than this is too coincidenta
 
 
 def _trim_restated_overlap(partial: str, remainder: str) -> str:
-    """If the continuation RESTATED the last complete unit it had already produced instead of
-    resuming after it, drop that duplicated prefix from the remainder. RESTRICTED to an
-    EDGE-ANCHORED EXACT restatement: the overlap must be one-or-more WHOLE trailing LINES of
-    the partial (a candidate suffix that begins exactly at a line boundary of the partial —
-    index 0 or just after a '\\n') that the remainder reproduces verbatim at its start. The
-    model clearly re-emitted the last complete line(s) it had written.
+    """Drop a restated prefix from remainder when the continuation re-emitted whole trailing lines.
+
+    Restricted to an EDGE-ANCHORED EXACT restatement: the overlap must be one-or-more WHOLE
+    trailing LINES of the partial (a candidate suffix that begins exactly at a line boundary of
+    the partial — index 0 or just after a '\\n') that the remainder reproduces verbatim at its
+    start. The model clearly re-emitted the last complete line(s) it had written.
 
     This is deliberately NOT a free mid-phrase substring trim. The previous version stripped
     ANY >=12-char suffix overlap, which would silently DELETE a COINCIDENTALLY recurring phrase
@@ -71,7 +71,15 @@ def _trim_restated_overlap(partial: str, remainder: str) -> str:
     Anchoring to a line boundary means an incidental recurring phrase mid-line can't trigger a
     trim — when in doubt we leave the text un-trimmed and the human sees the (visible) dup rather
     than us silently dropping real content. A genuine mid-word resume has no line-anchored
-    overlap and is untouched."""
+    overlap and is untouched.
+
+    Args:
+        partial: The already-produced portion of the truncated draft.
+        remainder: The continuation text returned by the model.
+
+    Returns:
+        remainder with its restated prefix removed, or remainder unchanged.
+    """
     if not partial or not remainder:
         return remainder
     window = partial[-_OVERLAP_WINDOW:]
@@ -90,10 +98,19 @@ _LEADING_H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _drop_duplicate_title(partial: str, remainder: str) -> str:
-    """If the partial already opened with an H1 ("# Title") and the remainder RESTARTS with the
-    same "# Title" heading (a model that re-introduced the article), drop that duplicate heading
-    line from the remainder. Only fires when the titles match, so a legitimate new "## Section"
-    or a different heading is never removed."""
+    """Drop a duplicate H1 heading when the continuation re-introduces the article title.
+
+    Only fires when the partial opened with an H1 ("# Title") and the remainder RESTARTS with
+    the same heading — a model that re-introduced the article. A legitimate new "## Section"
+    or a different heading is never removed.
+
+    Args:
+        partial: The already-produced portion of the truncated draft.
+        remainder: The continuation text returned by the model.
+
+    Returns:
+        remainder with the duplicated H1 stripped, or remainder unchanged.
+    """
     pm = _LEADING_H1_RE.search(partial or "")
     if not pm:
         return remainder
@@ -108,20 +125,30 @@ _BLOCK_START_RE = re.compile(r"(?:#{1,6}\s|[-*>]\s|\d+\.\s|\||```)")
 
 
 def _seam_separator(partial: str, remainder: str) -> str:
-    """Pick the glue between partial and remainder. The model is told to resume EXACTLY at the
-    cutoff, so we glue with NOTHING by default — a mid-word/mid-fence seam ("Refe" + "rences")
-    MUST re-form, and that safe behaviour is what the whole design relies on. A provider that
-    .strip()s each segment (xAI does) can drop the whitespace that lived at the seam, but we can
-    only safely repair the ONE unambiguous case: the remainder begins a line-anchored markdown
-    BLOCK ("## References", "- item", "1. ", "> ", "|", a fenced block). A genuine mid-word
-    resume never starts with such a marker, so inserting a newline there is a zero-false-positive
-    fix that keeps a stripped "## References" heading on its own line.
+    """Pick the glue string between partial and remainder at a continuation seam.
+
+    The model is told to resume EXACTLY at the cutoff, so we glue with NOTHING by default — a
+    mid-word/mid-fence seam ("Refe" + "rences") MUST re-form, and that safe behaviour is what
+    the whole design relies on. A provider that .strip()s each segment (xAI does) can drop the
+    whitespace that lived at the seam, but we can only safely repair the ONE unambiguous case:
+    the remainder begins a line-anchored markdown BLOCK ("## References", "- item", "1. ",
+    "> ", "|", a fenced block). A genuine mid-word resume never starts with such a marker, so
+    inserting a newline there is a zero-false-positive fix that keeps a stripped "## References"
+    heading on its own line.
 
     We deliberately do NOT insert a SPACE for a plain word/word seam ("in" + "2026"): that case
     is genuinely indistinguishable from a real mid-word resume ("Refe" + "rences"), so guessing a
     space risks corrupting content. We fall back to the safe glue-raw behaviour — a rare cosmetic
-    "in2026" under xAI is preferable to splitting a word. Returns "" unless both sides touch
-    non-whitespace AND the remainder opens a markdown block, in which case "\n"."""
+    "in2026" under xAI is preferable to splitting a word.
+
+    Args:
+        partial: The already-produced portion of the truncated draft.
+        remainder: The continuation text returned by the model.
+
+    Returns:
+        "\\n" when both sides touch non-whitespace and remainder opens a markdown block,
+        "" otherwise.
+    """
     if not partial or not remainder:
         return ""
     if partial[-1].isspace() or remainder[0].isspace():

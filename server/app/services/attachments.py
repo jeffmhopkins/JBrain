@@ -41,12 +41,29 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif",
 
 
 def resolve_mime(filename: str, declared: str | None) -> str:
+    """Resolve the effective MIME type for a file, preferring the declared type.
+
+    Args:
+        filename: Original filename, used for extension-based guessing.
+        declared: MIME type declared by the upload client (may be None or generic).
+
+    Returns:
+        The resolved MIME type string.
+    """
     if declared and declared not in ("application/octet-stream", ""):
         return "text/markdown" if "markdown" in declared else declared
     return mimetypes.guess_type(filename or "")[0] or "application/octet-stream"
 
 
 def _pdf_text(raw: bytes) -> str:
+    """Extract plain text from a PDF byte string (first 100 pages, 200 000 char cap).
+
+    Args:
+        raw: Raw PDF file bytes.
+
+    Returns:
+        Extracted text, or an empty string if extraction fails.
+    """
     import io
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(raw))
@@ -60,6 +77,15 @@ def _pdf_text(raw: bytes) -> str:
 
 
 def _image_meta(raw: bytes, filename: str) -> str:
+    """Extract image metadata and EXIF tags as a plain-text block for FTS indexing.
+
+    Args:
+        raw: Raw image file bytes.
+        filename: Original filename, used as the label in the output.
+
+    Returns:
+        Multi-line string of image/EXIF fields, including GPS if present.
+    """
     import io
     from PIL import ExifTags, Image
     img = Image.open(io.BytesIO(raw))
@@ -84,7 +110,20 @@ def _image_meta(raw: bytes, filename: str) -> str:
 
 
 def extract_text(raw: bytes, mime: str, filename: str) -> str:
-    """Best-effort searchable text. Returns '' for unsupported/binary files."""
+    """Extract best-effort searchable text from any supported file type.
+
+    Dispatches to the appropriate extractor: UTF-8 decode for text/code, pypdf for
+    PDFs, and EXIF/metadata harvesting for images. Returns '' for unsupported or
+    unreadable binary files.
+
+    Args:
+        raw: Raw file bytes.
+        mime: Resolved MIME type (from resolve_mime).
+        filename: Original filename used for extension-based dispatch and labelling.
+
+    Returns:
+        Extracted text, or '' for unsupported/binary files.
+    """
     ext = os.path.splitext((filename or "").lower())[1]
     try:
         if mime.startswith("text/") or ext in TEXT_EXTS or mime in TEXT_MIMES:
@@ -99,17 +138,26 @@ def extract_text(raw: bytes, mime: str, filename: str) -> str:
 
 
 def _sections(text: str) -> list[tuple[str, str]]:
-    """Split markdown into (breadcrumb, body) sections at ATX headers, keeping fenced
-    code blocks intact (a `#` inside a fence is not a header). `breadcrumb` is the header
-    path standing above the body (e.g. "Setup > Linux"); the header line itself is lifted
-    into the breadcrumb rather than left in the body. Text with no headers yields a single
-    ("", whole-text) section."""
+    """Split markdown into (breadcrumb, body) sections at ATX headers.
+
+    Fenced code blocks are kept intact (a ``#`` inside a fence is not treated as a
+    header). The breadcrumb is the header path above the body (e.g. "Setup > Linux");
+    the header line itself is lifted into the breadcrumb rather than left in the body.
+    Text with no headers yields a single ("", whole-text) section.
+
+    Args:
+        text: Raw markdown text to split.
+
+    Returns:
+        List of (breadcrumb, body) tuples, one per logical section.
+    """
     sections: list[tuple[str, str]] = []
     path: list[tuple[int, str]] = []        # (level, title) stack
     buf: list[str] = []
     in_fence, fence_tok = False, ""
 
     def flush() -> None:
+        """Flush the current buffer as a section entry."""
         body = "\n".join(buf).strip()
         if body:
             sections.append((" > ".join(t for _, t in path), body))
@@ -139,8 +187,21 @@ def _sections(text: str) -> list[tuple[str, str]]:
 
 
 def _best_break(body: str, start: int, end: int, budget: int) -> int:
-    """The position to end a window at: the latest preferred separator in the chunk's
-    final third (so chunks stay reasonably full), else a hard cut at `end`."""
+    """Find the best position to end a chunk window.
+
+    Returns the latest preferred separator (paragraph, sentence, word) found in the
+    final third of the proposed window so chunks stay reasonably full. Falls back to a
+    hard cut at ``end`` when no separator is found.
+
+    Args:
+        body: Full section body being windowed.
+        start: Start index of the current window.
+        end: Proposed hard-cut end index.
+        budget: Maximum chars per chunk (used to compute the "final third" threshold).
+
+    Returns:
+        The character index at which to end the current chunk.
+    """
     lo = start + (budget * 2) // 3
     for sep in _SEPARATORS:
         brk = body.rfind(sep, lo, end)
@@ -150,9 +211,19 @@ def _best_break(body: str, start: int, end: int, budget: int) -> int:
 
 
 def _window_split(breadcrumb: str, body: str) -> list[str]:
-    """Pack one section's body into <= CHUNK_MAX_CHARS windows (breadcrumb included),
-    breaking on paragraph/sentence boundaries where possible, with CHUNK_OVERLAP
-    carry-over. Each emitted chunk is prefixed with the breadcrumb."""
+    """Pack one section's body into CHUNK_MAX_CHARS windows with overlap.
+
+    Breaks on paragraph/sentence/word boundaries where possible. Each emitted chunk
+    is prefixed with the breadcrumb so a short section embeds with disambiguating
+    context. Overlap is CHUNK_OVERLAP characters carried over from the previous window.
+
+    Args:
+        breadcrumb: Header path for this section (e.g. "Setup > Linux"), may be empty.
+        body: Section body text to split.
+
+    Returns:
+        List of chunk strings, each prefixed with the breadcrumb.
+    """
     prefix = f"{breadcrumb}\n\n" if breadcrumb else ""
     budget = max(CHUNK_MAX_CHARS - len(prefix), 200)    # leave room for the breadcrumb
     out: list[str] = []
@@ -173,12 +244,20 @@ def _window_split(breadcrumb: str, body: str) -> list[str]:
 def chunk_text(text: str) -> list[str]:
     """Split text into overlapping, embed-ready chunks.
 
-    Markdown-aware: sections are cut at headers (each chunk carries its header breadcrumb
-    so a short section embeds with disambiguating context) and fenced code blocks are kept
-    intact. Within a section, text is packed into <= CHUNK_MAX_CHARS windows on
-    paragraph/sentence boundaries with CHUNK_OVERLAP carry-over; the char ceiling keeps
-    every chunk under the embedder's 512-token truncation limit. The returned list is flat
-    and contiguous — the chunk_index a consumer stores is just a position in it."""
+    Markdown-aware: sections are cut at ATX headers (each chunk carries its header
+    breadcrumb so a short section embeds with disambiguating context) and fenced code
+    blocks are kept intact. Within a section, text is packed into CHUNK_MAX_CHARS
+    windows on paragraph/sentence boundaries with CHUNK_OVERLAP carry-over; the char
+    ceiling keeps every chunk under the embedder's 512-token truncation limit. The
+    returned list is flat and contiguous — the chunk_index a consumer stores is just a
+    position in it.
+
+    Args:
+        text: Raw text (markdown or plain) to chunk.
+
+    Returns:
+        List of chunk strings, capped at MAX_CHUNKS entries.
+    """
     text = (text or "").strip()
     if not text:
         return []
@@ -192,6 +271,15 @@ def chunk_text(text: str) -> list[str]:
 
 
 def _sync_attachment_fts(conn, att_id, note_id, filename, content):
+    """Rebuild the FTS row for an attachment (delete-then-insert).
+
+    Args:
+        conn: SQLite connection.
+        att_id: Attachment primary key.
+        note_id: Owning note id (may be None for orphan attachments).
+        filename: Original filename stored in the FTS row.
+        content: Extracted text content to index.
+    """
     conn.execute("DELETE FROM attachments_fts WHERE attachment_id = ?", (att_id,))
     conn.execute(
         "INSERT INTO attachments_fts (attachment_id, note_id, filename, content) VALUES (?, ?, ?, ?)",
@@ -200,6 +288,22 @@ def _sync_attachment_fts(conn, att_id, note_id, filename, content):
 
 
 def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: bytes) -> dict:
+    """Store a file attachment and index its content, deduplicating by SHA-256.
+
+    Extracts searchable text, writes the FTS row, and upserts chunked embeddings.
+    Returns a metadata dict with the same shape whether this was a new insert or a
+    deduplicated existing record; the ``duplicate`` key distinguishes the two cases.
+
+    Args:
+        conn: SQLite connection (caller owns commit).
+        note_id: Owning note id, or None for an orphan/global attachment.
+        filename: Original client filename.
+        mime: Resolved MIME type (from resolve_mime).
+        raw: Raw file bytes.
+
+    Returns:
+        Dict with keys: id, note_id, filename, mime, byte_size, has_text, duplicate.
+    """
     sha = hashlib.sha256(raw).hexdigest()
     existing = conn.execute(
         "SELECT id, filename, mime, byte_size, content_text FROM attachments "

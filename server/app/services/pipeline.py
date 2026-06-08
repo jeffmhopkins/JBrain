@@ -36,6 +36,7 @@ from ..db import get_conn, get_meta, set_meta
 
 
 def _today() -> str:
+    """Return today's date as an ISO string (YYYY-MM-DD) in the app timezone."""
     return clock.today_iso()
 
 
@@ -80,6 +81,7 @@ def _render_value(val, scope):
 
 
 def _truthy(v) -> bool:
+    """Return the truthiness of a value, returning False on any evaluation error."""
     try:
         return bool(v)
     except Exception:
@@ -98,8 +100,23 @@ _MAX_STEPS = 5000       # total steps executed per top-level run
 
 
 class _Ctx:
+    """Execution context threaded through every primitive and step in a pipeline run."""
+
     def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None,
                  on_step=None, commit_steps=False):
+        """Initialise a pipeline execution context.
+
+        Args:
+            conn: Active SQLite connection for this run.
+            workflow_id: Database id of the triggering workflow.
+            trigger: Trigger-event payload dict (may be empty).
+            call_stack: Action types currently on the call stack (cycle detection).
+            depth: Current call_action nesting depth.
+            budget: Shared one-element list tracking remaining step allowance.
+            on_step: Optional callback invoked with the step name before each step executes.
+            commit_steps: When True, commit after each step to release the write lock between
+                LLM calls. Should only be True for scheduled (non-transactional) runs.
+        """
         self.conn = conn
         self.workflow_id = workflow_id
         self.trigger = trigger or {}
@@ -121,6 +138,16 @@ class _Ctx:
 
 
 def _p_read_note(ctx, title=None, id=None):
+    """Fetch a single note by id or title, returning a dict or None.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title to look up (used when id is not provided).
+        id: Primary-key id of the note (takes priority over title).
+
+    Returns:
+        Dict with id, title, slug, content_md fields, or None if not found.
+    """
     if id is not None:
         row = ctx.conn.execute(
             "SELECT id, title, slug, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (id,)
@@ -133,6 +160,20 @@ def _p_read_note(ctx, title=None, id=None):
 
 
 def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=None, version_note=None):
+    """Create or update a note, returning its id, resolved title, and slug.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title (doubles as its path).
+        content_md: Markdown body (preferred over text).
+        text: Fallback body when content_md is absent.
+        mode: 'replace' to overwrite; 'append' to concatenate to existing content.
+        kind: Note kind (e.g. 'kb', 'entry'); None leaves kind unchanged.
+        version_note: Label stored with the version history entry.
+
+    Returns:
+        Dict with id, title, and slug of the written note.
+    """
     body_in = content_md if content_md is not None else (text or "")
     if kind == "kb":
         title = notes_svc.root_title(title, "kb")   # the encyclopedia lives under kb/
@@ -152,6 +193,17 @@ def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=N
 
 
 def _p_create_review(ctx, title, message="", link_title=None):
+    """Post a card to the Review inbox, optionally linked to a note.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Display title for the review card.
+        message: Body text shown on the card.
+        link_title: Title of a note to link the card to (slug resolved at call time).
+
+    Returns:
+        Dict with id and link_slug of the created review item.
+    """
     link_slug = None
     if link_title:
         n = notes_svc.get_by_title(ctx.conn, link_title)
@@ -161,6 +213,16 @@ def _p_create_review(ctx, title, message="", link_title=None):
 
 
 def _p_semantic_search(ctx, query, limit=8):
+    """Run a vector similarity search over notes and return the top matches.
+
+    Args:
+        ctx: Pipeline execution context.
+        query: Natural-language query string.
+        limit: Maximum number of results to return.
+
+    Returns:
+        List of matching note dicts ordered by relevance.
+    """
     return embeddings.semantic_search(ctx.conn, query, int(limit))
 
 
@@ -499,6 +561,17 @@ def _p_validate_structure(ctx, title, content_md):
 
 
 def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
+    """List notes filtered by kind and/or id range, capped at 1 000 rows.
+
+    Args:
+        ctx: Pipeline execution context.
+        kind: Note kind to filter on (e.g. 'entry', 'kb'); None returns all kinds.
+        since_id: Return only notes with id strictly greater than this value.
+        limit: Maximum rows returned; clamped to [1, 1000].
+
+    Returns:
+        List of dicts with id, title, slug, content_md, and created_at.
+    """
     sql = "SELECT id, title, slug, content_md, created_at FROM notes WHERE deleted_at IS NULL"
     params: list = []
     if kind:
@@ -537,17 +610,45 @@ def _p_query_entry_changes(ctx, since="", limit=20):
 
 
 def _p_get_meta(ctx, key, default=None):
-    # Read through the pipeline's own connection so it sees this run's uncommitted
-    # watermark writes (every other primitive uses ctx.conn).
+    """Read a stored metadata key, returning default if absent.
+
+    Reads through the pipeline's own connection so it sees this run's uncommitted
+    watermark writes (every other primitive uses ctx.conn).
+
+    Args:
+        ctx: Pipeline execution context.
+        key: Metadata key to look up.
+        default: Value to return when the key is not set.
+
+    Returns:
+        Stored string value, or default.
+    """
     return get_meta(key, default, conn=ctx.conn)
 
 
 def _p_set_meta(ctx, key, value):
+    """Write a metadata key-value pair, stringifying the value.
+
+    Args:
+        ctx: Pipeline execution context.
+        key: Metadata key to write.
+        value: Value to store (converted to str).
+    """
     set_meta(ctx.conn, key, str(value))
     return None
 
 
 def _p_set_tags(ctx, note_id, tags):
+    """Replace the full tag set on a note.
+
+    Args:
+        ctx: Pipeline execution context.
+        note_id: Id of the note to update.
+        tags: New list of tag strings (replaces existing tags entirely).
+
+    Returns:
+        Updated list of tags stored on the note.
+    """
     return notes_svc.set_tags(ctx.conn, int(note_id), list(tags or []))
 
 
@@ -556,11 +657,35 @@ def _p_set_tags(ctx, note_id, tags):
 # in YAML — and delegate to the same workflows.* functions tests already stub.
 
 def _p_suggest_tags(ctx, title, content, prompt=None):
+    """Ask the LLM to suggest tags for a note based on its title and content.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title.
+        content: Note body text.
+        prompt: Optional custom prompt override.
+
+    Returns:
+        List of suggested tag strings.
+    """
     from . import workflows as wf
     return wf._suggest_tags(title or "", content or "", prompt)
 
 
 def _p_summarise_entries(ctx, entries, prompt=None):
+    """Summarise a list of log/journal entries into a single narrative via the LLM.
+
+    Live @t[...] tokens are expanded to point-in-time snapshots before the call, since
+    the resulting rollup is a stored record rather than a live note.
+
+    Args:
+        ctx: Pipeline execution context.
+        entries: List of entry text strings to summarise.
+        prompt: Optional custom prompt override.
+
+    Returns:
+        Summary string produced by the LLM.
+    """
     from . import workflows as wf
     # The summary is STORED (a daily/log rollup), so render @t[...] live values as
     # dated snapshots — the rollup is a point-in-time record, not a live note.
@@ -569,6 +694,17 @@ def _p_summarise_entries(ctx, entries, prompt=None):
 
 
 def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
+    """Ask the LLM to produce a KB write plan from source entries and existing articles.
+
+    Args:
+        ctx: Pipeline execution context.
+        entries: Source entry/daily notes to incorporate.
+        existing_kb: Existing KB article stubs available for update decisions.
+        instructions: Optional extra guidance appended to the synthesis prompt.
+
+    Returns:
+        List of dicts with op, title, and content_md for each planned article.
+    """
     from . import workflows as wf
     # conn enables semantic retrieval of only the relevant existing KB articles.
     return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions, conn=ctx.conn)

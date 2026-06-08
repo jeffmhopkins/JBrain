@@ -342,8 +342,17 @@ _NON_CONTENT_TABLES = {"meta", "prompt_overrides", "staging_actions",
 
 
 def _schema_tables(conn) -> str:
-    """Live, user-facing table list for the research prompt (excludes fts/vec
-    shadows and secret/internal tables)."""
+    """Return the live, user-facing table list for the research prompt.
+
+    Excludes fts/vec shadow tables and secret/internal tables so the model
+    only sees queryable user content.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Comma-separated table names, or an empty string on error.
+    """
     try:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name"
@@ -357,6 +366,19 @@ def _schema_tables(conn) -> str:
 
 
 def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
+    """Build the per-turn system prompt for the given mode, injecting live values.
+
+    Inserts brain name, owner-local time, and (for research mode) the live table
+    list. Rebuilt every turn so 'now'/'yesterday' always resolve correctly.
+
+    Args:
+        brain_name: The display name of this brain instance.
+        mode: Agent mode — 'assisted', 'research', or 'analyze'.
+        conn: Optional SQLite connection; required for {tables} substitution.
+
+    Returns:
+        Rendered system prompt string.
+    """
     tmpl = prompts.get(f"modes.{mode}.system") or _FALLBACK_SYSTEM.get(mode, _FALLBACK_SYSTEM["assisted"])
     tmpl = tmpl.replace("{brain_name}", brain_name)
     # Ground the agent in the owner's LOCAL time so "yesterday"/"in 1 hour"/"how
@@ -368,20 +390,53 @@ def _system_prompt(brain_name: str, mode: str, conn=None) -> str:
 
 
 def _mode_tool_names(mode: str) -> list[str]:
+    """Return the ordered tool-name list for a mode, consulting prompts.yaml first.
+
+    Args:
+        mode: Agent mode string.
+
+    Returns:
+        List of tool names available in this mode.
+    """
     return prompts.get_list(f"modes.{mode}.tools", _DEFAULT_MODE_TOOLS.get(mode, []))
 
 
 def _build_tool(name: str) -> llm.ToolDef:
+    """Build a ToolDef for the named tool, pulling its description from prompts.yaml.
+
+    Args:
+        name: Tool name key present in _TOOL_SCHEMAS.
+
+    Returns:
+        Populated ToolDef ready for the LLM provider.
+    """
     return llm.ToolDef(name=name, description=prompts.get(f"tools.{name}", ""), json_schema=_TOOL_SCHEMAS[name])
 
 
 def _tools_for(mode: str) -> list[llm.ToolDef]:
+    """Return the ToolDef list for all schema-registered tools in a mode.
+
+    Args:
+        mode: Agent mode string.
+
+    Returns:
+        List of ToolDef objects for tools that have a registered schema.
+    """
     return [_build_tool(n) for n in _mode_tool_names(mode) if n in _TOOL_SCHEMAS]
 
 
 def validate_agent_config(conn=None) -> list[str]:
-    """Flag drift: unknown tools in a mode, prompts naming unavailable tools, empty
-    descriptions / action prompts. Used at startup and in tests."""
+    """Flag configuration drift at startup and in tests.
+
+    Checks for unknown tools in a mode, prompt text referencing unavailable
+    tools, empty tool descriptions, and missing action prompts.
+
+    Args:
+        conn: Unused; accepted for interface compatibility.
+
+    Returns:
+        List of human-readable warning strings; empty when everything is clean.
+    """
     warnings: list[str] = []
     known = set(_TOOL_SCHEMAS)
     for mode in ("assisted", "research", "analyze"):
@@ -407,9 +462,17 @@ def validate_agent_config(conn=None) -> list[str]:
 def _untrusted(label: str, body: str) -> str:
     """Wrap stored/user content so the model treats it as data, not instructions.
 
-    A RANDOM per-call nonce is mixed into the delimiter so the body can't close
-    the fence and re-open a forged 'trusted' context (delimiter injection) — it
-    can't predict the closing tag."""
+    A random per-call nonce is mixed into the delimiter so the body cannot close
+    the fence and re-open a forged 'trusted' context (delimiter injection) — the
+    attacker cannot predict the closing tag.
+
+    Args:
+        label: Short name used as the XML tag prefix (e.g. 'note', 'search-results').
+        body: The untrusted content to fence.
+
+    Returns:
+        Fenced string with a nonce-salted tag and an advisory attribute.
+    """
     nonce = secrets.token_hex(6)
     tag = f"{label}-{nonce}"
     return (
@@ -421,9 +484,20 @@ def _untrusted(label: str, body: str) -> str:
 
 
 def _snippet(content: str, query: str, width: int = 160) -> str:
-    """A short, query-relevant excerpt of a note for search results — so an opaquely
-    titled note (e.g. notes/daily/2026/06/03/3) still reveals what it's about. Centres
-    on the first matching query term; falls back to the start."""
+    """Return a short, query-relevant excerpt of a note for search results.
+
+    Centres on the first matching query term so an opaquely titled note (e.g.
+    notes/daily/2026/06/03/3) still reveals what it's about. Falls back to the
+    start of the text when no term matches.
+
+    Args:
+        content: Raw note markdown.
+        query: The search query whose terms guide centering.
+        width: Maximum excerpt character width.
+
+    Returns:
+        Excerpt string, possibly prefixed/suffixed with '…'.
+    """
     text = " ".join((content or "").split())
     if not text:
         return ""
@@ -444,9 +518,20 @@ _SENT_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _quotable_passage(content: str, query: str, max_chars: int = 320) -> str:
-    """A longer, sentence-bounded excerpt centred on the best query match — clean enough for the
-    model to QUOTE verbatim (vs `_snippet`'s tiny relevance cue). Trims to sentence boundaries so a
-    quote isn't a mangled mid-word fragment."""
+    """Return a longer, sentence-bounded excerpt centred on the best query match.
+
+    Clean enough for the model to QUOTE verbatim (vs. _snippet's tiny relevance
+    cue). Trims to sentence boundaries so a quote is never a mangled mid-word
+    fragment.
+
+    Args:
+        content: Raw note markdown.
+        query: The search query whose terms guide centering.
+        max_chars: Maximum excerpt character width.
+
+    Returns:
+        Sentence-bounded excerpt, possibly prefixed/suffixed with '…'.
+    """
     text = " ".join((content or "").split())
     if not text:
         return ""

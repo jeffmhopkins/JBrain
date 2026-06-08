@@ -66,6 +66,14 @@ _SENSITIVE_RE = re.compile(
 
 
 def sensitive_reason(text: str) -> str | None:
+    """Return the first forbidden field name matched in text, or None.
+
+    Args:
+        text: Input text to scan for sensitive field keywords.
+
+    Returns:
+        The matched keyword string, or None if none found.
+    """
     m = _SENSITIVE_RE.search(text or "")
     return m.group(0) if m else None
 
@@ -117,20 +125,46 @@ _URL_RE = re.compile(r"(https?://\S+|www\.\S+|\[([^\]]+)\]\([^)]+\))", re.IGNORE
 
 
 def _sanitize_reply(text: str) -> str:
-    """Bound the only live model->recipient text: strip links (anti-phishing), strip
-    any control token, and clamp."""
+    """Sanitize the model's reply before delivery to the recipient.
+
+    Strips links (anti-phishing), strips any control token, and clamps length.
+
+    Args:
+        text: Raw model output to sanitize.
+
+    Returns:
+        Cleaned, length-clamped reply string.
+    """
     text = _URL_RE.sub(lambda m: m.group(2) or "", text or "")
     text = _CTRL_RE.sub("", text).strip()
     return text[:1200]
 
 
 def _scrub_control(text: str) -> str:
-    """Remove control-token text from a RECIPIENT message so the model can never echo
-    it into its own turn and forge a control signal (defeats sentinel forging)."""
+    """Remove control tokens from a recipient message to prevent sentinel forging.
+
+    Without this, the model could echo the recipient's text back on its own turn and
+    forge a control signal.
+
+    Args:
+        text: Recipient message text to scrub.
+
+    Returns:
+        Text with all control tokens removed.
+    """
     return _CTRL_RE.sub("", text or "")
 
 
 def _fence(text: str, nonce: str) -> str:
+    """Wrap recipient text in nonce-tagged XML markers to scope it as untrusted data.
+
+    Args:
+        text: Recipient message text to wrap.
+        nonce: Per-turn random hex nonce for the tag names.
+
+    Returns:
+        The fenced string with opening and closing nonce tags.
+    """
     return f"<recipient-message {nonce}>\n{text}\n</recipient-message {nonce}>"
 
 
@@ -139,6 +173,23 @@ def _fence(text: str, nonce: str) -> str:
 def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str, dest_title: str = "",
                 bind: bool = False, single_use: bool = False,
                 max_turns: int = 40, max_total_replies: int = 80) -> int:
+    """Create a guided-intake spec in 'draft' status for the given share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id this spec belongs to.
+        goal: Short description of the intake goal.
+        intro: Owner-written intro shown to the recipient.
+        sub_prompt: Owner's task instructions for the interview AI.
+        dest_title: Optional title for the synthesized document.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Prevent a second session after the first submission.
+        max_turns: Per-session turn cap.
+        max_total_replies: Total-reply budget across all sessions.
+
+    Returns:
+        The new guided_specs.id.
+    """
     cur = conn.execute(
         "INSERT INTO guided_specs (share_link_id, goal, intro, sub_prompt, dest_title, status, "
         "bind, single_use, max_turns, max_total_replies) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
@@ -149,28 +200,65 @@ def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str, d
 
 
 def set_options(conn, link_id: int, *, bind: bool, single_use: bool) -> None:
+    """Update the bind and single_use flags on an existing guided spec.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        bind: Lock the link to the first browser that uses it.
+        single_use: Prevent a second session after the first submission.
+    """
     conn.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
                  (1 if bind else 0, 1 if single_use else 0, link_id))
 
 
 def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -> None:
-    """Edit a guided link's interview brief post-creation (parity with research)."""
+    """Edit a guided link's interview brief post-creation (parity with research).
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id identifying the spec to update.
+        goal: Updated short goal description.
+        intro: Updated recipient intro text.
+        sub_prompt: Updated task instructions for the interview AI.
+    """
     conn.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
                  ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
 
 
 def reset_bind(conn, link_id: int) -> None:
-    """Forget the device that claimed a locked link so it can be started fresh
-    (abandons any in-progress session, mirroring share-link reset-bind)."""
+    """Forget the device that claimed a locked link so it can be started fresh.
+
+    Abandons any in-progress session, mirroring share-link reset-bind.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id whose in-progress sessions to abandon.
+    """
     conn.execute("UPDATE guided_sessions SET status='abandoned' "
                  "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
 
 
 def get_spec(conn, link_id: int):
+    """Fetch the guided_specs row for a share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        The guided_specs row, or None if not found.
+    """
     return conn.execute("SELECT * FROM guided_specs WHERE share_link_id = ?", (link_id,)).fetchone()
 
 
 def activate_spec(conn, link_id: int) -> None:
+    """Transition a guided spec from 'draft' to 'active', making the link live to recipients.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id whose spec to activate.
+    """
     conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id = ?", (link_id,))
 
 
@@ -178,8 +266,25 @@ def activate_spec(conn, link_id: int) -> None:
 
 def start_session(conn, link, spec, name: str | None, client_ip: str | None,
                   my_secret: str | None = None) -> tuple[int, str]:
-    """Create a recipient session, honoring the link's bind / single_use options.
-    Reached only when the caller's cookie doesn't already match a live session."""
+    """Create a recipient session, honoring the link's bind and single_use options.
+
+    Reached only when the caller's cookie doesn't already match a live session.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row for this link.
+        spec: The guided_specs row.
+        name: Recipient's display name (truncated to 80 chars).
+        client_ip: Originating IP for audit purposes.
+        my_secret: Existing session secret if the caller already has one.
+
+    Returns:
+        A (session_id, secret) tuple for the new session.
+
+    Raises:
+        HTTPException: 409 if the link is single_use and already completed.
+        HTTPException: 403 if the link is bound to a different device.
+    """
     from fastapi import HTTPException
     if spec["single_use"] and conn.execute(
         "SELECT 1 FROM guided_sessions WHERE share_link_id=? AND status='submitted' LIMIT 1",
@@ -201,6 +306,16 @@ def start_session(conn, link, spec, name: str | None, client_ip: str | None,
 
 
 def find_session(conn, link_id: int, secret: str | None):
+    """Look up a guided session by link and secret cookie.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to scope the search.
+        secret: Session secret from the recipient's cookie.
+
+    Returns:
+        The guided_sessions row, or None if secret is missing or not found.
+    """
     if not secret:
         return None
     return conn.execute(
@@ -210,6 +325,14 @@ def find_session(conn, link_id: int, secret: str | None):
 
 
 def _transcript(session) -> list[dict]:
+    """Deserialize the session transcript from JSON, returning an empty list on error.
+
+    Args:
+        session: A guided_sessions row with a transcript_json column.
+
+    Returns:
+        List of transcript turn dicts, or an empty list if parsing fails.
+    """
     try:
         return json.loads(session["transcript_json"]) or []
     except Exception:
@@ -217,11 +340,25 @@ def _transcript(session) -> list[dict]:
 
 
 def _owner_label() -> str:
+    """Return the brain owner's display name, or 'the owner' if unset.
+
+    Returns:
+        Owner name string for prompt interpolation.
+    """
     from ..config import get_settings
     return get_settings().brain_name or "the owner"
 
 
 def _build_messages(transcript: list[dict], nonce: str) -> list[dict]:
+    """Convert a transcript to LLM message format with recipient turns nonce-fenced.
+
+    Args:
+        transcript: List of {role, content} turn dicts.
+        nonce: Per-turn hex nonce used to fence untrusted recipient turns.
+
+    Returns:
+        List of LLM API message dicts ready to pass to llm.complete.
+    """
     msgs = []
     for t in transcript:
         if t["role"] == "user":
@@ -232,7 +369,17 @@ def _build_messages(transcript: list[dict], nonce: str) -> list[dict]:
 
 
 def first_message(conn, link, spec, session) -> dict:
-    """The interview AI's opening turn (no recipient input yet)."""
+    """Run the interview AI's opening turn with no recipient input yet.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The guided_specs row.
+        session: The guided_sessions row.
+
+    Returns:
+        Turn result dict from _run_turn (phase, message, progress).
+    """
     return _run_turn(conn, link, spec, session, user_message=None)
 
 

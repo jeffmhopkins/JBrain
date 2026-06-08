@@ -10,6 +10,8 @@ router = APIRouter(prefix="/api/reviews", tags=["reviews"], dependencies=[Curren
 
 
 class ReviewIn(BaseModel):
+    """Input body for manually creating a review item."""
+
     title: str
     message: str = ""
     link_title: str | None = None
@@ -17,6 +19,14 @@ class ReviewIn(BaseModel):
 
 @router.get("")
 def list_reviews(status: str = "pending"):
+    """List review items filtered by status (default: pending).
+
+    Args:
+        status: Filter value; one of 'pending' or 'dismissed'.
+
+    Returns:
+        List of review item dicts, newest first, up to 200.
+    """
     rows = get_conn().execute(
         "SELECT id, workflow_id, title, message, link_slug, kind, payload_json, status, created_at "
         "FROM review_items WHERE status = ? ORDER BY created_at DESC LIMIT 200",
@@ -27,11 +37,21 @@ def list_reviews(status: str = "pending"):
 
 @router.get("/count")
 def count():
+    """Return the count of pending review items.
+
+    Returns:
+        Dict with key 'pending' containing the integer count.
+    """
     return {"pending": reviews_svc.pending_count(get_conn())}
 
 
 @router.get("/history")
 def history():
+    """List dismissed review items from the last 24 hours, newest first.
+
+    Returns:
+        List of dismissed review item dicts (up to 200), ordered by dismissed_at DESC.
+    """
     # Notifications the user dismissed in the last 24h, newest first. Both sides of
     # the comparison are UTC (dismissed_at is written with datetime('now')), so the
     # window is correct; pending rows (dismissed_at IS NULL) drop out naturally.
@@ -45,6 +65,14 @@ def history():
 
 @router.post("")
 def create(body: ReviewIn):
+    """Manually create a review item, optionally linking to a note by title.
+
+    Args:
+        body: Title, optional message, and optional note link title.
+
+    Returns:
+        Dict with key 'id' containing the new review item's integer id.
+    """
     conn = get_conn()
     link_slug = None
     if body.link_title:
@@ -60,6 +88,17 @@ def create(body: ReviewIn):
 
 @router.post("/{review_id}/dismiss")
 def dismiss(review_id: int):
+    """Dismiss a pending review item.
+
+    Args:
+        review_id: ID of the review item to dismiss.
+
+    Returns:
+        Dict with key 'ok' set to True.
+
+    Raises:
+        HTTPException: 404 if no pending item with the given id exists.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM review_items WHERE id = ? AND status = 'pending'", (review_id,)
@@ -75,10 +114,25 @@ def dismiss(review_id: int):
 
 
 def _load_entity_merge(conn, review_id: int, *, require_status: str | None = None) -> tuple:
-    """Fetch an 'entity_merge' card's (status, parsed payload), or 404/400. When
-    `require_status` is set, the card must currently be in that status — so a stale double
-    action (approve/reject/undo on an already-resolved card) is rejected, not silently
-    re-applied."""
+    """Fetch an entity_merge card's (status, parsed payload), or raise 404/400.
+
+    When require_status is set the card must currently be in that status, so a stale
+    double-action (approve/reject/undo on an already-resolved card) is rejected rather
+    than silently re-applied.
+
+    Args:
+        conn: Active database connection.
+        review_id: ID of the review item to load.
+        require_status: If provided, the item's status must match this value.
+
+    Returns:
+        Tuple of (status_str, payload_dict).
+
+    Raises:
+        HTTPException: 404 if the item is not found.
+        HTTPException: 400 if the item is not an entity_merge kind or the payload is malformed.
+        HTTPException: 409 if require_status is set and the item's status does not match.
+    """
     import json
     row = conn.execute(
         "SELECT kind, status, payload_json FROM review_items WHERE id = ?", (review_id,)).fetchone()
@@ -95,6 +149,12 @@ def _load_entity_merge(conn, review_id: int, *, require_status: str | None = Non
 
 
 def _dismiss(conn, review_id: int) -> None:
+    """Mark a review item as dismissed and record the dismissal timestamp.
+
+    Args:
+        conn: Active database connection.
+        review_id: ID of the review item to dismiss.
+    """
     conn.execute(
         "UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
         (review_id,))

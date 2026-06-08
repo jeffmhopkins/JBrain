@@ -37,6 +37,14 @@ _START_ISO = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _http_json(path: str):
+    """Fetch JSON from the configured GitHub repo API path.
+
+    Args:
+        path: URL path appended to the GitHub API base, e.g. ``/releases/latest``.
+
+    Returns:
+        Parsed JSON response as a dict or list.
+    """
     req = urllib.request.Request(
         f"https://api.github.com/repos/{GITHUB_REPO}{path}",
         headers={"User-Agent": "jbrain", "Accept": "application/vnd.github+json"},
@@ -46,10 +54,26 @@ def _http_json(path: str):
 
 
 def _parse(v: str | None) -> tuple:
+    """Parse a version/tag string into a comparable integer tuple.
+
+    Args:
+        v: Version string such as ``"1.2.3"`` or a git tag; ``None`` yields an empty tuple.
+
+    Returns:
+        Tuple of integers extracted from the string, e.g. ``(1, 2, 3)``.
+    """
     return tuple(int(x) for x in re.findall(r"\d+", v)) if v else ()
 
 
 def _fetch_latest() -> dict | None:
+    """Fetch the newest release or tag from GitHub without caching.
+
+    Prefers a published Release; falls back to the newest git tag if no Release
+    exists.
+
+    Returns:
+        Dict with keys ``tag``, ``url``, and ``name``, or ``None`` on failure.
+    """
     # Prefer a published Release…
     try:
         j = _http_json("/releases/latest")
@@ -71,7 +95,11 @@ def _fetch_latest() -> dict | None:
 
 
 def _latest_release() -> dict | None:
-    """Latest release tag (or newest git tag), cached for an hour. None on failure."""
+    """Return the latest release tag (or newest git tag), cached for an hour.
+
+    Returns:
+        Dict with keys ``tag``, ``url``, and ``name``, or ``None`` on failure.
+    """
     if time.time() - _cache["ts"] < 3600 and _cache["data"] is not None:
         return _cache["data"]
     data = _fetch_latest()
@@ -83,7 +111,11 @@ _main_cache: dict = {"ts": 0.0, "data": None}
 
 
 def _latest_main_commit() -> dict | None:
-    """Newest commit on main, cached for an hour. None on failure."""
+    """Return the newest commit on main, cached for an hour.
+
+    Returns:
+        Dict with keys ``sha`` and ``url``, or ``None`` on failure.
+    """
     if time.time() - _main_cache["ts"] < 3600 and _main_cache["data"] is not None:
         return _main_cache["data"]
     data = None
@@ -97,7 +129,14 @@ def _latest_main_commit() -> dict | None:
 
 
 def _main_is_ahead(build_ref: str) -> bool:
-    """True if main has commits the deployed build doesn't (i.e. an update exists)."""
+    """Return True if main has commits the deployed build does not.
+
+    Args:
+        build_ref: The full or abbreviated git SHA of the currently deployed build.
+
+    Returns:
+        True when an update exists on main beyond the current build.
+    """
     try:
         j = _http_json(f"/compare/{build_ref}...main")
         return int(j.get("ahead_by", 0)) > 0
@@ -107,11 +146,26 @@ def _main_is_ahead(build_ref: str) -> bool:
 
 
 def _current_label(build_ref: str | None) -> str:
+    """Build a human-readable version label for the running server.
+
+    Args:
+        build_ref: Git SHA of the current build, or ``None`` if unavailable.
+
+    Returns:
+        String like ``"1.2.3 (abc1234)"`` when a ref is known, or just
+        ``APP_VERSION`` otherwise.
+    """
     return f"{APP_VERSION} ({build_ref[:7]})" if build_ref else APP_VERSION
 
 
 @router.get("/version")
 def version():
+    """Return the running version and whether a newer release or main commit exists.
+
+    Returns:
+        JSON with ``current``, ``latest``, ``update_available``, ``release_url``,
+        and ``release_name``.
+    """
     build_ref = os.environ.get("JBRAIN_BUILD_REF") or None
 
     # A published release/tag newer than this build wins (if you use tags).
@@ -136,8 +190,15 @@ def version():
 
 @router.get("/stats")
 def stats():
-    """Maintenance snapshot: data-volume storage, process uptime, and LLM token
-    usage today + month-to-date (token counts exact; $ estimated). Owner-only."""
+    """Return a maintenance snapshot: storage, uptime, and LLM token usage.
+
+    Covers data-volume storage, process uptime, and LLM token usage today
+    and month-to-date (token counts exact; cost estimated). Owner-only.
+
+    Returns:
+        JSON with ``storage``, ``uptime_seconds``, ``started_at``, ``tokens``,
+        and ``daily_warn_usd``.
+    """
     import shutil
     from ..db import get_conn, get_meta
     from ..services import usage as usage_svc
@@ -190,8 +251,18 @@ _DEPLOY_DIR = Path(os.environ.get("JBRAIN_DEPLOY_DIR", "/deploy-status"))
 
 @router.get("/update-log")
 def update_log(tail: int = 800):
-    """The captured console output of the latest/in-progress deploy plus its status,
-    so the PWA can show a live update console. Empty when nothing's been recorded."""
+    """Return the console output of the latest or in-progress deploy.
+
+    Provides the log text plus structured status so the PWA can show a live
+    update console. Empty when nothing has been recorded yet.
+
+    Args:
+        tail: Maximum number of log lines to return (1–5000, default 800).
+
+    Returns:
+        JSON with ``log`` (text), ``status`` (dict or null), and ``mtime``
+        (Unix timestamp or null).
+    """
     tail = max(1, min(int(tail), 5000))
     log_path, status_path = _DEPLOY_DIR / "update.log", _DEPLOY_DIR / "status.json"
     try:
@@ -214,10 +285,13 @@ def update_log(tail: int = 800):
 
 
 def _seed_deploy_console() -> None:
-    """Drop an immediate 'queued' status + log line the moment a deploy is requested,
-    so the live console reflects YOUR click right away instead of showing the previous
-    run until the deployer (host update.sh / auto-updater) wakes up and starts teeing.
-    Best-effort: a no-op on installs whose deploy-status mount is still read-only."""
+    """Write an immediate 'queued' status and log line at deploy-request time.
+
+    Ensures the live console reflects the user's click right away instead of
+    showing the previous run until the deployer (update.sh / auto-updater)
+    wakes up and starts writing. Best-effort: a no-op when the deploy-status
+    mount is read-only.
+    """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         (_DEPLOY_DIR / "status.json").write_text(json.dumps({"state": "running", "phase": "queued", "at": now}))
@@ -231,9 +305,16 @@ def _seed_deploy_console() -> None:
 
 @router.post("/update")
 def update():
-    """Trigger a self-update. If JBRAIN_UPDATE_CMD is configured it is run
-    (detached); otherwise an update-request marker is written for a host helper
-    (see update.sh). Either way the database and secrets are preserved."""
+    """Trigger a self-update of the server.
+
+    If ``JBRAIN_UPDATE_CMD`` is configured it is run detached; otherwise an
+    update-request marker is written for the host helper (see update.sh).
+    Either way the database and secrets are preserved.
+
+    Returns:
+        JSON with ``started`` (bool) and ``message`` when a command is set, or
+        ``scheduled`` (bool), ``auto`` (bool), and ``message`` otherwise.
+    """
     cmd = os.environ.get("JBRAIN_UPDATE_CMD")
     if cmd:
         _seed_deploy_console()
@@ -268,11 +349,16 @@ def update():
 
 @router.get("/export/original-notes")
 def export_original_notes():
-    """Download JUST the original note content the user uploaded — the FIRST user-authored
-    version of each (live) note, before any AI edit, rename, link-rewrite or KB synthesis.
-    Picks the earliest note_versions row with source='user' per note (so architect/import/
-    kb/rename/structural versions are excluded), as a JSON array [{title, content_md,
-    created_at}]."""
+    """Download original user-authored note content before any AI edits.
+
+    Returns the first ``source='user'`` version of every live note — the exact
+    text the user wrote, before any AI edit, rename, link-rewrite, or KB
+    synthesis. Architect/import/kb/rename/structural versions are excluded.
+
+    Returns:
+        JSON file attachment — an array of ``{title, content_md, created_at}``
+        objects ordered by creation time.
+    """
     conn = db_mod.get_conn()
     rows = conn.execute(
         "SELECT nv.title, nv.content_md, nv.created_at "

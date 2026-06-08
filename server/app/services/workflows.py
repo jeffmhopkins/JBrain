@@ -33,6 +33,7 @@ _DATED_LINE = re.compile(r"^- \*\*(\d{4}-\d{2}-\d{2})\*\* (.*)$")
 # --- Repo YAML ingestion ----------------------------------------------------
 
 def _workflows_dir() -> Path | None:
+    """Return the first workflows directory candidate that exists, or None."""
     candidates = [
         os.environ.get("JBRAIN_WORKFLOWS_DIR"),
         Path(__file__).resolve().parents[3] / "workflows",  # repo root (local/dev)
@@ -45,6 +46,14 @@ def _workflows_dir() -> Path | None:
 
 
 def _normalise(doc: dict) -> dict:
+    """Flatten a raw YAML workflow document into a DB-ready dict.
+
+    Args:
+        doc: Parsed YAML document with at least a 'key' field.
+
+    Returns:
+        Dict with normalized trigger/action fields ready for DB insertion.
+    """
     trig = doc.get("trigger", {}) or {}
     act = doc.get("action", {}) or {}
     trigger_type = trig.get("type", "event")
@@ -61,6 +70,14 @@ def _normalise(doc: dict) -> dict:
 
 
 def _hash(defn: dict) -> str:
+    """Compute a deterministic SHA-256 hex digest of a normalised workflow definition.
+
+    Args:
+        defn: Normalised workflow dict (e.g. from _normalise()).
+
+    Returns:
+        Hex digest string used as the origin_hash for change detection.
+    """
     return hashlib.sha256(
         json.dumps(defn, sort_keys=True).encode()
     ).hexdigest()
@@ -73,8 +90,14 @@ _RETIRED_KEYS = ("wiki-synthesis", "recite-kb", "example-daily-note")
 
 
 def _retire_workflows(conn) -> None:
-    """One-shot: drop retired repo workflows (cascade-deletes their runs); a user-locked
-    row (one they customised) is only DISABLED, so their edits aren't silently destroyed."""
+    """Drop retired repo workflows once, preserving user-customised rows as disabled.
+
+    One-shot: cascade-deletes runs for unlocked rows; a user-locked row (one they
+    customised) is only DISABLED, so their edits aren't silently destroyed.
+
+    Args:
+        conn: SQLite connection.
+    """
     from ..db import get_meta, set_meta
     marker = "workflows:retired:v1"
     if get_meta(marker) == "1":
@@ -91,7 +114,14 @@ def _retire_workflows(conn) -> None:
 
 
 def ingest_repo_workflows(conn) -> int:
-    """Seed/update repo workflows by key. User-locked rows are left untouched."""
+    """Seed or update repo workflows from YAML files; user-locked rows are left untouched.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Number of workflow rows inserted or updated.
+    """
     directory = _workflows_dir()
     if not directory:
         return 0
@@ -148,9 +178,18 @@ _DEFAULT_WIKI_TEMPLATE = (
 
 
 def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
-    """Summarise a day's log entries. Uses the LLM when configured, else a plain
-    recap so the workflow still works without a key. The prompt is overridable
-    from the workflow YAML (config.prompt)."""
+    """Summarise a day's log entries using the LLM, or produce a plain recap without one.
+
+    Uses the LLM when configured, else a plain recap so the workflow still works without
+    a key. The prompt is overridable from the workflow YAML (config.prompt).
+
+    Args:
+        entries: Raw log entry strings for the day.
+        prompt: Optional override instruction; defaults to the actions.daylog_summary prompt.
+
+    Returns:
+        Summarised text string.
+    """
     joined = "\n".join(f"- {e}" for e in entries)
     if not llm.has_credentials():
         return "Entries:\n" + joined
@@ -160,10 +199,21 @@ def _summarise_entries(entries: list[str], prompt: str | None = None) -> str:
 
 
 def _relevant_kb(conn, entries: list, fallback_kb: list, k: int = 12) -> list[dict]:
-    """The existing KB articles most relevant to this batch of entries, so
-    synthesis scales as the KB grows (instead of sending every article). Per-entry
-    semantic search, unioned by best distance, filtered to kb. Falls back to the
-    passed-in list at cold start (no conn / no embeddings yet)."""
+    """Return the KB articles most semantically relevant to a batch of entries.
+
+    Per-entry semantic search, unioned by best distance, filtered to kind='kb'. Falls
+    back to the passed-in list at cold start (no conn / no embeddings yet), so synthesis
+    scales as the KB grows instead of sending every article.
+
+    Args:
+        conn: SQLite connection, or None at cold start.
+        entries: Entry dicts with 'title' and optional 'content_md'.
+        fallback_kb: KB articles to use when conn is None or search returns nothing.
+        k: Maximum number of articles to return.
+
+    Returns:
+        List of KB article dicts with id, title, and content_md.
+    """
     if conn is None:
         return fallback_kb[:k]
     best: dict[int, float] = {}
@@ -190,10 +240,20 @@ def _relevant_kb(conn, entries: list, fallback_kb: list, k: int = 12) -> list[di
 
 
 def _entry_block(e: dict) -> str:
-    """Render one source entry for the prompt: heading is the EXACT title (so a
-    [[cite]] resolves), then a status line + the content. Edited entries look like
-    new ones (reconcile); deleted entries are flagged so the model cleans up the
-    articles that cited them."""
+    """Render one source entry as a prompt section for the synthesis LLM.
+
+    Heading is the EXACT title (so a [[cite]] resolves), then a status line and content.
+    Edited entries look like new ones (reconcile); deleted entries are flagged so the
+    model cleans up the articles that cited them. @t[...] live tokens are expanded to a
+    dated snapshot so the KB records a timeless, sourced fact.
+
+    Args:
+        e: Entry dict with at least 'title' and 'content_md'; optionally 'deleted',
+           'deleted_at', and 'created_at'.
+
+    Returns:
+        Formatted Markdown string ready for inclusion in the synthesis prompt.
+    """
     # Expand @t[...] live values to a DATED SNAPSHOT so the evergreen KB records a
     # timeless, sourced fact ("40 (as of 2026-06-01; born 1986-03-01)") rather than
     # a live token the synthesis LLM can't faithfully reproduce.
@@ -210,9 +270,18 @@ def _entry_block(e: dict) -> str:
 
 
 def _linked_kb(conn, entries: list) -> list[dict]:
-    """KB articles that CITE any of these entries (via the links table) — so when an
-    entry is edited or deleted, the articles that referenced it are in context to be
-    updated, even if semantic search wouldn't surface them."""
+    """Return KB articles that cite any of the given entries via the links table.
+
+    Ensures that when an entry is edited or deleted, the articles that referenced it
+    are in synthesis context to be updated, even if semantic search wouldn't surface them.
+
+    Args:
+        conn: SQLite connection, or None.
+        entries: Entry dicts with optional 'title'.
+
+    Returns:
+        List of KB article dicts with id, title, and content_md.
+    """
     if conn is None:
         return []
     titles = [e["title"] for e in entries if e.get("title")]
@@ -229,13 +298,26 @@ def _linked_kb(conn, entries: list) -> list[dict]:
 
 def _synthesize_actions(entries: list, existing_kb: list, instructions: str | None = None,
                         *, conn=None) -> list[dict]:
-    """Ask the LLM to fold new entries into the knowledge base. Returns a list of
-    {title, content_md}. Factored out so it can be stubbed in tests.
+    """Ask the LLM to fold new entries into the knowledge base.
 
-    `conn` (injected by the wiki_plan primitive) enables semantic retrieval of only
-    the relevant existing KB articles; without it the passed-in existing_kb is used.
+    Returns a list of {title, content_md}. Factored out so it can be stubbed in tests.
+    `conn` (injected by the wiki_plan primitive) enables semantic retrieval of only the
+    relevant existing KB articles; without it the passed-in existing_kb is used.
     `instructions` (from the workflow YAML config) is extra guidance appended to the
-    base prompt; the JSON-output contract is always enforced."""
+    base prompt; the JSON-output contract is always enforced.
+
+    Args:
+        entries: Entry dicts to synthesize into KB articles.
+        existing_kb: Fallback KB article list when conn is None.
+        instructions: Optional extra guidance from the workflow YAML config.
+        conn: SQLite connection for semantic KB retrieval; optional.
+
+    Returns:
+        List of dicts with 'title' and 'content_md' for each synthesized article.
+
+    Raises:
+        RuntimeError: If no LLM API key is configured.
+    """
     if not entries:
         return []                       # nothing to synthesize — never call the LLM
     if not llm.has_credentials():
@@ -267,15 +349,21 @@ def _synthesize_actions(entries: list, existing_kb: list, instructions: str | No
 
 
 def _parse_json_array(text: str) -> list:
-    """Extract the JSON array of articles from an LLM reply, tolerating prose
-    around it AND a truncated trailing object — we recover the complete prefix
-    rather than dropping the whole batch. Brackets inside string values (e.g.
-    [[wiki-links]]) are ignored via string/escape tracking, so the naive
-    find('[')/rfind(']') over/under-reach problems don't apply.
+    """Extract the JSON array of articles from an LLM reply, tolerating surrounding prose.
 
-    Returns the parsed list, or [] if not even one complete object is recoverable
-    (an empty result is treated as 'nothing durable', so the watermark won't
-    advance and the batch is retried)."""
+    Also recovers a truncated trailing object — returns the complete prefix rather than
+    dropping the whole batch. Brackets inside string values (e.g. [[wiki-links]]) are
+    ignored via string/escape tracking, so the naive find('[')/rfind(']') over/under-reach
+    problems don't apply.
+
+    Args:
+        text: Raw LLM reply text, possibly with prose before/after the JSON array.
+
+    Returns:
+        Parsed list, or [] if not even one complete object is recoverable. An empty
+        result is treated as 'nothing durable', so the watermark won't advance and the
+        batch is retried.
+    """
     import json as _json
     start = text.find("[")
     if start == -1:
@@ -324,7 +412,16 @@ DEFAULT_TAG_PROMPT = (
 
 
 def _suggest_tags(title: str, content: str, prompt: str | None = None) -> list[str]:
-    """Ask the LLM for tags. Returns [] if no key (graceful no-op)."""
+    """Ask the LLM to suggest tags for a note; returns [] if no key (graceful no-op).
+
+    Args:
+        title: Note title.
+        content: Note body text (truncated to 2000 chars).
+        prompt: Optional override instruction; defaults to actions.generate_tags prompt.
+
+    Returns:
+        List of up to 6 lowercase tag strings, or [] when no LLM key is configured.
+    """
     if not llm.has_credentials():
         return []
     instruction = prompt or prompts.get("actions.generate_tags", DEFAULT_TAG_PROMPT)
@@ -342,8 +439,14 @@ _PY_ACTION_SCHEMAS: dict[str, list] = {}
 
 
 def action_catalog() -> list[dict]:
-    """Every runnable action type + its config-form schema (drives the PWA
-    picker). YAML definitions plus any Python-only actions in _PY_ACTION_SCHEMAS."""
+    """Return every runnable action type with its config-form schema.
+
+    Drives the PWA action picker. Includes YAML-defined action types plus any
+    Python-only actions registered in _PY_ACTION_SCHEMAS.
+
+    Returns:
+        List of dicts with 'type', 'config', and 'category' keys, sorted by type.
+    """
     from . import pipeline
 
     meta: dict[str, dict] = {}
@@ -358,6 +461,14 @@ def action_catalog() -> list[dict]:
 # --- Execution --------------------------------------------------------------
 
 def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
+    """Insert a workflow_runs audit row for a completed run.
+
+    Args:
+        conn: SQLite connection.
+        workflow_id: ID of the workflow that ran.
+        status: Outcome string (e.g. 'ok' or 'error').
+        detail: Human-readable detail string; truncated to 1000 chars.
+    """
     conn.execute(
         "INSERT INTO workflow_runs (workflow_id, status, detail) VALUES (?, ?, ?)",
         (workflow_id, status, (detail or "")[:1000]),
@@ -365,8 +476,14 @@ def _log_run(conn, workflow_id: int, status: str, detail: str | None) -> None:
 
 
 def reset_stale_runs(conn) -> None:
-    """On startup, fail any run rows left 'running' by a previous process so a
-    crash mid-run doesn't wedge a trigger as perpetually in-progress."""
+    """Fail 'running' workflow_runs rows left by a previous process crash.
+
+    Called on startup so a crash mid-run doesn't wedge a trigger as perpetually
+    in-progress.
+
+    Args:
+        conn: SQLite connection.
+    """
     conn.execute(
         "UPDATE workflow_runs SET status='error', detail='interrupted (server restarted)' "
         "WHERE status='running'"
@@ -376,9 +493,18 @@ def reset_stale_runs(conn) -> None:
 
 
 def start_manual_run(conn, wf_id: int) -> dict:
-    """Kick off a manual run in a background thread and return immediately. Poll
-    latest_run() for status. A run already in flight is returned as-is (no
-    double-run)."""
+    """Kick off a manual workflow run in a background thread and return immediately.
+
+    Poll run_progress() for status. A run already in flight is returned as-is (no
+    double-run).
+
+    Args:
+        conn: SQLite connection.
+        wf_id: ID of the workflow to run.
+
+    Returns:
+        Dict with 'running' (True) and 'run_id'.
+    """
     existing = conn.execute(
         "SELECT id FROM workflow_runs WHERE workflow_id=? AND status='running' "
         "AND started_at > datetime('now','-15 minutes') ORDER BY id DESC LIMIT 1",
@@ -406,6 +532,11 @@ _RUN_PROGRESS_MAX = 30
 
 
 def _progress_init(run_id: int) -> None:
+    """Initialise the in-memory progress slot for a new run, evicting the oldest entries.
+
+    Args:
+        run_id: Unique run row ID to track.
+    """
     with _RUN_PROGRESS_LOCK:
         _RUN_PROGRESS[run_id] = {"events": [], "status": "running", "detail": ""}
         for old in sorted(_RUN_PROGRESS)[:-_RUN_PROGRESS_MAX]:   # evict the oldest
@@ -413,6 +544,12 @@ def _progress_init(run_id: int) -> None:
 
 
 def _progress_step(run_id: int, name: str) -> None:
+    """Append a named step event with a UTC timestamp to the run's progress log.
+
+    Args:
+        run_id: Run row ID.
+        name: Step label to record.
+    """
     with _RUN_PROGRESS_LOCK:
         p = _RUN_PROGRESS.get(run_id)
         if p is not None:
@@ -422,6 +559,13 @@ def _progress_step(run_id: int, name: str) -> None:
 
 
 def _progress_finish(run_id: int, status: str, detail: str) -> None:
+    """Mark an in-memory run progress slot as finished with a final status and detail.
+
+    Args:
+        run_id: Run row ID.
+        status: Final status string (e.g. 'ok' or 'error').
+        detail: Human-readable outcome detail.
+    """
     with _RUN_PROGRESS_LOCK:
         p = _RUN_PROGRESS.get(run_id)
         if p is not None:
@@ -429,8 +573,16 @@ def _progress_finish(run_id: int, status: str, detail: str) -> None:
 
 
 def run_progress(run_id: int) -> dict | None:
-    """Snapshot of a run's live step progress, or None if not tracked (e.g. after a
-    restart, or a scheduled — non-manual — run)."""
+    """Return a snapshot of a run's live step progress, or None if not tracked.
+
+    Not tracked after a server restart or for scheduled (non-manual) runs.
+
+    Args:
+        run_id: Run row ID.
+
+    Returns:
+        Dict with 'events', 'status', and 'detail', or None.
+    """
     with _RUN_PROGRESS_LOCK:
         p = _RUN_PROGRESS.get(run_id)
         return {"events": list(p["events"]), "status": p["status"], "detail": p["detail"]} if p else None

@@ -1,5 +1,4 @@
-"""Owner-side (AUTHENTICATED) share-link management: mint, list, revoke, and
-accept/reject the edit proposals that arrive via public EDIT links."""
+"""Owner-side (AUTHENTICATED) share-link management: mint, list, revoke, and accept/reject the edit proposals that arrive via public EDIT links."""
 import asyncio
 import hashlib
 import json
@@ -24,8 +23,16 @@ _KEEPALIVE_SECONDS = 15.0
 
 
 def _set_link_expiry(conn, link_id: int, ttl_days: int) -> None:
-    """Set/clear a share link's expiry from the host now (0 = never). Shared by the
-    view/edit, guided, and research detail editors so expiry behaves identically."""
+    """Set or clear a share link's expiry (0 = never expires).
+
+    Shared by the view/edit, guided, and research detail editors so expiry
+    behaves identically across link kinds.
+
+    Args:
+        conn: Active database connection.
+        link_id: Primary key of the share_links row to update.
+        ttl_days: Days until expiry from now; 0 or falsy clears the expiry.
+    """
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     conn.execute("UPDATE share_links SET expires_at = %s WHERE id = ?"
                  % ("datetime('now', ?)" if exp else "NULL"),
@@ -33,6 +40,8 @@ def _set_link_expiry(conn, link_id: int, ttl_days: int) -> None:
 
 
 class MintIn(BaseModel):
+    """Request body for minting a view/edit share link."""
+
     title: str
     scope: str = "view"
     label: str | None = None
@@ -42,6 +51,18 @@ class MintIn(BaseModel):
 
 @router.post("")
 def mint(body: MintIn):
+    """Mint a view or edit share link for a note owned by the authenticated user.
+
+    Args:
+        body: Title, scope, optional label, TTL, and bind flag.
+
+    Returns:
+        Token, full share URL, scope, note title, and note slug.
+
+    Raises:
+        HTTPException: 400 if scope is not 'view' or 'edit'.
+        HTTPException: 404 if no note with the given title exists.
+    """
     if body.scope not in ("view", "edit"):
         raise HTTPException(status_code=400, detail="scope must be 'view' or 'edit'")
     conn = get_conn()
@@ -56,9 +77,17 @@ def mint(body: MintIn):
 
 @router.get("")
 def list_shares():
-    """Active links (+ absolute URL), pending proposals (with a diff preview), and
-    the recent proposal HISTORY (accepted / rejected / superseded) so the owner can
-    see the status of everything in one place."""
+    """List all active share links, pending proposals, and recent history in one response.
+
+    Returns active note/guided/research/lab-share/chat links with their absolute URLs,
+    pending edit proposals with a diff preview and staleness flag, proposal history
+    (accepted/rejected/superseded), guided session queues, and research session summaries —
+    everything the owner needs to manage share state in one place.
+
+    Returns:
+        Dict with keys: chat_links, lab_links, research_links, links, proposals,
+        history, guided_history, guided_links, guided_pending, guided_ended.
+    """
     conn = get_conn()
     links = conn.execute(
         "SELECT sl.id, sl.token, sl.scope, sl.label, sl.created_at, sl.last_used_at, sl.expires_at, "
@@ -181,10 +210,18 @@ def list_shares():
 
 @router.get("/guided/{link_id}/sessions")
 def guided_sessions(link_id: int):
-    """Owner-only: every recipient session for a guided link — INCLUDING ones still in
-    progress (active/drafting) that have no review item yet, so partial or abandoned
-    conversations are visible, not just submitted/ended ones. The transcript itself is
-    fetched per session below (kept out of this list payload)."""
+    """List every recipient session for a guided link, including in-progress ones.
+
+    Returns active, drafting, submitted, ended, and abandoned sessions so partial
+    or abandoned conversations are visible, not just submitted/ended ones.
+    Transcripts are excluded from this list; fetch them individually.
+
+    Args:
+        link_id: Primary key of the guided share link.
+
+    Returns:
+        Dict with key 'sessions' — list of session metadata rows (up to 100).
+    """
     conn = get_conn()
     rows = conn.execute(
         "SELECT id, name, status, end_reason, turn_count, created_at, completed_at, "
@@ -198,10 +235,22 @@ def guided_sessions(link_id: int):
 
 @router.get("/guided/{link_id}/sessions/{sid}")
 def guided_session_transcript(link_id: int, sid: int):
-    """Owner-only: read a recipient's full guided transcript (+ any drafted document)
-    for this link — works for in-progress, submitted, ended, or abandoned sessions.
-    Like the pending/ended views, this is for owner review only: it's never written to
-    a note or embedded, so it stays out of brain search."""
+    """Fetch a recipient's full guided transcript and drafted document for owner review.
+
+    Works for in-progress, submitted, ended, or abandoned sessions. The transcript
+    is for owner review only — it is never written to a note or embedded, so it stays
+    out of brain search.
+
+    Args:
+        link_id: Primary key of the guided share link.
+        sid: Primary key of the guided session.
+
+    Returns:
+        Dict with name, status, end_reason, document_md, and transcript (parsed list).
+
+    Raises:
+        HTTPException: 404 if no session with that id exists under this link.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT name, status, end_reason, document_md, transcript_json "
@@ -215,7 +264,20 @@ def guided_session_transcript(link_id: int, sid: int):
 
 @router.post("/guided/sessions/{sid}/reopen")
 def guided_reopen(sid: int):
-    """Recover from an abuse lock: un-revoke the link and clear the ended session."""
+    """Recover from an abuse lock: reactivate the link and dismiss the ended session's review item.
+
+    The transcript is retained as an archived record; a new visit starts a fresh
+    session. Use 'Delete conversation' to purge the transcript deliberately.
+
+    Args:
+        sid: Primary key of the ended guided session.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the session does not exist.
+    """
     conn = get_conn()
     s = conn.execute("SELECT share_link_id, review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
     if not s:
@@ -232,8 +294,19 @@ def guided_reopen(sid: int):
 
 @router.post("/guided/sessions/{sid}/acknowledge")
 def guided_acknowledge(sid: int):
-    """Dismiss an auto-ended (abuse/distress) session without re-opening the link.
-    The transcript is kept as a record (delete it explicitly if you want it gone)."""
+    """Dismiss an auto-ended (abuse/distress) session without reopening the link.
+
+    The transcript is kept as a record; delete it explicitly if needed.
+
+    Args:
+        sid: Primary key of the ended guided session.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the session does not exist.
+    """
     conn = get_conn()
     s = conn.execute("SELECT review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
     if not s:
@@ -247,8 +320,20 @@ def guided_acknowledge(sid: int):
 
 @router.delete("/guided/sessions/{sid}")
 def guided_delete_session(sid: int):
-    """Permanently delete one guided conversation + its drafted artifact (owner choice).
-    Transcripts are kept by default now, so this is the deliberate way to purge one."""
+    """Permanently purge one guided conversation and its drafted artifact.
+
+    Transcripts are retained by default; this endpoint is the deliberate way to
+    delete them. Clears transcript_json and document_md in place.
+
+    Args:
+        sid: Primary key of the guided session to purge.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the session does not exist.
+    """
     conn = get_conn()
     if conn.execute("SELECT 1 FROM guided_sessions WHERE id=?", (sid,)).fetchone() is None:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -258,13 +343,23 @@ def guided_delete_session(sid: int):
 
 
 class GuidedOptionsIn(BaseModel):
+    """Request body for updating guided link options."""
+
     bind: bool = False
     single_use: bool = False
 
 
 @router.post("/guided/{link_id}/options")
 def guided_options(link_id: int, body: GuidedOptionsIn):
-    """Toggle the lock-to-device / run-once options for a guided link."""
+    """Toggle the lock-to-device and run-once options for a guided link.
+
+    Args:
+        link_id: Primary key of the guided share link.
+        body: New values for bind and single_use flags.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     from ..services import guided as guided_svc
     guided_svc.set_options(conn, link_id, bind=body.bind, single_use=body.single_use)
@@ -274,7 +369,14 @@ def guided_options(link_id: int, body: GuidedOptionsIn):
 
 @router.post("/guided/{link_id}/reset-bind")
 def guided_reset_bind(link_id: int):
-    """Forget the device a locked guided link bound to, so it can start fresh."""
+    """Forget the device a locked guided link bound to, allowing it to be claimed again.
+
+    Args:
+        link_id: Primary key of the guided share link.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     from ..services import guided as guided_svc
     guided_svc.reset_bind(conn, link_id)

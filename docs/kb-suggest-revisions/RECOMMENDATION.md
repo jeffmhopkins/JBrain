@@ -3,6 +3,34 @@
 Synthesis of a 5-research → 5-plan → red-team → 3-hybrid → red-team funnel.
 Full artifacts live beside this file (see `README.md`). This doc is the decision-ready summary.
 
+## Implementation status
+
+**Owner decisions (locked):** v1 = full autonomous truth-seeking agent (H2); note privacy =
+title-prefix inference (no durable flag yet — see the residual-risk note below); UX = unify
+Suggest-revisions with rebuild's Guide from the start; proceed with Phase 1 now.
+
+**Phase 1 — shared hardening on the existing rebuild — DONE** (backend gate green, 1038 passed):
+- *Date tokens*: `clock.tokens_in/malformed_tokens/dropped_tokens`; malformed `@t[...]` surfaced
+  via `validate_structure` (live rebuild + batch build + maintain); DATES directive added to
+  `wiki_revise`. (commit `1eb5625`)
+- *People linking*: `entity_index.rebuild(sync_embeddings=False)` run once at rebuild-session
+  start (offloaded, guarded) so new/renamed People pages link at draft time. (commit `06b8935`)
+- *Promotion parity*: `wiki_build.promote()` (link_owner + surface_aliases + normalize link
+  labels + flag_ungrounded_reference) wired into `finalize_rebuild`; the two network-bound steps
+  (link_medications, link_places) deliberately excluded from Accept. (commit `5f3d587`)
+
+**⚠ Residual risk to revisit at Phase 2.5:** the locked combination *full autonomous agent +
+title-prefix privacy* is the leak vector RT3 flagged — an agent reading raw notes mid-conversation,
+with privacy judged only by `kb/Health/`·`kb/Finance/` title prefixes, can pull a mis-filed/free-text
+private fact into a public/shareable article. Phase-2.5 mitigations (no durable flag required):
+mandatory user-approval gate on every inbound fact, default-deny when the target article is
+public/Reference, and the firewall built as one swappable seam so a durable per-note sensitivity
+flag can drop in later. To confirm with the owner before the truth-seeking layer ships.
+
+**Next — Phase 2:** the unified conversational targeted-edit loop (carry-forward generator, not
+`_generate`'s wipe; `run_redraft` seed-bug fix; backlinks read-only via `architect.py:818`),
+converging with rebuild's Guide step.
+
 ## The feature (locked with the owner)
 A live, **conversational "Suggest revisions"** mode for KB articles, parallel to "Rebuild page now":
 - **BASE = the current article, preserved** (not re-drafted from scratch).

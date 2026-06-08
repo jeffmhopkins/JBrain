@@ -23,12 +23,32 @@ from . import entity_index
 
 def add(conn, kind, type="person", norm_a=None, norm_b=None, display_a=None,
         display_b=None, canonical=None, author="user", source=None) -> int:
-    """Record a decision (normalizing all keys first) and return its id.
+    """Record a durable identity decision and return its row ID.
 
-    Refuses a degenerate self-pair (norm_a == norm_b). Enforces mutual exclusion: a
-    'merge' on a pair deletes any 'split' on that same unordered pair, and vice-versa.
-    De-dupes: an identical (kind,type,norm_a,norm_b,canonical) row is not re-inserted —
-    its existing id is returned.
+    Normalizes all keys before storing. Refuses a degenerate self-pair
+    (norm_a == norm_b). Enforces mutual exclusion: a 'merge' on a pair deletes any
+    'split' on the same unordered pair, and vice-versa. De-dupes: an identical
+    (kind, type, norm_a, norm_b, canonical) row is not re-inserted — the existing ID
+    is returned instead.
+
+    Args:
+        conn: SQLite connection (caller owns the transaction).
+        kind: Decision kind: 'merge', 'split', or 'alias'.
+        type: Entity type the decision applies to (default 'person').
+        norm_a: Primary normalized key (required).
+        norm_b: Secondary normalized key (required for 'split' and 'alias').
+        display_a: Human-readable label for norm_a.
+        display_b: Human-readable label for norm_b.
+        canonical: Canonical normalized key for a 'merge' decision.
+        author: Who recorded the decision (default 'user').
+        source: Optional provenance string.
+
+    Returns:
+        Row ID of the new or existing decision row.
+
+    Raises:
+        ValueError: When norm_a is empty, norm_a == norm_b, or a merge's member
+            equals its canonical.
     """
     na = entity_index.normalize(norm_a or "")
     nb = entity_index.normalize(norm_b or "") or None
@@ -69,15 +89,30 @@ def add(conn, kind, type="person", norm_a=None, norm_b=None, display_a=None,
 
 
 def remove(conn, decision_id: int) -> None:
+    """Delete a decision row by ID.
+
+    Args:
+        conn: SQLite connection (caller owns the transaction).
+        decision_id: Row ID of the decision to remove.
+    """
     conn.execute("DELETE FROM entity_decisions WHERE id=?", (decision_id,))
 
 
 def load_merges(conn, type="person") -> dict:
-    """{member_norm -> TERMINAL canonical_norm} from all 'merge' rows of this type.
+    """Return resolved merge decisions as a member_norm -> terminal canonical_norm map.
 
-    Chains are resolved so a merge X->Y plus Y->Z maps BOTH X and Y to the terminal Z (the
-    user's last-chosen target wins the display), with a cycle guard. The terminal maps to
-    itself, so set(values) is exactly the set of terminal canonicals."""
+    Chains are followed so X->Y plus Y->Z maps both X and Y to the terminal Z (the
+    user's last-chosen target wins). A cycle guard prevents infinite loops. The
+    terminal norm maps to itself so ``set(values)`` is exactly the set of terminal
+    canonicals.
+
+    Args:
+        conn: SQLite connection.
+        type: Entity type to filter by (default 'person').
+
+    Returns:
+        Dict mapping each member norm to its terminal canonical norm.
+    """
     immediate: dict = {}
     for r in conn.execute(
         "SELECT norm_a, canonical FROM entity_decisions WHERE kind='merge' AND type=?", (type,)
@@ -85,6 +120,7 @@ def load_merges(conn, type="person") -> dict:
         immediate[r["norm_a"]] = r["canonical"] or r["norm_a"]
 
     def terminal(n):
+        """Walk the merge chain to its terminal canonical, guarded against cycles."""
         seen = {n}
         while n in immediate and immediate[n] != n and immediate[n] not in seen:
             n = immediate[n]
@@ -100,7 +136,15 @@ def load_merges(conn, type="person") -> dict:
 
 
 def load_splits(conn, type="person") -> set:
-    """{frozenset({norm_a, norm_b})} — pairs the heuristic must NOT auto-union."""
+    """Return the set of norm pairs that the heuristic must not auto-union.
+
+    Args:
+        conn: SQLite connection.
+        type: Entity type to filter by (default 'person').
+
+    Returns:
+        Set of frozenset({norm_a, norm_b}) pairs.
+    """
     out: set = set()
     for r in conn.execute(
         "SELECT norm_a, norm_b FROM entity_decisions WHERE kind='split' AND type=?", (type,)
@@ -111,10 +155,18 @@ def load_splits(conn, type="person") -> set:
 
 
 def load_aliases(conn, type="person") -> dict:
-    """{canonical_norm -> [(alias_norm, alias_display), ...]} from 'alias' rows.
+    """Return alias decisions grouped by canonical norm.
 
     An alias row anchors to its canonical via norm_b (the canonical entity's normalized
-    key); norm_a holds the alias key and display_a the label."""
+    key); norm_a holds the alias key and display_a the label.
+
+    Args:
+        conn: SQLite connection.
+        type: Entity type to filter by (default 'person').
+
+    Returns:
+        Dict mapping canonical_norm to a list of (alias_norm, alias_display) pairs.
+    """
     out: dict = {}
     for r in conn.execute(
         "SELECT norm_a, norm_b, display_a FROM entity_decisions WHERE kind='alias' AND type=?", (type,)
@@ -126,6 +178,15 @@ def load_aliases(conn, type="person") -> dict:
 
 
 def list_for(conn, type="person") -> list:
+    """Return all decision rows for ``type`` ordered by ID.
+
+    Args:
+        conn: SQLite connection.
+        type: Entity type to filter by (default 'person').
+
+    Returns:
+        List of decision dicts with all stored columns.
+    """
     return [dict(r) for r in conn.execute(
         "SELECT id, kind, type, norm_a, norm_b, display_a, display_b, canonical, author, "
         "source, created_at FROM entity_decisions WHERE type=? ORDER BY id", (type,)

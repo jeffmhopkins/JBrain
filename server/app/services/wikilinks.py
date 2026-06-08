@@ -12,7 +12,16 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]")
 
 
 def extract_links(content_md: str) -> list[str]:
-    """Return the unique, order-preserving list of linked note titles."""
+    """Return the unique, order-preserving list of [[wiki-link]] target titles in content.
+
+    Ignores links longer than 200 chars or containing newlines.
+
+    Args:
+        content_md: Markdown note body.
+
+    Returns:
+        List of unique title strings in the order they first appear.
+    """
     seen: dict[str, None] = {}
     for match in WIKILINK_RE.finditer(content_md or ""):
         title = match.group(1).strip()
@@ -24,7 +33,13 @@ def extract_links(content_md: str) -> list[str]:
 
 
 def reconcile_links(conn, source_note_id: int, content_md: str) -> None:
-    """Rebuild the outgoing links for a note from its current content."""
+    """Rebuild the outgoing links table rows for a note from its current content.
+
+    Args:
+        conn: SQLite connection.
+        source_note_id: Note whose outgoing links should be replaced.
+        content_md: Current note body to extract links from.
+    """
     conn.execute("DELETE FROM links WHERE source_note_id = ?", (source_note_id,))
     for title in extract_links(content_md):
         target = conn.execute(
@@ -39,7 +54,13 @@ def reconcile_links(conn, source_note_id: int, content_md: str) -> None:
 
 
 def resolve_dangling_links(conn, note_id: int, title: str) -> None:
-    """When a note is created, attach any prior unresolved links to its title."""
+    """Attach prior unresolved [[title]] links to a newly created note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: ID of the newly created note.
+        title: Title to match against existing dangling links (case-insensitive).
+    """
     conn.execute(
         "UPDATE links SET target_note_id = ? "
         "WHERE target_note_id IS NULL AND lower(target_title) = lower(?)",
@@ -65,10 +86,18 @@ _ROOTS = ("notes", "kb", "lists", "logs")
 
 
 def wiki_label(title: str) -> str:
-    """The bare display label for a link, mirroring the PWA's wikiLabel(): for kb/
-    titles the category folders are taxonomy, so show the last path segment
-    ('kb/People/Jeffrey Mark Hopkins' → 'Jeffrey Mark Hopkins'); other roots keep
-    their root-stripped leaf."""
+    """Return the bare display label for a link, mirroring the PWA's wikiLabel().
+
+    For kb/ titles the category folders are taxonomy, so the last path segment is
+    shown ('kb/People/Jeffrey Mark Hopkins' → 'Jeffrey Mark Hopkins'). Other roots
+    keep their root-stripped leaf.
+
+    Args:
+        title: Full note title (may include kb/, notes/, etc. prefix).
+
+    Returns:
+        Short display label string.
+    """
     t = _norm(title)
     if t.lower().startswith("kb/"):
         segs = [s for s in t.split("/") if s.strip()]
@@ -77,9 +106,17 @@ def wiki_label(title: str) -> str:
 
 
 def _path_forms(title: str) -> set[str]:
-    """Progressive trailing path forms of a title, lowercased — the 'verbose' label
-    variants a writer might bake in. 'kb/People/Jeff Hopkins' → {'jeff hopkins',
-    'people/jeff hopkins', 'kb/people/jeff hopkins'}."""
+    """Return the progressive trailing path forms of a title, lowercased.
+
+    These are the 'verbose' label variants a writer might bake in.
+    'kb/People/Jeff Hopkins' → {'jeff hopkins', 'people/jeff hopkins', 'kb/people/jeff hopkins'}.
+
+    Args:
+        title: Full note title.
+
+    Returns:
+        Set of lowercased path suffix strings.
+    """
     segs = [s.strip() for s in _norm(title).split("/") if s.strip()]
     forms, suffix = set(), ""
     for seg in reversed(segs):
@@ -89,22 +126,46 @@ def _path_forms(title: str) -> set[str]:
 
 
 def _norm(s: str | None) -> str:
+    """Return a stripped string, treating None as empty."""
     return (s or "").strip()
 
 
 def _last_segment(title: str) -> str:
-    """The bare leaf name — the final '/'-separated segment ('kb/People/Jeff' → 'Jeff')."""
+    """Return the bare leaf name — the final '/'-separated segment of a title.
+
+    Args:
+        title: Full note title (e.g. 'kb/People/Jeff').
+
+    Returns:
+        Leaf segment string (e.g. 'Jeff').
+    """
     return _norm(title).split("/")[-1].strip()
 
 
 def _parent(title: str) -> str:
-    """Everything above the leaf ('kb/People/Jeff' → 'kb/People')."""
+    """Return everything above the leaf segment ('kb/People/Jeff' → 'kb/People').
+
+    Args:
+        title: Full note title.
+
+    Returns:
+        Parent path string, or '' for a top-level title.
+    """
     parts = [p.strip() for p in _norm(title).split("/")]
     return "/".join(parts[:-1])
 
 
 def _root_leaf(title: str) -> str:
-    """Mirror the PWA's leaf(): strip a single leading root folder ('kb/Jeff' → 'Jeff')."""
+    """Strip a single leading root folder, mirroring the PWA's leaf().
+
+    'kb/Jeff' → 'Jeff'. Recognized roots: notes, kb, lists, logs.
+
+    Args:
+        title: Full note title.
+
+    Returns:
+        Title with exactly one leading root stripped, or the original if no root matches.
+    """
     t = _norm(title)
     for r in _ROOTS:
         if t.lower().startswith(r + "/"):
@@ -113,11 +174,19 @@ def _root_leaf(title: str) -> str:
 
 
 def _tokens(s: str) -> set[str]:
+    """Return the set of lowercase alphanumeric tokens in a string."""
     return set(re.findall(r"[a-z0-9]+", (s or "").lower()))
 
 
 def _iter_display_links(content_md: str):
-    """Yield (raw, target, display) for every [[Target|Display]] with an explicit display."""
+    """Yield (raw, target, display) for every [[Target|Display]] link with an explicit alias.
+
+    Args:
+        content_md: Note body to scan.
+
+    Yields:
+        Tuple of (raw_match_string, target_title, display_text) for each aliased link.
+    """
     for m in WIKILINK_FULL_RE.finditer(content_md or ""):
         target, display = _norm(m.group(1)), m.group(2)
         if display is None:
@@ -130,10 +199,20 @@ def _iter_display_links(content_md: str):
 
 def scan_link_labels(conn) -> list[dict]:
     """Scan every live note for [[Target|Display]] links that should drop their alias.
+
     Each finding has kind 'mismatch' (label names a different article — high-confidence:
     a different note in the same folder, or a former title of the target) or 'verbose'
     (the label just repeats the article's path/name). The fix is always the bare
-    [[Target]], which renders the article's clean short name."""
+    [[Target]], which renders the article's clean short name. Returns [] on indeterminate
+    alias surface (fail-closed: strips nothing rather than risking intentional alias loss).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        List of finding dicts, each with kind, source_id, raw, target, display,
+        desired_display, fixed, and reason.
+    """
     notes = conn.execute(
         "SELECT id, title, slug, content_md FROM notes WHERE deleted_at IS NULL"
     ).fetchall()
@@ -150,6 +229,7 @@ def scan_link_labels(conn) -> list[dict]:
         s.add(_last_segment(r["title"]).lower())
 
     def finding(kind, n, raw, target, tgt, display, reason, resolved=None):
+        """Build a finding dict for one aliased link that should drop its alias."""
         return {
             "kind": kind, "source_id": n["id"], "source_title": n["title"], "source_slug": n["slug"],
             "raw": raw, "target": target, "target_title": tgt["title"], "target_slug": tgt["slug"],
@@ -172,6 +252,7 @@ def scan_link_labels(conn) -> list[dict]:
     from .wiki_build import _resolve_redirect_chain
 
     def _is_registered_alias(display: str, tgt) -> bool:
+        """Return True if display is a registered entity alias resolving to the same note as tgt."""
         info = _alias_surface.get(entity_index.normalize(display))
         if not info:
             return False
@@ -212,14 +293,34 @@ def scan_link_labels(conn) -> list[dict]:
 
 
 def audit_display_mismatches(conn) -> list[dict]:
-    """High-confidence label mismatches only (a label naming a different article) — what
-    the on-view Wiki panel flags. Verbose-alias tidying is left to the maintenance sweep."""
+    """Return high-confidence label mismatches only (a label naming a different article).
+
+    These are what the on-view Wiki panel flags. Verbose-alias tidying is left to the
+    maintenance sweep.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Subset of scan_link_labels() findings where kind == 'mismatch'.
+    """
     return [f for f in scan_link_labels(conn) if f["kind"] == "mismatch"]
 
 
 def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
-    """Drop the alias on one [[Target|Display]] in a note so it renders the target's clean
-    short name. Versioned/undoable. Returns whether anything changed."""
+    """Drop the alias on one [[Target|Display]] link so it renders the target's clean short name.
+
+    The change is versioned and undoable via the note's version history.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note containing the link to fix.
+        target: Exact target title of the link to rewrite.
+        display: Current display alias to remove.
+
+    Returns:
+        True if the link was found and rewritten, False otherwise.
+    """
     from . import notes as notes_svc  # lazy — notes imports this module
 
     row = conn.execute(
@@ -235,6 +336,7 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
     changed = False
 
     def repl(m):
+        """Replace matching [[target|display]] with bare [[target]]."""
         nonlocal changed
         if (_norm(m.group(1)).lower() == target.lower()
                 and m.group(2) is not None and _norm(m.group(2)) == display):
@@ -251,8 +353,17 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
 
 
 def normalize_all_link_labels(conn, limit: int = 5000) -> dict:
-    """Drop redundant/mismatched aliases across the whole wiki (deterministic, no LLM).
-    Used by the nightly sweep and the post-write KB maintenance/build passes."""
+    """Drop redundant and mismatched aliases across the whole wiki (deterministic, no LLM).
+
+    Used by the nightly sweep and the post-write KB maintenance/build passes.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of findings to fix in this pass.
+
+    Returns:
+        Dict with 'fixed', 'mismatches', and 'verbose' counts.
+    """
     mism = verb = 0
     for f in scan_link_labels(conn)[: int(limit)]:
         if fix_note_link(conn, f["source_id"], f["target"], f["display"]):

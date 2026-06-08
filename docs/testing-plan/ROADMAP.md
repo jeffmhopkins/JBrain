@@ -1,5 +1,13 @@
 # JBrain Testing — End-to-End Roadmap (now → full coverage)
 
+> **⚠️ Partly superseded — kept for the plan of record.** Stages **1–3** (the
+> `./jt` system), **2** (CI gating every PR), **6** (Playwright system/e2e), and
+> **7** (the `flows` tier + Android JUnit baseline) have **shipped**. The "Stage 0"
+> snapshot below (no CI, no e2e, framework not built) no longer reflects reality.
+> What remains live is the ongoing coverage-filling work (Stages **4–5**, **8**)
+> and the **ratchet-only floors** principle. See `CLAUDE.md` for the current
+> Definition of Done.
+
 Merges the two deliverables already in this repo:
 - **`docs/coverage-audit/COVERAGE_REPORT.md`** — *where the gaps are* (backend 79% but uneven;
   frontend 8%; no system/e2e; no CI).

@@ -11,9 +11,11 @@ One Gradle project, two modules, **one install**:
   and the note is saved into JBrain.
 
 The watch app is **embedded inside the phone APK** (`app/build.gradle.kts`:
-`wearApp(project(":wear"))`), so installing the phone app is all you do — the Wear OS
-companion delivers the watch app to a paired watch. There's no separate watch APK,
-keystore, or CI workflow to maintain.
+`wearApp(project(":wear"))`), so on a paired watch the Wear OS companion can deliver it
+straight from the phone install. CI **also** builds a **standalone watch APK**
+(`jbrain-watch.apk`) signed with the same key, for the cases where auto-delivery
+doesn't apply (Wear OS 3+ — see the note under *Build & install*) and you sideload it to
+the watch directly. Same single keystore for both; no per-watch configuration.
 
 ## How the watch works (no keys on the watch)
 
@@ -84,9 +86,11 @@ cd android && ./gradlew :app:assembleRelease
 ```
 
 The APK (with the watch app embedded) lands in `app/build/outputs/apk/release/`. Or let
-CI build it — see `.github/workflows/android-apk.yml` (download the artifact and
-sideload). Install it on your (and family) phones; pair a watch and the companion app
-delivers the watch app.
+CI build both — see `.github/workflows/android-apk.yml`, which produces a single
+artifact (`jbrain-apks`) containing **`jbrain-tracker.apk`** (sideload to the phone) and
+**`jbrain-watch.apk`** (sideload to the watch over ADB Wi-Fi). Install the phone APK on
+your (and family) phones; pair a watch and the companion app delivers the embedded watch
+app, or sideload the standalone watch APK directly (next note).
 
 > **Note on auto-delivery:** the embedded-app mechanism reliably auto-installs the watch
 > app from the *old Android Wear companion*. On **Wear OS 3+**, Google moved auto-delivery

@@ -20,6 +20,8 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 
 class MessageIn(BaseModel):
+    """Input schema for sending a chat message."""
+
     text: str
     mode: str = "assisted"          # 'assisted' (Full Brain) | 'research' (read-only)
     # Read-only "Deep" opt-in: raise the research budget for a multi-step question. Ignored
@@ -51,9 +53,19 @@ _MODE_ALIASES: dict[str, str] = {
 
 
 def normalize_mode(raw: str) -> str:
-    """Resolve a wire mode string to a canonical mode, failing CLOSED to read-only
-    'research' for anything unrecognized. A stale PWA or a forward-incompatible client
-    must never silently gain WRITE tools by sending a mode the server doesn't know."""
+    """Resolve a wire mode string to a canonical mode.
+
+    Fails closed to the read-only ``'research'`` mode for any unrecognised
+    string. A stale PWA or forward-incompatible client must never silently
+    gain write tools by sending an unknown mode.
+
+    Args:
+        raw: Wire mode string sent by the client (e.g. ``"assisted"``).
+
+    Returns:
+        A canonical mode from ``_CANONICAL_MODES``, defaulting to
+        ``"research"`` for anything unrecognised.
+    """
     if raw in _CANONICAL_MODES:
         return raw
     return _MODE_ALIASES.get(raw, "research")
@@ -61,6 +73,11 @@ def normalize_mode(raw: str) -> str:
 
 @router.post("/conversations")
 def create_conversation():
+    """Create a new empty conversation.
+
+    Returns:
+        JSON ``{"id": int}`` with the new conversation's primary key.
+    """
     conn = get_conn()
     cur = conn.execute("INSERT INTO conversations DEFAULT VALUES")
     conn.commit()
@@ -69,6 +86,11 @@ def create_conversation():
 
 @router.get("/conversations")
 def list_conversations():
+    """Return the 100 most recent conversations, newest first.
+
+    Returns:
+        List of dicts with ``id``, ``title``, and ``started_at``.
+    """
     rows = get_conn().execute(
         "SELECT id, title, started_at FROM conversations ORDER BY started_at DESC LIMIT 100"
     ).fetchall()
@@ -77,6 +99,19 @@ def list_conversations():
 
 @router.get("/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: int):
+    """Return all messages in a conversation with per-reply tool-call counts.
+
+    The ``step_count`` field lets the client render the "how I answered this"
+    pill without fetching the full tool log up front. The ``id`` field lets
+    the client lazily fetch that log per message when the panel opens.
+
+    Args:
+        conversation_id: Primary key of the conversation.
+
+    Returns:
+        List of message dicts with ``id``, ``role``, ``content``,
+        ``created_at``, and ``step_count``.
+    """
     # `step_count` (a cheap LEFT JOIN aggregate) lets the client render the "how I answered
     # this" pill without fetching the full tool log for every reply up front; `id` lets it
     # lazily fetch that log per message when the pill/swipe opens it.
@@ -91,8 +126,17 @@ def get_messages(conversation_id: int):
 
 @router.get("/messages/{message_id}/steps")
 def get_message_steps(message_id: int):
-    """The full raw tool-call history for one assistant reply (lazily fetched when the
-    reply's history panel is opened)."""
+    """Return the full tool-call history for one assistant reply.
+
+    Lazily fetched when the reply's history panel is opened by the user.
+
+    Args:
+        message_id: Primary key of the assistant message.
+
+    Returns:
+        List of step dicts with ``step_index``, ``tool_name``, ``args_json``,
+        ``result_text``, ``is_error``, ``event_json``, and ``created_at``.
+    """
     rows = get_conn().execute(
         "SELECT step_index, tool_name, args_json, result_text, is_error, event_json, created_at "
         "FROM message_steps WHERE message_id = ? ORDER BY step_index",
@@ -103,8 +147,17 @@ def get_message_steps(message_id: int):
 
 @router.delete("/conversations/{conversation_id}/steps")
 def clear_conversation_steps(conversation_id: int):
-    """Wipe the stored tool-call history for a conversation — invoked when the user runs
-    /clear, so the full-raw logs don't accumulate across throwaway chats."""
+    """Wipe the stored tool-call history for a conversation.
+
+    Invoked when the user runs /clear so full tool logs do not accumulate
+    across throwaway chats.
+
+    Args:
+        conversation_id: Primary key of the conversation to clear.
+
+    Returns:
+        JSON ``{"ok": true}``.
+    """
     conn = get_conn()
     conn.execute("DELETE FROM message_steps WHERE conversation_id = ?", (conversation_id,))
     conn.commit()
@@ -113,6 +166,25 @@ def clear_conversation_steps(conversation_id: int):
 
 @router.post("/conversations/{conversation_id}/message")
 def send_message(conversation_id: int, body: MessageIn):
+    """Send a user message and stream the architect's reply as SSE events.
+
+    Titles the conversation from the first user message. Runs the architect
+    agent in a background task and proxies its events through a keepalive
+    queue so proxies and the client's stall watchdog do not drop the stream
+    during long tool runs or model thinking pauses.
+
+    Args:
+        conversation_id: Primary key of the conversation.
+        body: Message text, mode, optional location, optional deep flag, and
+            optional fresh_context flag.
+
+    Yields:
+        SSE events from the architect, plus ``': keepalive'`` comments during
+        silent periods. On error, an ``event: error`` frame is emitted.
+
+    Raises:
+        HTTPException: 404 if the conversation does not exist.
+    """
     conn = get_conn()
     exists = conn.execute(
         "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
@@ -140,6 +212,7 @@ def send_message(conversation_id: int, body: MessageIn):
     mode = normalize_mode(body.mode)
 
     async def event_stream():
+        """Yield architect SSE events, interleaving periodic keepalive comments."""
         # Bridge the architect's async generator through a queue so we can interleave a
         # periodic keepalive while the real work is silent. A ': keepalive' comment line
         # carries no `data:` field, so the client safely ignores it — but every byte
@@ -149,6 +222,7 @@ def send_message(conversation_id: int, body: MessageIn):
         _DONE = object()
 
         async def pump():
+            """Drain the architect's async generator into the queue."""
             try:
                 async for event in architect.run(conversation_id, body.text, location, mode,
                                                  fresh_context=body.fresh_context, deep=body.deep):

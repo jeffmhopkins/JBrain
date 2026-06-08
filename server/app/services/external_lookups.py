@@ -8,6 +8,14 @@ from __future__ import annotations
 
 
 def _norm(term: str) -> str:
+    """Normalize a lookup term for deduplication.
+
+    Args:
+        term: Raw term string to normalize.
+
+    Returns:
+        Normalized string; falls back to lowercased whitespace-collapsed form on error.
+    """
     from . import entity_index
     try:
         return entity_index.normalize(term) or ""
@@ -16,10 +24,21 @@ def _norm(term: str) -> str:
 
 
 def check_or_propose(conn, tool: str, term: str) -> dict:
-    """Return {status, id, term} for an outbound `term`. If there's no prior decision, record a
-    PENDING proposal (nothing is sent) and return status='pending' so the caller can ask the owner.
-    For an EXISTING row, returns the STORED term — so if the owner edited the term on approval, the
-    caller fetches the owner's edited term, not the model's original phrasing."""
+    """Return the approval status for an outbound lookup term, creating a pending proposal if new.
+
+    If there is no prior decision, records a PENDING proposal (nothing is sent externally)
+    and returns status='pending' so the caller can ask the owner. For an existing row, returns
+    the STORED term — if the owner edited the term on approval, the caller gets the owner's
+    edited version, not the model's original phrasing.
+
+    Args:
+        conn: SQLite connection (commits internally when a new proposal is created).
+        tool: Tool name identifying the lookup type (e.g. 'medical_reference').
+        term: Raw term the tool wants to look up externally.
+
+    Returns:
+        Dict with keys: status ('pending', 'approved', or 'denied'), id (row pk), term.
+    """
     norm = _norm(term)
     if not norm:
         return {"status": "denied", "id": None, "term": term}
@@ -34,10 +53,22 @@ def check_or_propose(conn, tool: str, term: str) -> dict:
 
 
 def decide(conn, lookup_id: int, *, approve: bool, term: str | None = None) -> dict | None:
-    """Record the owner's decision; returns {tool, term} (the term to fetch) or None. `term` lets the
-    owner EDIT what's sent (e.g. trim a PHI-laden question to a clean topic). On an edited approval we
-    also pre-approve the edited term's own key, so whether the model re-calls its original phrasing or
-    the edited topic, it matches an approved row and fetches the edited term."""
+    """Record the owner's approve/deny decision for a pending lookup.
+
+    The optional ``term`` argument lets the owner edit what is sent externally (e.g.
+    trim a PHI-laden question to a clean topic). On an edited approval, the edited
+    term's normalized key is also pre-approved so future calls with either phrasing
+    match an approved row.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        lookup_id: Primary key of the external_lookups row to decide.
+        approve: True to approve, False to deny.
+        term: Optional owner-edited term to use instead of the original.
+
+    Returns:
+        Dict with keys: tool, term (the term to fetch), or None if the row is not found.
+    """
     row = conn.execute("SELECT tool, term, norm_key FROM external_lookups WHERE id=?", (lookup_id,)).fetchone()
     if not row:
         return None

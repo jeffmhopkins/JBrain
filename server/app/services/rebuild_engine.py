@@ -31,8 +31,16 @@ _MAX_TOKENS_CEILING = 16000
 
 
 def _clamp_tokens(n) -> int:
-    """Bound a requested Stage-2 budget: never below the default, never above the ceiling
-    (so an approved re-draft can grow the budget without an unbounded cost blowout)."""
+    """Clamp a requested Stage-2 token budget between the default and the ceiling.
+
+    An approved re-draft can grow the budget without an unbounded cost blowout.
+
+    Args:
+        n: Requested token count (any type; non-numeric falls back to the default).
+
+    Returns:
+        Clamped integer token budget.
+    """
     try:
         n = int(n)
     except (TypeError, ValueError):
@@ -66,6 +74,15 @@ _GATHER_TOOLS = [
 
 
 def _notes_meta(conn, ids) -> list[dict]:
+    """Fetch lightweight note metadata (id, title, date) for a list of note IDs.
+
+    Args:
+        conn: Database connection.
+        ids: Iterable of note IDs to look up.
+
+    Returns:
+        List of dicts with keys id, title, and date (ISO date string).
+    """
     ids = [int(i) for i in ids if i]
     if not ids:
         return []
@@ -77,6 +94,16 @@ def _notes_meta(conn, ids) -> list[dict]:
 
 
 def _gather_system(title: str, seed_titles: list[str], hint: str | None) -> str:
+    """Build the Stage-1 gather agent system prompt.
+
+    Args:
+        title: KB article title being rebuilt.
+        seed_titles: Deterministic seed note titles from prior citations and entity index.
+        hint: Optional owner guidance injected into the prompt.
+
+    Returns:
+        System prompt string for the gather agent.
+    """
     seed = "\n".join(f"- {t}" for t in seed_titles) or "(none yet)"
     extra = f"\n\nThe owner asks specifically: {hint.strip()}" if (hint or "").strip() else ""
     return (
@@ -90,7 +117,17 @@ def _gather_system(title: str, seed_titles: list[str], hint: str | None) -> str:
 
 
 async def run_gather(run, hint: str | None = None, append: bool = False) -> AsyncGenerator[dict, None]:
-    """Stage 1: stream the gather agent's tool use and emit the proposed candidate sources."""
+    """Run Stage 1: stream the gather agent's tool use and emit proposed candidate sources.
+
+    Args:
+        run: Active RebuildRun session object.
+        hint: Optional owner guidance forwarded to the gather agent's system prompt.
+        append: If True, merge new candidates into the existing run.candidates list
+            rather than replacing it.
+
+    Yields:
+        Event dicts of type tool_use, tool_result, sources_proposed, or error.
+    """
     from ..db import get_conn
     from . import search, wiki_build, wiki_guides
 
@@ -173,10 +210,27 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
 
 
 def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
+    """Build the final candidate and skipped source lists from the gather agent's proposal.
+
+    Falls back to the deterministic seed set when the proposal is empty or unusable.
+    Private-domain notes are flagged and defaulted off on public pages.
+
+    Args:
+        conn: Database connection.
+        title: KB article title being rebuilt.
+        pool: Dict mapping lowercase title -> note metadata, populated during gather.
+        proposal: Raw propose_sources args dict from the agent, or None.
+        seed_titles: Deterministic seed titles to fall back to.
+        wiki_guides: wiki_guides module (injected to avoid a top-level import).
+
+    Returns:
+        Tuple of (candidates, skipped) — each a list of source candidate dicts.
+    """
     target_private = wiki_guides.is_private_title(title)
     seen: set[int] = set()
 
     def mk(t: str, reason: str, added: bool = False):
+        """Build a candidate dict for a note title, looking it up in pool or the DB."""
         m = pool.get((t or "").lower())
         if not m:
             row = conn.execute(
@@ -215,9 +269,24 @@ def _build_candidates(conn, title, pool, proposal, seed_titles, wiki_guides):
 
 
 async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Stream ONE drafting turn from run.messages: thinking + the article body, then lint,
-    stage on the run, and emit `done`. Shared by the initial draft and Guide. `max_tokens`
-    is the (clamped) output budget — a re-draft after truncation passes a larger value."""
+    """Stream one drafting turn from run.messages and emit the article body.
+
+    Shared by the initial draft and Guide revisions. Streams thinking deltas and
+    content deltas, then lints the assembled draft (dead links, structure), stages
+    the result on the run, and emits a done event.
+
+    An auto-continue pass resumes a truncated draft once before surfacing the
+    truncation to the user. `max_tokens` is the (clamped) output budget; a re-draft
+    after truncation passes a larger value.
+
+    Args:
+        run: Active RebuildRun session object.
+        conn: Database connection.
+        max_tokens: Output token budget; clamped to [_MAX_TOKENS, _MAX_TOKENS_CEILING].
+
+    Yields:
+        Event dicts of type thinking_delta, content_delta, lint, done, or error.
+    """
     from . import wiki_build, wiki_guides
 
     budget = _clamp_tokens(max_tokens)
@@ -330,8 +399,17 @@ async def _generate(run, conn, max_tokens: int | None = None) -> AsyncGenerator[
 
 
 async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Stage 2: write the article from ONLY the curated source ids. `max_tokens` lets an
-    approved re-draft (after truncation) run at a larger output budget."""
+    """Run Stage 2: write the article from only the curated source note IDs.
+
+    Args:
+        run: Active RebuildRun session object.
+        source_ids: IDs of the curated source notes to write from.
+        max_tokens: Output token budget; allows an approved re-draft after truncation
+            to run at a larger budget.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
     from . import wiki_build
 
@@ -360,7 +438,16 @@ async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -
 
 
 async def run_guide(run, instruction: str, max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
-    """Steer a revision: append guidance and re-stream from the SAME loaded context."""
+    """Steer a revision by appending guidance and re-streaming from the same loaded context.
+
+    Args:
+        run: Active RebuildRun session object.
+        instruction: Owner guidance for the revision.
+        max_tokens: Output token budget passed through to _generate.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
 
     conn = get_conn()
@@ -377,12 +464,22 @@ async def run_guide(run, instruction: str, max_tokens: int | None = None) -> Asy
 
 
 async def run_redraft(run, max_tokens: int | None) -> AsyncGenerator[dict, None]:
-    """Re-run the last drafting turn at a larger (approved) budget after a truncation. Drops
-    the truncated assistant turn — AND any auto-continue scaffolding (the appended
-    CONTINUE_PROMPT user turn + the partial assistant turn before it) — so the model answers
-    the SAME original prompt afresh, NOT the "resume where you stopped" turn. Works for both
-    the initial draft and a Guide revision, since either way run.messages ends with the right
-    user prompt once the truncated turn(s) are removed."""
+    """Re-run the last drafting turn at a larger approved budget after a truncation.
+
+    Drops the truncated assistant turn and any auto-continue scaffolding (the
+    appended CONTINUE_PROMPT user turn plus the partial assistant turn before it),
+    so the model answers the SAME original prompt afresh rather than the
+    "resume where you stopped" turn. Works for both the initial draft and a Guide
+    revision, since run.messages ends with the right user prompt once the truncated
+    turn(s) are removed.
+
+    Args:
+        run: Active RebuildRun session object.
+        max_tokens: Larger output token budget approved by the user.
+
+    Yields:
+        Event dicts (see _generate).
+    """
     from ..db import get_conn
     from . import wiki_build
 

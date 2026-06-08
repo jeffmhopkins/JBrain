@@ -43,22 +43,34 @@ _DEFAULT_PROMPT = (
 
 
 class UnsupportedImage(Exception):
-    """The bytes can't be decoded/sent (e.g. HEIC without a codec, SVG, corrupt)."""
+    """Raised when image bytes cannot be decoded or sent (e.g. HEIC without a codec, SVG, corrupt)."""
 
 
 # --- Anchored block helpers (idempotent, per-attachment) --------------------
 
 def _open(att_id: int) -> str:
+    """Return the opening HTML comment marker for an image-summary block."""
     return f"<!-- jbrain:image-summary att={att_id} -->"
 
 
 def _close(att_id: int) -> str:
+    """Return the closing HTML comment marker for an image-summary block."""
     return f"<!-- /jbrain:image-summary att={att_id} -->"
 
 
 def strip_summary_block(md: str, att_id: int) -> str:
-    """Remove this attachment's summary block (if present). The trailing space
-    before --> anchors the exact integer, so att=1 never matches inside att=10."""
+    """Remove this attachment's summary block if present.
+
+    The trailing space before --> anchors the exact integer, so att=1 never
+    matches inside att=10.
+
+    Args:
+        md: Markdown content that may contain a summary block.
+        att_id: Attachment ID whose block should be removed.
+
+    Returns:
+        Markdown with the matching block removed, preserving surrounding whitespace.
+    """
     pat = re.compile(
         r"\n*" + re.escape(_open(att_id)) + r".*?" + re.escape(_close(att_id)) + r"\n*",
         re.DOTALL,
@@ -77,13 +89,29 @@ _ANY_BLOCK_RE = re.compile(
 
 
 def strip_all_summary_blocks(md: str) -> str:
+    """Remove all image-summary blocks (any attachment ID) from markdown.
+
+    Args:
+        md: Markdown content that may contain summary blocks.
+
+    Returns:
+        Markdown with all summary blocks removed.
+    """
     return _ANY_BLOCK_RE.sub("\n", md or "").strip() + ("\n" if (md or "").endswith("\n") else "")
 
 
 def _note_context(content_md: str | None) -> str | None:
-    """Build the (fenced, capped) note text passed to the vision model as context.
-    Strips prior AI summaries (no feedback loop), caps length, and returns None for
-    an empty note (e.g. a quick capture whose body is just the photo)."""
+    """Build the fenced, capped note text passed to the vision model as context.
+
+    Strips prior AI summaries (no feedback loop), caps length, and returns None
+    for an empty note (e.g. a quick capture whose body is just the photo).
+
+    Args:
+        content_md: Raw note markdown, or None.
+
+    Returns:
+        Fenced context string, or None if there is no meaningful note text.
+    """
     text = strip_all_summary_blocks(content_md or "").strip()
     if not text:
         return None
@@ -93,10 +121,22 @@ def _note_context(content_md: str | None) -> str | None:
 
 
 def _location_context(conn, lat, lon, label) -> str | None:
-    """A short place hint for the vision model — the owner-provided capture location, which
-    helps REGIONAL identification (e.g. narrowing a fish/wildlife/plant to species native to
-    the area). Prefers the human label; reverse-geocodes a place name when only coordinates
-    exist. Always best-effort: returns None when there's no usable location."""
+    """Build a short place hint for the vision model from the capture location.
+
+    Helps with regional identification (e.g. narrowing a fish/wildlife/plant to
+    species native to the area). Prefers the human label; reverse-geocodes a place
+    name when only coordinates exist. Always best-effort: returns None when there
+    is no usable location.
+
+    Args:
+        conn: Database connection.
+        lat: Latitude of the capture location, or None.
+        lon: Longitude of the capture location, or None.
+        label: Owner-provided location label, or None.
+
+    Returns:
+        A dash-joined hint string, or None if no location is available.
+    """
     parts: list[str] = []
     label = (label or "").strip()
     if label:
@@ -115,8 +155,18 @@ def _location_context(conn, lat, lon, label) -> str | None:
 
 
 def for_note(conn, note_id: int) -> list[tuple[str, str]]:
-    """[(filename, analysis_md)] for this note's analyzed image attachments (in upload
-    order). The sidecar the read paths re-assemble in place of the old in-body block."""
+    """Return (filename, analysis_md) pairs for a note's analyzed image attachments.
+
+    Results are in upload order. This is the sidecar the read paths re-assemble
+    in place of the old in-body block.
+
+    Args:
+        conn: Database connection.
+        note_id: Note whose image attachments to retrieve.
+
+    Returns:
+        List of (filename, analysis_md) tuples, empty if none are analyzed.
+    """
     if note_id is None:
         return []
     rows = conn.execute(
@@ -127,15 +177,35 @@ def for_note(conn, note_id: int) -> list[tuple[str, str]]:
 
 
 def block_for_note(conn, note_id: int, cap: int = 1500) -> str:
-    """A compact, bounded text block of this note's image analyses for feeding to a
-    reader/LLM, or "" if none. Each image is labelled so the model knows it's vision output."""
+    """Return a compact, bounded text block of a note's image analyses for LLM consumption.
+
+    Each image is labelled so the model knows it is vision output. Returns "" if none exist.
+
+    Args:
+        conn: Database connection.
+        note_id: Note whose image analyses to assemble.
+        cap: Maximum character length of the returned block.
+
+    Returns:
+        Concatenated analysis text, truncated to cap characters, or "".
+    """
     parts = [f"[AI image summary — {fn}]\n{md.strip()}" for fn, md in for_note(conn, note_id)]
     text = "\n\n".join(parts)
     return text[:cap] if (cap and len(text) > cap) else text
 
 
 def append_summary_block(md: str, att_id: int, filename: str, body: str) -> str:
-    """Strip-then-append this attachment's block so re-analysis replaces in place."""
+    """Strip then append this attachment's block so re-analysis replaces it in place.
+
+    Args:
+        md: Existing markdown content.
+        att_id: Attachment ID for the block markers.
+        filename: Attachment filename shown in the block header.
+        body: New summary text to embed.
+
+    Returns:
+        Updated markdown with the refreshed summary block appended.
+    """
     base = strip_summary_block(md or "", att_id).rstrip()
     block = (
         f"{_open(att_id)}\n"
@@ -149,8 +219,21 @@ def append_summary_block(md: str, att_id: int, filename: str, body: str) -> str:
 # --- Image preparation ------------------------------------------------------
 
 def _prepare_image(raw: bytes) -> tuple[str, str]:
-    """Return (media_type, base64) ready for an Anthropic image block. Raises
-    UnsupportedImage for anything Pillow can't decode (HEIC w/o codec, SVG, ...)."""
+    """Prepare image bytes for an Anthropic image block.
+
+    Normalises rotation via EXIF, shrinks to _MAX_EDGE on the long edge, and
+    re-encodes to JPEG (opaque) or PNG (alpha). Raises UnsupportedImage for
+    anything Pillow cannot decode (HEIC without a codec, SVG, corrupt, ...).
+
+    Args:
+        raw: Raw image bytes.
+
+    Returns:
+        Tuple of (media_type, base64-encoded string).
+
+    Raises:
+        UnsupportedImage: If the bytes cannot be decoded by Pillow.
+    """
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
@@ -175,6 +258,17 @@ def _prepare_image(raw: bytes) -> tuple[str, str]:
 
 def _vision_summary(raw: bytes, filename: str, note_context: str | None = None,
                     location_context: str | None = None) -> str:
+    """Call the vision model and return a Markdown description of the image.
+
+    Args:
+        raw: Raw image bytes.
+        filename: Attachment filename (informational; not sent to the model).
+        note_context: Optional fenced note text to give the model background context.
+        location_context: Optional capture-location hint for regional identification.
+
+    Returns:
+        Markdown description from the vision model, or a fallback string.
+    """
     media_type, b64 = _prepare_image(raw)
     instruction = prompts.get("actions.image_analysis", _DEFAULT_PROMPT)
     max_tokens = prompts.get_int("actions.image_max_tokens", 700)
@@ -204,8 +298,18 @@ _DEFAULT_FRAMES_PROMPT = (
 
 
 def vision_summary_frames(frames: list[bytes], filename: str = "") -> str:
-    """One vision call over several video frames (sampled across the clip), returning a visual
-    summary. Frames that don't decode are skipped; returns '' if none are usable or no key."""
+    """Run one vision call over several sampled video frames and return a visual summary.
+
+    Frames that fail to decode are skipped. Returns "" if no frames are usable or
+    no LLM credentials are configured.
+
+    Args:
+        frames: List of raw image bytes sampled from the clip.
+        filename: Attachment filename (used in the prompt context).
+
+    Returns:
+        Markdown visual summary string, or "".
+    """
     if not frames or not llm.has_credentials():
         return ""
     blocks: list[dict] = []
@@ -227,10 +331,20 @@ def vision_summary_frames(frames: list[bytes], filename: str = "") -> str:
 # --- Status + worker --------------------------------------------------------
 
 def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> None:
-    # analyzed_at is stamped on EVERY status transition, incl. 'pending' — for a pending row it is
-    # the "analysis started at" clock the stale-pending watchdog (reset_stale) measures from; for
-    # done/error it is the completion time. (Without stamping pending, a re-analyze of an old
-    # attachment would carry a stale done-era timestamp and be reaped instantly.)
+    """Update the analysis status and detail for an attachment row.
+
+    analyzed_at is stamped on EVERY status transition including 'pending' — for a
+    pending row it is the "analysis started at" clock the stale-pending watchdog
+    (reset_stale) measures from; for done/error it is the completion time. Without
+    stamping pending, a re-analyze of an old attachment would carry a stale
+    done-era timestamp and be reaped instantly.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to update.
+        status: New status string ('pending', 'done', or 'error').
+        detail: Optional human-readable detail or error message.
+    """
     conn.execute(
         "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
         "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
@@ -240,7 +354,15 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
 
 
 def analyze(att_id: int) -> None:
-    """Background worker (own thread → own thread-local connection)."""
+    """Run image analysis for an attachment on a background worker thread.
+
+    Runs on its own thread with its own thread-local database connection. Calls
+    the vision model, writes the summary sidecar to the attachment row, updates
+    the FTS index and chunk embeddings, and requests a note-analysis fold-back.
+
+    Args:
+        att_id: Attachment row ID to analyze.
+    """
     from ..db import close_conn, has_conn
     owns_conn = not has_conn()   # fresh worker thread created it → we close it; inline call → leave it
     conn = get_conn()
@@ -347,6 +469,13 @@ def analyze(att_id: int) -> None:
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:
+    """Set an attachment's analysis status to 'error' and commit, ignoring failures.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to mark as errored.
+        detail: Error description to store.
+    """
     try:
         _set_status(conn, att_id, "error", detail)
         conn.commit()
@@ -355,8 +484,18 @@ def _mark_error(conn, att_id: int, detail: str) -> None:
 
 
 def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
-    """Request thread: guard against double-runs, mark pending, spawn the worker.
-    Returns the resulting status dict ({"status": ...})."""
+    """Guard against double-runs, mark pending, and spawn the analysis worker.
+
+    Called on the request thread. Returns immediately with the current status.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to analyze.
+        force: If True, restart even a pending or already-done analysis.
+
+    Returns:
+        Status dict with at least a "status" key.
+    """
     row = conn.execute(
         "SELECT mime, analysis_status FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()
@@ -387,13 +526,26 @@ STALE_PENDING_SECONDS = 1800   # 30 min
 
 
 def reset_stale(conn, older_than_seconds: int | None = None) -> int:
-    """Fail analyses left 'pending'. On boot (older_than_seconds=None) reset ALL pending — a prior
-    process died mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
-    stuck past it (a worker that hung without ever reaching done/error), never a recent, legitimately
-    in-flight one. analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
-    created_at defends any legacy row that went pending before that stamp existed. One short UPDATE,
-    so it never holds the write lock long. Covers image AND audio/video (shared columns). Returns the
-    number of rows reset."""
+    """Fail analyses left in the 'pending' state.
+
+    On boot (older_than_seconds=None) resets ALL pending rows — a prior process died
+    mid-run. The periodic scheduler watchdog passes a threshold so it fails ONLY rows
+    stuck past it (a worker that hung without ever reaching done/error), never a
+    recent, legitimately in-flight one.
+
+    analyzed_at is the pending-start clock (stamped by _set_status); COALESCE to
+    created_at defends any legacy row that went pending before that stamp existed.
+    One short UPDATE, so it never holds the write lock long. Covers image AND
+    audio/video (shared columns).
+
+    Args:
+        conn: Database connection.
+        older_than_seconds: Reap only rows pending longer than this many seconds.
+            Pass None on boot to reap all pending rows regardless of age.
+
+    Returns:
+        Number of rows reset to 'error'.
+    """
     if older_than_seconds is None:
         cur = conn.execute(
             "UPDATE attachments SET analysis_status = 'error', "

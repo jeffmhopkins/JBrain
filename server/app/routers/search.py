@@ -1,5 +1,6 @@
 """Hybrid search over notes, attachments AND canonical entities: FTS5 keyword +
-sqlite-vec semantic (entities by name/alias)."""
+sqlite-vec semantic (entities by name/alias).
+"""
 import logging
 
 from fastapi import APIRouter
@@ -14,6 +15,14 @@ router = APIRouter(prefix="/api/search", tags=["search"], dependencies=[CurrentU
 
 
 def _fts_escape(q: str) -> str:
+    """Escape a query string for FTS5, wrapping each token as a quoted prefix query.
+
+    Args:
+        q: Raw user query string.
+
+    Returns:
+        FTS5-safe query string with each token quoted and suffixed with '*'.
+    """
     # Wrap each token as a prefix query; quote to neutralise FTS operators.
     tokens = [t for t in q.replace('"', " ").split() if t]
     return " ".join(f'"{t}"*' for t in tokens) or '""'
@@ -21,11 +30,33 @@ def _fts_escape(q: str) -> str:
 
 @router.get("")
 def search(q: str, mode: str = "hybrid", limit: int = 20):
+    """Search notes, attachments, and canonical entities using FTS5 and/or semantic search.
+
+    'entities' mode scopes results to entities only. 'hybrid' and 'keyword' use FTS5;
+    'hybrid' and 'semantic' use vector similarity. Semantic search degrades gracefully
+    to keyword results when the embedding model is unavailable.
+
+    Args:
+        q: Search query string.
+        mode: Search mode — 'hybrid' (default), 'keyword', 'semantic', or 'entities'.
+        limit: Maximum number of results to return (default 20).
+
+    Returns:
+        List of result dicts ranked by relevance; each has a 'kind' field
+        ('note', 'attachment', or 'entity').
+    """
     conn = get_conn()
     # Keyed by a string composite so note and attachment hits never collide.
     results: dict[str, dict] = {}
 
     def bump(key: str, base: dict, rank_index: int):
+        """Add a reciprocal-rank contribution for a result, initializing it if new.
+
+        Args:
+            key: Unique string key for this result (e.g. 'note:42').
+            base: Seed dict for a new result entry.
+            rank_index: 0-based rank position from this source.
+        """
         results.setdefault(key, {**base, "score": 0.0})
         results[key]["score"] += 1.0 / (rank_index + 1)
 

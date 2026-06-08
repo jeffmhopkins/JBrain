@@ -58,17 +58,38 @@ _REDIRECT = "I can only answer questions about the specific lab results {owner} 
 
 
 def _owner() -> str:
+    """Return the brain owner's display name from settings, defaulting to 'the owner'.
+
+    Returns:
+        Owner name string.
+    """
     from ..config import get_settings
     return get_settings().brain_name or "the owner"
 
 
 def _sanitize(text: str) -> str:
+    """Strip URLs, wiki-links, and control sequences from model output.
+
+    Args:
+        text: Raw model reply string.
+
+    Returns:
+        Sanitized string, at most 2000 characters.
+    """
     text = _URL_RE.sub(lambda m: m.group(2) or "", text or "")
     text = _WIKILINK_RE.sub("", text)
     return _CTRL_RE.sub("", text).strip()[:2000]
 
 
 def _range_days(q: str) -> int | None:
+    """Extract an approximate day count from a natural-language time range in the question.
+
+    Args:
+        q: Lowercased question string.
+
+    Returns:
+        Number of days matching the first recognized range keyword, or None.
+    """
     for kw, days in _RANGES:
         if kw in q:
             return days
@@ -76,8 +97,20 @@ def _range_days(q: str) -> int | None:
 
 
 def _context(conn, allowed, wfrom, wto) -> str:
-    """A deterministic, bounded text of the shared analytes (latest value + lab flag + span) — the
-    ONLY thing the model may answer from. No identity, no note titles."""
+    """Build a deterministic, bounded text snapshot of the shared analytes.
+
+    Contains latest value, lab flag, and date span — the ONLY thing the model may answer
+    from. No identity fields, no note titles.
+
+    Args:
+        conn: Database connection.
+        allowed: Set of allowed analyte slugs.
+        wfrom: Window start (ISO date), or None.
+        wto: Window end (ISO date), or None.
+
+    Returns:
+        Newline-joined summary string, or '(no shared results)' if the list is empty.
+    """
     lines = []
     for a in sc.list_analytes_scoped(conn, allowed)[:30]:
         unit = f" {a['unit']}" if a.get("unit") else ""
@@ -87,8 +120,22 @@ def _context(conn, allowed, wfrom, wto) -> str:
 
 
 def _charts_for(conn, question, allowed, wfrom, wto) -> list[dict]:
-    """SERVER-SIDE chart selection: the allow-listed analytes the question names (+ abnormal ones
-    if asked), each as a thin spec. Never charts an analyte outside the allow-list."""
+    """Select charts server-side for the allow-listed analytes named in the question.
+
+    Also includes abnormal analytes when the question asks about abnormal results. Never
+    charts an analyte outside the allow-list.
+
+    Args:
+        conn: Database connection.
+        question: Recipient's question string.
+        allowed: Set of allowed analyte slugs.
+        wfrom: Window start (ISO date), or None.
+        wto: Window end (ISO date), or None.
+
+    Returns:
+        List of thin chart spec dicts (up to _MAX_CHARTS), each with keys: analyte, unit,
+        from, to, title.
+    """
     ql = (question or "").lower()
     picked: list[str] = []
     for a in sc.list_analytes_scoped(conn, allowed):
@@ -120,8 +167,21 @@ def _charts_for(conn, question, allowed, wfrom, wto) -> list[dict]:
 
 
 def answer(conn, link, spec, session, question: str) -> dict:
-    """One Q&A turn. Tool-less model over the scoped DATA; charts chosen server-side. Enforces
-    per-session, atomic per-link, and global daily caps. Returns {phase, message, charts}."""
+    """Handle one Q&A turn for a lab-share recipient.
+
+    Runs a tool-less model over the scoped DATA context; charts are chosen server-side.
+    Enforces per-session turn caps, atomic per-link reply quotas, and a global daily cap.
+
+    Args:
+        conn: Database connection.
+        link: Share link row.
+        spec: labshare_specs row for this link.
+        session: labshare_sessions row for the current recipient session.
+        question: Recipient's question text (capped and sanitized internally).
+
+    Returns:
+        Dict with keys: phase ('answer' or 'ended'), message (reply text), charts (list).
+    """
     if not llm.has_credentials():
         return {"phase": "answer", "message": _UNAVAILABLE, "charts": []}
     q = _CTRL_RE.sub("", (question or "")[:MAX_QUESTION_CHARS]).strip()
@@ -171,6 +231,14 @@ def answer(conn, link, spec, session, question: str) -> dict:
 
 
 def _transcript(session) -> list[dict]:
+    """Decode the session's conversation transcript from JSON.
+
+    Args:
+        session: labshare_sessions row with a 'transcript_json' field.
+
+    Returns:
+        List of turn dicts with 'role' and 'content', or [] on any error.
+    """
     import json
     try:
         return json.loads(session["transcript_json"] or "[]")
@@ -179,6 +247,15 @@ def _transcript(session) -> list[dict]:
 
 
 def _record(conn, session, question, reply, charted) -> None:
+    """Append a Q&A turn to the session transcript and update audit fields.
+
+    Args:
+        conn: Database connection.
+        session: labshare_sessions row.
+        question: Recipient's question text.
+        reply: Assistant's reply text.
+        charted: List of analyte slugs whose charts were served in this turn.
+    """
     import json
     transcript = _transcript(session) + [{"role": "user", "content": question},
                                          {"role": "assistant", "content": reply}]
@@ -187,6 +264,16 @@ def _record(conn, session, question, reply, charted) -> None:
 
 
 def _global_budget_ok(conn) -> bool:
+    """Check and atomically increment the global daily reply counter.
+
+    Enforces _GLOBAL_DAILY_REPLIES across all lab-share links combined as a cost backstop.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        True if the counter was successfully incremented (budget not yet exhausted).
+    """
     from . import clock
     key = f"labshare:replies:{clock.today_iso()}"
     conn.execute("INSERT INTO meta(key,value) VALUES(?, '0') ON CONFLICT(key) DO NOTHING", (key,))

@@ -18,6 +18,16 @@ from . import embeddings
 
 
 def _fts_query(q: str) -> str:
+    """Build an FTS5 query string that prefix-matches every token in q.
+
+    Tokens are quoted to neutralise FTS operators (AND, OR, NOT, etc.).
+
+    Args:
+        q: Raw search query.
+
+    Returns:
+        FTS5 query string safe for a MATCH clause.
+    """
     # Prefix-match each token; quote to neutralise FTS operators.
     toks = [t for t in (q or "").replace('"', " ").split() if t]
     return " ".join(f'"{t}"*' for t in toks) or '""'
@@ -41,7 +51,8 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False,
         names — and never on an ambiguous term, so common words / bare heuristic first names
         do NOT expand into a corpus.
     Both share the ambiguity guard and the same modest fixed-rank bump (surfaces a note but
-    can't dominate a genuine FTS/vector hit), and a no-name sentence expands nothing."""
+    can't dominate a genuine FTS/vector hit), and a no-name sentence expands nothing.
+    """
     q = (q or "").strip()
     if not q:
         return []
@@ -53,6 +64,7 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False,
     meta: dict[int, dict] = {}
 
     def bump(nid, title: str, slug: str, rank: int) -> None:
+        """Accumulate a reciprocal-rank score for a note in the fusion table."""
         if nid is None:          # unattached attachment (no owning note) → nothing to surface
             return
         scores[nid] = scores.get(nid, 0.0) + 1.0 / (rank + 1)

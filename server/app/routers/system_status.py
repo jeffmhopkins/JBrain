@@ -25,6 +25,11 @@ router = APIRouter(prefix="/api/system", tags=["system-status"])
 
 
 def _public_skeleton() -> dict:                       # builder #1 — EXACT allowlist
+    """Build the minimal public status skeleton (ok, brain name, UTC timestamp).
+
+    Returns:
+        Dict with 'ok', 'brain', and 'ts' (ISO 8601 UTC timestamp).
+    """
     # clock.now_utc() returns an aware UTC datetime; .isoformat() -> "...+00:00".
     # (There is NO clock.iso_now().)
     return {"ok": True, "brain": get_settings().brain_name, "ts": clock.now_utc().isoformat()}
@@ -32,6 +37,19 @@ def _public_skeleton() -> dict:                       # builder #1 — EXACT all
 
 @router.get("/status")
 def status(request: Request):
+    """Return server health and capabilities; responds with a public skeleton on invalid auth.
+
+    Soft-auth: a missing or rotated key returns the minimal public skeleton so the
+    client can distinguish "server reachable" from "needs re-auth" without logging out.
+    A valid key returns the full capabilities snapshot in addition to the skeleton fields.
+
+    Args:
+        request: Incoming HTTP request (used to extract the bearer key).
+
+    Returns:
+        Public skeleton {ok, brain, ts} when unauthenticated, or the full snapshot
+        {ok, brain, ts, version, capabilities} when authenticated.
+    """
     if not verify_key(_extract_key(request)):         # None/empty/bad → False, never throws
         return _public_skeleton()                     # liveness only; no rollup, no names
     return {**_public_skeleton(), "version": APP_VERSION,

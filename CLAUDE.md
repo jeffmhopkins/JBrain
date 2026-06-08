@@ -60,3 +60,25 @@ results before merging; a red check means the Definition of Done isn't met yet.
 - Backend LLM calls go through the `app.services.llm` seam; tests mock there, never
   the SDK. Embeddings are always stubbed in tests.
 - Keep tests deterministic: frozen/pinned time, no arbitrary sleeps, seeded randomness.
+
+## Docstrings — Google style (Python)
+Every module, class, function, and method in `server/app/` (and `server/scripts/`,
+`e2e/`) carries a **Google-style docstring**. New code adds one too — a function isn't
+done without it.
+- **Summary line** first: one imperative sentence ending in a period, on the same line
+  as the opening `"""`. Add a blank line + prose only when the *why*/edge cases need it
+  (this repo's docstrings are terse and explain intent — keep that).
+- **Sections only when they apply**, in this order, bodies indented 4 spaces:
+  `Args:` (one entry per parameter, skip `self`/`cls`, match the signature) ·
+  `Returns:` (omit for `None`) · `Yields:` (generators, instead of `Returns:`) ·
+  `Raises:` (only exceptions raised/propagated on purpose; for routers, the
+  `HTTPException`s a handler returns).
+- **FastAPI route handlers:** the summary line becomes the endpoint's description in
+  the OpenAPI/Swagger docs — write it for that audience.
+- **Pydantic models / dataclasses:** a one-line class docstring; add `Attributes:`
+  only when the fields aren't self-evident.
+- Types live in the **signature** (PEP 484 hints), not the prose — docstrings describe
+  meaning/behaviour, not types.
+- Machine-check (honor-system, like the tests): `cd server && ruff check app`
+  (config: `[tool.ruff.lint.pydocstyle] convention = "google"` in `pyproject.toml`;
+  `D205`/`D301` are relaxed for the repo's compact multi-line headers).

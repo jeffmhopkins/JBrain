@@ -67,15 +67,36 @@ _WS = re.compile(r"\s+")
 # --- identity ---------------------------------------------------------------
 
 def normalize_title(title: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — the stable identity of
-    an event's name, independent of casing/punctuation drift between edits."""
+    """Lowercase, strip punctuation, and collapse whitespace for a stable event identity.
+
+    Produces a key that is independent of casing or punctuation drift between edits.
+
+    Args:
+        title: Raw event title string.
+
+    Returns:
+        Normalized title string.
+    """
     t = _PUNCT.sub(" ", (title or "").lower())
     return _WS.sub(" ", t).strip()
 
 
 def identity_key(note_id: int, title: str, kind: str, seq: int = 0) -> str:
-    """Stable dedup hash. Excludes the DATE so editing a note's date moves the row
-    in place; includes `seq` so two same-title/kind events in one note stay distinct."""
+    """Compute a stable dedup hash for a calendar event.
+
+    Excludes the date so editing a note's date moves the row in place rather than
+    duplicating it. Includes `seq` so two same-title/kind events in one note remain
+    distinct.
+
+    Args:
+        note_id: ID of the source note.
+        title: Event title (normalized internally).
+        kind: Event kind string (e.g. 'appointment', 'deadline').
+        seq: Zero-based sequence for events sharing a title/kind in one note.
+
+    Returns:
+        Hex SHA-256 identity key string.
+    """
     base = f"{int(note_id)}\x00{normalize_title(title)}\x00{(kind or 'event')}\x00{int(seq)}"
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
@@ -86,8 +107,17 @@ _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?")
 
 
 def _norm_dt(val) -> str | None:
-    """Accept a date ('YYYY-MM-DD') or datetime string; return a cleaned ISO string
-    (space→T) or None. Anything unparseable returns None (never crash extraction)."""
+    """Accept a date or datetime string and return a cleaned ISO string.
+
+    Normalizes space separators to 'T'. Anything unparseable returns None so
+    extraction never raises.
+
+    Args:
+        val: Raw date or datetime value (string or any type coercible to str).
+
+    Returns:
+        Cleaned ISO string, or None if the value is absent or unparseable.
+    """
     if not val:
         return None
     s = str(val).strip()
@@ -98,12 +128,19 @@ def _norm_dt(val) -> str | None:
 
 
 def _is_date_only(s: str | None) -> bool:
+    """Return True when `s` is a date-only ISO string (no time component)."""
     return bool(s) and "T" not in s
 
 
 def _clean_event(ev: dict) -> dict | None:
-    """Coerce one raw event dict into normalized, stored fields. Returns None when
-    it has no usable title."""
+    """Coerce one raw event dict into normalized, stored fields.
+
+    Args:
+        ev: Raw event dict from LLM output or caller.
+
+    Returns:
+        Normalized event dict, or None when the event has no usable title.
+    """
     title = str(ev.get("title") or "").strip()[:200]
     if not title:
         return None
@@ -139,9 +176,23 @@ def _clean_event(ev: dict) -> dict | None:
 
 def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extracted",
                   sweep: bool = True) -> dict:
-    """Idempotently project a note's events into calendar_events. Re-running with the
-    SAME logical events updates rows in place (a changed date MOVES, never duplicates);
-    events dropped from the note are swept. Returns {upserted, retired}."""
+    """Idempotently project a note's events into calendar_events.
+
+    Re-running with the same logical events updates rows in place (a changed date
+    MOVES, never duplicates). Events dropped from the note are swept when
+    ``sweep=True``. Use ``sweep=False`` when writing a single logical row to a shared
+    anchor note (e.g. recurrence promotion) so other rows of the same source survive.
+
+    Args:
+        conn: SQLite connection.
+        note_id: ID of the source note.
+        events: List of raw event dicts to project.
+        source: Source label stored on each row (e.g. 'extracted', 'workflow').
+        sweep: When True, retire this note's derived rows no longer present.
+
+    Returns:
+        Dict with keys ``note_id``, ``upserted``, and ``retired``.
+    """
     note_id = int(note_id)
     seen: list[str] = []
     counters: dict[tuple, int] = {}
@@ -212,10 +263,16 @@ def upsert_events(conn, note_id: int, events: list[dict], *, source: str = "extr
 
 
 def _purge_edges_for(conn, identity_key: str) -> None:
-    """Drop everything that references an event being deleted, so a removed event leaves
-    no dangling state that could resurrect or mis-suppress it if the same identity_key is
-    later re-derived: supersession edges (either side), its per-event reminders, and its
-    fired-reminder markers (which would otherwise dedup-suppress a re-added occurrence)."""
+    """Drop all state that references an event being deleted.
+
+    Removes supersession edges (either side), per-event reminders, and fired-reminder
+    markers so a removed event leaves no dangling state that could resurrect or
+    mis-suppress it if the same identity_key is later re-derived.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: SHA-256 identity key of the event being deleted.
+    """
     conn.execute(
         "DELETE FROM calendar_supersedes WHERE old_identity_key=? OR new_identity_key=?",
         (identity_key, identity_key),
@@ -227,8 +284,17 @@ def _purge_edges_for(conn, identity_key: str) -> None:
 # --- supersession (a later note retires an earlier event) -------------------
 
 def parse_supersession_markers(content_md: str) -> list[dict]:
-    """Find structured `supersedes/cancels [[Title]] YYYY-MM-DD` markers in a note.
-    Returns [{old_title, old_date}, ...]. Deterministic — the (a) path."""
+    """Find structured supersession markers in a note body.
+
+    Matches patterns like ``supersedes [[Title]] YYYY-MM-DD`` and
+    ``cancels [[Title]] YYYY-MM-DD``. Deterministic — the (a) path.
+
+    Args:
+        content_md: Markdown body of the note.
+
+    Returns:
+        List of dicts with keys ``old_title`` and ``old_date``.
+    """
     out = []
     for m in _MARKER_RE.finditer(content_md or ""):
         out.append({"old_title": m.group("title").strip(), "old_date": m.group("date")})
@@ -236,7 +302,16 @@ def parse_supersession_markers(content_md: str) -> list[dict]:
 
 
 def _resolve_old_event(conn, old_title: str, old_date: str) -> dict | None:
-    """The event on `old_date` whose source note is titled `old_title`."""
+    """Look up the event on ``old_date`` whose source note is titled ``old_title``.
+
+    Args:
+        conn: SQLite connection.
+        old_title: Title of the note that originally contained the event.
+        old_date: ISO date string (YYYY-MM-DD) of the event to find.
+
+    Returns:
+        Dict with keys ``id``, ``identity_key``, and ``title``, or None if not found.
+    """
     row = conn.execute(
         "SELECT e.id, e.identity_key, e.title FROM calendar_events e JOIN notes n ON n.id = e.note_id "
         "WHERE n.title = ? COLLATE NOCASE AND date(e.starts_at) = ? LIMIT 1",
@@ -245,11 +320,24 @@ def _resolve_old_event(conn, old_title: str, old_date: str) -> dict | None:
     return dict(row) if row else None
 
 
-def _replacement_key(conn, note_id: int, exclude_ik: str | None, old_title: str | None) -> str | None:
-    """The superseding note's replacement event (the rescheduled-to date). Matched by
-    TITLE AFFINITY to the retired event — NOT merely "latest date in the note", which
-    would wrongly pick an unrelated later event in a multi-event note. Falls back to the
-    note's sole event; None when ambiguous or absent (a pure cancellation)."""
+def _replacement_key(conn, note_id: int, exclude_ik: str | None,
+                     old_title: str | None) -> str | None:
+    """Find the superseding note's replacement event (the rescheduled-to date).
+
+    Matched by title affinity to the retired event — NOT merely the latest date in the
+    note, which would wrongly pick an unrelated later event in a multi-event note.
+    Falls back to the note's sole event; None when ambiguous or absent (a pure
+    cancellation).
+
+    Args:
+        conn: SQLite connection.
+        note_id: ID of the superseding note.
+        exclude_ik: Identity key of the retired event to exclude from candidates.
+        old_title: Title of the retired event, used for title-affinity matching.
+
+    Returns:
+        Identity key of the replacement event, or None for a pure cancellation.
+    """
     rows = [dict(r) for r in conn.execute(
         "SELECT identity_key, title FROM calendar_events WHERE note_id=? AND identity_key IS NOT ? "
         "AND starts_at IS NOT NULL ORDER BY starts_at DESC",
@@ -267,10 +355,20 @@ def _replacement_key(conn, note_id: int, exclude_ik: str | None, old_title: str 
 
 def record_supersession(conn, old_identity_key: str, new_identity_key: str | None,
                         note_id: int, confidence: str = "structured") -> None:
-    """Idempotently record one supersession edge (INSERT OR IGNORE on the PK). On a
-    RESCHEDULE (a replacement exists) the per-event reminders FOLLOW the event to the new
-    identity_key, so "remind me 30m before" survives the move (UPDATE OR IGNORE skips an
-    offset the target already has)."""
+    """Idempotently record one supersession edge.
+
+    Uses INSERT OR IGNORE on the primary key. On a reschedule (a replacement exists)
+    per-event reminders follow the event to the new identity_key so "remind me 30m
+    before" survives the move (UPDATE OR IGNORE skips an offset the target already has).
+    On a pure cancellation, dead reminders are dropped.
+
+    Args:
+        conn: SQLite connection.
+        old_identity_key: Identity key of the retired event.
+        new_identity_key: Identity key of the replacement event, or None for cancellation.
+        note_id: ID of the note that issued the supersession.
+        confidence: Source confidence label ('structured' or 'llm').
+    """
     conn.execute(
         "INSERT OR IGNORE INTO calendar_supersedes "
         "(old_identity_key, new_identity_key, superseded_by_note_id, confidence) VALUES (?,?,?,?)",
@@ -286,10 +384,20 @@ def record_supersession(conn, old_identity_key: str, new_identity_key: str | Non
 
 
 def consolidate(conn, notes: list[dict]) -> dict:
-    """Apply structured supersession markers in the given (changed) notes. RECONCILES,
-    not just inserts: each note's STRUCTURED edges are rebuilt from its current markers,
-    so a marker the owner removed retracts its edge (the sidecar stays re-derivable).
-    'llm'-confidence edges (the (b) path) are left untouched here. Idempotent."""
+    """Apply structured supersession markers for the given changed notes.
+
+    Reconciles, not just inserts: each note's structured edges are rebuilt from its
+    current markers so a removed marker retracts its edge (the sidecar stays
+    re-derivable). 'llm'-confidence edges (the (b) path) are left untouched.
+    Idempotent.
+
+    Args:
+        conn: SQLite connection.
+        notes: List of note dicts with keys ``id`` and ``content_md``.
+
+    Returns:
+        Dict with key ``edges`` counting supersession edges recorded.
+    """
     edges = 0
     for note in notes or []:
         nid = note.get("id")
@@ -319,7 +427,19 @@ _RESCHED_RE = re.compile(
 
 
 def _candidate_events(conn, exclude_note_id: int, limit: int = 30) -> list[dict]:
-    """Live events from OTHER notes a free-prose note might be rescheduling/cancelling."""
+    """Return live events from notes other than ``exclude_note_id``.
+
+    Used to find events a free-prose note might be rescheduling or cancelling.
+
+    Args:
+        conn: SQLite connection.
+        exclude_note_id: Note ID to exclude (the note doing the rescheduling).
+        limit: Maximum number of candidate events to return.
+
+    Returns:
+        List of event dicts with keys ``id``, ``identity_key``, ``title``,
+        ``starts_at``, and ``note_title``.
+    """
     rows = conn.execute(
         "SELECT e.id, e.identity_key, e.title, e.starts_at, n.title AS note_title "
         "FROM calendar_events e JOIN notes n ON n.id = e.note_id "
@@ -332,8 +452,18 @@ def _candidate_events(conn, exclude_note_id: int, limit: int = 30) -> list[dict]
 
 
 def _llm_match_supersession(note_text: str, candidates: list[dict]) -> dict | None:
-    """Ask the LLM whether `note_text` clearly reschedules/cancels ONE candidate. Returns
-    {index, confidence:'high'|'low', cancel:bool} or None. The stubbable (b) LLM seam."""
+    """Ask the LLM whether ``note_text`` clearly reschedules or cancels one candidate.
+
+    This is the stubbable (b) LLM seam.
+
+    Args:
+        note_text: Full text of the note being evaluated.
+        candidates: List of live candidate event dicts.
+
+    Returns:
+        Dict with keys ``index``, ``confidence`` ('high'|'low'), and ``cancel``
+        (bool), or None when no clear match is found or the call fails.
+    """
     block = "\n".join(
         f"{i}. {c['title']} ({(c.get('starts_at') or '')[:10]}) — from note {c.get('note_title')}"
         for i, c in enumerate(candidates)
@@ -360,11 +490,22 @@ def _llm_match_supersession(note_text: str, candidates: list[dict]) -> dict | No
 
 
 def propose_supersessions(conn, notes: list[dict], *, workflow_id=None) -> dict:
-    """The (b) free-prose path. For changed notes that READ like a reschedule/cancellation
-    but carry NO structured marker, ask the LLM to match a live event: HIGH confidence
-    records an 'llm' edge; LOW posts a Review card for the owner (never auto-applied).
-    Reconciling + idempotent (re-derives this note's 'llm' edges each pass). No-op
-    without an LLM key, so the deterministic (a) path/tests are unaffected."""
+    """Handle the free-prose supersession path (b) for changed notes.
+
+    For notes that read like a reschedule/cancellation but carry no structured marker,
+    asks the LLM to match a live event. HIGH-confidence matches record an 'llm' edge;
+    LOW-confidence matches post a Review card for the owner (never auto-applied).
+    Reconciling and idempotent: re-derives this note's 'llm' edges each pass. No-op
+    without an LLM key so the deterministic (a) path and tests are unaffected.
+
+    Args:
+        conn: SQLite connection.
+        notes: List of changed note dicts with keys ``id`` and ``content_md``.
+        workflow_id: Workflow ID for Review card creation; may be None.
+
+    Returns:
+        Dict with keys ``applied`` (edges recorded) and ``staged`` (review cards posted).
+    """
     if not llm.has_credentials():
         return {"applied": 0, "staged": 0}
     from . import reviews as reviews_svc
@@ -404,8 +545,19 @@ def propose_supersessions(conn, notes: list[dict], *, workflow_id=None) -> dict:
 
 
 def what_replaced(conn, event_id: int) -> dict | None:
-    """The event that replaced a (now-superseded) event, or None. A clean lookup the
-    Research tools / UI can use. new_identity_key NULL => cancellation, not reschedule."""
+    """Return the event that replaced a superseded event.
+
+    A clean lookup for Research tools and the UI. A NULL new_identity_key means
+    the event was cancelled, not rescheduled.
+
+    Args:
+        conn: SQLite connection.
+        event_id: Database ID of the superseded event.
+
+    Returns:
+        The replacement event dict, ``{'cancelled': True}`` for a cancellation,
+        or None if the event was not superseded.
+    """
     row = conn.execute(
         "SELECT s.new_identity_key FROM calendar_supersedes s JOIN calendar_events e "
         "ON e.identity_key = s.old_identity_key WHERE e.id = ?",
@@ -425,9 +577,23 @@ def what_replaced(conn, event_id: int) -> dict | None:
 
 def expand_rrule(rrule: str, start: str, window_from: str, window_to: str,
                  *, exdates: list[str] | None = None, rdates: list[str] | None = None) -> list[str]:
-    """Expand an iCal RRULE into concrete ISO instances within [window_from, window_to]
-    (inclusive). Date-only `start` yields date-only instances; a timed start yields
-    datetimes. Unparseable rules degrade to [start] (if in window) — never raise."""
+    """Expand an iCal RRULE into concrete ISO instances within a date window.
+
+    Window is inclusive [window_from, window_to]. Date-only ``start`` yields date-only
+    instances; a timed start yields datetimes. Unparseable rules degrade gracefully to
+    ``[start]`` (if in window) — never raises.
+
+    Args:
+        rrule: iCal RRULE string (with or without the 'RRULE:' prefix).
+        start: Series start as ISO date or datetime string.
+        window_from: Window start as ISO date or datetime string.
+        window_to: Window end as ISO date or datetime string.
+        exdates: Optional list of ISO dates/datetimes to exclude from expansion.
+        rdates: Optional list of extra ISO dates/datetimes to include.
+
+    Returns:
+        Sorted list of ISO date or datetime strings within the window.
+    """
     from datetime import datetime
     from dateutil import rrule as _rr
     from dateutil.parser import isoparse
@@ -435,6 +601,7 @@ def expand_rrule(rrule: str, start: str, window_from: str, window_to: str,
     date_only = _is_date_only(start)
 
     def _fmt(dt: datetime) -> str:
+        """Format a datetime as a date-only or full ISO string per the event's grain."""
         return dt.strftime("%Y-%m-%d") if date_only else dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     try:
@@ -478,6 +645,15 @@ def expand_rrule(rrule: str, start: str, window_from: str, window_to: str,
 # --- LLM front end (stubbable; no-op without credentials) -------------------
 
 def _note_dates(conn, note_id: int) -> list[str]:
+    """Return the ISO date strings detected in a note's analysis record.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note ID to look up.
+
+    Returns:
+        List of date strings (up to 20), or an empty list if none are recorded.
+    """
     row = conn.execute("SELECT dates_json FROM note_analysis WHERE note_id=?", (note_id,)).fetchone()
     if not row:
         return []
@@ -488,7 +664,14 @@ def _note_dates(conn, note_id: int) -> list[str]:
 
 
 def _parse_list(text: str) -> list[dict]:
-    """Pull the first JSON array out of an LLM reply, tolerating fences/prose."""
+    """Pull the first JSON array out of an LLM reply, tolerating fences and prose.
+
+    Args:
+        text: Raw LLM response string.
+
+    Returns:
+        List of dicts parsed from the first JSON array found, or an empty list.
+    """
     if not text:
         return []
     start = text.find("[")
@@ -521,7 +704,16 @@ def _parse_list(text: str) -> list[dict]:
 
 
 def _parse_obj(text: str) -> dict:
-    """Pull the first complete JSON object out of an LLM reply (fences/prose tolerant)."""
+    """Pull the first complete JSON object out of an LLM reply.
+
+    Tolerates markdown fences and surrounding prose.
+
+    Args:
+        text: Raw LLM response string.
+
+    Returns:
+        First JSON object found as a dict, or an empty dict on failure.
+    """
     if not text:
         return {}
     start = text.find("{")
@@ -554,8 +746,19 @@ def _parse_obj(text: str) -> dict:
 
 
 def classify_dates(conn, note: dict) -> list[dict]:
-    """LLM-classify one note's dated commitments into event dicts. No-op (returns [])
-    without an LLM key. The LLM-touching seam — stubbed in tests."""
+    """LLM-classify one note's dated commitments into event dicts.
+
+    No-op (returns []) without an LLM key. Gated on note_analysis detected dates: if
+    no dates were found, returns [] with no LLM call. This is the LLM-touching seam —
+    stubbed in tests.
+
+    Args:
+        conn: SQLite connection.
+        note: Note dict with at least ``id``, ``title``, and ``content_md`` keys.
+
+    Returns:
+        List of raw event dicts extracted by the LLM, or an empty list.
+    """
     if not llm.has_credentials():
         return []
     body = (note.get("content_md") or "")[:6000]
@@ -580,9 +783,18 @@ def classify_dates(conn, note: dict) -> list[dict]:
 
 
 def _parse_cursor(since: str) -> tuple[str, int]:
-    """A watermark is a composite "<updated_at>|<id>" cursor so notes that share an
-    updated_at are never starved by batch_limit (a bare timestamp + strict `>` would
-    drop the ones past the cap). Legacy/empty values parse to the very beginning."""
+    """Parse a composite ``updated_at|id`` watermark cursor.
+
+    The composite form ensures notes sharing the same ``updated_at`` are never
+    starved by a batch limit (a bare timestamp with strict ``>`` would drop entries
+    beyond the cap). Legacy or empty values parse to the very beginning of time.
+
+    Args:
+        since: Watermark string, either ``"<updated_at>|<id>"`` or a bare timestamp.
+
+    Returns:
+        Tuple of (timestamp_string, last_id).
+    """
     s = since or ""
     if "|" in s:
         ts, _, rid = s.rpartition("|")
@@ -594,8 +806,17 @@ def _parse_cursor(since: str) -> tuple[str, int]:
 
 
 def cursor_for(rows: list[dict]) -> str:
-    """The composite watermark to store after processing `rows` (ordered by
-    (updated_at, id)): the last row's cursor. '' if nothing was processed."""
+    """Return the composite watermark to store after processing ``rows``.
+
+    Rows must be ordered by ``(updated_at, id)``. Returns the last row's cursor
+    string, or an empty string if no rows were processed.
+
+    Args:
+        rows: List of note dicts ordered by (updated_at, id).
+
+    Returns:
+        Cursor string ``"<updated_at>|<id>"``, or ``''`` when rows is empty.
+    """
     if not rows:
         return ""
     last = rows[-1]
@@ -603,13 +824,23 @@ def cursor_for(rows: list[dict]) -> str:
 
 
 def pending_notes(conn, since: str = "", limit: int = 40) -> list[dict]:
-    """Entry/daily notes changed since the watermark that need a calendar pass — those
-    that have a detected date, OR already have calendar rows (so a note whose dates were
-    all removed is revisited and its orphaned rows swept), OR carry a supersession marker
-    (so a pure-cancellation note with no date of its own still gets consolidated).
-    classify_dates is gated on detected dates, so dateless notes cost no LLM call.
-    Paged by the composite (updated_at, id) cursor; carries content_md for the
-    supersession scan."""
+    """Return entry/daily notes changed since the watermark that need a calendar pass.
+
+    Includes notes that have a detected date, already have calendar rows (so a note
+    whose dates were removed is revisited and its orphaned rows swept), or carry a
+    supersession marker (so a pure-cancellation note with no date still gets
+    consolidated). ``classify_dates`` is gated on detected dates so dateless notes
+    incur no LLM call. Paged by the composite (updated_at, id) cursor; includes
+    ``content_md`` for the supersession scan.
+
+    Args:
+        conn: SQLite connection.
+        since: Composite watermark cursor from the last processed batch.
+        limit: Maximum number of notes to return (clamped to 1–1000).
+
+    Returns:
+        List of note dicts ordered by (updated_at, id).
+    """
     ts, rid = _parse_cursor(since)
     rows = conn.execute(
         "SELECT n.id, n.title, n.content_md, n.updated_at "
@@ -636,10 +867,20 @@ _WEEKDAY_RR = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
 
 def infer_rrule(dates: list[str]) -> str | None:
-    """Infer an iCal RRULE from a cluster's DISTINCT occurrence days. Only REGULAR
-    cadences promote (so irregular chatter doesn't become a fake recurring event):
-    WEEKLY (all gaps 6–8 days; BYDAY = the dominant weekday), DAILY (all gaps 1),
-    MONTHLY (all gaps 27–31). Needs >= 3 distinct days. Returns None when irregular."""
+    """Infer an iCal RRULE from a cluster of distinct occurrence dates.
+
+    Only regular cadences promote so irregular chatter doesn't become a fake recurring
+    event. Recognizes DAILY (all gaps 1), WEEKLY (gaps 6–8, BYDAY = dominant weekday),
+    and MONTHLY (gaps 27–31). Requires at least 3 distinct days. Refuses when any
+    input date is malformed to avoid computing the cadence from a partial set.
+
+    Args:
+        dates: List of ISO date strings (YYYY-MM-DD) for the cluster's occurrences.
+
+    Returns:
+        iCal RRULE string (e.g. ``'FREQ=WEEKLY;BYDAY=TH'``), or None when the
+        cadence is irregular or the input is insufficient.
+    """
     from datetime import date as _date
     days = sorted({(str(d) or "").strip()[:10] for d in (dates or []) if str(d).strip()})
     # Strict: every non-empty input must be a real ISO date. A malformed token would
@@ -670,15 +911,26 @@ def infer_rrule(dates: list[str]) -> str | None:
 
 
 def emit_recurrence(conn, cluster: dict) -> dict:
-    """Promote ONE recurring chatter cluster into a kind='recurring' calendar row. No-op
-    unless a regular cadence is inferable. Does not sweep (other workflow rows on the
-    anchor note must survive).
+    """Promote one recurring chatter cluster into a kind='recurring' calendar row.
 
-    Idempotency across re-runs is the tricky part: a chatter cluster can gain an EARLIER
-    member on a later run, which would move a naive "earliest member" anchor to a new
-    note and (with sweep off) leave a duplicate. So we first look for an EXISTING workflow
-    recurring row of the same normalized title ON ANY of the cluster's member notes and
-    update THAT in place; only if none exists do we anchor on the earliest dated member."""
+    No-op unless a regular cadence is inferable from the cluster entries. Does not
+    sweep so other workflow rows on the anchor note survive.
+
+    Idempotency across re-runs: a chatter cluster can gain an earlier member on a
+    later run, which would move a naive "earliest member" anchor to a new note and
+    (with sweep off) leave a duplicate. Instead we first look for an existing workflow
+    recurring row of the same normalized title on ANY cluster member note and update
+    that in place; only when none exists do we anchor on the earliest dated member.
+
+    Args:
+        conn: SQLite connection.
+        cluster: Cluster dict with an ``entries`` list of note dicts
+            (each having ``id``, ``title``, and ``created_at``).
+
+    Returns:
+        Dict with key ``emitted`` (1 on success, 0 when skipped), plus ``rrule``,
+        ``title``, and ``anchor_note_id`` on success, or ``reason`` on skip.
+    """
     entries = [e for e in (cluster or {}).get("entries", [])
                if e.get("id") is not None and _norm_dt(e.get("created_at"))]
     if not entries:
@@ -713,9 +965,23 @@ def emit_recurrence(conn, cluster: dict) -> dict:
 # --- reminders (Phase 3): Review cards + Web Push, deduped per instance ------
 
 def _reminder_due(starts_at: str, all_day, midnight, horizon, today_s: str, horizon_s: str) -> bool:
-    """Is this occurrence within the reminder window? The lower bound is the START OF
-    TODAY (not 'now'), so a timed event that already slipped past between daily runs
-    still reminds once; the upper bound is the lead horizon. All-day rows compare by date."""
+    """Return True when this occurrence falls within the reminder window.
+
+    The lower bound is the start of today (not 'now') so a timed event that slipped
+    past between daily runs still reminds once. The upper bound is the lead horizon.
+    All-day rows compare by date string.
+
+    Args:
+        starts_at: ISO date or datetime string of the occurrence.
+        all_day: Truthy when the event has no clock time.
+        midnight: Naive datetime for the start of today.
+        horizon: Naive datetime for the upper reminder boundary.
+        today_s: ISO date string for today.
+        horizon_s: ISO date string for the horizon day.
+
+    Returns:
+        True when the occurrence is within the reminder window.
+    """
     if all_day:
         return today_s <= starts_at[:10] <= horizon_s
     from dateutil.parser import isoparse
@@ -729,6 +995,7 @@ def _reminder_due(starts_at: str, all_day, midnight, horizon, today_s: str, hori
 
 
 def _already_fired(conn, workflow_id, marker: str, kind: str = "reminder") -> bool:
+    """Return True when this (workflow_id, kind, marker) combination is already recorded."""
     return conn.execute(
         "SELECT 1 FROM calendar_fired WHERE workflow_id=? AND kind=? AND marker=?",
         (workflow_id, kind, marker),
@@ -737,6 +1004,7 @@ def _already_fired(conn, workflow_id, marker: str, kind: str = "reminder") -> bo
 
 def _record_fire(conn, workflow_id, marker, title, when, slug,
                  kind: str = "reminder", verb: str = "Upcoming") -> None:
+    """Create a Review card and record the dedup marker so this firing never repeats."""
     from . import reviews as reviews_svc
     msg = f"Scheduled for {when}." if verb == "Upcoming" else f"Starts {when}."
     reviews_svc.create_review_item(conn, workflow_id, f"{verb}: {title}", msg, slug)
@@ -747,13 +1015,26 @@ def _record_fire(conn, workflow_id, marker, title, when, slug,
 
 
 def due_reminders(conn, workflow_id, lead_hours: int = 48, push: bool = True) -> dict:
-    """Post a Review card (+ optional Web Push) for each live event whose next occurrence
-    falls within the lead window, deduped per instance via calendar_fired so it fires
-    once. One-off events and the NEXT instance(s) of recurring series are both covered.
+    """Post Review cards and optional Web Pushes for events due within the lead window.
 
-    Requires a real workflow_id: calendar_fired.workflow_id is NOT NULL, so a None would
-    make INSERT OR IGNORE silently drop the dedup row and the reminder would re-fire every
-    run. Pushes are fired AFTER all DB writes (post-state), never interleaved."""
+    Covers both one-off events and the next instance(s) of recurring series. Deduped
+    per occurrence via calendar_fired so each fires exactly once. Pushes are sent after
+    all DB writes, never interleaved. Requires a real workflow_id because
+    calendar_fired.workflow_id is NOT NULL — passing None would cause INSERT OR IGNORE
+    to silently drop the dedup row, making the reminder re-fire every run.
+
+    Args:
+        conn: SQLite connection.
+        workflow_id: Non-None workflow ID used as the dedup scope.
+        lead_hours: Number of hours ahead to look for upcoming events.
+        push: When True, also send Web Push notifications for fired reminders.
+
+    Returns:
+        Dict with key ``fired`` counting reminders that were posted.
+
+    Raises:
+        ValueError: When ``workflow_id`` is None.
+    """
     if workflow_id is None:
         raise ValueError("due_reminders requires a workflow_id (dedup integrity)")
     from datetime import timedelta
@@ -814,12 +1095,14 @@ _ALLDAY_ANCHOR_HOUR = 9   # all-day reminders are measured from 9am on the event
 _MAX_FIRES_PER_TICK = 500   # backstop: never emit more than this many alarms in one pass
 
 def is_dismissed(conn, identity_key: str) -> bool:
+    """Return True when the event has been dismissed (revoked) by the owner."""
     return conn.execute(
         "SELECT 1 FROM calendar_dismissed WHERE identity_key=?", (identity_key,)
     ).fetchone() is not None
 
 
 def get_reminders(conn, identity_key: str) -> list[dict]:
+    """Return the per-event reminder offsets for the given identity key, ordered by anchor then offset."""
     return [dict(r) for r in conn.execute(
         "SELECT offset_minutes, anchor, enabled FROM calendar_reminders "
         "WHERE identity_key=? ORDER BY anchor, offset_minutes", (identity_key,))]
@@ -828,11 +1111,21 @@ def get_reminders(conn, identity_key: str) -> list[dict]:
 _MAX_OFFSET_MIN = 43200   # 30 days — bounds expansion so one reminder can't storm
 
 def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
-    """Replace an event's reminder set. items: [{offset_minutes, anchor}]. Empty = none.
-    Offsets are clamped to [0, 30 days] (a negative or absurd lead is rejected — it would
-    either never fire or expand into a notification storm). The anchor is NORMALIZED from
-    the event's own all_day, never trusted from the client (a 'start' offset on an all-day
-    event is meaningless)."""
+    """Replace an event's reminder set.
+
+    Offsets are clamped to [0, 30 days]; negative or absurd leads are silently dropped.
+    The anchor is normalized from the event's own ``all_day`` flag, never trusted from
+    the client (a 'start' offset on an all-day event is meaningless). Pass an empty
+    list to clear all reminders.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the target event.
+        items: List of dicts with an ``offset_minutes`` key (anchor is ignored).
+
+    Returns:
+        Dict with keys ``identity_key`` and ``count`` (number of reminders stored).
+    """
     row = conn.execute("SELECT all_day FROM calendar_events WHERE identity_key=? LIMIT 1",
                        (identity_key,)).fetchone()
     anchor = "day_of" if (row and row["all_day"]) else "start"
@@ -853,10 +1146,19 @@ def set_reminders(conn, identity_key: str, items: list[dict]) -> dict:
 
 
 def dismiss_event(conn, identity_key: str) -> dict:
-    """Remove an event from the calendar (the review banner's Revoke, or the detail
-    sheet's "Remove from calendar"): snapshot it (so Undo can restore instantly), drop
-    the row + its fired markers, and remember the removal so re-derivation never
-    re-creates it. The note's text is never touched."""
+    """Remove an event from the calendar and prevent re-derivation.
+
+    Snapshots the row (so Undo can restore instantly), drops the event row and its
+    fired markers, and records the identity key in calendar_dismissed so re-extraction
+    never recreates the event. The note's text is never modified.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the event to dismiss.
+
+    Returns:
+        Dict with keys ``identity_key`` and ``dismissed`` (True).
+    """
     row = conn.execute("SELECT * FROM calendar_events WHERE identity_key=?", (identity_key,)).fetchone()
     conn.execute("INSERT OR REPLACE INTO calendar_dismissed (identity_key, payload_json) VALUES (?,?)",
                  (identity_key, json.dumps(dict(row)) if row else None))
@@ -871,8 +1173,17 @@ _RESTORE_COLS = ["note_id", "title", "detail", "kind", "starts_at", "ends_at", "
 
 
 def undismiss_event(conn, identity_key: str) -> dict:
-    """Undo a revoke: re-insert the snapshotted row and clear the dismissal so extraction
-    treats the event normally again."""
+    """Undo a revoke: re-insert the snapshotted event row and clear the dismissal.
+
+    After this call, extraction treats the event normally again.
+
+    Args:
+        conn: SQLite connection.
+        identity_key: Identity key of the event to restore.
+
+    Returns:
+        Dict with keys ``identity_key`` and ``dismissed`` (False).
+    """
     d = conn.execute("SELECT payload_json FROM calendar_dismissed WHERE identity_key=?", (identity_key,)).fetchone()
     conn.execute("DELETE FROM calendar_dismissed WHERE identity_key=?", (identity_key,))
     if d and d["payload_json"] and not conn.execute(
@@ -889,8 +1200,18 @@ def undismiss_event(conn, identity_key: str) -> dict:
 
 
 def recently_added(conn, since: str = "", limit: int = 100) -> list[dict]:
-    """Auto-created events (extracted + recurring promotions) added since the watermark,
-    for the in-calendar review — excludes dismissed/superseded and the owner's quick-adds."""
+    """Return auto-created events added since the watermark for in-calendar review.
+
+    Excludes dismissed events, superseded events, and owner quick-adds (source='manual').
+
+    Args:
+        conn: SQLite connection.
+        since: ISO datetime watermark; only events created after this are returned.
+        limit: Maximum number of events to return (clamped to 1–500).
+
+    Returns:
+        List of event dicts ordered by created_at descending.
+    """
     rows = conn.execute(
         "SELECT e.id, e.identity_key, e.title, e.kind, e.starts_at, e.all_day, e.source, "
         "e.created_at, n.slug AS note_slug, n.title AS note_title "
@@ -905,9 +1226,21 @@ def recently_added(conn, since: str = "", limit: int = 100) -> list[dict]:
 
 
 def _alarm_window(occ_start_iso: str, all_day, offset_minutes: int, anchor: str):
-    """(fire_at, cap) naive-local datetimes for one (occurrence, offset). Fire when
-    fire_at <= now < cap. Timed: fire offset minutes before the start; cap = start.
-    All-day: anchor at 9am on the event day; cap = end of that day. None if unparseable."""
+    """Compute the (fire_at, cap) naive-local datetimes for one occurrence/offset pair.
+
+    Fire when ``fire_at <= now < cap``. For timed events: fire ``offset_minutes``
+    before the start; cap is the start. For all-day events: anchor at 9am on the event
+    day; cap is end of that day.
+
+    Args:
+        occ_start_iso: ISO date or datetime string of the occurrence.
+        all_day: Truthy when the event is all-day.
+        offset_minutes: Number of minutes before the anchor to fire.
+        anchor: Anchor type string ('start' or 'day_of').
+
+    Returns:
+        Tuple (fire_at, cap) as naive datetimes, or (None, None) if unparseable.
+    """
     from datetime import datetime, timedelta
     from dateutil.parser import isoparse
     try:
@@ -926,13 +1259,28 @@ def _alarm_window(occ_start_iso: str, all_day, offset_minutes: int, anchor: str)
 
 
 def _alarm_label(cap, all_day) -> str:
+    """Format a human-readable alarm label from the event cap datetime."""
     return cap.strftime("%Y-%m-%d") if all_day else cap.strftime("%Y-%m-%d %H:%M")
 
 
 def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
-    """Fire owner-set per-event reminders: notify at occurrence_start − offset, once per
-    (occurrence, offset), only while the event hasn't started yet (so downtime never
-    blasts past-due reminders). Owner-local/DST-correct. No reminders set → no-op."""
+    """Fire owner-set per-event reminders for all due occurrences.
+
+    Notifies at ``occurrence_start − offset_minutes``, once per (occurrence, offset).
+    Fires only while the event has not yet started, so downtime never blasts past-due
+    alarms. Owner-local and DST-correct. No-op when no reminders are set.
+
+    Args:
+        conn: SQLite connection.
+        workflow_id: Non-None workflow ID used as the dedup scope.
+        push: When True, also send Web Push notifications for fired alarms.
+
+    Returns:
+        Dict with key ``fired`` counting alarms that were posted.
+
+    Raises:
+        ValueError: When ``workflow_id`` is None.
+    """
     if workflow_id is None:
         raise ValueError("due_event_alarms requires a workflow_id (dedup integrity)")
     from datetime import timedelta
@@ -952,6 +1300,7 @@ def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
     pending: list[tuple[str, str, str]] = []
 
     def fire_for(ik, occ_iso, all_day, title, slug):
+        """Fire all due reminders for one event occurrence, respecting the per-tick cap."""
         if len(pending) >= _MAX_FIRES_PER_TICK:        # hard backstop against a storm
             return
         for rem in conn.execute(

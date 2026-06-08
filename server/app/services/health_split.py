@@ -44,12 +44,30 @@ _FN_DEF_RE = re.compile(r"(?m)^(\[\^([^\]\s]+)\]:\s.*)$")    # a footnote DEFINI
 
 
 def _truthy(v) -> bool:
+    """Return True for values that represent a logical true (non-falsy forms).
+
+    Args:
+        v: Value to test; checked against a set of common false-string forms.
+
+    Returns:
+        False for None, False, 0, '', '0', 'false', 'False', 'no', 'off'; True otherwise.
+    """
     return v not in (False, None, 0, "", "0", "false", "False", "no", "off")
 
 
 def _sections(content: str):
-    """Split markdown into (lead, [{name, text}]) on top-level ## headings; `text` includes
-    the heading line through the byte before the next ## (or EOF), right-stripped."""
+    """Split markdown into a lead and a list of top-level ## sections.
+
+    Each section's 'text' includes the heading line through the character before the next
+    ## (or EOF), right-stripped.
+
+    Args:
+        content: Markdown article body.
+
+    Returns:
+        Tuple of (lead: str, sections: list[dict]) where each section dict has 'name'
+        and 'text' keys.
+    """
     heads = list(_HEAD_RE.finditer(content))
     if not heads:
         return content, []
@@ -62,9 +80,22 @@ def _sections(content: str):
 
 
 def _plan_person(conn, people_title: str, content: str) -> dict | None:
-    """Plan the move for one People article. Returns None when there's nothing medical, a
-    {borderline: reason} dict when medical content exists but can't be safely auto-cut, else a
-    full plan {leaf, people_title, moved_names, health_body, new_people_body}."""
+    """Plan the medical section move for one People article.
+
+    Returns None when there are no medical sections, a {borderline: reason} dict when
+    medical content exists but cannot be safely auto-cut (e.g. in the lead/Key facts
+    rather than a dedicated ## heading), or a full plan dict otherwise.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the People article (e.g. 'kb/People/Jane Doe').
+        content: Markdown body of the People article.
+
+    Returns:
+        None if no medical content is found; {'borderline': reason} if content is
+        ambiguous; or a plan dict with keys: leaf, people_title, moved_names, health_body,
+        new_people_body, borderline (None).
+    """
     lead, secs = _sections(content)
     med = [s for s in secs if s["name"].lower() in _MED_HEADINGS
            and s["name"].lower() != "references" and _MED_SIGNAL.search(s["text"])]
@@ -115,8 +146,19 @@ def _plan_person(conn, people_title: str, content: str) -> dict | None:
 
 
 def _disambiguate(conn, people_title: str, leaf: str) -> str:
-    """A kb/Health/<leaf> already belongs to a DIFFERENT person (two same-named People under
-    different parents). Pick a stable, collision-free title that mirrors the People parent."""
+    """Pick a collision-free kb/Health title when the default is taken by a different person.
+
+    Handles two same-named People articles under different parent paths. The disambiguated
+    title mirrors the People parent path for stability.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the source People article.
+        leaf: Last path component of the People title (the person's name leaf).
+
+    Returns:
+        A kb/Health/* title string that is either unclaimed or already owned by this person.
+    """
     parts = people_title.split("/")
     parent = parts[-2] if len(parts) >= 4 else None             # kb/People/<parent>/<leaf>
     cand = f"kb/Health/{parent} {leaf}" if parent else f"kb/Health/{leaf} (2)"
@@ -130,8 +172,21 @@ def _disambiguate(conn, people_title: str, leaf: str) -> str:
 
 
 def _apply_person(conn, plan: dict, on_conflict: str) -> dict:
-    """Write one person's split (validated, versioned, committed). Never writes a structurally
-    broken page — a lint error aborts that person without touching their People article."""
+    """Write one person's health split (validated, versioned, committed).
+
+    Never writes a structurally broken page — a lint error aborts that person without
+    touching their People article.
+
+    Args:
+        conn: Database connection.
+        plan: Plan dict from _plan_person (must have no borderline issue).
+        on_conflict: 'skip' to leave an existing health page untouched, or 'append' to
+            merge the new sections onto the end of it.
+
+    Returns:
+        Dict with 'status' key: 'extracted' (success), 'conflict' (skipped due to existing
+        page), or 'error' (lint failure, with 'errors' key).
+    """
     people_title = plan["people_title"]
     target = f"kb/Health/{plan['leaf']}"
     existing = notes_svc.get_by_title(conn, target)
@@ -168,6 +223,18 @@ def _apply_person(conn, plan: dict, on_conflict: str) -> dict:
 
 
 def _scan(conn, *, dry_run: bool, limit: int, on_conflict: str) -> dict:
+    """Scan all kb/People/* articles and apply (or plan) health splits.
+
+    Args:
+        conn: Database connection.
+        dry_run: If True, plan splits without writing anything.
+        limit: Maximum number of splits to apply in a live run.
+        on_conflict: Conflict resolution for existing health pages ('skip' or 'append').
+
+    Returns:
+        Report dict with keys: ok, dry_run, scanned, extracted, conflicts, borderline,
+        errors, people (list of split records), flagged (list of issue records).
+    """
     rep = {"ok": True, "dry_run": dry_run, "scanned": 0, "extracted": 0,
            "conflicts": 0, "borderline": 0, "errors": 0, "people": [], "flagged": []}
     rows = conn.execute(
@@ -205,9 +272,24 @@ def _scan(conn, *, dry_run: bool, limit: int, on_conflict: str) -> dict:
 
 
 def extract_health(conn, *, dry_run: bool = True, limit: int = 200, on_conflict: str = "skip") -> dict:
-    """Scan kb/People/* for personal medical sections and (unless dry_run) move each into a
-    kb/Health/<Person> page. Apply runs under the KB write lock so it can't interleave with the
-    nightly incremental update / maintenance. dry_run reports what WOULD move and writes nothing."""
+    """Scan kb/People/* for personal medical sections and move them to kb/Health/<Person> pages.
+
+    When dry_run is True, reports what would be moved without writing anything. Live runs
+    hold the KB write lock so they can't interleave with the nightly incremental update or
+    maintenance jobs.
+
+    Args:
+        conn: Database connection.
+        dry_run: If True, plan and report without writing (default True).
+        limit: Maximum splits to apply in a live run.
+        on_conflict: 'skip' (default) to leave existing health pages untouched, or
+            'append' to merge new sections onto them.
+
+    Returns:
+        Report dict from _scan with ok, dry_run, scanned, extracted, conflicts, borderline,
+        errors, people, flagged keys; or {'ok': False, 'skipped': reason} if the KB lock
+        is held.
+    """
     dry_run = _truthy(dry_run)
     if dry_run:
         return _scan(conn, dry_run=True, limit=int(limit), on_conflict=str(on_conflict))
@@ -221,9 +303,19 @@ def extract_health(conn, *, dry_run: bool = True, limit: int = 200, on_conflict:
 
 
 def health_page_for(conn, people_title: str) -> str | None:
-    """The kb/Health/<leaf> page that holds this person's medical record, if one exists — used
-    by the incremental builder to route a person's medical captures to their health page instead
-    of their (now medical-free) People article. Existence-gated: no health page → no rerouting."""
+    """Return the kb/Health page that holds this person's medical record, if one exists.
+
+    Used by the incremental builder to route new medical captures to the person's health
+    page instead of their (now medical-free) People article. Existence-gated: no health
+    page means no rerouting.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the People article (must start with 'kb/People/').
+
+    Returns:
+        The kb/Health/* title string, or None if no health page exists for this person.
+    """
     if not (people_title or "").lower().startswith("kb/people/"):
         return None
     target = "kb/Health/" + people_title.split("/")[-1]

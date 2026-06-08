@@ -15,7 +15,16 @@ from . import share as share_svc
 
 
 def allowed_analytes(spec) -> set[str]:
-    """The exposed allow-list — the ONLY thing that gates what a recipient can read."""
+    """Return the exposed analyte allow-list from a labshare spec.
+
+    This is the ONLY thing that gates what a recipient can read.
+
+    Args:
+        spec: labshare_specs row with an 'analytes_json' field.
+
+    Returns:
+        Set of analyte slug strings; empty set if the field is absent or malformed.
+    """
     try:
         return {str(a) for a in json.loads(spec["analytes_json"] or "[]") if a}
     except Exception:  # noqa: BLE001
@@ -23,13 +32,42 @@ def allowed_analytes(spec) -> set[str]:
 
 
 def get_spec(conn, link_id: int):
+    """Fetch the labshare spec row for a given share link.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+
+    Returns:
+        labshare_specs row, or None if not found.
+    """
     return conn.execute("SELECT * FROM labshare_specs WHERE share_link_id = ?", (link_id,)).fetchone()
 
 
 def create(conn, *, analytes, window_from=None, window_to=None, allow_chat=True,
            intro="", topics="", persona_voice="", label=None, ttl_days=14, bind=True,
            single_use=False, max_turns=30, max_total_replies=120) -> tuple[str, int]:
-    """Mint a lab-share link + its DRAFT spec. The link is inert until activate()."""
+    """Mint a lab-share link and its DRAFT spec. The link is inert until activate() is called.
+
+    Args:
+        conn: Database connection.
+        analytes: Iterable of analyte slug strings to include in the allow-list.
+        window_from: Optional ISO date lower bound for shared results.
+        window_to: Optional ISO date upper bound for shared results.
+        allow_chat: Whether to enable the AI chat interface for recipients.
+        intro: Optional introductory message shown to recipients.
+        topics: Optional topic scope restriction for the AI.
+        persona_voice: Optional tone/role instruction for the AI (rules are not overrideable).
+        label: Optional human-readable label for the link.
+        ttl_days: Link time-to-live in days.
+        bind: Whether to bind the link to the requester's IP.
+        single_use: Whether the link expires after one session.
+        max_turns: Maximum AI turns per recipient session.
+        max_total_replies: Maximum total AI replies across all sessions.
+
+    Returns:
+        Tuple of (token, link_id).
+    """
     token, link_id = share_svc.create_labshare_link(conn, label=label, ttl_days=ttl_days, bind=bind)
     conn.execute(
         "INSERT INTO labshare_specs (share_link_id, analytes_json, window_from, window_to, allow_chat, "
@@ -43,8 +81,19 @@ def create(conn, *, analytes, window_from=None, window_to=None, allow_chat=True,
 
 
 def set_scope(conn, link_id: int, *, analytes=None, window_from=..., window_to=..., allow_chat=None) -> None:
-    """Adjust a DRAFT spec's scope before activation (or narrow it after — removing an analyte
-    takes it out of reach on the next read, like research's remove_approved)."""
+    """Adjust a draft spec's scope before activation, or narrow it after activation.
+
+    Removing an analyte takes it out of reach on the next read, like research's
+    remove_approved. Uses sentinel '...' to distinguish 'not provided' from 'set to None'.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+        analytes: New analyte allow-list, or None to leave unchanged.
+        window_from: New window start (ISO date, None, or '...' to leave unchanged).
+        window_to: New window end (ISO date, None, or '...' to leave unchanged).
+        allow_chat: New chat-enable flag, or None to leave unchanged.
+    """
     sets, params = [], []
     if analytes is not None:
         sets.append("analytes_json = ?"); params.append(json.dumps(sorted({str(a) for a in analytes if a})))
@@ -61,8 +110,18 @@ def set_scope(conn, link_id: int, *, analytes=None, window_from=..., window_to=.
 
 
 def activate(conn, link_id: int) -> bool:
-    """Owner approval gate: draft -> active. REFUSES an empty allow-list (default-deny) so a link
-    can never go live exposing nothing-or-everything. Returns True if it activated."""
+    """Advance a draft spec to active — the owner approval gate.
+
+    Refuses an empty allow-list (default-deny) so a link can never go live without an
+    explicit analyte selection.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+
+    Returns:
+        True if the spec was activated; False if it was not in draft state or had no analytes.
+    """
     spec = get_spec(conn, link_id)
     if not spec or spec["status"] != "draft" or not allowed_analytes(spec):
         return False
@@ -73,13 +132,33 @@ def activate(conn, link_id: int) -> bool:
 # --- recipient sessions + audit --------------------------------------------
 
 def session_for(conn, link_id: int, secret: str):
+    """Fetch a recipient session by link ID and cookie secret.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+        secret: Session cookie secret token.
+
+    Returns:
+        labshare_sessions row, or None if not found.
+    """
     return conn.execute(
         "SELECT * FROM labshare_sessions WHERE share_link_id = ? AND secret = ?",
         (link_id, secret)).fetchone()
 
 
 def start_session(conn, link_id: int, *, name=None, client_ip=None) -> tuple[int, str]:
-    """Create a recipient session, returning (session_id, cookie_secret)."""
+    """Create a recipient session and return its ID and cookie secret.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+        name: Optional recipient display name.
+        client_ip: Optional client IP address for audit.
+
+    Returns:
+        Tuple of (session_id, cookie_secret).
+    """
     secret = secrets.token_urlsafe(32)
     cur = conn.execute(
         "INSERT INTO labshare_sessions (share_link_id, secret, name, client_ip, last_at) "
@@ -89,8 +168,18 @@ def start_session(conn, link_id: int, *, name=None, client_ip=None) -> tuple[int
 
 def record_turn(conn, session_id: int, *, transcript_json: str, charted: list[str] | None = None,
                 denied: int = 0) -> None:
-    """Persist a turn's transcript + audit (which analytes were charted/served, out-of-scope
-    attempts) so the owner can see exactly what was asked and shown."""
+    """Persist a turn's transcript and audit data.
+
+    Records which analytes were charted/served and counts out-of-scope attempts so the
+    owner can see exactly what was asked and shown.
+
+    Args:
+        conn: Database connection.
+        session_id: Session row ID.
+        transcript_json: Full conversation transcript as a JSON string.
+        charted: Analyte slugs whose charts were served in this turn, or None.
+        denied: Number of out-of-scope requests in this turn.
+    """
     extra = ""
     params: list = [transcript_json]
     if charted:
@@ -108,7 +197,16 @@ def record_turn(conn, session_id: int, *, transcript_json: str, charted: list[st
 
 
 def audit(conn, link_id: int) -> list[dict]:
-    """Owner-facing audit: per recipient session, what was asked/shown and when."""
+    """Return owner-facing audit data: per-session summary of what was asked and shown.
+
+    Args:
+        conn: Database connection.
+        link_id: Share link ID.
+
+    Returns:
+        List of session summary dicts ordered by created_at DESC, each with keys: id,
+        name, status, turns, charted, denied, client_ip, created_at, last_at.
+    """
     rows = conn.execute(
         "SELECT id, name, status, turn_count, charted_json, denied_count, client_ip, created_at, last_at "
         "FROM labshare_sessions WHERE share_link_id = ? ORDER BY created_at DESC", (link_id,)).fetchall()

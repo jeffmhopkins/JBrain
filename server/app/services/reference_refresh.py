@@ -32,11 +32,24 @@ _FIELD_RE = re.compile(r'(\w+)="([^"]*)"')
 
 
 def _today() -> str:
+    """Return today's date as an ISO-format string.
+
+    Returns:
+        Date string in YYYY-MM-DD format.
+    """
     return date.today().isoformat()
 
 
 def _provenance(body: str) -> dict | None:
-    """Parse the `<!-- refseed … -->` marker → {src, url, fetched} (or None if absent/incomplete)."""
+    """Parse the refseed provenance marker from article body text.
+
+    Args:
+        body: Full article markdown content.
+
+    Returns:
+        Dict with keys src, url, fetched (and any other attributes in the marker), or
+        None if the marker is absent or missing required fields.
+    """
     m = _SEED_RE.search(body or "")
     if not m:
         return None
@@ -47,6 +60,15 @@ def _provenance(body: str) -> dict | None:
 
 
 def _days_since(iso: str, today: str) -> int:
+    """Return the number of days between two ISO date strings.
+
+    Args:
+        iso: Earlier ISO date string (the fetched date).
+        today: Later ISO date string to compare against.
+
+    Returns:
+        Non-negative day count, or 0 if either date is unparseable (treated as not stale).
+    """
     try:
         return (date.fromisoformat(today[:10]) - date.fromisoformat(iso[:10])).days
     except Exception:  # noqa: BLE001 — an unparseable date is treated as not-stale (skip, don't crash)
@@ -54,14 +76,38 @@ def _days_since(iso: str, today: str) -> int:
 
 
 def _reseat(body: str, source: str, url: str, fetched: str, leaf: str) -> str:
-    """Replace the marked source block with a freshly-cited one; everything else is preserved."""
+    """Replace the marked source block with a freshly-cited one, preserving all other content.
+
+    Args:
+        body: Full article markdown content containing the source block.
+        source: Provenance source key ('medlineplus' or 'rxnorm').
+        url: Fresh public source URL.
+        fetched: ISO date string for the new fetch date.
+        leaf: Human-readable topic name for the visible link text.
+
+    Returns:
+        Updated article body with only the source block replaced.
+    """
     block = rp._source_block(source, url, fetched, leaf).rstrip("\n")
     return _BLOCK_RE.sub(lambda _m: block, body, count=1)
 
 
 def run(conn, ttl_days: int = 180, limit: int = 5) -> dict:
-    """Stage citation refreshes for up to `limit` kb/Reference seeds whose source is older than
-    `ttl_days`. Posts one review card if anything was staged. Returns {refreshed, titles}."""
+    """Stage citation refreshes for stale kb/Reference seeds.
+
+    Finds seeds whose ``<!-- refseed fetched=… -->`` date is older than ``ttl_days``,
+    re-fetches the public source (cached), and stages an UPDATE that re-seats only the
+    cited source line and provenance marker. The owner's prose is preserved. Posts one
+    review card if anything was staged.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        ttl_days: Age in days before a seed's citation is considered stale.
+        limit: Maximum seeds to refresh in one run.
+
+    Returns:
+        Dict with keys: refreshed (int), titles (list[str]).
+    """
     from . import medref, reviews, clock
     today = (clock.today_iso() if hasattr(clock, "today_iso") else None) or _today()
     ttl = max(1, int(ttl_days))

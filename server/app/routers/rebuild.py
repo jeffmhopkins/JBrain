@@ -25,32 +25,55 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 
 class GuideIn(BaseModel):
+    """Input schema for the rebuild guide endpoint."""
+
     text: str
 
 
 class RegatherIn(BaseModel):
+    """Input schema for the regather endpoint."""
+
     hint: str | None = None
 
 
 class DraftIn(BaseModel):
+    """Input schema for the draft endpoint."""
+
     source_ids: list[int]
 
 
 class RedraftIn(BaseModel):
+    """Input schema for the redraft endpoint."""
+
     max_tokens: int | None = None     # approved larger budget after a truncation
 
 
 class AcceptIn(BaseModel):
+    """Input schema for accepting a rebuild draft."""
+
     rename_to: str | None = None     # opt-in retitle (must stay under kb/); None = keep title
 
 
 def _sse(agen) -> StreamingResponse:
-    """Bridge an async event-dict generator to a keepalive'd SSE response (mirrors chat.py)."""
+    """Bridge an async event-dict generator to a keepalive SSE response.
+
+    Mirrors the pattern used in chat.py: a background task pumps events into a
+    queue while the stream loop drains it with a timeout, emitting SSE keepalive
+    comments during silent stretches so proxies do not drop the connection.
+
+    Args:
+        agen: Async generator yielding event dicts with at least a ``type`` key.
+
+    Returns:
+        StreamingResponse with ``text/event-stream`` media type.
+    """
     async def event_stream():
+        """Yield the rebuild run's SSE events, interleaving keepalive comments."""
         queue: asyncio.Queue = asyncio.Queue()
         _DONE = object()
 
         async def pump():
+            """Drain the rebuild async generator into the queue."""
             try:
                 async for event in agen:
                     await queue.put(("event", event))
@@ -89,6 +112,19 @@ def _sse(agen) -> StreamingResponse:
 
 
 def _kb_note(conn, slug: str):
+    """Fetch a live KB note row by slug, or raise 404 if not found or not a KB page.
+
+    Args:
+        conn: Active DB connection.
+        slug: URL slug of the note.
+
+    Returns:
+        sqlite3 Row with ``id``, ``title``, ``slug``, ``kind``, and ``content_md``.
+
+    Raises:
+        HTTPException: 404 if no live note with that slug exists, or it is not
+            of kind ``'kb'``.
+    """
     row = conn.execute(
         "SELECT id, title, slug, kind, content_md FROM notes WHERE slug = ? AND deleted_at IS NULL",
         (slug,),
@@ -100,13 +136,28 @@ def _kb_note(conn, slug: str):
 
 @router.post("/start/{slug}")
 def start(slug: str):
-    """Stage 1: create a run and stream the gather agent's tool use → proposed sources."""
+    """Start a rebuild run for a KB page and stream the gather agent's source proposals.
+
+    Stage 1: creates an in-memory run and streams the gather agent's tool use
+    through to the client as SSE events ending with a proposed source list.
+
+    Args:
+        slug: URL slug of the KB page to rebuild.
+
+    Yields:
+        SSE events: ``run_started``, gather-agent tool events, and proposed
+        source events.
+
+    Raises:
+        HTTPException: 404 if the note does not exist or is not a KB page.
+    """
     conn = get_conn()
     note = _kb_note(conn, slug)
     title = note["title"]
     run = rebuild_runs.create(slug, title, llm.model_for("synthesis"), note["content_md"] or "")
 
     async def gen():
+        """Stream the initial gather + draft run as Server-Sent Events."""
         yield {"type": "run_started", "run_id": run.run_id, "slug": slug,
                "title": title, "base_rev": run.base_hash}
         async for ev in rebuild_engine.run_gather(run):
@@ -116,6 +167,17 @@ def start(slug: str):
 
 
 def _live_run(run_id: str):
+    """Retrieve a live rebuild run or raise 410 if it has expired.
+
+    Args:
+        run_id: UUID string identifying the in-memory run.
+
+    Returns:
+        The live run object.
+
+    Raises:
+        HTTPException: 410 if the run no longer exists.
+    """
     run = rebuild_runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
@@ -124,10 +186,24 @@ def _live_run(run_id: str):
 
 @router.post("/{run_id}/regather")
 def regather(run_id: str, body: RegatherIn):
-    """Stage 1 again, appending newly-found sources while keeping the user's current picks."""
+    """Re-run source gathering for an existing rebuild run.
+
+    Appends newly-found sources while keeping the user's current picks.
+
+    Args:
+        run_id: UUID of the active rebuild run.
+        body: Optional ``hint`` string to steer the re-gather.
+
+    Yields:
+        SSE gather-agent events with additional proposed sources.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
     run = _live_run(run_id)
 
     async def gen():
+        """Stream the re-gather pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_gather(run, hint=(body.hint or None), append=True):
             yield ev
 
@@ -136,7 +212,18 @@ def regather(run_id: str, body: RegatherIn):
 
 @router.get("/{run_id}/search")
 def search_add(run_id: str, q: str):
-    """Note search for the 'add a source' picker on the curate screen (primary notes only)."""
+    """Search primary notes to add as additional sources on the curate screen.
+
+    Args:
+        run_id: UUID of the active rebuild run (must exist).
+        q: Free-text search query.
+
+    Returns:
+        List of dicts with ``note_id``, ``title``, and ``date`` for up to 8 hits.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
     run = _live_run(run_id)
     conn = get_conn()
     hits = [h for h in search.hybrid_notes(conn, q, 8, require_kb_ingest=True)
@@ -147,10 +234,24 @@ def search_add(run_id: str, q: str):
 
 @router.post("/{run_id}/draft")
 def draft(run_id: str, body: DraftIn):
-    """Stage 2: write the article from the curated source ids."""
+    """Draft the rebuilt article from a curated set of source note IDs.
+
+    Stage 2: streams the writer agent's output for the curated sources.
+
+    Args:
+        run_id: UUID of the active rebuild run.
+        body: ``{"source_ids": [int, ...]}`` — note IDs chosen on the curate screen.
+
+    Yields:
+        SSE drafting events including incremental article text and completion.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
     run = _live_run(run_id)
 
     async def gen():
+        """Stream the draft pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_draft(run, body.source_ids):
             yield ev
 
@@ -159,12 +260,26 @@ def draft(run_id: str, body: DraftIn):
 
 @router.post("/{run_id}/redraft")
 def redraft(run_id: str, body: RedraftIn):
-    """Re-run the last drafting turn at a larger, user-approved budget after a truncation."""
+    """Re-run the last drafting turn at a user-approved larger token budget.
+
+    Called after a truncation warning when the user approves a higher budget.
+
+    Args:
+        run_id: UUID of the active rebuild run.
+        body: ``{"max_tokens": int | null}`` — approved budget override.
+
+    Yields:
+        SSE drafting events, same shape as ``/draft``.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
     run = rebuild_runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
 
     async def gen():
+        """Stream the redraft pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_redraft(run, body.max_tokens):
             yield ev
 
@@ -173,6 +288,20 @@ def redraft(run_id: str, body: RedraftIn):
 
 @router.post("/{run_id}/guide")
 def guide(run_id: str, body: GuideIn):
+    """Steer the current rebuild draft with natural-language guidance.
+
+    Args:
+        run_id: UUID of the active rebuild run.
+        body: ``{"text": str}`` — guidance instruction for the writer agent.
+
+    Yields:
+        SSE revision events, same shape as ``/draft``.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+        HTTPException: 409 if the run is not in a guidable state.
+        HTTPException: 400 if guidance text is empty.
+    """
     run = rebuild_runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
@@ -183,6 +312,7 @@ def guide(run_id: str, body: GuideIn):
         raise HTTPException(status_code=400, detail="Empty guidance.")
 
     async def gen():
+        """Stream the guided-revision pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_guide(run, text):
             yield ev
 
@@ -191,6 +321,24 @@ def guide(run_id: str, body: GuideIn):
 
 @router.post("/{run_id}/accept")
 def accept(run_id: str, body: AcceptIn):
+    """Commit the rebuild draft as a new note version, replacing the live KB page.
+
+    Optionally renames the page (must remain under ``kb/``). A staleness guard
+    rejects the commit if the page was edited since the rebuild began.
+
+    Args:
+        run_id: UUID of the active rebuild run.
+        body: Optional ``rename_to`` title (must start with ``"kb/"``).
+
+    Returns:
+        JSON ``{"ok": true, "slug": str}`` with the (possibly renamed) page slug.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+        HTTPException: 409 if the run cannot be accepted (wrong state, no draft,
+            KB lock busy, page deleted, or content is stale).
+        HTTPException: 400 if ``rename_to`` does not start with ``"kb/"``.
+    """
     run = rebuild_runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=410, detail="This rebuild session expired — please rebuild again.")
@@ -237,5 +385,13 @@ def accept(run_id: str, body: AcceptIn):
 
 @router.post("/{run_id}/reject")
 def reject(run_id: str):
+    """Discard a rebuild run without writing anything.
+
+    Args:
+        run_id: UUID of the rebuild run to discard.
+
+    Returns:
+        JSON ``{"ok": true}``.
+    """
     rebuild_runs.drop(run_id)
     return {"ok": True}

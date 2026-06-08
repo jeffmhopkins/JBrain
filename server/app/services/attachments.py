@@ -41,12 +41,29 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif",
 
 
 def resolve_mime(filename: str, declared: str | None) -> str:
+    """Resolve the effective MIME type for a file, preferring the declared type.
+
+    Args:
+        filename: Original filename, used for extension-based guessing.
+        declared: MIME type declared by the upload client (may be None or generic).
+
+    Returns:
+        The resolved MIME type string.
+    """
     if declared and declared not in ("application/octet-stream", ""):
         return "text/markdown" if "markdown" in declared else declared
     return mimetypes.guess_type(filename or "")[0] or "application/octet-stream"
 
 
 def _pdf_text(raw: bytes) -> str:
+    """Extract plain text from a PDF byte string (first 100 pages, 200 000 char cap).
+
+    Args:
+        raw: Raw PDF file bytes.
+
+    Returns:
+        Extracted text, or an empty string if extraction fails.
+    """
     import io
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(raw))
@@ -60,6 +77,15 @@ def _pdf_text(raw: bytes) -> str:
 
 
 def _image_meta(raw: bytes, filename: str) -> str:
+    """Extract image metadata and EXIF tags as a plain-text block for FTS indexing.
+
+    Args:
+        raw: Raw image file bytes.
+        filename: Original filename, used as the label in the output.
+
+    Returns:
+        Multi-line string of image/EXIF fields, including GPS if present.
+    """
     import io
     from PIL import ExifTags, Image
     img = Image.open(io.BytesIO(raw))
@@ -84,7 +110,20 @@ def _image_meta(raw: bytes, filename: str) -> str:
 
 
 def extract_text(raw: bytes, mime: str, filename: str) -> str:
-    """Best-effort searchable text. Returns '' for unsupported/binary files."""
+    """Extract best-effort searchable text from any supported file type.
+
+    Dispatches to the appropriate extractor: UTF-8 decode for text/code, pypdf for
+    PDFs, and EXIF/metadata harvesting for images. Returns '' for unsupported or
+    unreadable binary files.
+
+    Args:
+        raw: Raw file bytes.
+        mime: Resolved MIME type (from resolve_mime).
+        filename: Original filename used for extension-based dispatch and labelling.
+
+    Returns:
+        Extracted text, or '' for unsupported/binary files.
+    """
     ext = os.path.splitext((filename or "").lower())[1]
     try:
         if mime.startswith("text/") or ext in TEXT_EXTS or mime in TEXT_MIMES:
@@ -99,17 +138,26 @@ def extract_text(raw: bytes, mime: str, filename: str) -> str:
 
 
 def _sections(text: str) -> list[tuple[str, str]]:
-    """Split markdown into (breadcrumb, body) sections at ATX headers, keeping fenced
-    code blocks intact (a `#` inside a fence is not a header). `breadcrumb` is the header
-    path standing above the body (e.g. "Setup > Linux"); the header line itself is lifted
-    into the breadcrumb rather than left in the body. Text with no headers yields a single
-    ("", whole-text) section."""
+    """Split markdown into (breadcrumb, body) sections at ATX headers.
+
+    Fenced code blocks are kept intact (a ``#`` inside a fence is not treated as a
+    header). The breadcrumb is the header path above the body (e.g. "Setup > Linux");
+    the header line itself is lifted into the breadcrumb rather than left in the body.
+    Text with no headers yields a single ("", whole-text) section.
+
+    Args:
+        text: Raw markdown text to split.
+
+    Returns:
+        List of (breadcrumb, body) tuples, one per logical section.
+    """
     sections: list[tuple[str, str]] = []
     path: list[tuple[int, str]] = []        # (level, title) stack
     buf: list[str] = []
     in_fence, fence_tok = False, ""
 
     def flush() -> None:
+        """Flush the current buffer as a section entry."""
         body = "\n".join(buf).strip()
         if body:
             sections.append((" > ".join(t for _, t in path), body))
@@ -139,8 +187,21 @@ def _sections(text: str) -> list[tuple[str, str]]:
 
 
 def _best_break(body: str, start: int, end: int, budget: int) -> int:
-    """The position to end a window at: the latest preferred separator in the chunk's
-    final third (so chunks stay reasonably full), else a hard cut at `end`."""
+    """Find the best position to end a chunk window.
+
+    Returns the latest preferred separator (paragraph, sentence, word) found in the
+    final third of the proposed window so chunks stay reasonably full. Falls back to a
+    hard cut at ``end`` when no separator is found.
+
+    Args:
+        body: Full section body being windowed.
+        start: Start index of the current window.
+        end: Proposed hard-cut end index.
+        budget: Maximum chars per chunk (used to compute the "final third" threshold).
+
+    Returns:
+        The character index at which to end the current chunk.
+    """
     lo = start + (budget * 2) // 3
     for sep in _SEPARATORS:
         brk = body.rfind(sep, lo, end)
@@ -150,9 +211,19 @@ def _best_break(body: str, start: int, end: int, budget: int) -> int:
 
 
 def _window_split(breadcrumb: str, body: str) -> list[str]:
-    """Pack one section's body into <= CHUNK_MAX_CHARS windows (breadcrumb included),
-    breaking on paragraph/sentence boundaries where possible, with CHUNK_OVERLAP
-    carry-over. Each emitted chunk is prefixed with the breadcrumb."""
+    """Pack one section's body into CHUNK_MAX_CHARS windows with overlap.
+
+    Breaks on paragraph/sentence/word boundaries where possible. Each emitted chunk
+    is prefixed with the breadcrumb so a short section embeds with disambiguating
+    context. Overlap is CHUNK_OVERLAP characters carried over from the previous window.
+
+    Args:
+        breadcrumb: Header path for this section (e.g. "Setup > Linux"), may be empty.
+        body: Section body text to split.
+
+    Returns:
+        List of chunk strings, each prefixed with the breadcrumb.
+    """
     prefix = f"{breadcrumb}\n\n" if breadcrumb else ""
     budget = max(CHUNK_MAX_CHARS - len(prefix), 200)    # leave room for the breadcrumb
     out: list[str] = []
@@ -173,12 +244,20 @@ def _window_split(breadcrumb: str, body: str) -> list[str]:
 def chunk_text(text: str) -> list[str]:
     """Split text into overlapping, embed-ready chunks.
 
-    Markdown-aware: sections are cut at headers (each chunk carries its header breadcrumb
-    so a short section embeds with disambiguating context) and fenced code blocks are kept
-    intact. Within a section, text is packed into <= CHUNK_MAX_CHARS windows on
-    paragraph/sentence boundaries with CHUNK_OVERLAP carry-over; the char ceiling keeps
-    every chunk under the embedder's 512-token truncation limit. The returned list is flat
-    and contiguous — the chunk_index a consumer stores is just a position in it."""
+    Markdown-aware: sections are cut at ATX headers (each chunk carries its header
+    breadcrumb so a short section embeds with disambiguating context) and fenced code
+    blocks are kept intact. Within a section, text is packed into CHUNK_MAX_CHARS
+    windows on paragraph/sentence boundaries with CHUNK_OVERLAP carry-over; the char
+    ceiling keeps every chunk under the embedder's 512-token truncation limit. The
+    returned list is flat and contiguous — the chunk_index a consumer stores is just a
+    position in it.
+
+    Args:
+        text: Raw text (markdown or plain) to chunk.
+
+    Returns:
+        List of chunk strings, capped at MAX_CHUNKS entries.
+    """
     text = (text or "").strip()
     if not text:
         return []
@@ -192,6 +271,15 @@ def chunk_text(text: str) -> list[str]:
 
 
 def _sync_attachment_fts(conn, att_id, note_id, filename, content):
+    """Rebuild the FTS row for an attachment (delete-then-insert).
+
+    Args:
+        conn: SQLite connection.
+        att_id: Attachment primary key.
+        note_id: Owning note id (may be None for orphan attachments).
+        filename: Original filename stored in the FTS row.
+        content: Extracted text content to index.
+    """
     conn.execute("DELETE FROM attachments_fts WHERE attachment_id = ?", (att_id,))
     conn.execute(
         "INSERT INTO attachments_fts (attachment_id, note_id, filename, content) VALUES (?, ?, ?, ?)",
@@ -200,6 +288,22 @@ def _sync_attachment_fts(conn, att_id, note_id, filename, content):
 
 
 def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: bytes) -> dict:
+    """Store a file attachment and index its content, deduplicating by SHA-256.
+
+    Extracts searchable text, writes the FTS row, and upserts chunked embeddings.
+    Returns a metadata dict with the same shape whether this was a new insert or a
+    deduplicated existing record; the ``duplicate`` key distinguishes the two cases.
+
+    Args:
+        conn: SQLite connection (caller owns commit).
+        note_id: Owning note id, or None for an orphan/global attachment.
+        filename: Original client filename.
+        mime: Resolved MIME type (from resolve_mime).
+        raw: Raw file bytes.
+
+    Returns:
+        Dict with keys: id, note_id, filename, mime, byte_size, has_text, duplicate.
+    """
     sha = hashlib.sha256(raw).hexdigest()
     existing = conn.execute(
         "SELECT id, filename, mime, byte_size, content_text FROM attachments "
@@ -231,6 +335,16 @@ def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: byt
 
 
 def delete_attachment(conn, att_id: int) -> None:
+    """Delete an attachment and clean up its FTS rows, embeddings, and note summary.
+
+    If the attachment had an AI image summary appended to its owning note, the summary
+    block is stripped from the note (versioned) before deletion so there is no dangling
+    reference.
+
+    Args:
+        conn: SQLite connection (caller owns commit).
+        att_id: Attachment primary key to delete.
+    """
     # If this attachment had an AI image summary appended to its note, strip that
     # block (versioned) so deleting the image cleanly removes its summary.
     row = conn.execute(
@@ -257,8 +371,19 @@ def delete_attachment(conn, att_id: int) -> None:
 
 
 def _att_label(mime: str | None, filename: str | None) -> str:
-    """Human label for an attachment's text in an LLM context block (so the model knows
-    what each block is, and transcripts/PDF text aren't mislabeled as image summaries)."""
+    """Return a human-readable label for an attachment's text in an LLM context block.
+
+    Ensures the model knows what each block is so transcripts and PDF text are not
+    mislabelled as image summaries.
+
+    Args:
+        mime: MIME type of the attachment (may be None).
+        filename: Original filename of the attachment (may be None).
+
+    Returns:
+        One of: 'AI image summary', 'video transcript', 'audio transcript', or
+        'attachment text'.
+    """
     from . import audio_transcription  # lazy: avoids an import cycle
     if (mime or "").startswith("image/"):
         return "AI image summary"
@@ -270,11 +395,22 @@ def _att_label(mime: str | None, filename: str | None) -> str:
 
 
 def context_block_for_note(conn, note_id: int | None, cap: int = 2500, per_att_cap: int = 1500) -> str:
-    """A bounded, labelled text digest of a note's attachments for feeding an analyzer/LLM.
-    Per attachment, prefer the rich enrichment sidecar (image vision summary or audio/video
-    transcript in analysis_md); otherwise fall back to extracted content_text (PDF, text,
-    office). Returns "" if the note has no attachment text. This is what makes the note-analysis
-    sidecar (and the KB synthesis it feeds) aware of PDFs, transcripts, and text files."""
+    """Build a bounded, labelled text digest of a note's attachments for an LLM context window.
+
+    Per attachment, prefers the rich enrichment sidecar (image vision summary or
+    audio/video transcript from analysis_md); falls back to extracted content_text
+    (PDF, text, office). This is what makes the note-analysis sidecar (and the KB
+    synthesis it feeds) aware of PDFs, transcripts, and text files.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Owning note id; returns '' immediately when None.
+        cap: Maximum total characters across all attachment blocks.
+        per_att_cap: Maximum characters per individual attachment.
+
+    Returns:
+        Labelled, newline-separated attachment text, or '' if no attachment text exists.
+    """
     if note_id is None:
         return ""
     rows = conn.execute(
@@ -292,6 +428,16 @@ def context_block_for_note(conn, note_id: int | None, cap: int = 2500, per_att_c
 
 
 def list_for_note(conn, note_id: int) -> list[dict]:
+    """Return metadata rows for all attachments belonging to a note, newest first.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Owning note primary key.
+
+    Returns:
+        List of dicts with attachment metadata (id, filename, mime, byte_size,
+        created_at, analysis_status, analysis_detail, analyzed_at, analysis_md).
+    """
     rows = conn.execute(
         "SELECT id, filename, mime, byte_size, created_at, "
         "analysis_status, analysis_detail, analyzed_at, analysis_md FROM attachments "

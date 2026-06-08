@@ -28,7 +28,15 @@ _SRC_MARK = "<!-- refsrc -->"
 
 
 def _source_of(cand) -> str:
-    """The provenance source key for re-fetch: 'rxnorm' (drug → MedlinePlus Connect) or 'medlineplus'."""
+    """Return the provenance source key for re-fetching a candidate's citation.
+
+    Args:
+        cand: Reference candidate row (dict-like with 'source' and 'category' fields).
+
+    Returns:
+        'rxnorm' for drug candidates (re-fetched via MedlinePlus Connect), else
+        'medlineplus'.
+    """
     try:
         src = cand["source"]
     except (KeyError, IndexError):
@@ -37,26 +45,63 @@ def _source_of(cand) -> str:
 
 
 def _source_block(source: str, url: str, fetched: str, leaf: str) -> str:
-    """The cited-source block (visible line + machine-readable provenance marker). Shared with
-    reference_refresh so a re-seated citation keeps the exact same shape."""
+    """Build the cited-source block: a visible attribution line plus a machine-readable marker.
+
+    Shared with reference_refresh so a re-seated citation keeps the exact same shape
+    and is parseable by _provenance().
+
+    Args:
+        source: Provenance source key ('medlineplus' or 'rxnorm').
+        url: Public source URL.
+        fetched: ISO date string when the source was fetched.
+        leaf: Human-readable topic name used in the visible link text.
+
+    Returns:
+        Multi-line string with the <!-- refsrc --> visible line and <!-- refseed --> marker.
+    """
     return (f"{_SRC_MARK} **Source:** [MedlinePlus — {leaf}]({url}) — fetched {fetched}. "
             "U.S. National Library of Medicine, public domain.\n"
             f'<!-- refseed src="{source}" url="{url}" fetched="{fetched}" -->\n')
 
 
 def _category(cand) -> str:
+    """Return the title-cased category for a candidate, defaulting to 'Conditions'.
+
+    Args:
+        cand: Reference candidate row with a 'category' field.
+
+    Returns:
+        Category string from _CATEGORIES, or 'Conditions' if absent/unrecognised.
+    """
     c = (cand["category"] or "").strip().title() if cand["category"] else ""
     return c if c in _CATEGORIES else "Conditions"
 
 
 def _title_for(cand) -> str:
+    """Derive the kb/Reference article title for a candidate.
+
+    Args:
+        cand: Reference candidate row.
+
+    Returns:
+        Wiki page title string (e.g. 'kb/Reference/Medicine/Conditions/Aspirin').
+    """
     leaf = (cand["topic"] or "").replace("/", " ").strip()
     return f"kb/Reference/Medicine/{_category(cand)}/{leaf}"
 
 
 def _is_medication(cand) -> bool:
-    """A drug candidate (captured via drug_reference) — re-fetched and cited differently from a
-    health topic (RxNorm → MedlinePlus Connect, not the health-topics search)."""
+    """Return True if a candidate is a drug (captured via drug_reference).
+
+    Drug candidates are re-fetched differently from health topics: via RxNorm ->
+    MedlinePlus Connect rather than the health-topics search.
+
+    Args:
+        cand: Reference candidate row.
+
+    Returns:
+        True if the candidate's source is 'rxnorm' or its category is 'Medications'.
+    """
     try:
         src = cand["source"]
     except (KeyError, IndexError):
@@ -65,6 +110,17 @@ def _is_medication(cand) -> bool:
 
 
 def _stub(cand, url: str, snippet: str, fetched: str) -> str:
+    """Build the initial markdown body for a reference seed article.
+
+    Args:
+        cand: Reference candidate row supplying topic and category.
+        url: Public source URL to cite.
+        snippet: Short public-domain summary text to include (may be empty).
+        fetched: ISO date string for the citation fetch date.
+
+    Returns:
+        Markdown string ready to be staged as a new kb/Reference article.
+    """
     leaf = (cand["topic"] or "").replace("/", " ").strip()
     kind = "medication" if _is_medication(cand) else "health topic"
     body = f"# {leaf}\n\n"
@@ -77,8 +133,21 @@ def _stub(cand, url: str, snippet: str, fetched: str) -> str:
 
 
 def run(conn, min_hits: int = 2, limit: int = 5) -> dict:
-    """Stage up to `limit` reference stubs for candidates with hits >= `min_hits`. Posts one review
-    card if anything was staged. Returns {promoted, titles}."""
+    """Stage reference stub articles for candidates that have been looked up enough times.
+
+    Processes up to ``limit`` candidates with hits >= ``min_hits`` that are not already
+    owned or pending. Re-fetches each source (cached), builds a deterministic stub, and
+    inserts a staging_actions CREATE row for owner review. Posts one review card if
+    anything was staged.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        min_hits: Minimum lookup count before a candidate is promoted.
+        limit: Maximum candidates to process in one run.
+
+    Returns:
+        Dict with keys: promoted (int), titles (list[str]).
+    """
     from . import medref, reviews
     from . import clock
     rows = conn.execute(

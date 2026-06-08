@@ -1,5 +1,6 @@
 """Guarded read-only SQL execution (SELECT/WITH only). Shared by the SQL console
-and the architect's research-mode query_sql tool."""
+and the architect's research-mode query_sql tool.
+"""
 from __future__ import annotations
 
 import re
@@ -35,10 +36,25 @@ _slots = threading.Semaphore(_MAX_CONCURRENT)
 
 
 def run_select(conn, sql: str, limit: int = 200):
-    """Execute a single SELECT/WITH query. Returns (columns, rows).
+    """Execute a single read-only SELECT/WITH query with a timeout watchdog.
 
-    Raises ValueError if the statement isn't a safe read-only query or runs too
-    long (a watchdog interrupts heavy queries to protect the single API process).
+    Validates the query against a forbidden-keyword list (with string literals
+    neutralised) and enforces a per-query CPU/wall cap via a progress-handler
+    watchdog. A concurrency semaphore caps parallel ad-hoc queries.
+
+    Args:
+        conn: SQLite connection configured with the read-only authorizer.
+        sql: SQL statement to execute (must start with SELECT or WITH).
+        limit: Maximum rows to return (clamped to 1–1000).
+
+    Returns:
+        Tuple of (columns, rows) where columns is a list of column-name strings and
+        rows is a list of lists.
+
+    Raises:
+        ValueError: If the statement is not a safe read-only query, references a
+            forbidden keyword/table/function, times out, or too many concurrent
+            queries are running.
     """
     sql = (sql or "").strip().rstrip(";")
     if ";" in sql:

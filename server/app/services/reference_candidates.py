@@ -13,6 +13,14 @@ from __future__ import annotations
 
 
 def _norm(topic: str) -> str:
+    """Normalize a topic string for deduplication.
+
+    Args:
+        topic: Raw topic string.
+
+    Returns:
+        Normalized string; falls back to lowercased whitespace-collapsed form on error.
+    """
     from . import entity_index
     try:
         return entity_index.normalize(topic) or ""
@@ -21,8 +29,19 @@ def _norm(topic: str) -> str:
 
 
 def has_reference_article(conn, topic: str, norm: str | None = None) -> bool:
-    """True if the owner already has a kb/Reference/… article whose leaf normalizes to this topic
-    (the loop has already closed — don't re-capture)."""
+    """Return True if the owner already has a kb/Reference article for this topic.
+
+    Checks all kb/Reference/ notes by normalizing each leaf title. When True, the
+    capture loop has already closed and the candidate should not be re-recorded.
+
+    Args:
+        conn: SQLite connection.
+        topic: Topic string to look for.
+        norm: Pre-computed normalized key; computed from topic if not supplied.
+
+    Returns:
+        True if a matching kb/Reference article exists.
+    """
     norm = norm or _norm(topic)
     if not norm:
         return False
@@ -35,9 +54,20 @@ def has_reference_article(conn, topic: str, norm: str | None = None) -> bool:
 
 def record(conn, *, topic: str, source: str = "medlineplus", url: str, snippet: str = "",
            category: str | None = None) -> None:
-    """Enqueue/bump a reference candidate (atomic upsert by normalized topic — a repeat lookup bumps
-    `hits`/`last_seen` so repeated interest is visible). Dedups against existing kb/Reference up front.
-    Takes ONLY the public topic + source — never owner data."""
+    """Enqueue or bump a reference candidate by normalized topic (atomic upsert).
+
+    A repeat lookup increments ``hits`` and updates ``last_seen`` so repeated interest
+    is visible to the promote pass. Deduplicates against existing kb/Reference articles
+    up front. Records ONLY the public topic and source URL — never owner data.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        topic: Public topic name (e.g. 'Aspirin').
+        source: Provenance source key ('medlineplus' or 'rxnorm').
+        url: Public source URL for the topic.
+        snippet: Short public-domain summary text (may be empty).
+        category: Optional category hint (e.g. 'Medications').
+    """
     norm = _norm(topic)
     if not norm or not (url or "").strip():
         return

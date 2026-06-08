@@ -36,6 +36,7 @@ from ..db import get_conn, get_meta, set_meta
 
 
 def _today() -> str:
+    """Return today's date as an ISO string (YYYY-MM-DD) in the app timezone."""
     return clock.today_iso()
 
 
@@ -53,7 +54,8 @@ _env.filters["clip"] = lambda s, n: (s or "")[:n]
 
 def _eval(expr: str, scope: dict):
     """Evaluate an expression to its native Python value (Undefined → None).
-    Accepts a bare expression or one wrapped in `{{ }}` (for when/for_each)."""
+    Accepts a bare expression or one wrapped in `{{ }}` (for when/for_each).
+    """
     expr = expr.strip()
     if expr.startswith("{{") and expr.endswith("}}"):
         expr = expr[2:-2].strip()
@@ -63,7 +65,8 @@ def _eval(expr: str, scope: dict):
 def _render_value(val, scope):
     """Render a `with:` value: a lone `{{ expr }}` yields the native value; a
     string with embedded `{{ }}` is interpolated; dicts/lists recurse. The legacy
-    `{date}` token is substituted in any resulting string for backward-compat."""
+    `{date}` token is substituted in any resulting string for backward-compat.
+    """
     if isinstance(val, str):
         s = val.strip()
         if s.startswith("{{") and s.endswith("}}") and s.count("{{") == 1:
@@ -80,6 +83,7 @@ def _render_value(val, scope):
 
 
 def _truthy(v) -> bool:
+    """Return the truthiness of a value, returning False on any evaluation error."""
     try:
         return bool(v)
     except Exception:
@@ -98,8 +102,23 @@ _MAX_STEPS = 5000       # total steps executed per top-level run
 
 
 class _Ctx:
+    """Execution context threaded through every primitive and step in a pipeline run."""
+
     def __init__(self, conn, workflow_id, trigger, *, call_stack=None, depth=0, budget=None,
                  on_step=None, commit_steps=False):
+        """Initialise a pipeline execution context.
+
+        Args:
+            conn: Active SQLite connection for this run.
+            workflow_id: Database id of the triggering workflow.
+            trigger: Trigger-event payload dict (may be empty).
+            call_stack: Action types currently on the call stack (cycle detection).
+            depth: Current call_action nesting depth.
+            budget: Shared one-element list tracking remaining step allowance.
+            on_step: Optional callback invoked with the step name before each step executes.
+            commit_steps: When True, commit after each step to release the write lock between
+                LLM calls. Should only be True for scheduled (non-transactional) runs.
+        """
         self.conn = conn
         self.workflow_id = workflow_id
         self.trigger = trigger or {}
@@ -121,6 +140,16 @@ class _Ctx:
 
 
 def _p_read_note(ctx, title=None, id=None):
+    """Fetch a single note by id or title, returning a dict or None.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title to look up (used when id is not provided).
+        id: Primary-key id of the note (takes priority over title).
+
+    Returns:
+        Dict with id, title, slug, content_md fields, or None if not found.
+    """
     if id is not None:
         row = ctx.conn.execute(
             "SELECT id, title, slug, content_md FROM notes WHERE id = ? AND deleted_at IS NULL", (id,)
@@ -133,6 +162,20 @@ def _p_read_note(ctx, title=None, id=None):
 
 
 def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=None, version_note=None):
+    """Create or update a note, returning its id, resolved title, and slug.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title (doubles as its path).
+        content_md: Markdown body (preferred over text).
+        text: Fallback body when content_md is absent.
+        mode: 'replace' to overwrite; 'append' to concatenate to existing content.
+        kind: Note kind (e.g. 'kb', 'entry'); None leaves kind unchanged.
+        version_note: Label stored with the version history entry.
+
+    Returns:
+        Dict with id, title, and slug of the written note.
+    """
     body_in = content_md if content_md is not None else (text or "")
     if kind == "kb":
         title = notes_svc.root_title(title, "kb")   # the encyclopedia lives under kb/
@@ -152,6 +195,17 @@ def _p_write_note(ctx, title, content_md=None, text=None, mode="replace", kind=N
 
 
 def _p_create_review(ctx, title, message="", link_title=None):
+    """Post a card to the Review inbox, optionally linked to a note.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Display title for the review card.
+        message: Body text shown on the card.
+        link_title: Title of a note to link the card to (slug resolved at call time).
+
+    Returns:
+        Dict with id and link_slug of the created review item.
+    """
     link_slug = None
     if link_title:
         n = notes_svc.get_by_title(ctx.conn, link_title)
@@ -161,19 +215,31 @@ def _p_create_review(ctx, title, message="", link_title=None):
 
 
 def _p_semantic_search(ctx, query, limit=8):
+    """Run a vector similarity search over notes and return the top matches.
+
+    Args:
+        ctx: Pipeline execution context.
+        query: Natural-language query string.
+        limit: Maximum number of results to return.
+
+    Returns:
+        List of matching note dicts ordered by relevance.
+    """
     return embeddings.semantic_search(ctx.conn, query, int(limit))
 
 
 def _p_analyze_pending(ctx, limit=60, force=False):
     """Ids of entry/daily notes whose AI analysis is missing or stale (or ALL of them
-    when force is set — to refresh every analysis after a behaviour/prompt change)."""
+    when force is set — to refresh every analysis after a behaviour/prompt change).
+    """
     from . import note_analysis
     return note_analysis.pending_ids(ctx.conn, int(limit), force=bool(force))
 
 
 def _p_analyze_note(ctx, id, force=False):
     """(Re)compute one note's analysis sidecar (no-op if unchanged, unless force).
-    Returns whether a fresh analysis was stored."""
+    Returns whether a fresh analysis was stored.
+    """
     from . import note_analysis
     return {"id": int(id), "changed": bool(note_analysis.analyze(ctx.conn, int(id), force=bool(force)))}
 
@@ -259,7 +325,8 @@ def _p_taxonomy_health(ctx):
 def _p_extract_health(ctx, dry_run=True, limit=200, on_conflict="skip"):
     """One-time migration: move each person's personal medical section out of their kb/People
     article into a dedicated kb/Health/<Person> PHI page. Deterministic + versioned/undoable;
-    dry_run reports what would move and writes nothing. Apply runs under the KB write lock."""
+    dry_run reports what would move and writes nothing. Apply runs under the KB write lock.
+    """
     from . import health_split
     return health_split.extract_health(ctx.conn, dry_run=dry_run, limit=int(limit), on_conflict=str(on_conflict))
 
@@ -314,14 +381,16 @@ def _p_flag_ungrounded_reference(ctx):
 
 def _p_link_medications(ctx, limit=200):
     """Add MedlinePlus drug references to medication KB articles (RxNorm-resolved, link-only;
-    exact -> auto-link, approximate -> talk todo for owner confirmation)."""
+    exact -> auto-link, approximate -> talk todo for owner confirmation).
+    """
     from . import medref
     return medref.link_medications(ctx.conn, int(limit))
 
 
 def _p_link_places(ctx):
     """Reconcile saved geofences with their kb/Places articles — add a location box (coords +
-    address + loc/ link) + a back-link on the loc/ note. Deterministic, link-only."""
+    address + loc/ link) + a back-link on the loc/ note. Deterministic, link-only.
+    """
     from . import places
     return places.link_places(ctx.conn)
 
@@ -338,7 +407,8 @@ def _p_audit_link_labels(ctx, limit=500, fix=True):
     link renders the article's clean short name. Covers BOTH a label that names a different
     article (mismatch — e.g. a stale alias after a rename) and one that merely repeats the
     article's path/name (verbose). When `fix`, applies it (deterministic + undoable) and
-    logs each in the source article's talk. Returns the changes for the recipe's Review."""
+    logs each in the source article's talk. Returns the changes for the recipe's Review.
+    """
     from . import wikilinks, article_talk
 
     do_fix = fix not in (False, 0, "0", "false", "False", "", None)
@@ -373,7 +443,8 @@ def _p_normalize_link_labels(ctx, limit=5000):
     """Drop redundant/mismatched [[Target|Display]] aliases KB-wide so links render the
     article's clean short name (deterministic, no LLM). A post-write hygiene pass for the
     KB maintenance/build recipes — keeps freshly-written links from carrying 'People/…'
-    clutter without re-running the article writer."""
+    clutter without re-running the article writer.
+    """
     from . import wikilinks
     res = wikilinks.normalize_all_link_labels(ctx.conn, int(limit))
     if res["fixed"]:
@@ -384,7 +455,8 @@ def _p_normalize_link_labels(ctx, limit=5000):
 def _p_tidy_talk(ctx):
     """Demote non-actionable 'stub / needs-more-notes / revisit-later' talk todos to inert
     notes and cap clutter — stops them nagging maintenance + Review cards, and retires the
-    existing backlog. Never touches conflicts, owner directives, or user items."""
+    existing backlog. Never touches conflicts, owner directives, or user items.
+    """
     from . import article_talk
     demoted = article_talk.demote_stub_notes(ctx.conn)
     ctx.conn.commit()
@@ -405,7 +477,8 @@ def _p_title_notes(ctx, limit=40, dry_run=False):
 
 def _p_seed_kb_watermark(ctx):
     """Reset the incremental-update watermark to now — the full build just covered all
-    history, so incremental should only pick up changes from here on."""
+    history, so incremental should only pick up changes from here on.
+    """
     from . import wiki_build
     set_meta(ctx.conn, "kb_incremental:since", wiki_build._now(ctx.conn))
     return {"since": "now"}
@@ -414,7 +487,8 @@ def _p_seed_kb_watermark(ctx):
 def _p_review_open_talk(ctx, limit=20):
     """Open a review 'session' from the build: post a Review card for each article that
     has unresolved talk items needing a human (conflict / question / todo / directive), so
-    they're worked through the Review inbox rather than ticked off in the talk panel."""
+    they're worked through the Review inbox rather than ticked off in the talk panel.
+    """
     from . import reviews as reviews_svc
     conn = ctx.conn
     rows = conn.execute(
@@ -446,7 +520,8 @@ def _p_review_open_talk(ctx, limit=20):
 def _p_write_kb_index(ctx, articles, valid):
     """(Re)write the protected kb/_index map from the articles that were actually SAVED, so
     it never links to a quarantined (unsaved) article — the one dead-link source the
-    prevention passes skip, because kb/_* pages are protected."""
+    prevention passes skip, because kb/_* pages are protected.
+    """
     from . import wiki_build
     from . import notes as ns
     saved = {str(d.get("title", "")).lower() for d in (valid or [])}
@@ -460,7 +535,8 @@ def _p_write_kb_index(ctx, articles, valid):
 
 def _p_kb_reset(ctx):
     """Soft-delete all kb/ articles except protected kb/_* pages, and clear the
-    synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe."""
+    synthesis watermark/markers. Undoable. Only reachable via the wiki_build recipe.
+    """
     from . import wiki_build
     return wiki_build.reset(ctx.conn)
 
@@ -479,10 +555,12 @@ def _p_wiki_outline(ctx, digest, instructions=None):
 
 def _p_wiki_write_batch(ctx, articles, instructions=None):
     """Write every planned article (draft + one revise pass + structure lint); returns
-    {valid, quarantined, count, bad}. Reports each article to the run modal as it's written."""
+    {valid, quarantined, count, bad}. Reports each article to the run modal as it's written.
+    """
     from . import wiki_build
 
     def on_article(i, n, title):
+        """Forward per-article progress to the run-modal step callback (best-effort)."""
         if ctx.on_step:
             try:
                 ctx.on_step(f"wiki_write:{i}/{n}:{title}")
@@ -493,12 +571,24 @@ def _p_wiki_write_batch(ctx, articles, instructions=None):
 
 def _p_validate_structure(ctx, title, content_md):
     """Lint one article against its domain guide's spec (lead, citations, PII firewall,
-    required sections). Returns {ok, errors, warnings, stub, domain}."""
+    required sections). Returns {ok, errors, warnings, stub, domain}.
+    """
     from . import wiki_guides
     return wiki_guides.validate_structure(title, content_md or "")
 
 
 def _p_query_notes(ctx, kind=None, since_id=0, limit=1000):
+    """List notes filtered by kind and/or id range, capped at 1 000 rows.
+
+    Args:
+        ctx: Pipeline execution context.
+        kind: Note kind to filter on (e.g. 'entry', 'kb'); None returns all kinds.
+        since_id: Return only notes with id strictly greater than this value.
+        limit: Maximum rows returned; clamped to [1, 1000].
+
+    Returns:
+        List of dicts with id, title, slug, content_md, and created_at.
+    """
     sql = "SELECT id, title, slug, content_md, created_at FROM notes WHERE deleted_at IS NULL"
     params: list = []
     if kind:
@@ -518,7 +608,8 @@ def _p_query_entry_changes(ctx, since="", limit=20):
     """Entries CHANGED since a timestamp watermark — new, edited, OR soft-deleted
     (so wiki synthesis can fold in edits and clean up after removals, not just add
     new notes). Each row carries `deleted` and `changed_at`; the caller advances the
-    watermark to the max changed_at processed."""
+    watermark to the max changed_at processed.
+    """
     # Synthesis consumes the daily ROLLUPS plus any legacy free-titled entries —
     # but NOT the raw dated captures (notes/daily/.../<n>), which reach the KB only
     # via their daily summary. This keeps facts in the KB exactly once (no double
@@ -537,17 +628,45 @@ def _p_query_entry_changes(ctx, since="", limit=20):
 
 
 def _p_get_meta(ctx, key, default=None):
-    # Read through the pipeline's own connection so it sees this run's uncommitted
-    # watermark writes (every other primitive uses ctx.conn).
+    """Read a stored metadata key, returning default if absent.
+
+    Reads through the pipeline's own connection so it sees this run's uncommitted
+    watermark writes (every other primitive uses ctx.conn).
+
+    Args:
+        ctx: Pipeline execution context.
+        key: Metadata key to look up.
+        default: Value to return when the key is not set.
+
+    Returns:
+        Stored string value, or default.
+    """
     return get_meta(key, default, conn=ctx.conn)
 
 
 def _p_set_meta(ctx, key, value):
+    """Write a metadata key-value pair, stringifying the value.
+
+    Args:
+        ctx: Pipeline execution context.
+        key: Metadata key to write.
+        value: Value to store (converted to str).
+    """
     set_meta(ctx.conn, key, str(value))
     return None
 
 
 def _p_set_tags(ctx, note_id, tags):
+    """Replace the full tag set on a note.
+
+    Args:
+        ctx: Pipeline execution context.
+        note_id: Id of the note to update.
+        tags: New list of tag strings (replaces existing tags entirely).
+
+    Returns:
+        Updated list of tags stored on the note.
+    """
     return notes_svc.set_tags(ctx.conn, int(note_id), list(tags or []))
 
 
@@ -556,11 +675,35 @@ def _p_set_tags(ctx, note_id, tags):
 # in YAML — and delegate to the same workflows.* functions tests already stub.
 
 def _p_suggest_tags(ctx, title, content, prompt=None):
+    """Ask the LLM to suggest tags for a note based on its title and content.
+
+    Args:
+        ctx: Pipeline execution context.
+        title: Note title.
+        content: Note body text.
+        prompt: Optional custom prompt override.
+
+    Returns:
+        List of suggested tag strings.
+    """
     from . import workflows as wf
     return wf._suggest_tags(title or "", content or "", prompt)
 
 
 def _p_summarise_entries(ctx, entries, prompt=None):
+    """Summarise a list of log/journal entries into a single narrative via the LLM.
+
+    Live @t[...] tokens are expanded to point-in-time snapshots before the call, since
+    the resulting rollup is a stored record rather than a live note.
+
+    Args:
+        ctx: Pipeline execution context.
+        entries: List of entry text strings to summarise.
+        prompt: Optional custom prompt override.
+
+    Returns:
+        Summary string produced by the LLM.
+    """
     from . import workflows as wf
     # The summary is STORED (a daily/log rollup), so render @t[...] live values as
     # dated snapshots — the rollup is a point-in-time record, not a live note.
@@ -569,6 +712,17 @@ def _p_summarise_entries(ctx, entries, prompt=None):
 
 
 def _p_wiki_plan(ctx, entries, existing_kb, instructions=None):
+    """Ask the LLM to produce a KB write plan from source entries and existing articles.
+
+    Args:
+        ctx: Pipeline execution context.
+        entries: Source entry/daily notes to incorporate.
+        existing_kb: Existing KB article stubs available for update decisions.
+        instructions: Optional extra guidance appended to the synthesis prompt.
+
+    Returns:
+        List of dicts with op, title, and content_md for each planned article.
+    """
     from . import workflows as wf
     # conn enables semantic retrieval of only the relevant existing KB articles.
     return wf._synthesize_actions(list(entries or []), list(existing_kb or []), instructions, conn=ctx.conn)
@@ -583,7 +737,8 @@ def citation_issues(content_md: str) -> list[str]:
     """Graph-safety check on a synthesized article's citations (M1): every footnote
     marker resolves to one definition, every definition carries a [[…]] (so a links
     row is recorded), and no id is reused for two sources. Malformed citations would
-    silently break delete/edit reconciliation, so such articles are NOT written."""
+    silently break delete/edit reconciliation, so such articles are NOT written.
+    """
     text = content_md or ""
     defs: dict[str, int] = {}
     def_has_link: dict[str, bool] = {}
@@ -608,7 +763,8 @@ def _p_kb_uncited_pending(ctx, limit=25, since_floor="", reconsider=False):
     query_entry_changes candidate set exactly (raw dated captures reach the KB only
     via their rollup, so they're excluded). `since_floor`: entries created on/before
     it are treated as already-evaluated (bootstrap — skip the historical corpus).
-    `reconsider`: ignore both the marker and the floor (expensive)."""
+    `reconsider`: ignore both the marker and the floor (expensive).
+    """
     rows = ctx.conn.execute(
         "SELECT n.id, n.title, n.slug, n.content_md, n.created_at, n.updated_at "
         "FROM notes n WHERE n.deleted_at IS NULL "
@@ -635,7 +791,8 @@ def _p_chatter_pending(ctx, limit=500):
     """The 'dropped chatter' pool for recurrence detection: live daily-rollups +
     free-titled entries that NO kb article cites and that haven't been promoted as a
     pattern yet. Same candidate predicate as the coverage check (raw dated captures
-    excluded). No store — this is just a query over existing notes."""
+    excluded). No store — this is just a query over existing notes.
+    """
     rows = ctx.conn.execute(
         "SELECT n.id, n.title, n.slug, n.content_md, n.created_at "
         "FROM notes n WHERE n.deleted_at IS NULL "
@@ -654,12 +811,14 @@ def _p_cluster_chatter(ctx, entries, tau=0.35, min_days=3, neighbours=16, promot
     """Cluster the chatter pool by embedding similarity (greedy union-find over
     semantic_search — reuses the vectors every note already has, no LLM, nothing
     written). A cluster spanning >= min_days DISTINCT calendar days is a recurring
-    PATTERN worth promoting. Returns the promotable clusters, largest first."""
+    PATTERN worth promoting. Returns the promotable clusters, largest first.
+    """
     items = [e for e in (entries or []) if e.get("id") is not None]
     by_id = {e["id"]: e for e in items}
     parent = {i: i for i in by_id}
 
     def find(x):
+        """Return the root of x's union-find component using path-halving compression."""
         while parent[x] != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
@@ -697,7 +856,8 @@ def _p_cluster_chatter(ctx, entries, tau=0.35, min_days=3, neighbours=16, promot
 
 def _p_mark_promoted(ctx, ids, key=""):
     """Mark chatter entries consumed by a pattern promotion so they're never
-    re-clustered (mirrors mark_evaluated)."""
+    re-clustered (mirrors mark_evaluated).
+    """
     for nid in (ids or []):
         set_meta(ctx.conn, f"chatter_promoted:{int(nid)}", str(key or "1"))
     return {"marked": len(ids or [])}
@@ -705,7 +865,8 @@ def _p_mark_promoted(ctx, ids, key=""):
 
 def _p_mark_evaluated(ctx, ids, at=None):
     """Record that synthesis CONSIDERED these entries (whether or not a fact resulted),
-    so the coverage check never re-feeds an intentionally-skipped entry. Idempotent."""
+    so the coverage check never re-feeds an intentionally-skipped entry. Idempotent.
+    """
     from datetime import datetime, timezone
     ts = at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     for nid in (ids or []):
@@ -717,7 +878,8 @@ def _p_stage_kb_proposals(ctx, articles, conversation_id=None):
     """Stage synthesized KB articles as pending staging_actions (CREATE/UPDATE,
     kind=kb) for the owner to approve — the 'review first' path for coverage. An
     UPDATE carries a content-hash basis so a stale apply is refused, mirroring the
-    architect's propose_actions."""
+    architect's propose_actions.
+    """
     staged = 0
     for a in (articles or []):
         title = (a.get("title") or "").strip()
@@ -739,7 +901,8 @@ def _p_stage_kb_proposals(ctx, articles, conversation_id=None):
 
 def _p_validate_citations(ctx, articles):
     """Split a wiki_plan into citation-VALID articles (safe to write) and
-    QUARANTINED ones (malformed footnotes → would break the link graph)."""
+    QUARANTINED ones (malformed footnotes → would break the link graph).
+    """
     valid, quarantined = [], []
     for a in (articles or []):
         issues = citation_issues(a.get("content_md") or "")
@@ -766,7 +929,8 @@ def _p_kb_audit(ctx, limit=1000):
       - leftover old-style "## Sources" list (should be a "## References" footnote block)
       - footnote markers used but no "## References" section holding their definitions
       - no citations at all (a KB article with durable facts but nothing traced)
-    Returns {flagged: [{id,title,slug,issues:[...]}], bad, ok, scanned}."""
+    Returns {flagged: [{id,title,slug,issues:[...]}], bad, ok, scanned}.
+    """
     rows = ctx.conn.execute(
         "SELECT id, title, slug, content_md FROM notes "
         "WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL ORDER BY title"
@@ -799,6 +963,14 @@ def _p_kb_audit(ctx, limit=1000):
 
 
 def _strip_code_fence(s: str) -> str:
+    """Strip a leading/trailing markdown code fence from a string, if present.
+
+    Args:
+        s: String that may be wrapped in a triple-backtick code block.
+
+    Returns:
+        The unwrapped string with surrounding whitespace removed.
+    """
     s = (s or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
@@ -830,7 +1002,8 @@ _RECITE_DEFAULT = (
 def _p_kb_old_citation_pending(ctx, limit=10):
     """KB articles still in the OLD citation style (a '## Sources' list and/or inline
     [[notes/…]] cites) and NOT yet converted to footnotes ([^…]). Idempotent: once an
-    article gains a [^ footnote it drops out of the candidate set."""
+    article gains a [^ footnote it drops out of the candidate set.
+    """
     rows = ctx.conn.execute(
         "SELECT id, title, content_md FROM notes WHERE kind='kb' AND deleted_at IS NULL "
         "  AND content_md NOT LIKE '%[^%' "
@@ -844,7 +1017,8 @@ def _p_kb_old_citation_pending(ctx, limit=10):
 def _p_recite_articles(ctx, articles):
     """Rewrite each article's citations into the footnote style via the LLM, then GUARD:
     reject a rewrite whose footnotes are malformed (citation_issues) OR that DROPS any
-    [[…]] the original had (would break the link graph). Returns valid vs quarantined."""
+    [[…]] the original had (would break the link graph). Returns valid vs quarantined.
+    """
     from . import prompts
     valid, quarantined = [], []
     tmpl = prompts.get("actions.recite", _RECITE_DEFAULT)
@@ -873,7 +1047,8 @@ def _p_recite_articles(ctx, articles):
 
 def _p_gather_context(ctx, source_title=None, context_query=None):
     """Build context text from a named note or a semantic search (synthesize).
-    @t[...] live values are expanded so the model reads the value, not the token."""
+    @t[...] live values are expanded so the model reads the value, not the token.
+    """
     if source_title:
         row = notes_svc.get_by_title(ctx.conn, source_title)
         return clock.expand_tokens(row["content_md"]) if row else ""
@@ -890,7 +1065,8 @@ def _p_gather_context(ctx, source_title=None, context_query=None):
 
 def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise", model=None):
     """Run an LLM prompt over optional context. `on_no_key` controls behaviour
-    when no provider key is configured: raise | fallback (return content) | skip ('')."""
+    when no provider key is configured: raise | fallback (return content) | skip ('').
+    """
     if not llm.has_credentials():
         if on_no_key == "raise":
             raise RuntimeError("no LLM API key configured")
@@ -904,7 +1080,8 @@ def _p_llm(ctx, prompt, content="", max_tokens=1024, on_no_key="raise", model=No
 
 def _p_daylog_pending(ctx, log_title):
     """Parse a log note's dated lines and the per-log watermark; return the days
-    still to summarise (encapsulates summarize_day_log's irregular front-end)."""
+    still to summarise (encapsulates summarize_day_log's irregular front-end).
+    """
     from . import workflows as wf
     empty = {"days": [], "watermark_key": None, "last_date": None}
     note = notes_svc.get_by_title(ctx.conn, log_title)
@@ -937,7 +1114,8 @@ def _p_daily_pending(ctx, limit_days=60):
     restart or multi-day outage simply resumes with whatever days are still
     missing (and backfills them all in one run). Each returned day carries its
     entries' bodies (for summarise_entries) and child titles (for ## Entries
-    backlinks). Today is excluded (it's still being written into)."""
+    backlinks). Today is excluded (it's still being written into).
+    """
     today = _local_day_path()
     rows = ctx.conn.execute(
         "SELECT title, content_md, lat, lon FROM notes "
@@ -986,7 +1164,8 @@ def _p_call_action(ctx, action, config=None, trigger=None):
     The sub-recipe gets a FRESH variable scope (its own config/trigger), but the
     recursion depth and step budget are SHARED with the parent so cycles and
     runaways are bounded. A recipe may declare top-level `returns: "{{ expr }}"`
-    to hand a value back; otherwise a small summary object is returned."""
+    to hand a value back; otherwise a small summary object is returned.
+    """
     if ctx.depth >= _MAX_CALL_DEPTH:
         raise RuntimeError("call_action: max call depth exceeded")
     recipe = get_action_def(action)
@@ -1016,6 +1195,16 @@ def _p_call_action(ctx, action, config=None, trigger=None):
 # (e.g. notes/SomeThought). Dated daily captures/rollups (notes/daily/…) are
 # never touched — they stay as the chronological log.
 def _is_loose_title(title: str) -> bool:
+    """Return True when a title has no folder or sits only one level under notes/.
+
+    Dated daily entries (notes/daily/...) are never considered loose.
+
+    Args:
+        title: Note title string to evaluate.
+
+    Returns:
+        True if the title is a bare segment or lives directly under notes/.
+    """
     t = (title or "").strip()
     if not t or t == "notes/daily" or t.startswith("notes/daily/"):
         return False
@@ -1025,7 +1214,8 @@ def _is_loose_title(title: str) -> bool:
 
 def _p_find_unfiled(ctx, limit=200):
     """Loose, unfiled notes to re-file. Returns a list (so stop_when_empty
-    short-circuits when there's nothing to sort)."""
+    short-circuits when there's nothing to sort).
+    """
     rows = ctx.conn.execute(
         "SELECT id, title, content_md FROM notes WHERE deleted_at IS NULL ORDER BY id"
     ).fetchall()
@@ -1038,7 +1228,8 @@ def _p_find_unfiled(ctx, limit=200):
 
 def _existing_folders(conn) -> list[str]:
     """Folder paths already in use (every ancestor prefix of a note title), minus
-    the dated daily tree — the taxonomy to re-file INTO."""
+    the dated daily tree — the taxonomy to re-file INTO.
+    """
     folders: set[str] = set()
     for r in conn.execute("SELECT title FROM notes WHERE deleted_at IS NULL").fetchall():
         parts = (r["title"] or "").split("/")
@@ -1052,7 +1243,8 @@ def _existing_folders(conn) -> list[str]:
 def _parse_moves(raw: str, valid_from: set[str]) -> list[dict]:
     """Pull a JSON array of {from,to} out of an LLM reply, keeping only moves whose
     source is a real candidate and whose target is a different, foldered path under
-    the notes/ root."""
+    the notes/ root.
+    """
     m = re.search(r"\[.*\]", raw or "", re.DOTALL)
     if not m:
         return []
@@ -1079,7 +1271,8 @@ def _parse_moves(raw: str, valid_from: set[str]) -> list[dict]:
 
 def _p_plan_moves(ctx, candidates, instructions=None):
     """Ask the LLM to file each loose note into the EXISTING folder structure,
-    inventing a new folder only when nothing fits. Returns {moves, count}."""
+    inventing a new folder only when nothing fits. Returns {moves, count}.
+    """
     items = candidates if isinstance(candidates, list) else []
     if not items:
         return {"moves": [], "count": 0}
@@ -1110,7 +1303,8 @@ def _p_plan_moves(ctx, candidates, instructions=None):
 def _p_stage_moves(ctx, moves):
     """Stage each proposed move as a pending (conversation-less) RENAME action for
     the owner to approve in the staging area — nothing moves until then. Skips
-    no-ops, missing sources, and targets that already exist / collide in the batch."""
+    no-ops, missing sources, and targets that already exist / collide in the batch.
+    """
     staged, seen = 0, set()
     for m in (moves or []):
         if not isinstance(m, dict):
@@ -1133,7 +1327,8 @@ def _p_stage_moves(ctx, moves):
 def _p_notify(ctx, title, body="", url="/"):
     """Fire a Web Push to every subscribed device (custom title/body/deep-link).
     Fire-and-forget on its own connection, so it never blocks or fails the pipeline
-    transaction. Lets a trigger's action actually reach the owner (e.g. location)."""
+    transaction. Lets a trigger's action actually reach the owner (e.g. location).
+    """
     from . import push
     push.notify(str(title)[:120], str(body or "")[:400], str(url or "/"))
     return {"queued": True}
@@ -1141,7 +1336,8 @@ def _p_notify(ctx, title, body="", url="/"):
 
 def _existing_place(conn, name, lat, lon, radius_m):
     """True if a place by this name already exists, OR any place sits within this
-    one's radius of the coord (so we don't re-suggest a spot already saved)."""
+    one's radius of the coord (so we don't re-suggest a spot already saved).
+    """
     if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE LIMIT 1", (name,)).fetchone():
         return True
     for p in conn.execute("SELECT lat, lon FROM places").fetchall():
@@ -1154,7 +1350,8 @@ def _p_suggest_places(ctx, entries):
     """From entries that carry a capture coordinate, ask the LLM which clearly
     happened AT a nameable, reusable place. The LLM only picks an index + a name;
     the COORDINATE comes from the entry (never invented). Returns deduped
-    candidates {name, lat, lon, radius_m, source_title}. No-op without an LLM key."""
+    candidates {name, lat, lon, radius_m, source_title}. No-op without an LLM key.
+    """
     items = [e for e in (entries or []) if isinstance(e, dict) and e.get("lat") is not None and e.get("lon") is not None]
     if not items or not llm.has_credentials():
         return {"candidates": []}
@@ -1202,7 +1399,8 @@ def _p_suggest_places(ctx, entries):
 def _p_stage_places(ctx, candidates):
     """Stage each place candidate as a pending ADD_PLACE action for the owner to
     approve (nothing is written to `places` until they tap Apply). Skips ones
-    already pending or already saved since suggestion."""
+    already pending or already saved since suggestion.
+    """
     staged = 0
     for c in (candidates or []):
         if not isinstance(c, dict) or not (c.get("name") and c.get("lat") is not None and c.get("lon") is not None):
@@ -1231,7 +1429,8 @@ def _p_discover_stays(ctx, min_days=3, days_back=21, min_minutes=30):
     """Find UNLABELED spots the trail shows you returning to across several distinct
     days — a place worth naming. Pure geo-math (no LLM). Groups recurring stays by
     proximity; emits a candidate (coordinate-named placeholder for the owner to
-    rename) when one recurs on >= min_days days and isn't already a saved place."""
+    rename) when one recurs on >= min_days days and isn't already a saved place.
+    """
     from datetime import datetime, timedelta, timezone
     from . import geotrail
     since = (datetime.now(timezone.utc) - timedelta(days=int(days_back or 21))).strftime("%Y-%m-%d %H:%M:%S")
@@ -1262,14 +1461,16 @@ def _p_discover_stays(ctx, min_days=3, days_back=21, min_minutes=30):
 
 def _p_research_nudges(ctx):
     """Post review-inbox nudges for active research links that have new candidate
-    notes the owner hasn't reviewed yet (the approve-to-add tray)."""
+    notes the owner hasn't reviewed yet (the approve-to-add tray).
+    """
     from . import research
     return {"nudged": research.post_candidate_nudges(ctx.conn)}
 
 
 def _p_promote_reference_candidates(ctx, min_hits=2, limit=5):
     """Stage kb/Reference stubs for health topics the owner looked up repeatedly (read-only capture →
-    nightly promote → owner approves). Source-only, deterministic, never auto-live."""
+    nightly promote → owner approves). Source-only, deterministic, never auto-live.
+    """
     from . import reference_promote
     return reference_promote.run(ctx.conn, min_hits=int(min_hits), limit=int(limit))
 
@@ -1277,35 +1478,40 @@ def _p_promote_reference_candidates(ctx, min_hits=2, limit=5):
 def _p_refresh_reference_seeds(ctx, ttl_days=180, limit=5):
     """Stage a citation refresh for kb/Reference seeds whose cited source is older than `ttl_days` —
     re-fetch the public source and re-seat ONLY the Source line + fetch date (owner prose untouched).
-    Source-only, deterministic, never auto-live."""
+    Source-only, deterministic, never auto-live.
+    """
     from . import reference_refresh
     return reference_refresh.run(ctx.conn, ttl_days=int(ttl_days), limit=int(limit))
 
 
 def _p_calendar_pending(ctx, since="", limit=40):
     """Entry/daily notes changed since the watermark that carry a detected date — the
-    batch for calendar extraction + supersession scanning. No LLM."""
+    batch for calendar extraction + supersession scanning. No LLM.
+    """
     from . import calendar as cal
     return cal.pending_notes(ctx.conn, str(since or ""), int(limit))
 
 
 def _p_extract_events(ctx, note):
     """LLM-classify ONE note's dated commitments into event dicts (no-op without a
-    key). Returns {note_id, events} for the upsert step."""
+    key). Returns {note_id, events} for the upsert step.
+    """
     from . import calendar as cal
     return {"note_id": note.get("id"), "events": cal.classify_dates(ctx.conn, note)}
 
 
 def _p_upsert_calendar_events(ctx, note_id, events, source="extracted"):
     """Idempotently project a note's events into calendar_events (move-not-duplicate;
-    sweeps dropped events). Auto-derive — like analyze_note, no staging."""
+    sweeps dropped events). Auto-derive — like analyze_note, no staging.
+    """
     from . import calendar as cal
     return cal.upsert_events(ctx.conn, int(note_id), list(events or []), source=str(source))
 
 
 def _p_consolidate_calendar(ctx, notes):
     """Apply structured supersession markers in the given notes (a later note
-    reschedules/cancels an earlier event). Idempotent."""
+    reschedules/cancels an earlier event). Idempotent.
+    """
     from . import calendar as cal
     return cal.consolidate(ctx.conn, list(notes or []))
 
@@ -1313,7 +1519,8 @@ def _p_consolidate_calendar(ctx, notes):
 def _p_propose_supersessions(ctx, notes):
     """The free-prose (b) supersession path: LLM-match reschedule/cancel notes that lack
     a structured marker — high confidence applies an 'llm' edge, low posts a Review card.
-    No-op without an LLM key."""
+    No-op without an LLM key.
+    """
     from . import calendar as cal
     return cal.propose_supersessions(ctx.conn, list(notes or []), workflow_id=ctx.workflow_id)
 
@@ -1321,7 +1528,8 @@ def _p_propose_supersessions(ctx, notes):
 def _p_promote_recurrence_calendar(ctx, clusters):
     """Promote regular-cadence recurring chatter clusters into kind='recurring' calendar
     rows (anchored to the earliest member note, with an inferred rrule). Irregular
-    clusters are skipped. Returns {emitted}."""
+    clusters are skipped. Returns {emitted}.
+    """
     from . import calendar as cal
     emitted = 0
     for c in clusters or []:
@@ -1331,14 +1539,16 @@ def _p_promote_recurrence_calendar(ctx, clusters):
 
 def _p_calendar_reminders(ctx, lead_hours=48, push=True):
     """Post a Review card (+ optional Web Push) for each live calendar event whose next
-    occurrence falls within the lead window, deduped per instance so it fires once."""
+    occurrence falls within the lead window, deduped per instance so it fires once.
+    """
     from . import calendar as cal
     return cal.due_reminders(ctx.conn, ctx.workflow_id, int(lead_hours), _truthy(push))
 
 
 def _p_calendar_alarms(ctx, push=True):
     """Fire owner-set per-event reminders (calendar_reminders) at occurrence − offset,
-    once per (occurrence, offset), only before the event starts. No-op if none set."""
+    once per (occurrence, offset), only before the event starts. No-op if none set.
+    """
     from . import calendar as cal
     return cal.due_event_alarms(ctx.conn, ctx.workflow_id, _truthy(push))
 
@@ -1664,7 +1874,13 @@ def primitive_catalog() -> list[dict]:
 
 class _Stop(Exception):
     """Carries an early-return message out of nested steps."""
+
     def __init__(self, message: str):
+        """Initialise with the stop message to surface in the pipeline summary.
+
+        Args:
+            message: Human-readable reason for the early stop.
+        """
         self.message = message
 
 
@@ -1673,12 +1889,29 @@ def _commit_step(ctx):
     transaction is NOT held open across the next step's (often slow) LLM call. This keeps a
     long batch from pinning SQLite's single write lock for its whole duration and starving
     interactive writes (a chat's user-turn INSERT). No-op when nothing was written, or for
-    synchronous in-transaction callers (commit_steps=False) that own their own transaction."""
+    synchronous in-transaction callers (commit_steps=False) that own their own transaction.
+    """
     if ctx.commit_steps and ctx.conn.in_transaction:
         ctx.conn.commit()
 
 
 def _run_steps(ctx, steps, scope, trace):
+    """Execute a list of recipe steps, mutating scope and appending to trace.
+
+    Handles when/stop_when guards, for_each sub-loops, primitive dispatch, and the
+    stop_when_empty short-circuit. Raises _Stop for early exits and RuntimeError
+    when the step budget is exceeded.
+
+    Args:
+        ctx: Pipeline execution context (budget, conn, etc.).
+        steps: List of step dicts from the recipe.
+        scope: Mutable Jinja2 variable scope (updated with each step's id output).
+        trace: List to append each executed primitive name to.
+
+    Raises:
+        _Stop: When a stop_when guard or stop_when_empty condition triggers.
+        RuntimeError: When the step budget is exhausted or an unknown primitive is used.
+    """
     for step in steps:
         when = step.get("when")
         if when is not None and not _truthy(_eval(when, scope)):
@@ -1728,6 +1961,21 @@ def _run_steps(ctx, steps, scope, trace):
 
 def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | None, *,
                  on_step=None, commit_steps=False) -> str:
+    """Execute a YAML recipe and return a human-readable summary string.
+
+    Args:
+        conn: Active SQLite connection for the run.
+        recipe: Parsed recipe dict (must have a 'steps' list).
+        cfg: Workflow configuration dict (available as `config` in templates).
+        workflow_id: Database id of the triggering workflow.
+        context: Trigger-event payload (available as `trigger` in templates).
+        on_step: Optional callback invoked with each primitive name before it runs.
+        commit_steps: When True, commit after each step (for scheduled runs).
+
+    Returns:
+        A short summary string, e.g. "ran 3 step(s): write_note, create_review, ..."
+        or the early-exit message from a stop_when / stop_when_empty guard.
+    """
     ctx = _Ctx(conn, workflow_id, context, on_step=on_step, commit_steps=commit_steps)
     scope = {
         "config": cfg or {},
@@ -1745,17 +1993,33 @@ def run_pipeline(conn, recipe: dict, cfg: dict, workflow_id, context: dict | Non
 
 class _PromptsProxy:
     """Read-only `prompts.<section>.<key>` access inside templates (DB-override
-    aware), so recipes can reference the shared prompt store."""
+    aware), so recipes can reference the shared prompt store.
+    """
     def __init__(self, prefix: str = ""):
+        """Initialise the proxy with an optional dot-separated key prefix.
+
+        Args:
+            prefix: Dot-terminated prefix prepended to every attribute lookup.
+        """
         self._prefix = prefix
 
     def __getattr__(self, name):
+        """Return the stored prompt string, or a deeper proxy for further chaining.
+
+        Args:
+            name: Next key segment to append to the current prefix.
+
+        Returns:
+            The stored prompt string if the composed key exists, otherwise a new
+            _PromptsProxy with the key extended by name.
+        """
         from . import prompts as _prompts
         key = f"{self._prefix}{name}"
         val = _prompts.get(key)
         return val if val else _PromptsProxy(key + ".")
 
     def __str__(self):
+        """Return the prompt string for the current prefix, or an empty string."""
         from . import prompts as _prompts
         return _prompts.get(self._prefix.rstrip(".")) or ""
 
@@ -1773,6 +2037,11 @@ _cache = threading.local()
 
 
 def _actions_dir() -> Path | None:
+    """Locate the actions YAML directory, checking env override, repo root, and container path.
+
+    Returns:
+        Path to the actions directory, or None if none of the candidates exists.
+    """
     for c in (
         os.environ.get("JBRAIN_ACTIONS_DIR"),
         Path(__file__).resolve().parents[3] / "actions",  # repo root
@@ -1805,6 +2074,11 @@ def _load_repo() -> dict:
 
 
 def _repo_defs() -> dict:
+    """Return the cached repo action definitions, loading them on first access.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     if _REPO_DEFS is None:
         _load_repo()
     return _REPO_DEFS
@@ -1812,17 +2086,28 @@ def _repo_defs() -> dict:
 
 # Public names kept for tests/validation that operate on the repo files.
 def load_action_defs() -> dict:
+    """Load (or reload) action definitions from the repo YAML files.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     return _load_repo()
 
 
 def reload_action_defs() -> dict:
+    """Force a reload of action definitions from the repo YAML files.
+
+    Returns:
+        Dict mapping action type strings to their parsed recipe dicts.
+    """
     return _load_repo()
 
 
 def ingest_repo_action_defs(conn) -> int:
     """Seed/update the action_defs table from actions/*.yaml. Mirrors the
     workflows ingest: insert new types, refresh unlocked ones whose repo file
-    changed, leave user-locked rows untouched. Stores the raw YAML verbatim."""
+    changed, leave user-locked rows untouched. Stores the raw YAML verbatim.
+    """
     d = _actions_dir()
     if not d:
         return 0
@@ -1859,7 +2144,8 @@ def ingest_repo_action_defs(conn) -> int:
 def get_action_def(action_type: str) -> dict | None:
     """Resolve a recipe (DB-first, alias-aware). Falls back to the repo file only
     before the table is seeded. Uses a per-thread (type, updated_at) cache to
-    avoid re-parsing YAML while still reflecting committed edits."""
+    avoid re-parsing YAML while still reflecting committed edits.
+    """
     _repo_defs()  # ensure the alias map is loaded
     canonical = _ALIASES.get(action_type, action_type)
     try:
@@ -1911,6 +2197,14 @@ def _expr_names(text) -> set:
 
 
 def _value_names(val) -> set:
+    """Collect all top-level variable names referenced in a with: value (recursively).
+
+    Args:
+        val: A string, dict, or list from a step's with: block.
+
+    Returns:
+        Set of variable name strings found in any embedded {{ }} expressions.
+    """
     if isinstance(val, str):
         return _expr_names(val) if "{{" in val else set()
     if isinstance(val, dict):
@@ -1923,7 +2217,8 @@ def _value_names(val) -> set:
 def validate_recipe(recipe) -> list[str]:
     """Soft lint of a recipe: unknown primitive, unknown input, malformed
     for_each, and references to variables not yet in scope. Warnings only — the
-    Jinja runtime tolerates missing names (ChainableUndefined → None)."""
+    Jinja runtime tolerates missing names (ChainableUndefined → None).
+    """
     if not isinstance(recipe, dict):
         return ["recipe must be a mapping"]
     warnings: list[str] = []
@@ -1934,6 +2229,12 @@ def validate_recipe(recipe) -> list[str]:
         return warnings + ["'steps' must be a list"]
 
     def walk(steps, scope: set):
+        """Recursively walk a step list, accumulating warnings into the outer list.
+
+        Args:
+            steps: List of step dicts to inspect.
+            scope: Set of variable names currently in scope at this nesting level.
+        """
         scope = set(scope)
         for step in steps:
             if not isinstance(step, dict):

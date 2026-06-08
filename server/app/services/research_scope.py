@@ -22,6 +22,15 @@ from . import embeddings
 # --- spec accessors ---------------------------------------------------------
 
 def _ids(spec, col: str) -> set[int]:
+    """Parse a JSON integer-list column from a spec row into a set.
+
+    Args:
+        spec: A research_specs row.
+        col: Column name holding a JSON array of integers.
+
+    Returns:
+        Set of integer ids, or an empty set on parse failure.
+    """
     try:
         return {int(x) for x in json.loads(spec[col] or "[]")}
     except Exception:
@@ -29,11 +38,26 @@ def _ids(spec, col: str) -> set[int]:
 
 
 def approved_ids(spec) -> set[int]:
-    """The exposed allowlist — the ONLY thing that gates retrieval."""
+    """Return the exposed note-id allowlist — the only thing that gates retrieval.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Set of approved note ids.
+    """
     return _ids(spec, "approved_ids_json")
 
 
 def _scope(spec) -> dict:
+    """Parse the scope_json candidate-filter dict from a spec row.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Parsed scope dict, or an empty dict on parse failure.
+    """
     try:
         return json.loads(spec["scope_json"] or "{}")
     except Exception:
@@ -43,10 +67,23 @@ def _scope(spec) -> dict:
 # --- candidate detection (the FILTER; never a retrieval gate) ---------------
 
 def filter_match_ids(conn, scope: dict) -> set[int]:
-    """Notes matching the owner's candidate filter: folder prefixes AND/OR explicit
-    note titles, optional kinds. Empty/root prefixes match NOTHING (F10) — an empty
-    filter can't expose the whole brain. This only surfaces candidates; approval is
-    what exposes."""
+    """Return note ids matching the owner's candidate filter.
+
+    Matches on folder prefixes AND/OR explicit note titles, with optional kind
+    filtering. Empty/root prefixes match NOTHING (F10) — an empty filter cannot expose
+    the whole brain. This only surfaces candidates for approval; it never gates
+    retrieval directly.
+
+    Private-domain pages (kb/Health/…, kb/Finance/…) are excluded even if the owner's
+    prefix would match, as a defence-in-depth measure on top of the approved-id gate.
+
+    Args:
+        conn: Database connection.
+        scope: Candidate filter dict with optional 'prefixes', 'titles', and 'kinds' keys.
+
+    Returns:
+        Set of matching note ids.
+    """
     prefixes = [p.strip().strip("/") for p in (scope.get("prefixes") or [])]
     prefixes = [p for p in prefixes if p]                       # drop "", "/", whitespace
     titles = [t.strip().strip("/") for t in (scope.get("titles") or [])]
@@ -77,35 +114,72 @@ def filter_match_ids(conn, scope: dict) -> set[int]:
 
 
 def candidate_ids(conn, spec) -> set[int]:
-    """Filter matches the owner has NOT yet approved or dismissed — the pending tray."""
+    """Return filter matches the owner has not yet approved or dismissed.
+
+    This is the pending-tray set shown in the owner's candidate review UI.
+
+    Args:
+        conn: Database connection.
+        spec: A research_specs row.
+
+    Returns:
+        Set of note ids that match the scope filter but are neither approved nor dismissed.
+    """
     return filter_match_ids(conn, _scope(spec)) - approved_ids(spec) - _ids(spec, "dismissed_ids_json")
 
 
 # --- scoped retrieval (the only path that returns note content) -------------
 
 def _fts_query(q: str) -> str:
+    """Build a prefix-match FTS5 query from a plain-text query string.
+
+    Each token is quoted to neutralize FTS operators and suffixed with * for prefix matching.
+
+    Args:
+        q: Plain-text query from the recipient.
+
+    Returns:
+        FTS5 query string safe for use in a MATCH clause.
+    """
     # Prefix-match each token; quote to neutralise FTS operators.
     toks = [t for t in (q or "").replace('"', " ").split() if t]
     return " ".join(f'"{t}"*' for t in toks) or '""'
 
 
 def _placeholders(n: int) -> str:
+    """Return a comma-separated string of n SQL parameter placeholders.
+
+    Args:
+        n: Number of placeholders needed.
+
+    Returns:
+        String like '?,?,?' with n entries.
+    """
     return ",".join("?" * n)
 
 
 def _semantic_hits(conn, ids: list[int], query: str, k: int) -> list[tuple[int, float]]:
-    """Exact in-process cosine over the in-scope embeddings, scored at CHUNK level and
-    collapsed to each note's best-matching chunk. NOT vec0 KNN: that is global (no
-    partition key), so a post-filter could return zero useful rows when the scope is a
-    small fraction of the brain (F1). Brute force over the bounded in-scope set is exact
-    → 100% in-scope recall.
+    """Compute exact in-process cosine similarity over in-scope embeddings, chunk-level.
 
-    Scoring chunks (vec_note_chunks ∩ in-scope note_ids), not the whole-note vector,
-    means a long approved note matches on its relevant passage rather than only the
-    embedder-truncated head — without widening the boundary: only chunks whose note_id
-    is in `ids` are ever considered, and scoped_search re-verifies the collapsed note_id
-    against `allowed`. Any in-scope note that has no chunk vectors yet (e.g. mid-backfill)
-    falls back to its whole-note vec_notes vector, so recall never drops below before."""
+    Scores at CHUNK level and collapses to each note's best-matching chunk. Does NOT
+    use vec0 KNN (which is global and could return zero useful rows when the scope is a
+    small fraction of the brain — F1). Brute force over the bounded in-scope set gives
+    exact 100% in-scope recall.
+
+    Scoring chunks (vec_note_chunks ∩ in-scope note_ids) means a long approved note
+    matches on its relevant passage rather than only the embedder-truncated head, without
+    widening the boundary: only chunks whose note_id is in `ids` are ever considered.
+    Notes with no chunk vectors yet fall back to their whole-note vec_notes vector.
+
+    Args:
+        conn: Database connection.
+        ids: List of in-scope note ids to search over.
+        query: Plain-text query string to embed and score against.
+        k: Maximum number of (note_id, score) results to return.
+
+    Returns:
+        List of (note_id, similarity_score) tuples sorted by descending score.
+    """
     ph = _placeholders(len(ids))
     rows = conn.execute(
         "SELECT c.note_id AS note_id, v.embedding AS embedding "
@@ -139,10 +213,22 @@ def _semantic_hits(conn, ids: list[int], query: str, k: int) -> list[tuple[int, 
 
 
 def scoped_search(conn, allowed: set[int], query: str, k: int = 6) -> list[dict]:
-    """The single retrieval primitive for a research link. Returns up to k in-scope
-    note BODIES relevant to `query` (semantic first, keyword fill), each re-verified
-    to be in `allowed`. Titles/ids are NOT returned to the model — only content +
-    the internal id for the server-side audit log. Output ⊆ allowed, ALWAYS."""
+    """The single retrieval primitive for a research link.
+
+    Returns up to k in-scope note bodies relevant to the query (semantic first, keyword
+    fill), each re-verified to be in the allowed set. Titles and ids are NOT returned to
+    the model — only content plus the internal id for the server-side audit log.
+    Output is always a subset of allowed.
+
+    Args:
+        conn: Database connection.
+        allowed: The approved note-id allowlist; only ids in this set are ever returned.
+        query: Plain-text query string from the recipient.
+        k: Maximum number of note bodies to return.
+
+    Returns:
+        List of {id, content} dicts for the top-k relevant in-scope notes.
+    """
     from . import wiki_guides
     _is_private = wiki_guides.is_private_title
     if not allowed or not (query or "").strip():

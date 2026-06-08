@@ -18,6 +18,18 @@ public_router = APIRouter(prefix="/api", tags=["attachments"])
 
 
 def _note_id_for_slug(conn, slug: str) -> int:
+    """Resolve a note slug to its primary key, or raise 404 if not found.
+
+    Args:
+        conn: Active DB connection.
+        slug: URL slug of the note.
+
+    Returns:
+        Integer primary key of the note.
+
+    Raises:
+        HTTPException: 404 if no live note with that slug exists.
+    """
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
     ).fetchone()
@@ -28,6 +40,26 @@ def _note_id_for_slug(conn, slug: str) -> int:
 
 @router.post("/notes/{slug}/attachments")
 async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(True)):
+    """Upload a file attachment to a note and optionally auto-analyze it.
+
+    Stores the file, extracts text if applicable, and (when auto-analyze is
+    enabled) kicks off image vision analysis, audio/video transcription, or
+    document-based note re-analysis in a background thread.
+
+    Args:
+        slug: URL slug of the note to attach the file to.
+        file: Multipart file upload.
+        analyze: Set to False to suppress AI analysis (e.g. chat-assisted
+            attachment paths). Defaults to True.
+
+    Returns:
+        Attachment metadata dict from the storage service, possibly with an
+        ``analysis`` key when enrichment was started.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+        HTTPException: 413 if the file exceeds the 100 MB limit.
+    """
     conn = get_conn()
     note_id = _note_id_for_slug(conn, slug)
 
@@ -39,6 +71,7 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
     mime = att_svc.resolve_mime(filename or "", file.content_type)
 
     def _store_and_enrich() -> dict:
+        """Store the upload and run text-extraction + embedding off the event loop."""
         # Off the event loop: add_attachment text-extracts + embeds (multi-second), and the
         # document path below runs a full note-analysis LLM call — doing either inline on the
         # single event loop would block every other request. The connection is the event-loop
@@ -78,16 +111,41 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
 
 
 class AnalyzeBody(BaseModel):
+    """Input schema for manual analyze/transcribe endpoints."""
+
     force: bool = False
 
 
 def _require_attachment(conn, att_id: int) -> None:
+    """Assert an attachment exists, raising 404 otherwise.
+
+    Args:
+        conn: Active DB connection.
+        att_id: Primary key of the attachment to check.
+
+    Raises:
+        HTTPException: 404 if no attachment with that ID exists.
+    """
     if not conn.execute("SELECT 1 FROM attachments WHERE id = ?", (att_id,)).fetchone():
         raise HTTPException(status_code=404, detail="Attachment not found")
 
 
 @router.post("/attachments/{att_id}/analyze")
 def analyze_attachment(att_id: int, body: AnalyzeBody | None = None):
+    """Manually trigger AI vision analysis for an image attachment.
+
+    Args:
+        att_id: Primary key of the attachment.
+        body: Optional ``{"force": bool}`` — set True to re-run even if analysis
+            is already pending or complete.
+
+    Returns:
+        Analysis job metadata dict from the image analysis service.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+        HTTPException: 409 if analysis is already running and ``force`` is False.
+    """
     conn = get_conn()
     _require_attachment(conn, att_id)
     force = bool(body and body.force)
@@ -101,6 +159,20 @@ def analyze_attachment(att_id: int, body: AnalyzeBody | None = None):
 
 @router.post("/attachments/{att_id}/transcribe")
 def transcribe_attachment(att_id: int, body: AnalyzeBody | None = None):
+    """Manually trigger audio/video transcription for an attachment.
+
+    Args:
+        att_id: Primary key of the attachment.
+        body: Optional ``{"force": bool}`` — set True to re-run even if
+            transcription is already pending or complete.
+
+    Returns:
+        Transcription job metadata dict from the audio transcription service.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+        HTTPException: 409 if transcription is already running and ``force`` is False.
+    """
     conn = get_conn()
     _require_attachment(conn, att_id)
     force = bool(body and body.force)
@@ -114,6 +186,18 @@ def transcribe_attachment(att_id: int, body: AnalyzeBody | None = None):
 
 @router.get("/attachments/{att_id}/analysis-status")
 def analysis_status(att_id: int):
+    """Return the current analysis or transcription status for an attachment.
+
+    Args:
+        att_id: Primary key of the attachment.
+
+    Returns:
+        JSON with ``status`` (str), ``detail`` (str or null), and
+        ``analyzed_at`` (timestamp or null).
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+    """
     row = get_conn().execute(
         "SELECT analysis_status, analysis_detail, analyzed_at FROM attachments WHERE id = ?",
         (att_id,),
@@ -129,12 +213,35 @@ def analysis_status(att_id: int):
 
 @router.get("/notes/{slug}/attachments")
 def list_attachments(slug: str):
+    """List all attachments for a note.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        List of attachment metadata dicts for the note.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     return att_svc.list_for_note(conn, _note_id_for_slug(conn, slug))
 
 
 @router.get("/attachments/{att_id}")
 def get_attachment(att_id: int):
+    """Return metadata for a single attachment (no binary content).
+
+    Args:
+        att_id: Primary key of the attachment.
+
+    Returns:
+        Dict with ``id``, ``note_id``, ``filename``, ``mime``, ``content_text``,
+        ``byte_size``, and ``created_at``.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+    """
     row = get_conn().execute(
         "SELECT id, note_id, filename, mime, content_text, byte_size, created_at "
         "FROM attachments WHERE id = ?", (att_id,)
@@ -146,8 +253,21 @@ def get_attachment(att_id: int):
 
 @router.get("/attachments/{att_id}/media-url")
 def media_url(att_id: int):
-    """Mint a short-lived signed URL the browser's <img>/<audio>/<video> can load
-    directly (same-origin, no bearer header, no blob: → no media-src CSP needed)."""
+    """Mint a short-lived signed URL for direct browser media loading.
+
+    The signed token authorises a single attachment so the browser's
+    ``<img>``/``<audio>``/``<video>`` can load it without an Authorization
+    header or a ``blob:`` URL (no ``media-src`` CSP rule needed).
+
+    Args:
+        att_id: Primary key of the attachment.
+
+    Returns:
+        JSON ``{"url": str}`` pointing to the stream endpoint with a token.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+    """
     conn = get_conn()
     _require_attachment(conn, att_id)
     token = media_tokens.make_token(conn, att_id)
@@ -156,9 +276,26 @@ def media_url(att_id: int):
 
 @public_router.get("/attachments/{att_id}/stream")
 def stream_attachment(att_id: int, request: Request, token: str = ""):
-    """Range-capable inline streaming for media, gated by the signed token (not the
-    access key, which never belongs in a media URL). Only real media renders inline;
-    anything script-y/unknown is neutralised to a forced download (no same-origin XSS)."""
+    """Stream attachment bytes inline, supporting HTTP range requests.
+
+    Gated by a short-lived signed token (not the access key, which must never
+    appear in a media URL). Only images, audio, and video render inline; any
+    script-like or unknown MIME is forced to a download to prevent same-origin
+    XSS.
+
+    Args:
+        att_id: Primary key of the attachment to stream.
+        request: FastAPI request (used to inspect the ``Range`` header).
+        token: Signed media token from the ``/media-url`` endpoint.
+
+    Returns:
+        206 partial content for ranged requests; 200 for full-file requests;
+        or a forced-download response for non-inlineable types.
+
+    Raises:
+        HTTPException: 403 if the token is invalid or expired.
+        HTTPException: 404 if the attachment or its binary content is missing.
+    """
     conn = get_conn()
     if not media_tokens.verify_token(conn, att_id, token):
         raise HTTPException(status_code=403, detail="Invalid or expired media link.")
@@ -206,6 +343,21 @@ def stream_attachment(att_id: int, request: Request, token: str = ""):
 
 @router.get("/attachments/{att_id}/download")
 def download_attachment(att_id: int):
+    """Force-download an attachment safely, neutralising dangerous MIME types.
+
+    SVG, HTML, and JavaScript MIMEs are remapped to
+    ``application/octet-stream``; the filename is sanitised to prevent header
+    injection; content sniffing is disabled.
+
+    Args:
+        att_id: Primary key of the attachment.
+
+    Returns:
+        Forced-download response with sanitised headers.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+    """
     row = get_conn().execute(
         "SELECT filename, mime, content_text, content_blob FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()
@@ -231,6 +383,17 @@ def download_attachment(att_id: int):
 
 @router.delete("/attachments/{att_id}")
 def delete_attachment(att_id: int):
+    """Permanently delete an attachment and its stored data.
+
+    Args:
+        att_id: Primary key of the attachment to delete.
+
+    Returns:
+        JSON ``{"ok": true}``.
+
+    Raises:
+        HTTPException: 404 if the attachment does not exist.
+    """
     conn = get_conn()
     row = conn.execute("SELECT id FROM attachments WHERE id = ?", (att_id,)).fetchone()
     if not row:

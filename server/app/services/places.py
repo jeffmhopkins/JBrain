@@ -15,10 +15,27 @@ from . import geo, entity_index
 
 
 def _loc_title(name: str) -> str:
+    """Return the canonical 'loc/<name>' note title for a place name.
+
+    Args:
+        name: Place name.
+
+    Returns:
+        Title string in 'loc/<name>' form.
+    """
     return f"loc/{name.strip().strip('/')}"
 
 
 def _note_by_slug(conn, slug: str):
+    """Return a non-deleted note row by slug, or None.
+
+    Args:
+        conn: Database connection.
+        slug: Note slug to look up.
+
+    Returns:
+        Note row with id, slug, and content_md, or None.
+    """
     if not slug:
         return None
     return conn.execute(
@@ -27,7 +44,18 @@ def _note_by_slug(conn, slug: str):
 
 
 def ensure_note(conn, place_id: int) -> str | None:
-    """Create/find/restore the loc/<name> note backing this place and link it back."""
+    """Create, find, or restore the loc/<name> note backing a place and link it back.
+
+    Callers own the transaction: this function never commits and raises on error so
+    the caller's rollback unwinds cleanly.
+
+    Args:
+        conn: Database connection.
+        place_id: ID of the place whose note should be ensured.
+
+    Returns:
+        Note slug string, or None if no such place exists.
+    """
     place = conn.execute("SELECT name, note_slug FROM places WHERE id = ?", (place_id,)).fetchone()
     if place is None:
         return None
@@ -64,10 +92,19 @@ _LOC_RE = re.compile(r"(?m)^<!-- kbplace -->.*$")
 
 
 def geofence_for(conn, name: str) -> dict | None:
-    """The saved geofence (a `places` row) that a place name refers to, or None. Matches by
-    normalized name/alias first; else by COORDINATES — the place entity's coord-stamped
-    mention-notes that fall inside a geofence vote for it (handles name drift like
-    'the house' -> the saved 'Home')."""
+    """Return the saved geofence row that a place name refers to, or None.
+
+    Matches by normalised name/alias first; else by coordinates — coord-stamped
+    mention-notes for the entity that fall inside a geofence vote for it, handling
+    name drift like 'the house' -> the saved 'Home'.
+
+    Args:
+        conn: Database connection.
+        name: Place name or alias to resolve.
+
+    Returns:
+        Places row dict, or None if no geofence matches.
+    """
     places = [dict(p) for p in conn.execute(
         "SELECT id, name, lat, lon, radius_m, note_slug FROM places").fetchall()]
     if not places or not (name or "").strip():
@@ -95,8 +132,19 @@ def geofence_for(conn, name: str) -> dict | None:
 
 
 def _apply_box(conn, art_title: str, gf: dict, addr: dict | None) -> bool:
-    """Ensure the kb/Places article carries a single marked location box (idempotent; replaces
-    a stale one). Versioned. Returns True if the body changed."""
+    """Ensure a kb/Places article carries exactly one marked location box.
+
+    Idempotent: replaces a stale box if present. Versioned.
+
+    Args:
+        conn: Database connection.
+        art_title: Title of the kb/Places knowledge article.
+        gf: Geofence row dict with lat, lon, and name.
+        addr: Optional reverse-geocode result dict; may be None.
+
+    Returns:
+        True if the article body was changed.
+    """
     row = conn.execute(
         "SELECT id, content_md FROM notes WHERE title=? AND deleted_at IS NULL AND kind='kb'",
         (art_title,)).fetchone()
@@ -117,8 +165,15 @@ def _apply_box(conn, art_title: str, gf: dict, addr: dict | None) -> bool:
 
 
 def _ensure_loc_link(conn, note_slug: str, art_title: str) -> None:
-    """Add a marked back-link from the loc/ geofence note to its knowledge article (additive,
-    idempotent, versioned). Never rewrites the owner's existing content."""
+    """Add a marked back-link from the loc/ note to its knowledge article.
+
+    Additive, idempotent, and versioned. Never rewrites the owner's existing content.
+
+    Args:
+        conn: Database connection.
+        note_slug: Slug of the loc/ geofence note.
+        art_title: Title of the corresponding knowledge article to link back to.
+    """
     row = conn.execute(
         "SELECT id, title, content_md, kind FROM notes WHERE slug=? AND deleted_at IS NULL",
         (note_slug,)).fetchone()
@@ -134,11 +189,20 @@ def _ensure_loc_link(conn, note_slug: str, art_title: str) -> None:
 
 
 def link_places(conn) -> dict:
-    """For each kb/Places article that maps to a saved geofence, add a location box (coords +
-    reverse-geocoded address + a link to its loc/ note) and a back-link on the loc/ note.
-    Also de-forks: when ≥2 articles map to the SAME geofence they're the same place, so record
-    a merge hint. Deterministic, link-only, idempotent, cached. Returns {checked, linked,
-    merge_hints}."""
+    """Link each kb/Places article to its saved geofence and back.
+
+    For each kb/Places article that maps to a saved geofence, adds a location box
+    (coords + reverse-geocoded address + a link to its loc/ note) and a back-link
+    on the loc/ note. Also de-forks: when two or more articles map to the same
+    geofence they represent the same place, so a merge hint is recorded.
+    Deterministic, link-only, idempotent, and cached.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        Dict with keys checked, linked, and merge_hints.
+    """
     from . import geocode, article_talk
     arts = conn.execute(
         "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND title LIKE 'kb/Places/%'"
@@ -179,8 +243,17 @@ def link_places(conn) -> dict:
 
 
 def unsaved_places(conn) -> list[str]:
-    """kb/Places article titles with no matching saved geofence — candidates the owner could
-    'save as a place' for trail tracking. Cheap: no geocoding."""
+    """Return kb/Places article titles with no matching saved geofence.
+
+    These are candidates the owner could 'save as a place' for trail tracking.
+    Cheap: no geocoding.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        List of article title strings.
+    """
     return [a["title"] for a in conn.execute(
         "SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL "
         "AND title LIKE 'kb/Places/%' ORDER BY title").fetchall()
@@ -188,8 +261,20 @@ def unsaved_places(conn) -> list[str]:
 
 
 def create_place(conn, name: str, lat: float, lon: float, radius_m: int = 150) -> dict:
-    """Create a saved geofence (+ its loc/ note) at coords, or return an existing place of the
-    same name. Returns {id, name, note_slug, existing}. Caller commits."""
+    """Create a saved geofence and its loc/ note, or return an existing place of the same name.
+
+    The caller is responsible for committing.
+
+    Args:
+        conn: Database connection.
+        name: Place name (trimmed to 80 characters).
+        lat: Latitude of the geofence centre.
+        lon: Longitude of the geofence centre.
+        radius_m: Geofence radius in metres (clamped to 20–20000).
+
+    Returns:
+        Dict with keys id, name, note_slug, and existing (True if already existed).
+    """
     name = (name or "").strip()[:80]
     existing = conn.execute("SELECT id FROM places WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
     if existing:

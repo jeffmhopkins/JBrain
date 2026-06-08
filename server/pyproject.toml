@@ -19,6 +19,24 @@ markers = [
 timeout = 120
 timeout_method = "thread"
 
+# Docstring lint — honor-system, like the tests (CI reports, doesn't block).
+# Scoped to docstrings only (the `D`/pydocstyle rules); run it with:
+#   cd server && ruff check app
+# Google convention is the house standard (see CLAUDE.md → "Docstrings").
+[tool.ruff.lint]
+select = ["D"]
+# Relaxed for this repo's compact docstring house style:
+#   D205 — allow a wrapped multi-line summary without a forced blank line before the body
+#   D301 — allow escaped sequences (e.g. '\n') shown literally in explanatory prose
+ignore = ["D205", "D301"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests follow their own conventions; don't require docstrings there.
+"tests/**" = ["D"]
+
 [tool.coverage.run]
 source = ["app"]
 branch = true

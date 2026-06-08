@@ -51,6 +51,9 @@ def _clamp_tokens(n) -> int:
 _GATHER_MAX_ITER = 5
 _GATHER_MAX_TOKENS = 1500
 _GATHER_SEARCH_LIMIT = 8
+# Max seconds to wait on the session-start entity rebind before proceeding without it. The
+# rebind keeps running in the background; this just caps how long it can delay the gather UI.
+_REBIND_TIMEOUT_S = 10
 
 _GATHER_TOOLS = [
     llm.ToolDef(
@@ -142,15 +145,27 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
     # Freshen the entity index (cheap, embeddings-free) so a People page created or renamed
     # since the last full rebuild — and any freshly-seeded nickname alias — is linkable at
     # draft time. Without this the deterministic add_links backstop and the known-aliases
-    # block work off a stale index and leave a known person plain. Offloaded to a thread (it's
-    # a synchronous DB sweep) so the rebind never blocks the event loop. Best-effort: a rebind
-    # failure must never abort a rebuild — the draft just falls back to the existing index.
+    # block work off a stale index and leave a known person plain.
+    #
+    # CRITICAL: open a FRESH connection inside the worker thread — a sqlite3 connection must
+    # never be shared across threads. Connections are opened check_same_thread=False, so passing
+    # this request's `conn` into the thread does NOT raise; instead the two threads contend on the
+    # connection's mutex and can DEADLOCK (an unkillable hang that the try/except can't catch).
+    # Bounded by a timeout so a large KB can't stall the gather UI either; the rebind keeps
+    # running in the background and is best-effort, so any failure/timeout just falls back to the
+    # existing index.
     if not getattr(run, "rebound", False):
-        try:
-            await asyncio.to_thread(entity_index.rebuild, conn, sync_embeddings=False)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("rebuild: entity rebind skipped (%s)", exc)
         run.rebound = True
+
+        def _rebind() -> None:
+            """Rebuild the entity index on a thread-local connection (never the request's)."""
+            from ..db import get_conn as _thread_conn
+            entity_index.rebuild(_thread_conn(), sync_embeddings=False)
+
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_rebind), timeout=_REBIND_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 — incl. asyncio.TimeoutError; rebind is best-effort
+            log.warning("rebuild: entity rebind skipped (%s)", exc)
 
     art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
     run.known = wiki_build._known_titles(conn)

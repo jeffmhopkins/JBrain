@@ -18,14 +18,32 @@ _ITEM_RE = re.compile(r"^(\s*)- \[( |x|X)\] (?:\(P(\d+)\) )?(.*)$")
 
 
 def _format_item(indent: str, checked: bool, priority: int | None, text: str) -> str:
+    """Format a single checklist line from its components.
+
+    Args:
+        indent: Leading whitespace string.
+        checked: Whether the checkbox is ticked.
+        priority: Optional priority number (rendered as '(P1)' token).
+        text: Item text.
+
+    Returns:
+        Formatted checklist line string.
+    """
     box = "[x]" if checked else "[ ]"
     ptok = f"(P{priority}) " if priority else ""
     return f"{indent}- {box} {ptok}{text}".rstrip()
 
 
 def parse_items(content_md: str) -> list[dict]:
-    """Parse checkbox lines into [{index, indent, checked, priority, text, raw}]
-    (index = 0-based source line number, used to rewrite the exact line)."""
+    """Parse checkbox lines from markdown into structured item dicts.
+
+    Args:
+        content_md: Markdown content to parse.
+
+    Returns:
+        List of dicts with keys index (0-based line number), indent, checked,
+        priority (int or None), text, and raw.
+    """
     items = []
     for i, ln in enumerate((content_md or "").split("\n")):
         m = _ITEM_RE.match(ln)
@@ -38,8 +56,23 @@ def parse_items(content_md: str) -> list[dict]:
 
 def match_item(items: list[dict], item_text: str, ordinal: int | None = None,
                expect_checked: bool | None = None) -> dict:
-    """Fail-closed item lookup. Prefer the ordinal (the index the model saw via
-    read_list); else require a unique text match. Never guesses on ambiguity."""
+    """Locate a checklist item fail-closed.
+
+    Prefers the ordinal (the index the model saw via read_list); otherwise requires
+    a unique text match. Never guesses on ambiguity.
+
+    Args:
+        items: Parsed item list from parse_items.
+        item_text: Exact text of the item to find.
+        ordinal: Optional 0-based index from the model's read_list view.
+        expect_checked: If set, the match must have this checked state.
+
+    Returns:
+        Matching item dict.
+
+    Raises:
+        LookupError: If the item is not found or multiple items match.
+    """
     if ordinal is not None and 0 <= ordinal < len(items):
         c = items[ordinal]
         if c["text"] == item_text and (expect_checked is None or c["checked"] == expect_checked):
@@ -54,6 +87,14 @@ def match_item(items: list[dict], item_text: str, ordinal: int | None = None,
 
 
 def _loc_kwargs(location) -> dict:
+    """Extract lat/lon/location_label from a location dict for upsert_note kwargs.
+
+    Args:
+        location: Dict with lat, lon, and location_label keys, or None/falsy.
+
+    Returns:
+        Dict of keyword arguments, or {} if location is absent.
+    """
     if not location:
         return {}
     return {"lat": location["lat"], "lon": location["lon"], "location_label": location["location_label"]}
@@ -63,10 +104,25 @@ def add_list_item(
     conn, list_title: str, item: str, checkbox: bool = True, priority: int | None = None, *,
     source: str = "architect", conversation_id: int | None = None, location=None,
 ) -> dict:
-    """Append an item to a checklist note, creating the list if absent. Lists are
-    their own layer: titled under the "lists/" root with kind='list', so they're
-    kept apart from notes and skipped by wiki-synthesis. Optional priority -> a
-    leading "(P1)" token."""
+    """Append an item to a checklist note, creating the list if absent.
+
+    Lists are their own layer: titled under the "lists/" root with kind='list',
+    so they are kept apart from notes and skipped by wiki-synthesis. An optional
+    priority renders as a leading "(P1)" token.
+
+    Args:
+        conn: Database connection.
+        list_title: List title (rooted under 'lists/' if not already).
+        item: Text of the item to add.
+        checkbox: If True, render as a checkbox line; otherwise a plain bullet.
+        priority: Optional priority number 1–N.
+        source: Write source tag for versioning.
+        conversation_id: Optional conversation ID to attach to the version.
+        location: Optional location dict with lat, lon, and location_label.
+
+    Returns:
+        Dict with note_title, line, and created (True if the list was just created).
+    """
     title = notes_svc.root_title(list_title, "lists")
     note = notes_svc.get_by_title(conn, title)
     created = note is None

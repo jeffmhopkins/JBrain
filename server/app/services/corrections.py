@@ -66,9 +66,20 @@ def extract_corrected_name(body: str) -> str | None:
 def maybe_promote(conn, talk_id: int, article_title: str, body: str) -> dict | None:
     """Promote a 'correction' talk item to a dated entry note and link it back.
 
-    Runs inside the talk endpoint's transaction (before commit). Returns the new note's
-    {slug, title}, or None if nothing was promoted (empty body / duplicate). The caller
-    commits, then flushes entry events so the note's analysis/auto-tag hooks fire.
+    Runs inside the talk endpoint's transaction (before commit). The caller commits, then
+    flushes entry events so the note's analysis/auto-tag hooks fire.
+
+    If the body is empty, or a duplicate open correction already exists for this article,
+    the just-added row is deleted and None is returned (no second truth note is spawned).
+
+    Args:
+        conn: Database connection.
+        talk_id: The article_talk.id just inserted by the router.
+        article_title: Title of the KB article being corrected.
+        body: The correction body text.
+
+    Returns:
+        Dict with slug and title of the new note, or None if nothing was promoted.
     """
     body = (body or "").strip()
     if not body:

@@ -3504,20 +3504,40 @@ _ELLIPSIS_RE = re.compile(r"\s*(?:\.\.\.|…)\s*")
 
 
 def _norm_quote(s: str) -> str:
-    """Fold a span to compare a quote against its source robustly: lowercase, drop all punctuation
-    and quote marks, collapse whitespace — so reformatting (smart quotes, spacing) isn't a mismatch
-    while genuine fabrication still fails."""
+    """Normalise a span for robust quote comparison against its source.
+
+    Lowercases, drops all punctuation and quote marks, and collapses whitespace
+    so reformatting (smart quotes, spacing differences) is not a mismatch, while
+    genuine fabrication still fails.
+
+    Args:
+        s: Raw text span to normalise.
+
+    Returns:
+        Normalised ASCII-alphanum-and-space string.
+    """
     import unicodedata
     s = unicodedata.normalize("NFKC", s or "").lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
 def _verify_quotes(text: str, corpus: str) -> tuple[str, bool]:
-    """Downgrade any "verbatim quotation" in `text` that does NOT appear in `corpus` (everything a
-    tool returned this turn + the user's message) by removing its quote marks — so the model can't
-    pass off an invented or mis-remembered quote as a real one. Conservative to avoid false positives:
-    only acts on multi-word (≥6) quotes, normalizes aggressively, and treats an elided quote ("a … b")
-    as verified when EACH part appears. Returns (text, changed)."""
+    """Downgrade ungrounded verbatim quotations by stripping their quote marks.
+
+    Removes quote marks from any quoted span in `text` that does NOT appear in
+    `corpus` (everything a tool returned this turn plus the user's message) so
+    the model cannot pass off an invented or mis-remembered quote as a real one.
+    Conservative to avoid false positives: only acts on multi-word (≥6) quotes,
+    normalizes aggressively, and treats an elided quote ('a … b') as verified
+    when EACH part appears.
+
+    Args:
+        text: The assistant reply to verify.
+        corpus: All tool results and user text from this turn, concatenated.
+
+    Returns:
+        Tuple (verified_text, changed).
+    """
     cn = _norm_quote(corpus)
     changed = False
 

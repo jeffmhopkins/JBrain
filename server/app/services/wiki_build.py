@@ -2865,16 +2865,30 @@ def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
 
 
 def _now(conn) -> str:
-    # Match the notes table's timestamp format (millisecond precision) so watermark
-    # comparisons against updated_at/deleted_at are exact, not off-by-a-fraction.
+    """Return the current UTC datetime at millisecond precision for watermark use.
+
+    Matches the notes table's updated_at/deleted_at format so watermark comparisons
+    are exact, never off-by-a-fraction.
+    """
     return conn.execute("SELECT strftime('%Y-%m-%d %H:%M:%f','now') AS n").fetchone()["n"]
 
 
 def write_batch(conn, articles: list[dict], instructions: str | None = None, on_article=None) -> dict:
-    """Write every article; split valid (saved by the recipe) vs quarantined (failed
-    the structure lint — surfaced, not saved). Mirrors validate_citations' shape.
-    `on_article(index, total, title)` is called before each write so the run modal can
-    show which article is currently being written."""
+    """Write every article and split the results into valid vs quarantined.
+
+    Quarantined articles failed the structure lint and are surfaced but not saved. Mirrors
+    validate_citations' shape. ``on_article(index, total, title)`` is called before each
+    write so the run modal can show which article is currently being written.
+
+    Args:
+        conn: SQLite connection.
+        articles: List of article dicts (title, domain, scope, sources) from outline.
+        instructions: Optional guidance forwarded to each write_one call.
+        on_article: Optional callback(index, total, title) called before each write.
+
+    Returns:
+        Dict with keys ``valid``, ``quarantined``, ``count``, ``bad``, and ``report``.
+    """
     # The titles writers may cross-link: every planned article PLUS any live kb article
     # that survives (so links resolve when adding to an existing KB, not just full rebuild).
     planned = [str(a.get("title") or "").strip() for a in articles]

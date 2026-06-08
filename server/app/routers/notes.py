@@ -132,8 +132,18 @@ def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
 
 @router.get("/located")
 def located_notes(since: str | None = None, until: str | None = None, limit: int = 2000):
-    """Notes that carry a capture coordinate — drives the Map's note pins. Declared
-    BEFORE /{slug} so 'located' isn't swallowed as a slug. Owner-only (bearer)."""
+    """Return notes that carry a capture coordinate, for the Map's note pins.
+
+    Declared before /{slug} so 'located' is not swallowed as a slug parameter.
+
+    Args:
+        since: Optional ISO datetime lower bound on created_at.
+        until: Optional ISO datetime upper bound on created_at.
+        limit: Maximum number of results (default 2000, clamped to 5000).
+
+    Returns:
+        List of note dicts with slug, title, lat, lon, location_label, kind, created_at.
+    """
     conn = get_conn()
     sql = ("SELECT slug, title, lat, lon, location_label, kind, created_at FROM notes "
            "WHERE deleted_at IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
@@ -151,6 +161,17 @@ def located_notes(since: str | None = None, until: str | None = None, limit: int
 
 @router.get("/{slug}")
 def get_note(slug: str):
+    """Fetch a note by slug, including backlinks, tags, and redirect resolution.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Full note dict with all columns plus backlinks, tags, and redirect_to_slug.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -183,8 +204,17 @@ def get_note(slug: str):
 
 @router.get("/{slug}/preview")
 def note_preview(slug: str):
-    """A tiny title + excerpt for a note, so a [[citation]] in a chat reply can reveal its source on
-    hover (verify the cite without leaving the conversation). Prefers the AI gist; else the lead text."""
+    """Return a small title and excerpt for a note, used to preview [[citations]] on hover.
+
+    Prefers the AI-generated gist; falls back to the leading prose. Returns
+    {found: false} instead of 404 so the caller can degrade gracefully.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Dict with found, and when found: title and excerpt (max 280 chars).
+    """
     conn = get_conn()
     row = conn.execute("SELECT id, title, content_md FROM notes WHERE slug=? AND deleted_at IS NULL",
                        (slug,)).fetchone()
@@ -206,8 +236,20 @@ def note_preview(slug: str):
 
 @router.get("/{slug}/analysis")
 def note_analysis(slug: str):
-    """The read-only AI analysis sidecar for a note (gist, salient facts, entities,
-    domain). {} when none has been computed yet. Never mutates the note."""
+    """Return the read-only AI analysis sidecar for a note.
+
+    Includes gist, salient facts, entities, and domain classification. Returns {}
+    when no analysis has been computed yet. Never mutates the note.
+
+    Args:
+        slug: URL slug of the note.
+
+    Returns:
+        Analysis dict, or {} if none exists.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -220,11 +262,21 @@ def note_analysis(slug: str):
 
 @router.post("/{slug}/analysis")
 def refresh_note_analysis(slug: str):
-    """Force-recompute THIS note's analysis sidecar (ignoring the content-hash cache) — the
-    per-note 'reanalyze' button. Also runs the title check (a bare dated note gets a
-    generated leaf title) so the two passes don't have to be run separately, and re-aggregates
-    the entity index when the analysis changes. Returns the fresh analysis plus the note's
-    (possibly renamed) slug/title."""
+    """Force-recompute a note's AI analysis sidecar, bypassing the content-hash cache.
+
+    Also runs the title-normalization pass (a bare dated note may be renamed) and
+    re-aggregates the entity index when the analysis changes. Returns the fresh
+    analysis plus the note's (possibly renamed) slug and title.
+
+    Args:
+        slug: URL slug of the note to reanalyze.
+
+    Returns:
+        Fresh analysis dict with slug and title fields appended.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -244,19 +296,37 @@ def refresh_note_analysis(slug: str):
 
 
 class TalkIn(BaseModel):
+    """Request body for adding a talk item to an article."""
+
     kind: str = "note"
     body: str
 
 
 class TalkReplyIn(BaseModel):
+    """Request body for replying to a talk item."""
+
     body: str
 
 
 class TalkDismissIn(BaseModel):
+    """Request body for dismissing a talk item."""
+
     reason: str = ""
 
 
 def _note_title(conn, slug: str) -> str:
+    """Return the title of a note by slug, raising 404 if not found.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the note.
+
+    Returns:
+        The note's title string.
+
+    Raises:
+        HTTPException: 404 if no live note with that slug exists.
+    """
     row = conn.execute("SELECT title FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Note not found")

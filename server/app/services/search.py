@@ -63,6 +63,7 @@ def hybrid_notes(conn, q: str, limit: int = 8, *, entity_expand: bool = False,
     meta: dict[int, dict] = {}
 
     def bump(nid, title: str, slug: str, rank: int) -> None:
+        """Accumulate a reciprocal-rank score for a note in the fusion table."""
         if nid is None:          # unattached attachment (no owning note) → nothing to surface
             return
         scores[nid] = scores.get(nid, 0.0) + 1.0 / (rank + 1)

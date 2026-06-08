@@ -27,9 +27,23 @@ mandatory user-approval gate on every inbound fact, default-deny when the target
 public/Reference, and the firewall built as one swappable seam so a durable per-note sensitivity
 flag can drop in later. To confirm with the owner before the truth-seeking layer ships.
 
-**Next — Phase 2:** the unified conversational targeted-edit loop (carry-forward generator, not
-`_generate`'s wipe; `run_redraft` seed-bug fix; backlinks read-only via `architect.py:818`),
-converging with rebuild's Guide step.
+**Phase 2 — the unified conversational targeted-edit loop — DONE** (backend 1041 + frontend 810,
+typecheck clean):
+- *Backend* (commit `5c72b65`): `run_suggest` seeds the current article + curated sources +
+  read-only backlinks into one user turn and streams the revised article through the existing
+  `_generate` tail (inheriting all Phase-1 hardening); follow-ups reuse `run_guide`.
+  `_load_backlinks` carries the **inbound PII firewall** (no private-domain prose into a public
+  article). New `wiki_suggest` prompt + `build_suggest_prompt`; `RebuildRun.kind`/`base_content`;
+  router `start?mode=suggest` + `POST /{run_id}/suggest`.
+- *Frontend* (commit `4ca75d2`): the note menu's "Rebuild page now" → **"Edit with AI"**, opening
+  the unified panel in suggest mode (gather → curate → talk→edit→talk loop). First message →
+  `/suggest`, follow-ups → `/guide`; sources optional; rebuild-from-scratch still reachable;
+  diff-against-original by default.
+
+**Next — Phase 2.5 (gated on the owner safety check):** the autonomous truth-seeking tool agent.
+This is the layer carrying the locked-but-flagged risk (full agent + title-prefix privacy). To
+build behind a per-fact approval gate + default-deny on public/Reference targets + the swappable
+firewall seam — confirm mitigations before shipping.
 
 ## The feature (locked with the owner)
 A live, **conversational "Suggest revisions"** mode for KB articles, parallel to "Rebuild page now":

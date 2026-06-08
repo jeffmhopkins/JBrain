@@ -232,6 +232,13 @@ export function useHealth<T>(selector: (m: HealthModel) => T): T {
   );
 }
 
+// Health-poll policy: poll on every authed/KeyEntry route, but NEVER on the public
+// /share/:token recipient route (no key; must not poll the owner's server). The path
+// here is react-router's basename-STRIPPED pathname, so this holds under any deploy base.
+export function pollEnabledForPath(pathname: string): boolean {
+  return !pathname.startsWith("/share/");
+}
+
 // --- imperative refresh (lets App.tsx connect() force an immediate poll) ----
 let _refreshNow: (() => void) | null = null;
 export function refreshNow(): void {

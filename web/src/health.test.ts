@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  __reset, applyPoll, getSnapshot, ingestVerify, report, setOnline,
+  __reset, applyPoll, getSnapshot, ingestVerify, pollEnabledForPath, report, setOnline,
   type Capabilities,
 } from "./health";
 import { setAccessKey, clearAccessKey } from "./api";
@@ -120,6 +120,17 @@ describe("LLM observed overlay (declared wins; observed only downgrades + self-h
     clock += 61_000;            // past LLM_DEGRADE_MS
     report({ kind: "http", status: 200 });   // any event re-derives the model
     expect(getSnapshot().caps?.llm.state).toBe("ready");
+  });
+});
+
+describe("pollEnabledForPath (the /share carve-out)", () => {
+  it("disables polling only on the public /share/:token route (basename-stripped)", () => {
+    expect(pollEnabledForPath("/share/abc123")).toBe(false);
+    expect(pollEnabledForPath("/chat")).toBe(true);
+    expect(pollEnabledForPath("/")).toBe(true);
+    expect(pollEnabledForPath("/system")).toBe(true);
+    // not the shares MANAGEMENT page (owner side, authed) — only the recipient route
+    expect(pollEnabledForPath("/shares")).toBe(true);
   });
 });
 

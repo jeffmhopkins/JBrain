@@ -3,9 +3,11 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { get, post } from "../api";
 import { enablePush, pushSupported } from "../push";
-import { useOnline, useTtsEnabled } from "../hooks";
+import { useTtsEnabled } from "../hooks";
+import { useHealth } from "../health";
 import { reviewHref } from "../util";
 import { Icon } from "./Icon";
+import StatusDot from "./StatusDot";
 
 interface ReviewItem { id: number; title: string; message: string; link_slug: string | null; created_at: string; }
 
@@ -169,7 +171,7 @@ function scrollParent(el: HTMLElement | null): HTMLElement | null {
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
-  const online = useOnline();
+  const reachability = useHealth((m) => m.reachability);
   const tts = useTtsEnabled();   // read Assisted replies aloud (top-bar toggle)
   const { brainName, versionMismatch, pwaVersion, serverVersion } = useAuth();
   const loc = useLocation();
@@ -240,6 +242,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           <span className="brand">{brainName}<span className="dot">.</span></span>
         )}
         <span className="spacer" />
+        <StatusDot />
         <ReviewBell />
         <button className={"bolt" + (tts.enabled ? " active" : "")}
                 title={tts.enabled ? "Read replies aloud: on" : "Read replies aloud: off"}
@@ -258,7 +261,14 @@ export default function Shell({ children }: { children: ReactNode }) {
       {versionMismatch && (
         <div className="version-banner">App v{pwaVersion} vs server v{serverVersion} — versions differ; update from System.</div>
       )}
-      {!online && <div className="offline-banner">Offline — reading cached notes only.</div>}
+      {/* Three-axis reachability (distinct from navigator.onLine alone): tell apart
+          "your device is offline" from "your device is online but the server is down". */}
+      {reachability === "browser-offline" && (
+        <div className="offline-banner">Offline — reading cached notes only.</div>
+      )}
+      {reachability === "server-unreachable" && (
+        <div className="offline-banner">Browser online, but {brainName} server unreachable — retrying…</div>
+      )}
 
       <div className={"ubody" + (advanced ? " adv" : "")}
            onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>{children}</div>

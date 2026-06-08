@@ -1,9 +1,13 @@
 import { FormEvent, useState } from "react";
 import { useAuth } from "../App";
 import { getServer } from "../api";
+import { useHealth } from "../health";
 
 export default function KeyEntry() {
   const { brainName, connect, pwaVersion } = useAuth();
+  // Pre-auth reachability (the soft-auth /status skeleton needs no key), so the
+  // login screen tells "server is down" apart from "you're offline".
+  const reachability = useHealth((m) => m.reachability);
   const [server, setServerInput] = useState(getServer());
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
@@ -40,6 +44,14 @@ export default function KeyEntry() {
       <p className="muted" style={{ textAlign: "center", marginTop: -8 }}>
         Connect this device to your brain
       </p>
+      {reachability === "browser-offline" && (
+        <p style={{ color: "var(--danger)", textAlign: "center", fontSize: 13 }}>You’re offline.</p>
+      )}
+      {reachability === "server-unreachable" && (
+        <p style={{ color: "var(--danger)", textAlign: "center", fontSize: 13 }}>
+          Can’t reach {brainName} — your connection is fine, but the server isn’t responding.
+        </p>
+      )}
       <form onSubmit={submit}>
         <label className="muted">Server address</label>
         <input

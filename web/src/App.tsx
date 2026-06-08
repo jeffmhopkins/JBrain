@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { clearAccessKey, get, getAccessKey, getServer, setAccessKey, setServer } from "./api";
+import { ingestVerify, pollEnabledForPath, refreshNow, useHealthPoll } from "./health";
 import Shell from "./components/Shell";
 import ErrorBoundary from "./components/ErrorBoundary";
 import KeyEntry from "./pages/KeyEntry";
@@ -84,6 +85,8 @@ export default function App() {
     setAppTz(v.app_tz || "");
     setVapidPublicKey(v.vapid_public_key || "");
     setOwnerSet(!!v.owner_set);
+    ingestVerify(v);                         // seed the health store from the login snapshot…
+    refreshNow();                            // …and fire the first authed poll immediately
     setAuthed(true);
   }
 
@@ -99,7 +102,7 @@ export default function App() {
     const stored = getAccessKey();
     if (stored) {
       get("/api/auth/verify")
-        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setVapidPublicKey(v?.vapid_public_key || ""); setOwnerSet(!!v?.owner_set); setAuthed(true); })
+        .then((v) => { setServerVersion(v?.version || null); setHasLlm(!!v?.has_llm); setAppTz(v?.app_tz || ""); setVapidPublicKey(v?.vapid_public_key || ""); setOwnerSet(!!v?.owner_set); ingestVerify(v); setAuthed(true); })
         // Only a real 401 means the key is bad/rotated — forget it and re-prompt.
         // A network error or 5xx (offline, server restarting) must NOT log the
         // user out: stay authed so cached pages still work.
@@ -109,6 +112,12 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  // Drive the live status poll ABOVE the auth gate (so KeyEntry gets a pre-auth
+  // reachability signal), but NEVER on the public /share/:token recipient route
+  // (it has no key and must not poll the owner's server).
+  const location = useLocation();
+  useHealthPoll(pollEnabledForPath(location.pathname));
 
   const versionMismatch = !!serverVersion && serverVersion !== PWA_VERSION;
   const auth: AuthState = {

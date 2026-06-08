@@ -1678,14 +1678,45 @@ def rebuild_sources(conn, title: str, instructions: str | None = None):
     return art, instr, prior
 
 
+def promote(conn) -> dict:
+    """Run the network-free promotion suite after a single-article rebuild/Accept.
+
+    Brings the live Accept path and the nightly per-article rebuild (which share
+    finalize_rebuild) to formatting/promotion parity with the full build's per-article
+    steps — without adding a network dependency to the interactive Accept. Runs the four
+    deterministic, idempotent steps: bind the owner to their People page (link_owner),
+    refresh each person's "Also known as" line (surface_aliases), normalize KB-wide link
+    labels (wikilinks.normalize_all_link_labels), and flag ungrounded Reference articles
+    (flag_ungrounded_reference). Each is a no-op when nothing changed and talk notes
+    dedupe, so running it on every Accept can't duplicate work or churn versions.
+
+    The two NETWORK-bound build steps are deliberately excluded here — link_medications
+    (RxNorm/MedlinePlus) and link_places (reverse-geocode) stay on the full build /
+    nightly maintenance path so an Accept never blocks on an external service.
+
+    Args:
+        conn: SQLite connection (the caller commits; the steps also commit internally).
+
+    Returns:
+        Dict of per-step result summaries (keys: owner, aliases, labels, grounding).
+    """
+    return {
+        "owner": link_owner(conn),
+        "aliases": surface_aliases(conn),
+        "labels": wikilinks.normalize_all_link_labels(conn),
+        "grounding": flag_ungrounded_reference(conn),
+    }
+
+
 def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
                      prior_note_id: int | None = None, rename_to: str | None = None) -> None:
     """Persist a rebuilt article and re-link it fully into the KB.
 
     Upserts revive-in-place (keeping slug + version history), reconnects inbound links, records
-    talk, rebuilds the entity index + disambiguation pages, and sweeps dead links. The caller
-    must hold the KB write lock and commit afterwards. Shared by the nightly rebuild_article
-    and the live Accept path so they can't drift.
+    talk, rebuilds the entity index + disambiguation pages, sweeps dead links, and runs the
+    network-free promotion suite (owner-link, AKA lines, link-label hygiene, ungrounded-Reference
+    flagging — see promote). The caller must hold the KB write lock and commit afterwards. Shared
+    by the nightly rebuild_article and the live Accept path so they can't drift.
 
     ``rename_to`` (live Accept only, with the user's explicit approval) retitles the article in
     place: an id-targeted write changes the slug and rewrites inbound [[links]], exactly as the
@@ -1718,6 +1749,7 @@ def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
     entity_index.rebuild(conn)                 # relink entity → fresh article
     entity_index.write_disambiguation_pages(conn)
     flag_dead_links(conn)                      # sweep any dangling cross-links
+    promote(conn)                              # formatting/promotion parity (network-free steps)
 
 
 def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:

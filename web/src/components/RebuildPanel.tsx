@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  RebuildEvent, RebuildCandidate, RebuildSkipped, SSEHandle, ApiError,
+  RebuildEvent, RebuildCandidate, RebuildSkipped, SSEHandle, ApiError, CandidateFact,
   rebuildStream, regatherStream, draftStream, suggestStream, guideStream, redraftStream,
-  searchRebuildSources, acceptRebuild, rejectRebuild,
+  searchRebuildSources, findFacts, acceptRebuild, rejectRebuild,
 } from "../api";
 import { makeLinkRenderer, renderWikiLinks, stripSummarySentinels } from "../util";
 import Modal from "./Modal";
@@ -65,6 +65,14 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted, mode = "
   const [showDiff, setShowDiff] = useState(suggest);   // suggest mode shows the change by default
   const [thread, setThread] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [guideInput, setGuideInput] = useState("");
+  // Truth-seeker (suggest mode): privacy-filtered candidate facts the owner approves before
+  // they fold into the message — nothing is applied to the article without consent.
+  const [factsOpen, setFactsOpen] = useState(false);
+  const [factQuery, setFactQuery] = useState("");
+  const [factResults, setFactResults] = useState<CandidateFact[]>([]);
+  const [factSel, setFactSel] = useState<Set<number>>(new Set());
+  const [factBusy, setFactBusy] = useState(false);
+  const [factSearched, setFactSearched] = useState(false);
   const [accepting, setAccepting] = useState(false);
   // Stage-2 output budget. Starts at the server default; a truncated draft can be re-drafted
   // at a larger, approved budget (server clamps the ceiling).
@@ -247,6 +255,28 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted, mode = "
       else { alert(e.message || "Couldn't accept the rebuild."); }
     } finally { setAccepting(false); }
   }
+  // ---- truth-seeker (suggest mode) ---------------------------------------------
+  async function runFindFacts() {
+    if (!factQuery.trim() || !runId.current || factBusy) return;
+    setFactBusy(true); setFactResults([]); setFactSel(new Set());
+    try { setFactResults(await findFacts(runId.current, factQuery.trim())); }
+    catch { setFactResults([]); }
+    finally { setFactBusy(false); setFactSearched(true); }
+  }
+  function toggleFact(id: number) {
+    setFactSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  // Fold the owner-APPROVED facts into the message as cited bullet points; the edit turn then
+  // incorporates them with footnotes. Nothing reaches the article until the owner sends + accepts.
+  function addFacts() {
+    const chosen = factResults.filter((f) => factSel.has(f.source_id));
+    if (!chosen.length) return;
+    const block = "Incorporate these facts, citing each source:\n" +
+      chosen.map((f) => `- ${f.claim} [[${f.source_title}]]`).join("\n");
+    setGuideInput((g) => (g.trim() ? g.trim() + "\n\n" : "") + block);
+    setFactResults([]); setFactSel(new Set()); setFactsOpen(false); setFactQuery(""); setFactSearched(false);
+  }
+
   function openGuide() { setPhase("guiding"); setTab("guide"); }
   function sendGuide() {
     const text = guideInput.trim();
@@ -506,6 +536,37 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted, mode = "
                     : "Tell me how to revise this — I'll rewrite from your chosen sources (no new lookups)."}</div>
                   {thread.map((m, i) => <div key={i} className={"rb-msg " + (m.role === "user" ? "user" : "ai")}>{m.text}</div>)}
                 </div>
+                {suggest && (
+                  <div className="rb-facts">
+                    <button className="rb-mini" onClick={() => setFactsOpen((o) => !o)}>🔎 Find facts in your notes</button>
+                    {factsOpen && (
+                      <div>
+                        <div className="rb-addrow">
+                          <input className="rb-ti" placeholder="What should I look for? (e.g. when did Al move)" value={factQuery}
+                                 onChange={(e) => setFactQuery(e.target.value)}
+                                 onKeyDown={(e) => { if (e.key === "Enter") runFindFacts(); }} />
+                          <button className="rb-mini" onClick={runFindFacts} disabled={factBusy || !factQuery.trim()}>{factBusy ? "…" : "Search"}</button>
+                        </div>
+                        {factResults.length > 0 && (
+                          <>
+                            <div className="rb-results">
+                              {factResults.map((f) => (
+                                <label key={f.source_id} className="rb-frow">
+                                  <input type="checkbox" checked={factSel.has(f.source_id)} onChange={() => toggleFact(f.source_id)} />
+                                  <span>{f.claim}<br /><span className="muted" style={{ fontSize: 11 }}>🔗 {leaf(f.source_title)}{f.date ? ` · ${f.date}` : ""}</span></span>
+                                </label>
+                              ))}
+                            </div>
+                            <button className="rb-mini" onClick={addFacts} disabled={!factSel.size}>
+                              ＋ Add {factSel.size || ""} to my message</button>
+                          </>
+                        )}
+                        {!factBusy && factSearched && factResults.length === 0 &&
+                          <div className="muted" style={{ fontSize: 12 }}>No matching facts in your notes.</div>}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {draftSources.length > 0 && (
                   <div className="rb-ctx"><span className="muted">Working from:</span>
                     {draftSources.map((t, i) => <span key={i} className="rb-chip">🔗 {leaf(t)}</span>)}</div>

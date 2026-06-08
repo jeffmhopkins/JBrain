@@ -667,6 +667,57 @@ def test_run_suggest_then_guide_continues_same_transcript(conn, monkeypatch):
     assert len(run.messages) > n_before          # guide continued the same loaded transcript
 
 
+def test_private_note_ids_floor_flags_health_linked_notes(conn):
+    from app.services import rebuild_engine, notes as notes_svc
+    _mk(conn, "kb/Health/Al", "# Al (health)\n")
+    diary = _mk(conn, "notes/2026/01/diary", "checkup notes", kind="entry")
+    plain = _mk(conn, "notes/2026/01/trip", "road trip", kind="entry")
+    htgt = notes_svc.get_by_title(conn, "kb/Health/Al")
+    conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                 (diary["id"], htgt["id"], "kb/Health/Al"))
+    conn.commit()
+    priv = rebuild_engine._private_note_ids(conn)
+    assert diary["id"] in priv             # links to a Health page → sensitivity floor
+    assert plain["id"] not in priv
+
+
+def test_find_facts_firewall_and_extraction(conn, monkeypatch):
+    from app.services import rebuild_engine, search, notes as notes_svc, llm
+    _mk(conn, "kb/People/Al", "# Al\n")
+    _mk(conn, "kb/Health/Al", "# Al (health)\n")
+    pub = _mk(conn, "notes/2026/01/hobby", "Al took up sailing in 2026.", kind="entry")
+    sens = _mk(conn, "notes/2026/01/checkup", "Al's blood pressure reading.", kind="entry")
+    htgt = notes_svc.get_by_title(conn, "kb/Health/Al")
+    conn.execute("INSERT INTO links (source_note_id, target_note_id, target_title) VALUES (?,?,?)",
+                 (sens["id"], htgt["id"], "kb/Health/Al"))   # marks the checkup note private-adjacent
+    conn.commit()
+    # Search returns both notes; the model would name both, but the private one must be filtered.
+    monkeypatch.setattr(search, "hybrid_notes", lambda *a, **k: [
+        {"id": pub["id"], "title": "notes/2026/01/hobby"},
+        {"id": sens["id"], "title": "notes/2026/01/checkup"}])
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: __import__("json").dumps([
+        {"claim": "Al took up sailing in 2026.", "source": "notes/2026/01/hobby"},
+        {"claim": "Al's blood pressure was recorded.", "source": "notes/2026/01/checkup"}]))
+
+    # Editing a PUBLIC article: the private-adjacent source is firewalled out (floor + backstop).
+    facts = rebuild_engine.find_facts(conn, "kb/People/Al", "what's new with Al")
+    titles = {f["source_title"] for f in facts}
+    assert "notes/2026/01/hobby" in titles
+    assert "notes/2026/01/checkup" not in titles
+    assert all(f["claim"] and f["source_id"] for f in facts)
+
+    # Editing the PRIVATE article itself: its own private sources are allowed (no cross-firewall).
+    facts_priv = rebuild_engine.find_facts(conn, "kb/Health/Al", "what's new with Al")
+    assert "notes/2026/01/checkup" in {f["source_title"] for f in facts_priv}
+
+
+def test_find_facts_no_creds_returns_empty(conn, monkeypatch):
+    from app.services import rebuild_engine, llm
+    monkeypatch.setattr(llm, "has_credentials", lambda: False)
+    assert rebuild_engine.find_facts(conn, "kb/People/Al", "anything") == []
+
+
 def test_redraft_unwinds_continue_scaffolding(conn, monkeypatch):
     """After a truncated draft auto-continued, run_redraft drops the truncated assistant turn
     AND the CONTINUE_PROMPT scaffolding so the model re-answers the ORIGINAL prompt."""

@@ -487,6 +487,89 @@ def _load_backlinks(conn, title: str, *, cap_each: int = 400, max_links: int = 1
     return out
 
 
+def _private_note_ids(conn) -> set[int]:
+    """Return note ids that touch a private (Health/Finance) kb article — a sensitivity FLOOR.
+
+    Best-effort: a raw note carries no privacy flag, so we infer sensitivity from the link graph
+    — any note that links to a Health/Finance kb article is treated as private. This is
+    deliberately partial (a free-text entry that merely mentions a diagnosis won't be caught),
+    which is exactly why the owner's per-fact APPROVAL is the real firewall; this floor just keeps
+    the obvious private sources from ever being surfaced for a non-private article.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Set of note ids considered private-adjacent.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT l.source_note_id AS nid FROM links l JOIN notes t ON t.id = l.target_note_id "
+        "WHERE t.kind='kb' AND t.deleted_at IS NULL "
+        "AND (lower(t.title) LIKE 'kb/health/%' OR lower(t.title) LIKE 'kb/finance/%')"
+    ).fetchall()
+    return {r["nid"] for r in rows if r["nid"]}
+
+
+def find_facts(conn, title: str, query: str, *, limit: int = 6) -> list[dict]:
+    """Find owner-approvable candidate facts from the owner's notes for the suggest loop.
+
+    The privacy-filtered, human-gated realization of truth-seeking: searches the owner's notes,
+    drops kb articles and (for a NON-private target) private-adjacent notes via the sensitivity
+    floor, then asks the cheap model to extract salient one-sentence facts each tied to an exact
+    source note. The caller surfaces these for the owner to APPROVE before any becomes an edit —
+    nothing is woven into the article automatically, so a mis-classified private fact can't leak
+    without the owner consenting. Never raises; returns [] on any failure.
+
+    Args:
+        conn: SQLite connection.
+        title: The article being edited (sets the privacy posture of the search).
+        query: What the owner is looking for.
+        limit: Max facts to return.
+
+    Returns:
+        List of {claim, source_id, source_title, date} dicts (possibly empty).
+    """
+    from . import prompts, search, wiki_build, wiki_guides
+    from .workflows import _parse_json_array
+
+    query = (query or "").strip()
+    if not query or not llm.has_credentials():
+        return []
+    target_private = wiki_guides.is_private_title(title)
+    priv = set() if target_private else _private_note_ids(conn)
+    rows = search.hybrid_notes(conn, query, 12, require_kb_ingest=True)
+    hits = [h for h in rows
+            if not h["title"].lower().startswith("kb/") and h["id"] not in priv]
+    if not hits:
+        return []
+    meta = {m["title"].lower(): m for m in _notes_meta(conn, [h["id"] for h in hits])}
+    srcs = wiki_build._load_sources(conn, [h["id"] for h in hits[: limit * 2]], query=query)
+    if not srcs:
+        return []
+    prompt = (prompts.get("actions.wiki_find_facts", "")
+              .replace("{limit}", str(limit)).replace("{query}", query)
+              .replace("{title}", title).replace("{sources}", wiki_build._sources_text(srcs)))
+    try:
+        text = llm.complete([{"role": "user", "content": prompt}], max_tokens=900)
+    except Exception as exc:  # noqa: BLE001 — fact-finding is best-effort, never fatal
+        log.info("find_facts failed: %s", exc)
+        return []
+    out: list[dict] = []
+    seen: set[int] = set()
+    for f in _parse_json_array(text):
+        if not isinstance(f, dict):
+            continue
+        claim = str(f.get("claim") or "").strip()
+        m = meta.get(str(f.get("source") or "").strip().lower())
+        if not claim or not m or m["id"] in seen or m["id"] in priv:
+            continue                       # privacy backstop: never surface a private source here
+        out.append({"claim": claim, "source_id": m["id"], "source_title": m["title"], "date": m["date"]})
+        seen.add(m["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def run_suggest(run, source_ids: list[int], instruction: str,
                       max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
     """Open a conversational targeted edit: revise the CURRENT article at the owner's direction.

@@ -992,6 +992,18 @@ actions:
 
     OWNER GUIDANCE:
     {instructions}
+  wiki_find_facts: |
+    From the owner's personal notes below, extract up to {limit} SALIENT facts that are relevant
+    to "{query}" and would genuinely belong in the knowledge-base article "{title}". Each fact is
+    ONE concise sentence, faithful to a note (invent nothing — no outside knowledge), paired with
+    the EXACT title of the source note it came from. Skip anything off-topic, trivial, or already
+    obvious. If nothing relevant is there, return an empty array.
+
+    Output ONLY a JSON array, nothing else:
+    [{"claim": "one concise sentence", "source": "Exact Source Note Title"}]
+
+    NOTES:
+    {sources}
   wiki_maintain: |
     Update ONE existing knowledge-base article so it's faithful and current: address its
     OPEN ITEMS, integrate any NEW/CHANGED sources, and purge anything that relied on a

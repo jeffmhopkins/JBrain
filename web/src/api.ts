@@ -961,6 +961,13 @@ export const searchRebuildSources = (runId: string, q: string) =>
   get<{ note_id: number; title: string; date: string }[]>(
     `/api/kb/rebuild/${runId}/search?q=${encodeURIComponent(q)}`);
 
+export interface CandidateFact { claim: string; source_id: number; source_title: string; date: string; }
+
+// Suggest-mode truth-seeker: privacy-filtered candidate facts from the owner's notes, for the
+// owner to APPROVE before any is folded into the edit (nothing is applied server-side here).
+export const findFacts = (runId: string, query: string) =>
+  post<CandidateFact[]>(`/api/kb/rebuild/${runId}/find_facts`, { query });
+
 export const acceptRebuild = (runId: string, renameTo?: string) =>
   post<{ ok: boolean; slug: string }>(`/api/kb/rebuild/${runId}/accept`, { rename_to: renameTo ?? null });
 

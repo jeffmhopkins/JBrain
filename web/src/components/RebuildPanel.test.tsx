@@ -98,6 +98,12 @@ function recordingHandlers() {
       posted.push({ url: request.url, method: "GET", body: null });
       return HttpResponse.json([{ note_id: 7, title: "notes/Bagel", date: "2024-03-01" }]);
     }),
+    http.post(`*/api/kb/rebuild/${RUN_ID}/find_facts`, async ({ request }) => {
+      posted.push({ url: request.url, method: "POST", body: await request.json() });
+      return HttpResponse.json([
+        { claim: "Al moved to Denver in 2026.", source_id: 5, source_title: "notes/2026/al", date: "2026-01-01" },
+      ]);
+    }),
   ];
 }
 
@@ -381,6 +387,25 @@ describe("RebuildPanel — suggest mode", () => {
 
     await waitFor(() => expect(calls.some((c) => c.kind === "guide")).toBe(true));
     expect(calls.filter((c) => c.kind === "suggest")).toHaveLength(1);   // only the first turn
+  });
+
+  it("finds facts and folds an APPROVED one into the message as a cited bullet", async () => {
+    const { user } = await gotoEditing();
+    await user.click(await screen.findByRole("button", { name: /Find facts in your notes/i }));
+    await user.type(await screen.findByPlaceholderText(/What should I look for/i), "denver");
+    await user.click(screen.getByRole("button", { name: /^Search$/i }));
+
+    await screen.findByText(/Al moved to Denver/i);
+    expect(posted.some((p) => p.url.includes("/find_facts"))).toBe(true);
+    // Approve the fact, then add it — it lands in the composer as a cited instruction, NOT the page.
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: /Add .*to my message/i }));
+
+    const box = screen.getByPlaceholderText(/Tell me what to change/i) as HTMLTextAreaElement;
+    expect(box.value).toContain("Al moved to Denver in 2026.");
+    expect(box.value).toContain("[[notes/2026/al]]");
+    // Nothing was sent/applied yet — the owner still drives the edit.
+    expect(calls.some((c) => c.kind === "suggest")).toBe(false);
   });
 
   it("sources are optional — Start editing works with zero selected", async () => {

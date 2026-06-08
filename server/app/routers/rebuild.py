@@ -49,6 +49,12 @@ class SuggestIn(BaseModel):
     text: str = ""
 
 
+class FindFactsIn(BaseModel):
+    """Input schema for the fact-finder endpoint."""
+
+    query: str = ""
+
+
 class RedraftIn(BaseModel):
     """Input schema for the redraft endpoint."""
 
@@ -299,6 +305,30 @@ def suggest(run_id: str, body: SuggestIn):
             yield ev
 
     return _sse(gen())
+
+
+@router.post("/{run_id}/find_facts")
+def find_facts(run_id: str, body: FindFactsIn):
+    """Find owner-approvable candidate facts from the owner's notes during a suggest session.
+
+    The privacy-filtered, human-gated truth-seeker: returns salient one-sentence facts (each tied
+    to an exact source note) for the owner to approve before any is folded into the edit. A
+    sensitivity floor drops private-adjacent notes when the target article is non-private; nothing
+    is applied to the article here.
+
+    Args:
+        run_id: UUID of the active run.
+        body: ``{"query": str}`` — what to look for.
+
+    Returns:
+        List of ``{claim, source_id, source_title, date}`` candidate-fact dicts.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
+    run = _live_run(run_id)
+    conn = get_conn()
+    return rebuild_engine.find_facts(conn, run.title, body.query)
 
 
 @router.post("/{run_id}/redraft")

@@ -1,0 +1,48 @@
+# Rendered to ./Caddyfile by install.sh in LOCAL mode ({{HOST}} / {{LOG_AUTH_HASH}}
+# injected). No public domain or Let's Encrypt: Caddy serves HTTPS on your LAN using
+# its own internal CA — a self-signed cert for {{HOST}} (browsers show a one-time
+# warning; install Caddy's root CA from the 'caddy-data' volume to trust it).
+# HTTPS is used (not plain HTTP) so the PWA's service worker / offline features work,
+# which a bare LAN-IP origin only gets over TLS. Run ./setupdns.sh to switch to a
+# public domain with an automatic Let's Encrypt certificate.
+{
+	# Keep all certificate issuance local — never reach out to Let's Encrypt.
+	local_certs
+}
+
+{{HOST}} {
+	encode zstd gzip
+
+	# Caddy's internal CA issues (and auto-renews) the cert for {{HOST}}.
+	tls internal
+
+	# Security headers (mirrors the public Caddyfile). The CSP is strict but allows
+	# the inline styles the app uses; tighten if you customise.
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+		-Server
+	}
+
+	# Live deploy console: the captured update.sh / updater output, served by Caddy
+	# itself (which stays up while the API restarts) so the PWA can stream a
+	# restarting or FAILED deploy. Gated by the access key (bcrypt) so the logs
+	# aren't public. {{LOG_AUTH_HASH}} is injected from .env.
+	handle_path /deploy-status/* {
+		basic_auth {
+			jbrain {{LOG_AUTH_HASH}}
+		}
+		root * /srv/deploy-status
+		file_server
+	}
+
+	# Stream Server-Sent Events (chat) without buffering.
+	@sse path /api/chat/*
+	reverse_proxy @sse api:8000 {
+		flush_interval -1
+	}
+
+	reverse_proxy api:8000
+}

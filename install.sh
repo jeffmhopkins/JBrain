@@ -51,11 +51,57 @@ ask_secret() { # ask_secret VAR "Prompt"
 
 gen_secret() { openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
+detect_lan_ip() { # this machine's primary LAN IP (the src for the default route)
+  local ip=""
+  ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  [[ -z "$ip" ]] && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s' "$ip"
+}
+
+render_caddyfile() { # render_caddyfile TEMPLATE HOST_OR_DOMAIN EMAIL ACCESS_KEY
+  # Inject the site address, ACME email, and a bcrypt of the access key so the live
+  # deploy console at /deploy-status is gated. Hashing is best-effort: if it can't run
+  # (offline / image unavailable) the placeholder is left as-is, exactly like before —
+  # update.sh fills it in on the next update, and Caddy starts fine either way.
+  local tmpl="$1" host="$2" email="$3" key="$4" hash=""
+  hash="$(docker run --rm caddy:2 caddy hash-password --plaintext "$key" 2>/dev/null | tr -d '\r' || true)"
+  if [[ -n "$hash" ]]; then
+    sed -e "s|{{DOMAIN}}|$host|g" -e "s|{{HOST}}|$host|g" \
+        -e "s|{{ACME_EMAIL}}|$email|g" -e "s|{{LOG_AUTH_HASH}}|$hash|g" \
+        "$tmpl" > Caddyfile
+  else
+    sed -e "s|{{DOMAIN}}|$host|g" -e "s|{{HOST}}|$host|g" \
+        -e "s|{{ACME_EMAIL}}|$email|g" \
+        "$tmpl" > Caddyfile
+  fi
+}
+
 # --- Collect config ---------------------------------------------------------
 info "Answer a few questions. Press Enter to accept the [default]."
 echo
-ask        JBRAIN_DOMAIN  "Public domain (A record must point at this VM)" "brain.example.com"
-ask        ACME_EMAIL     "Email for Let's Encrypt cert notices"
+bold "Deployment mode"
+echo "  1) Local network only — reach JBrain at this machine's LAN IP over HTTPS"
+echo "     (Caddy issues its own self-signed cert; no domain or DNS needed). You can"
+echo "     switch to a public domain anytime later with ./setupdns.sh."
+echo "  2) Public domain — automatic Let's Encrypt HTTPS (needs a DNS A record"
+echo "     pointing at this VM and ports 80/443 open to the internet)."
+read -r -p "Choose [1/2] (1): " MODE_CHOICE
+MODE_CHOICE="${MODE_CHOICE:-1}"
+echo
+
+if [[ "$MODE_CHOICE" == "2" ]]; then
+  JBRAIN_MODE="public"
+  ask JBRAIN_HOST  "Public domain (A record must point at this VM)" "brain.example.com"
+  ask ACME_EMAIL   "Email for Let's Encrypt cert notices"
+else
+  JBRAIN_MODE="local"
+  ask JBRAIN_HOST  "LAN IP (or hostname) to reach this machine on" "$(detect_lan_ip)"
+  ask ACME_EMAIL   "Contact email (for push now + the HTTPS cert later — optional)" ""
+fi
+# JBRAIN_HOST is the Caddy site address either way; JBRAIN_DOMAIN feeds the app
+# (share-link URLs, CORS context) and equals the host until ./setupdns.sh sets a domain.
+JBRAIN_DOMAIN="$JBRAIN_HOST"
+
 ask        BRAIN_NAME     "Name for your brain"                            "My Brain"
 ask        LLM_MODEL      "LLM model"                                      "claude-sonnet-4-6"
 ask_secret LLM_API_KEY    "LLM API key (hidden)"
@@ -72,10 +118,13 @@ COMPOSE_PROFILES=""
 # app (and watch) on first run. Treat it like a password.
 JBRAIN_ACCESS_KEY="$(gen_secret)"
 EMBEDDING_MODEL="BAAI/bge-small-en-v1.5"
+VAPID_EMAIL="${ACME_EMAIL:-admin@localhost}"
 
 # --- Render .env ------------------------------------------------------------
 umask 077
 cat > .env <<EOF
+JBRAIN_MODE=$JBRAIN_MODE
+JBRAIN_HOST=$JBRAIN_HOST
 JBRAIN_DOMAIN=$JBRAIN_DOMAIN
 ACME_EMAIL=$ACME_EMAIL
 LLM_PROVIDER=anthropic
@@ -86,22 +135,38 @@ JBRAIN_ACCESS_KEY=$JBRAIN_ACCESS_KEY
 EMBEDDING_MODEL=$EMBEDDING_MODEL
 DB_PATH=/data/brain.db
 TZ=$TZ
-VAPID_SUBJECT=mailto:$ACME_EMAIL
+VAPID_SUBJECT=mailto:$VAPID_EMAIL
 COMPOSE_PROJECT_NAME=jbrain
 COMPOSE_PROFILES=$COMPOSE_PROFILES
 EOF
 info "Wrote .env (permissions 600)."
 
 # --- Render Caddyfile -------------------------------------------------------
-sed -e "s|{{DOMAIN}}|$JBRAIN_DOMAIN|g" \
-    -e "s|{{ACME_EMAIL}}|$ACME_EMAIL|g" \
-    Caddyfile.template > Caddyfile
-info "Wrote Caddyfile for $JBRAIN_DOMAIN."
+if [[ "$JBRAIN_MODE" == "public" ]]; then
+  render_caddyfile Caddyfile.template "$JBRAIN_HOST" "$ACME_EMAIL" "$JBRAIN_ACCESS_KEY"
+  info "Wrote Caddyfile for $JBRAIN_HOST (Let's Encrypt HTTPS)."
+else
+  render_caddyfile Caddyfile.local.template "$JBRAIN_HOST" "$ACME_EMAIL" "$JBRAIN_ACCESS_KEY"
+  info "Wrote Caddyfile for https://$JBRAIN_HOST (local self-signed HTTPS)."
+fi
 
 echo
-bold "Before HTTPS can work, make sure:"
-echo "  1. DNS: an A record for $JBRAIN_DOMAIN points at this VM's public IP."
-echo "  2. Firewall: TCP ports 80 and 443 are open to the internet."
+if [[ "$JBRAIN_MODE" == "public" ]]; then
+  bold "Before HTTPS can work, make sure:"
+  echo "  1. DNS: an A record for $JBRAIN_HOST points at this VM's public IP."
+  echo "  2. Firewall: TCP ports 80 and 443 are open to the internet."
+  ACCESS_URL="https://$JBRAIN_HOST"
+else
+  bold "Local-network mode:"
+  echo "  • Reach JBrain at https://$JBRAIN_HOST from devices on the same network."
+  echo "  • The cert is self-signed, so browsers show a one-time warning — click"
+  echo "    through it (HTTPS is required for the PWA/offline features to work). To"
+  echo "    silence it, install Caddy's root CA (from the 'caddy-data' volume) on"
+  echo "    your devices."
+  echo "  • Tip: give this machine a static IP / DHCP reservation so $JBRAIN_HOST"
+  echo "    doesn't change. Ready to go public? Run ./setupdns.sh."
+  ACCESS_URL="https://$JBRAIN_HOST"
+fi
 echo
 
 bold "Your access key (paste this into the app on first run):"
@@ -115,7 +180,7 @@ if [[ "${go,,}" != "n" ]]; then
   export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
   docker compose up -d --build
   echo
-  bold "JBrain is starting. In a minute, open: https://$JBRAIN_DOMAIN"
+  bold "JBrain is starting. In a minute, open: $ACCESS_URL"
   echo "Paste the access key above, then use your browser's 'Install app' / 'Add to Home Screen'."
   echo "Logs:  docker compose logs -f"
 else

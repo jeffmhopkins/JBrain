@@ -218,7 +218,8 @@ describe("Chat — Research mode (read-only)", () => {
     // Read-only: a conversation may be created for the thread, but NO write to entry.
     expect(entryUrls()).toHaveLength(0);
     // The streamed reply renders.
-    await screen.findByText(/Read-only answer\./i);
+    // Streamed reply renders via a typewriter; allow time under load (no flake).
+    await screen.findByText(/Read-only answer\./i, {}, { timeout: 4000 });
   });
 
   it("forwards the Deep opt-in to the research stream when toggled on", async () => {
@@ -264,8 +265,8 @@ describe("Chat — Full Brain mode", () => {
     expect(streamCalls[0].conversationId).toBe(42);
 
     // The optimistic user bubble and the streamed assistant reply both render.
-    expect(screen.getByText("capture this thought")).toBeInTheDocument();
-    await screen.findByText(/Hello from the brain\./i);
+    await screen.findByText("capture this thought");
+    await screen.findByText(/Hello from the brain\./i, {}, { timeout: 4000 });
   });
 
   it("renders an in-stream error event on the assistant bubble", async () => {
@@ -277,7 +278,7 @@ describe("Chat — Full Brain mode", () => {
     await user.type(screen.getByPlaceholderText(/full tool access/i), "hi");
     await user.click(screen.getByRole("button", { name: /^Send$/i }));
 
-    await screen.findByText(/model unavailable/i);
+    await screen.findByText(/model unavailable/i, {}, { timeout: 4000 });
   });
 });
 
@@ -297,7 +298,7 @@ describe("Chat — capability/mode gating", () => {
     const send = screen.getByRole("button", { name: /need an API key|Send/i }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     // The safety line shows the capability reason rather than the scope hint.
-    expect(screen.getByText(/need an API key/i)).toBeInTheDocument();
+    await screen.findByText(/need an API key/i);
 
     // Even a forced click is a no-op — nothing streams.
     await user.click(send);

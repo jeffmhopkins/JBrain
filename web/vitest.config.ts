@@ -30,7 +30,7 @@ export default defineConfig({
       ],
       // FLOOR, not a target — pinned just under today's ~7.8% so CI is green on day
       // one and can only ratchet UP. Raise as feature components get covered.
-      thresholds: { lines: 20, functions: 20, statements: 20, branches: 20 },
+      thresholds: { lines: 30, functions: 30, statements: 30, branches: 30 },
     },
   },
 });

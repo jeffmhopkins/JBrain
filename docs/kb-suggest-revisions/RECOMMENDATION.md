@@ -40,10 +40,27 @@ typecheck clean):
   `/suggest`, follow-ups → `/guide`; sources optional; rebuild-from-scratch still reachable;
   diff-against-original by default.
 
-**Next — Phase 2.5 (gated on the owner safety check):** the autonomous truth-seeking tool agent.
-This is the layer carrying the locked-but-flagged risk (full agent + title-prefix privacy). To
-build behind a per-fact approval gate + default-deny on public/Reference targets + the swappable
-firewall seam — confirm mitigations before shipping.
+**Phase 2.5 — privacy-filtered, owner-approved truth-seeker — DONE** (backend 1044 + frontend
+811; commit `bc871b2`). The safe realization of the locked-but-flagged choice (full agent +
+title-prefix privacy): `find_facts()` searches the owner's notes for salient facts and surfaces
+them for **per-fact approval** before any folds into the edit. Defenses, in depth:
+- `_private_note_ids` — a link-graph sensitivity FLOOR drops notes that link to a Health/Finance
+  kb article (when the target is non-private), plus a per-fact privacy backstop.
+- The **human approval gate is the real firewall** — nothing reaches the article without the
+  owner consenting — which is what protects against title-prefix privacy's blind spot (raw notes
+  carry no privacy flag). Approved facts enter the composer as cited bullets the owner edits/sends.
+- Tool-free: fact-finding is a separate cheap-model call surfaced for approval, so the edit
+  transcript stays plain text (no autonomous read-and-weave).
+
+**Residual risk still open:** the sensitivity floor is best-effort (a free-text note that merely
+mentions a diagnosis, with no link to a Health page, won't be auto-flagged) — the owner's approval
+is what catches it. The clean structural fix remains a **durable per-note sensitivity flag**
+(decision #2), which would let the floor become authoritative and unlock a fully-autonomous agent
+later; the firewall is built as one seam so it can drop in without rework.
+
+**The feature is complete and shippable.** Remaining optional follow-ups: the durable per-note
+privacy flag; a Playwright e2e spec for the new flow (this repo has none for the rebuild family,
+so it's net-new); and `maintain`/nightly people-link parity (deferred, never requested).
 
 ## The feature (locked with the owner)
 A live, **conversational "Suggest revisions"** mode for KB articles, parallel to "Rebuild page now":

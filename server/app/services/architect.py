@@ -3388,7 +3388,14 @@ def _extract_urls(text: str) -> set[str]:
 
 
 def _minutes_since_utc(ts: str | None) -> float | None:
-    """Minutes since a stored UTC timestamp ('YYYY-MM-DD HH:MM:SS'), or None if unparseable."""
+    """Return minutes elapsed since a stored UTC timestamp, or None if unparseable.
+
+    Args:
+        ts: UTC timestamp string in 'YYYY-MM-DD HH:MM:SS' format, or None.
+
+    Returns:
+        Float minutes since ts, or None if ts is absent or unparseable.
+    """
     if not ts:
         return None
     from datetime import datetime, timezone
@@ -3402,12 +3409,25 @@ def _minutes_since_utc(ts: str | None) -> float | None:
 
 
 def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[dict]:
-    """Load the conversational turns for the model, FRESHNESS-WINDOWED. Returns [] (a clean slate)
-    when the client signals a fresh context (left the app / navigated away and back) OR the gap
-    since the last turn exceeds _RESUME_GAP_MINUTES — so a returning user can't get a stale value
-    re-asserted from an old answer. Within a recent, continuous conversation, prior ASSISTANT turns
-    are tagged as possibly-stale so the model re-queries values rather than trusting its own prose.
-    (Prior turns stay in the DB for display; this only shapes what the model sees.)"""
+    """Load conversational turns for the model, freshness-windowed.
+
+    Returns [] (a clean slate) when the client signals a fresh context (user
+    left the app / navigated away and back) OR the gap since the last turn
+    exceeds _RESUME_GAP_MINUTES — so a returning user cannot get a stale value
+    re-asserted from an old answer. Within a recent, continuous conversation,
+    prior ASSISTANT turns are tagged as possibly-stale so the model re-queries
+    values rather than trusting its own prose. Prior turns stay in the DB for
+    display; this only shapes what the model sees.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        fresh_context: True when the client flagged a context reset.
+
+    Returns:
+        List of {'role': …, 'content': …} dicts for the LLM provider, possibly
+        empty.
+    """
     rows = conn.execute(
         # Only conversational turns go to the model; 'event' rows (applied-action records shown in
         # the UI) are excluded from the LLM history.
@@ -3433,9 +3453,20 @@ def _assemble_history(conn, conversation_id: int, fresh_context: bool) -> list[d
 
 
 def _verify_reply(conn, text: str, allowed_urls: set[str]) -> tuple[str, bool]:
-    """Make the reply trustworthy before it's persisted/clicked: neutralize every [[Title]] that
-    resolves to no live note (reusing the KB dead-link sweep), and strip any URL no tool returned.
-    Returns (verified_text, changed)."""
+    """Sanitize the reply before persistence: neutralize dead [[links]] and strip ungrounded URLs.
+
+    Neutralizes every [[Title]] that resolves to no live note (reusing the KB
+    dead-link sweep) and strips any URL that no tool returned this turn.
+
+    Args:
+        conn: SQLite connection.
+        text: Raw assistant reply text.
+        allowed_urls: Set of URLs that tools genuinely returned this turn.
+
+    Returns:
+        Tuple (verified_text, changed) where changed is True if anything was
+        modified.
+    """
     from . import wikilinks, wiki_build
     bad_titles = {
         t for t in wikilinks.extract_links(text)

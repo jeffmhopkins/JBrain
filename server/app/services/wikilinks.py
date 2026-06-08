@@ -229,6 +229,7 @@ def scan_link_labels(conn) -> list[dict]:
         s.add(_last_segment(r["title"]).lower())
 
     def finding(kind, n, raw, target, tgt, display, reason, resolved=None):
+        """Build a finding dict for one aliased link that should drop its alias."""
         return {
             "kind": kind, "source_id": n["id"], "source_title": n["title"], "source_slug": n["slug"],
             "raw": raw, "target": target, "target_title": tgt["title"], "target_slug": tgt["slug"],
@@ -251,6 +252,7 @@ def scan_link_labels(conn) -> list[dict]:
     from .wiki_build import _resolve_redirect_chain
 
     def _is_registered_alias(display: str, tgt) -> bool:
+        """Return True if display is a registered entity alias resolving to the same note as tgt."""
         info = _alias_surface.get(entity_index.normalize(display))
         if not info:
             return False
@@ -334,6 +336,7 @@ def fix_note_link(conn, note_id: int, target: str, display: str) -> bool:
     changed = False
 
     def repl(m):
+        """Replace matching [[target|display]] with bare [[target]]."""
         nonlocal changed
         if (_norm(m.group(1)).lower() == target.lower()
                 and m.group(2) is not None and _norm(m.group(2)) == display):

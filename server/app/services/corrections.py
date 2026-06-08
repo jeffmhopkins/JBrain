@@ -38,8 +38,18 @@ _NAME_CORR = re.compile(
 
 
 def extract_corrected_name(body: str) -> str | None:
-    """The corrected name asserted by a name/spelling correction, or None. Conservative:
-    requires a name keyword and a plausible (≤6-word, has-a-letter) value."""
+    """Extract the corrected name asserted by a name/spelling correction body.
+
+    Conservative: requires an explicit name/spelling keyword and a plausible value
+    (at most 6 words, must contain a letter). A miss degrades gracefully — no entity
+    override is recorded but the article still heals via the promoted note.
+
+    Args:
+        body: The correction talk entry body text.
+
+    Returns:
+        The corrected name string, or None if no match is found.
+    """
     m = _NAME_CORR.search(body or "")
     if not m:
         return None

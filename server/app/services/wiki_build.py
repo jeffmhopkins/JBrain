@@ -2664,16 +2664,28 @@ _WATERMARK = "kb_incremental:since"
 
 
 def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: int = 25) -> dict:
-    """Incremental update: flow notes changed since the last pass into the EXISTING KB.
-    Routes each change to its articles (cite-based for edits/deletes ∪ entity-based for new
-    facts), refreshes each affected article once, nudges a Review card for brand-new
-    subjects that have no article yet, and advances the watermark. Additive + reconciling;
-    the full rebuild remains the source of truth. Assumes changed notes are already
-    analyzed + the entity index rebuilt (the recipe does that first).
+    """Flow notes changed since the last pass into the existing KB (incremental update).
 
-    Watermark discipline: it advances only over the LEADING run of changes whose every
-    target article succeeded — a failed (or deferred-by-cap) article holds the watermark at
-    the prior change, so nothing is silently skipped; the next run retries from there."""
+    Routes each change to its articles (cite-based for edits/deletes ∪ entity-based for new
+    facts), refreshes each affected article once via maintain_one, nudges a Review card for
+    brand-new subjects that have no article yet, and advances the watermark. Additive +
+    reconciling; the full rebuild remains the source of truth. Assumes changed notes are
+    already analyzed and the entity index rebuilt (the recipe does that first).
+
+    Watermark discipline: advances only over the LEADING run of changes whose every target
+    article succeeded — a failed (or deferred-by-cap) article holds the watermark at the prior
+    change, so nothing is silently skipped; the next run retries from there.
+
+    Args:
+        conn: SQLite connection.
+        limit: Maximum number of changed notes to process per run.
+        new_subject_min: Minimum note count to auto-create a new subject article.
+        max_articles: Maximum number of distinct articles to refresh per run.
+
+    Returns:
+        Dict with keys ``changes``, ``articles``, ``changed``, ``resolved``, ``examined``,
+        ``kept_open``, ``failed``, ``deferred``, ``created``, and ``new_subjects``.
+    """
     from ..db import get_meta, set_meta
     since = get_meta(_WATERMARK)
     if since is None:
@@ -2762,12 +2774,21 @@ def update_batch(conn, limit: int = 40, new_subject_min: int = 2, max_articles: 
 
 
 def taxonomy_health(conn, post_card: bool = True) -> dict:
-    """Read-only KB taxonomy-drift report (no LLM) — turns "rare manual Reorganize" from a
-    guess into a triggered decision. Surfaces ORPHAN articles (nothing but the index links
-    them) and un-foldered Reference articles (kb/Reference/<Name> — the guide says Reference
-    is always foldered). Posts a single "Reorganize recommended" Review card past thresholds
-    (skip with post_card=False — e.g. when a chat tool just wants the report). Returns the
-    counts + a sample of titles."""
+    """Report KB taxonomy drift: orphaned articles and un-foldered Reference pages.
+
+    Read-only (no LLM) — turns "rare manual Reorganize" from a guess into a triggered
+    decision. Surfaces ORPHAN articles (nothing but the index links them) and un-foldered
+    Reference articles (kb/Reference/<Name> — the guide says Reference is always foldered).
+    Posts a single "Reorganize recommended" Review card past thresholds.
+
+    Args:
+        conn: SQLite connection.
+        post_card: Whether to post a Review card when thresholds are exceeded (default True).
+
+    Returns:
+        Dict with keys ``articles``, ``orphans``, ``flat_reference``, ``orphan_titles``,
+        ``flat_reference_titles``, ``reasons``, and optionally ``carded``.
+    """
     from . import reviews as reviews_svc
     arts = [r["title"] for r in conn.execute(
         r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
@@ -2800,10 +2821,20 @@ def taxonomy_health(conn, post_card: bool = True) -> dict:
 
 
 def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
-    """Recurring subjects (≥ min_notes notes) that changed but have no article yet: CREATE
-    them (create_article dedups/folds + refuses thin stubs). A creation that fails the lint
-    falls back to a Review card so the owner sees it — maintenance no longer defers new
-    subjects to a full rebuild. Returns {created, nudged}."""
+    """Create articles for recurring subjects that have changed notes but no article yet.
+
+    Uses create_article (which dedups/folds and refuses thin stubs). A creation that fails
+    the lint falls back to a Review card so the owner sees it — maintenance no longer defers
+    new subjects to a full rebuild.
+
+    Args:
+        conn: SQLite connection.
+        orphans: Changed note dicts with no routed article (from update_batch routing).
+        min_notes: Minimum mention count to attempt article creation.
+
+    Returns:
+        Dict with keys ``created`` and ``nudged``.
+    """
     from . import reviews as reviews_svc
     tally: dict[tuple, int] = {}
     for ch in orphans:

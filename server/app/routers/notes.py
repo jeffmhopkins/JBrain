@@ -27,6 +27,19 @@ class NoteIn(BaseModel):
 
 
 class EntryIn(BaseModel):
+    """Request body for the 'Make entry' dictation capture endpoint.
+
+    Attributes:
+        dest: Entry sub-selector destination; files the note under notes/<root>/<dest>/NN.
+            Ignored when an explicit title is given.
+        root: Capture tree for dest ('medical' | 'financial'); defaults to medical for
+            back-compat. Clamped to a known root.
+        source: Provenance label for the version badge ('user' | 'watch'). Unrecognised
+            values are clamped to 'user' — capture must never 422 over a bad label.
+        lat: Capture latitude, bounded to [-90, 90] so NaN/inf can't break distance math.
+        lon: Capture longitude, bounded to [-180, 180].
+    """
+
     text: str
     title: str | None = None
     # Entry sub-selector capture: file the entry under notes/<root>/<dest>/NN (a preconfigured
@@ -47,11 +60,26 @@ class EntryIn(BaseModel):
 
 
 class RestoreIn(BaseModel):
+    """Request body for restoring a note to a previous version."""
+
     version_id: int
     note: str | None = None
 
 
 def _note_by_slug(conn, slug: str, include_deleted: bool = False):
+    """Fetch a note row by slug, raising 404 if not found.
+
+    Args:
+        conn: Active database connection.
+        slug: URL slug of the note.
+        include_deleted: If True, also return soft-deleted notes.
+
+    Returns:
+        The notes row for the given slug.
+
+    Raises:
+        HTTPException: 404 if no matching note exists.
+    """
     sql = "SELECT * FROM notes WHERE slug = ?"
     if not include_deleted:
         sql += " AND deleted_at IS NULL"
@@ -64,6 +92,20 @@ def _note_by_slug(conn, slug: str, include_deleted: bool = False):
 @router.get("")
 def list_notes(q: str | None = None, kind: str | None = None, limit: int = 200,
                include_hidden: bool = False):
+    """List notes, optionally filtered by title substring and/or kind.
+
+    Redirects and soft-deleted notes are excluded. Protected/system pages (any
+    path segment starting with '_') are hidden unless include_hidden is True.
+
+    Args:
+        q: Optional title substring filter (LIKE match).
+        kind: Optional note kind filter (e.g. 'note', 'kb').
+        limit: Maximum number of results to return (default 200).
+        include_hidden: If True, include protected/system pages in the results.
+
+    Returns:
+        List of note dicts with id, title, slug, kind, kb_ingest, tool_access, updated_at.
+    """
     conn = get_conn()
     # Redirects are decluttered from browse: a merged-away page keeps its UNIQUE title slot
     # live so old [[links]] resolve, but it must not show up in the notes list.

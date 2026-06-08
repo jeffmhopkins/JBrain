@@ -423,12 +423,20 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .status-dot-btn:hover { background: var(--bg-elev-2); }
 .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--text-dim); }
 .status-dot.ok { background: var(--good); }
+/* The top-bar summary dot reads as the calm, on-brand resting state (accent), so the
+   louder green/amber/red stay reserved for the per-capability rows. Scoped to the
+   button so the System/Maintenance update-status dots (further down) are untouched. */
+.status-dot-btn .status-dot.ok { background: var(--accent); }
 .status-dot.warn { background: #d9a441; }
 .status-dot.down { background: var(--danger); }
 .status-dot.unknown { background: var(--text-dim); }
+/* Pinned to the viewport's top-right corner (not the mid-header dot): position:fixed
+   escapes the .ushell overflow:hidden clip, and the width clamp + safe-area gutters mean
+   it can never run off the left edge on a narrow phone. z-index sits above the sticky bar. */
 .status-panel {
-  position: absolute; top: 100%; right: 0; margin-top: 6px; z-index: 50;
-  width: max(240px, 70vw); max-width: 320px;
+  position: fixed; top: calc(48px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right)); left: auto; z-index: 60;
+  width: min(320px, calc(100vw - 24px));
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px;
   padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);
 }

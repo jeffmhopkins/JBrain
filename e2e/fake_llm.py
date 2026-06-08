@@ -245,3 +245,18 @@ async def ollama_delete(request: Request):
     body = await request.json()
     _INSTALLED.discard(body.get("name") or "")
     return {"status": "success"}
+
+
+@app.post("/api/_reset")
+def ollama_reset():
+    """Clear the in-memory installed set (test hook, not a real Ollama route).
+
+    The fake is a single long-lived webServer shared across the whole Playwright run, so
+    a spec calls this in beforeEach to start from a known-empty state regardless of prior
+    pulls or retries.
+
+    Returns:
+        JSON dict {"ok": True}.
+    """
+    _INSTALLED.clear()
+    return {"ok": True}

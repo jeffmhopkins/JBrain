@@ -1,6 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { connect } from "./helpers";
 
+const FAKE = "http://127.0.0.1:8919";
+
+// The fake Ollama is a single webServer shared across the run — reset its installed
+// set so this spec always starts empty (deterministic across retries / prior specs).
+test.beforeEach(async ({ request }) => {
+  await request.post(`${FAKE}/api/_reset`);
+});
+
 // Local-LLM (Ollama) model management, end-to-end against the real stack with Ollama
 // faked at the admin boundary (fake_llm.py serves /api/tags, /api/pull, /api/delete).
 // The journey: open System settings → the "Local models (Ollama)" card shows the
@@ -42,9 +50,11 @@ test("local models: pull a curated Ollama model and assign it to a task tier", a
   await routineSelect.selectOption("qwen2.5:7b");
   await expect(routineSelect).toHaveValue("qwen2.5:7b");
 
-  // Reload: the assignment is server-side (PUT /api/prompts/models.cheap), so it should
-  // survive a fresh load of the page. Re-navigate through the launcher and re-read.
-  await page.reload();
+  // Fresh load: the assignment is server-side (PUT /api/prompts/models.cheap), so it
+  // should survive reloading the app. Navigate to "/" (the e2e server has no SPA
+  // fallback for deep links like /system, so reload there 404s); the stored key
+  // auto-reconnects, then re-open System via the launcher.
+  await page.goto("/");
   await page.getByRole("button", { name: /Advanced/i }).click();
   await page.getByRole("button", { name: /^System/ }).click();
 

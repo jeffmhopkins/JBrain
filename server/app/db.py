@@ -63,8 +63,14 @@ def _connect(*, query_only: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     # Wait for a concurrent writer (WAL serialises writes) instead of failing the
-    # request immediately with "database is locked".
-    conn.execute("PRAGMA busy_timeout=5000")
+    # request immediately with "database is locked". A scheduled batch job (KB
+    # synthesis / note-analysis) can hold the write transaction for tens of seconds,
+    # so 5s was too short — an interactive chat's user-turn INSERT would time out and
+    # the whole reply would fail silently. 60s lets such writes WAIT OUT a busy batch
+    # instead (interactive writes are already offloaded off the event loop, so the wait
+    # can't freeze the server). The real cure is keeping batches from holding the lock
+    # across their LLM calls (see the services below); this is the safety net behind it.
+    conn.execute("PRAGMA busy_timeout=60000")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)

@@ -477,7 +477,11 @@ def run_workflow(conn, wf, context: dict | None = None, commit: bool = True) -> 
         if recipe is None:
             status, detail = "error", f"unknown action '{wf['action_type']}'"
         else:
-            detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], context)
+            # commit_steps mirrors `commit`: a scheduled run (commit=True) releases the write
+            # lock after each step so a long batch can't pin it across every LLM call and
+            # starve interactive chat writes. A synchronous in-transaction caller (commit=False,
+            # the entry_created hook) keeps its single transaction and commits itself.
+            detail = pipeline.run_pipeline(conn, recipe, cfg, wf["id"], context, commit_steps=commit)
             status = "ok"
     except Exception as exc:  # noqa: BLE001 — record any failure, never crash a trigger
         status, detail = "error", str(exc)

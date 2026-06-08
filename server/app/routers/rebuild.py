@@ -42,6 +42,13 @@ class DraftIn(BaseModel):
     source_ids: list[int]
 
 
+class SuggestIn(BaseModel):
+    """Input schema for the first conversational-edit turn."""
+
+    source_ids: list[int] = []
+    text: str = ""
+
+
 class RedraftIn(BaseModel):
     """Input schema for the redraft endpoint."""
 
@@ -135,14 +142,17 @@ def _kb_note(conn, slug: str):
 
 
 @router.post("/start/{slug}")
-def start(slug: str):
-    """Start a rebuild run for a KB page and stream the gather agent's source proposals.
+def start(slug: str, mode: str = "rebuild"):
+    """Start a rebuild/suggest run for a KB page and stream the gather agent's source proposals.
 
     Stage 1: creates an in-memory run and streams the gather agent's tool use
-    through to the client as SSE events ending with a proposed source list.
+    through to the client as SSE events ending with a proposed source list. In
+    ``suggest`` mode the run seeds the current article body so the panel can show it
+    immediately and the conversational edit turns revise FROM it.
 
     Args:
         slug: URL slug of the KB page to rebuild.
+        mode: ``rebuild`` (write from sources) or ``suggest`` (edit the current article).
 
     Yields:
         SSE events: ``run_started``, gather-agent tool events, and proposed
@@ -154,12 +164,16 @@ def start(slug: str):
     conn = get_conn()
     note = _kb_note(conn, slug)
     title = note["title"]
-    run = rebuild_runs.create(slug, title, llm.model_for("synthesis"), note["content_md"] or "")
+    kind = "suggest" if mode == "suggest" else "rebuild"
+    run = rebuild_runs.create(slug, title, llm.model_for("synthesis"), note["content_md"] or "", kind=kind)
+    if kind == "suggest":
+        run.draft = note["content_md"] or ""     # show the current article while sources gather
 
     async def gen():
-        """Stream the initial gather + draft run as Server-Sent Events."""
+        """Stream the initial gather (+ seeded draft for suggest) as Server-Sent Events."""
         yield {"type": "run_started", "run_id": run.run_id, "slug": slug,
-               "title": title, "base_rev": run.base_hash}
+               "title": title, "base_rev": run.base_hash, "kind": kind,
+               "draft": run.draft if kind == "suggest" else ""}
         async for ev in rebuild_engine.run_gather(run):
             yield ev
 
@@ -253,6 +267,35 @@ def draft(run_id: str, body: DraftIn):
     async def gen():
         """Stream the draft pass as Server-Sent Events."""
         async for ev in rebuild_engine.run_draft(run, body.source_ids):
+            yield ev
+
+    return _sse(gen())
+
+
+@router.post("/{run_id}/suggest")
+def suggest(run_id: str, body: SuggestIn):
+    """Open a conversational targeted edit: revise the current article at the owner's direction.
+
+    The first turn of "Suggest revisions" — seeds the live article body, the curated source
+    notes, and read-only backlinks, then streams the revised article. Follow-up edits use the
+    shared ``/guide`` endpoint, which continues this same loaded transcript.
+
+    Args:
+        run_id: UUID of the active run.
+        body: ``{"source_ids": [int, ...], "text": str}`` — curated sources and the owner's
+            first guidance.
+
+    Yields:
+        SSE editing events, same shape as ``/draft``.
+
+    Raises:
+        HTTPException: 410 if the run has expired.
+    """
+    run = _live_run(run_id)
+
+    async def gen():
+        """Stream the first conversational-edit turn as Server-Sent Events."""
+        async for ev in rebuild_engine.run_suggest(run, body.source_ids, body.text):
             yield ev
 
     return _sse(gen())

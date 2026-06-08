@@ -818,6 +818,51 @@ def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | No
             .replace("{scope}", scope).replace("{sources}", _sources_text(srcs)))
 
 
+def build_suggest_prompt(conn, title: str, base: str, srcs: list[dict], backlinks: list[dict],
+                         instruction: str | None, known_titles: list[str] | None = None,
+                         source_ids: list[int] | None = None) -> str:
+    """Assemble the actions.wiki_suggest prompt for a conversational targeted edit.
+
+    Mirrors build_write_prompt but seeds the CURRENT article (``base``) as the thing being
+    edited and adds read-only backlink context plus the owner's guidance. Used by the live
+    "Suggest revisions" engine for the first edit turn.
+
+    Args:
+        conn: SQLite connection.
+        title: KB article title being edited.
+        base: The current (live) article body to edit FROM.
+        srcs: Curated source notes from _load_sources (may be empty).
+        backlinks: Read-only backlink context dicts ({title, excerpt}).
+        instruction: The owner's guidance for this turn (empty → a tidy-only default).
+        known_titles: Full set of article titles for cross-link validation.
+        source_ids: Curated source-note IDs (seed mentioned-entity articles into known_titles).
+
+    Returns:
+        Filled prompt string ready to send to the LLM.
+    """
+    from . import people
+    domain = wiki_guides.domain_for_title(title)
+    owner = people.owner_name(conn)
+    general = wiki_guides.guide_text(None)
+    dguide = wiki_guides.guide_text(domain)
+    others = scoped_known_titles(conn, title, known_titles, source_ids=source_ids)
+    known_block = "\n".join(others) if others else "(no other articles yet)"
+    alias_block = known_aliases_block(conn, others)
+    bl = "\n\n".join(f"[{b['title']}]\n{b['excerpt']}" for b in (backlinks or [])) or "(none)"
+    guidance = (instruction or "").strip() or (
+        "Review the article and tidy any formatting or linking issues; make no factual change "
+        "without a source.")
+    return (prompts.get("actions.wiki_suggest", "")
+            .replace("{owner}", owner)
+            .replace("{general_guide}", general).replace("{domain_guide}", dguide)
+            .replace("{domain}", domain or "").replace("{title}", title)
+            .replace("{known_titles}", known_block).replace("{known_aliases}", alias_block)
+            .replace("{backlinks}", bl)
+            .replace("{sources}", _sources_text(srcs) if srcs else "(none)")
+            .replace("{base}", base or "(empty)")
+            .replace("{instructions}", guidance))
+
+
 def write_one(conn, art: dict, instructions: str | None = None,
               known_titles: list[str] | None = None) -> dict:
     """Write one kb article from its raw source notes and apply a structure lint/revise pass.

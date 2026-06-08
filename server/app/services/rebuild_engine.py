@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import AsyncGenerator
 
 from . import llm
@@ -446,6 +447,82 @@ async def run_draft(run, source_ids: list[int], max_tokens: int | None = None) -
     if not run.known:
         run.known = wiki_build._known_titles(conn)
     run.messages = [{"role": "user", "content": wiki_build.build_write_prompt(conn, art, srcs, instr, run.known)}]
+    async for ev in _generate(run, conn, max_tokens=max_tokens):
+        yield ev
+
+
+def _load_backlinks(conn, title: str, *, cap_each: int = 400, max_links: int = 12) -> list[dict]:
+    """Load read-only backlink context: kb articles that link TO this one.
+
+    Firewall on the way IN: when the target article is non-private, a private-domain
+    (Health/Finance) backlink source is EXCLUDED so its content can never leak into a
+    shareable article. Raw notes (non-kb/) are skipped — only article-to-article context.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the article being edited.
+        cap_each: Max characters of each backlink's body to include as context.
+        max_links: Max number of backlinks to include.
+
+    Returns:
+        List of {title, excerpt} dicts for the permitted backlinks.
+    """
+    from . import notes as notes_svc, wiki_guides
+    row = notes_svc.get_by_title(conn, title)
+    if not row:
+        return []
+    target_private = wiki_guides.is_private_title(title)
+    out: list[dict] = []
+    for b in notes_svc.backlinks(conn, row["id"]):
+        bt = str(b["title"])
+        if not bt.lower().startswith("kb/"):
+            continue                       # article-to-article context only, never a raw note
+        if wiki_guides.is_private_title(bt) and not target_private:
+            continue                       # PII firewall: no private-domain prose into a public article
+        r = conn.execute("SELECT content_md FROM notes WHERE id=?", (b["id"],)).fetchone()
+        excerpt = re.sub(r"\s+", " ", (r["content_md"] if r else "") or "").strip()[:cap_each]
+        out.append({"title": bt, "excerpt": excerpt})
+        if len(out) >= max_links:
+            break
+    return out
+
+
+async def run_suggest(run, source_ids: list[int], instruction: str,
+                      max_tokens: int | None = None) -> AsyncGenerator[dict, None]:
+    """Open a conversational targeted edit: revise the CURRENT article at the owner's direction.
+
+    The first turn of "Suggest revisions": seeds the live article body (run.base_content) as the
+    thing being edited, plus the curated source notes and read-only backlinks, then streams the
+    revised article (full re-emit; the diff-first UI reads it as a targeted edit). Subsequent
+    edit turns reuse run_guide, which continues this same loaded transcript. Embedding the BASE
+    in the first USER turn (not a synthetic assistant turn) keeps run_redraft's unwind correct.
+
+    Args:
+        run: Active RebuildRun session object (kind="suggest").
+        source_ids: Curated source-note IDs (may be empty for a pure formatting edit).
+        instruction: The owner's first guidance.
+        max_tokens: Output token budget passed through to _generate.
+
+    Yields:
+        Event dicts (see _generate).
+    """
+    from ..db import get_conn
+    from . import wiki_build
+
+    conn = get_conn()
+    ids = [int(i) for i in (source_ids or []) if i]
+    art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
+    subject = f"{run.title.rsplit('/', 1)[-1]} {art.get('scope') or ''}".strip()
+    srcs = wiki_build._load_sources(conn, ids, query=subject) if ids else []
+    run.sources = [{"title": s["title"]} for s in srcs]
+    if not run.known:
+        run.known = wiki_build._known_titles(conn)
+    backlinks = _load_backlinks(conn, run.title)
+    prompt = wiki_build.build_suggest_prompt(
+        conn, run.title, run.base_content, srcs, backlinks, instruction,
+        known_titles=run.known, source_ids=ids)
+    run.messages = [{"role": "user", "content": prompt}]
+    run.status = "guiding"
     async for ev in _generate(run, conn, max_tokens=max_tokens):
         yield ev
 

@@ -27,7 +27,7 @@ show_missing = true
 # FLOOR, not a target — pinned just under the measured baseline so adopting the
 # standard never reds CI without a code change. Ratchet UP as coverage rises;
 # never set above actual. (See docs/coverage-audit for the weak modules to lift.)
-fail_under = 76
+fail_under = 79
 exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",

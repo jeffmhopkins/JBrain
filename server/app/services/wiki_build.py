@@ -2419,11 +2419,21 @@ _NEEDS_EDIT = {"answered", "applied", "reconciled"}
 
 
 def _apply_maintain(conn, out: dict, version_note: str) -> tuple[bool, int]:
-    """Apply a maintain_one result: save the revision (versioned), close the items the model
-    GENUINELY settled (recording HOW), record any new items. An item closes only when its
-    `outcome` is a real settlement (see _CLOSING) — and answered/applied/reconciled also
-    require the article to have changed, else the item stays open. Returns (content_changed,
-    number_of_items_actually_closed)."""
+    """Persist a maintain_one result: save the revision and close genuinely settled items.
+
+    Saves the revision (versioned), closes the items the model GENUINELY settled (recording
+    HOW), and records any new items. An item closes only when its ``outcome`` is a real
+    settlement (see _CLOSING) — and answered/applied/reconciled also require the article to
+    have changed, else the item stays open.
+
+    Args:
+        conn: SQLite connection.
+        out: Result dict from maintain_one.
+        version_note: Version note to record on the upsert.
+
+    Returns:
+        Tuple of (content_changed, number_of_items_actually_closed).
+    """
     from . import article_talk
     from . import notes as notes_svc
     if not out["ok"]:
@@ -2459,8 +2469,11 @@ _MAINT_WATERMARK = "kb_maintain:since"
 
 
 def _now_sec(conn) -> str:
-    # article_talk.created_at is SECOND precision (datetime('now')); take the watermark at
-    # the same precision so the `>=` gate below is exact, never off by a sub-second.
+    """Return the current UTC datetime at second precision for watermark use.
+
+    article_talk.created_at is second-precision (datetime('now')); taking the watermark at
+    the same precision makes the >= gate exact, never off by a sub-second.
+    """
     return conn.execute("SELECT strftime('%Y-%m-%d %H:%M:%S','now') AS n").fetchone()["n"]
 
 

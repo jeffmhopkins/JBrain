@@ -202,8 +202,17 @@ def reply(conn, talk_id: int, body: str, author: str = "user") -> int | None:
 
 
 def replies_for(conn, talk_ids: list[int]) -> dict[int, list[dict]]:
-    """Replies for a set of talk-item ids, oldest-first, grouped by talk_id. One query —
-    used by both list_for (UI) and maintain_one (fold into the writer prompt)."""
+    """Fetch replies for a set of talk-item ids in a single query, grouped by talk_id.
+
+    Used by both list_for (UI) and maintain_one (fold into the writer prompt).
+
+    Args:
+        conn: Database connection.
+        talk_ids: List of article_talk.id values to fetch replies for.
+
+    Returns:
+        Dict mapping talk_id → list of reply dicts (oldest-first).
+    """
     ids = [int(i) for i in (talk_ids or [])]
     if not ids:
         return {}
@@ -217,9 +226,19 @@ def replies_for(conn, talk_ids: list[int]) -> dict[int, list[dict]]:
 
 
 def list_for(conn, article_title: str) -> list[dict]:
-    """All talk for an article — open items first, then most-recent. A promoted correction
-    carries source_note_slug (the truth note it spawned), or NULL if that note was deleted.
-    Each item carries its `replies` (the owner↔AI conversation), oldest-first."""
+    """Return all talk entries for an article with replies embedded.
+
+    Open items sort first, then most-recent. A promoted correction carries
+    source_note_slug (the truth note it spawned), or NULL if that note was deleted.
+    Each item has a 'replies' key (owner↔AI conversation, oldest-first).
+
+    Args:
+        conn: Database connection.
+        article_title: Title of the KB article.
+
+    Returns:
+        List of talk entry dicts, each with an embedded 'replies' list.
+    """
     rows = conn.execute(
         "SELECT t.id, t.kind, t.body, t.author, t.created_at, t.resolved_at, t.resolution, "
         "t.is_correction, t.source_note_id, n.slug AS source_note_slug "
@@ -236,7 +255,15 @@ def list_for(conn, article_title: str) -> list[dict]:
 
 
 def resolve_with(conn, talk_id: int, how: str | None = None) -> None:
-    """Resolve an item AND record how it was addressed (the maintenance pass uses this)."""
+    """Resolve an open talk item and record how it was addressed.
+
+    Used by the maintenance pass to close items it has handled.
+
+    Args:
+        conn: Database connection.
+        talk_id: The article_talk.id to resolve.
+        how: Optional resolution description (truncated to 500 chars).
+    """
     conn.execute(
         "UPDATE article_talk SET resolved_at=datetime('now'), resolution=? WHERE id=? AND resolved_at IS NULL",
         ((how or "").strip()[:500] or None, talk_id))

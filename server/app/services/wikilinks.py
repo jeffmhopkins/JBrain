@@ -199,10 +199,20 @@ def _iter_display_links(content_md: str):
 
 def scan_link_labels(conn) -> list[dict]:
     """Scan every live note for [[Target|Display]] links that should drop their alias.
+
     Each finding has kind 'mismatch' (label names a different article — high-confidence:
     a different note in the same folder, or a former title of the target) or 'verbose'
     (the label just repeats the article's path/name). The fix is always the bare
-    [[Target]], which renders the article's clean short name."""
+    [[Target]], which renders the article's clean short name. Returns [] on indeterminate
+    alias surface (fail-closed: strips nothing rather than risking intentional alias loss).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        List of finding dicts, each with kind, source_id, raw, target, display,
+        desired_display, fixed, and reason.
+    """
     notes = conn.execute(
         "SELECT id, title, slug, content_md FROM notes WHERE deleted_at IS NULL"
     ).fetchall()
@@ -281,8 +291,17 @@ def scan_link_labels(conn) -> list[dict]:
 
 
 def audit_display_mismatches(conn) -> list[dict]:
-    """High-confidence label mismatches only (a label naming a different article) — what
-    the on-view Wiki panel flags. Verbose-alias tidying is left to the maintenance sweep."""
+    """Return high-confidence label mismatches only (a label naming a different article).
+
+    These are what the on-view Wiki panel flags. Verbose-alias tidying is left to the
+    maintenance sweep.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Subset of scan_link_labels() findings where kind == 'mismatch'.
+    """
     return [f for f in scan_link_labels(conn) if f["kind"] == "mismatch"]
 
 

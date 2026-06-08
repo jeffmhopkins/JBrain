@@ -2966,10 +2966,27 @@ def _tool_create_share_link(conn, conversation_id, title, scope="view"):
 
 def _tool_create_guided_share(conn, conversation_id, goal, sub_prompt, intro="",
                               dest_title=None, ttl_days=14, bind=False, single_use=False):
-    """Mint a DRAFT guided AI intake link. The owner reviews/activates it (approval
-    #1) before recipients can use it. The interview AI (guided_svc) has no brain
-    access. `sub_prompt` = the goal-specific instructions you authored from the
-    owner's answers; it is wrapped at runtime by a fixed safety preamble."""
+    """Implement the create_guided_share tool: mint a DRAFT guided AI intake link.
+
+    The owner reviews and activates it (approval #1) before recipients can use
+    it. The interview AI (guided_svc) has no brain access. `sub_prompt` is the
+    goal-specific instructions authored from the owner's answers; it is wrapped
+    at runtime by a fixed safety preamble.
+
+    Args:
+        conn: SQLite connection.
+        conversation_id: Current conversation primary key.
+        goal: One-line intake goal.
+        sub_prompt: The interview instructions for the intake AI.
+        intro: Optional warm intro the recipient sees.
+        dest_title: Note the approved result lands in (created if absent).
+        ttl_days: Link TTL in days.
+        bind: Lock to the first device that begins it.
+        single_use: Close the link after one completed response.
+
+    Returns:
+        Tuple (applied_message, applied_event).
+    """
     from . import share as share_svc
     from . import guided as guided_svc
     bad = guided_svc.sensitive_reason(f"{goal}\n{intro}\n{sub_prompt}")

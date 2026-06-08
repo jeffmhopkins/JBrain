@@ -75,17 +75,23 @@ def today_local() -> date:
 
 
 def today_iso() -> str:
+    """Return today's date in the app timezone as an ISO 8601 string (YYYY-MM-DD)."""
     return now_local().date().isoformat()
 
 
 def today_path() -> str:
-    """Today as 'YYYY/MM/DD' in the app tz (the dated-capture bucket)."""
+    """Return today as 'YYYY/MM/DD' in the app timezone for use as a dated-capture bucket path."""
     return now_local().strftime("%Y/%m/%d")
 
 
 def now_prompt() -> str:
-    """Human grounding string for the agent system prompt, e.g.
-    'Monday, 2026-06-01 14:30 EDT (UTC-04:00)'."""
+    """Return a human grounding string for the agent system prompt.
+
+    Example: 'Monday, 2026-06-01 14:30 EDT (UTC-04:00)'.
+
+    Returns:
+        Formatted local datetime string with day name, timezone abbreviation, and UTC offset.
+    """
     n = now_local()
     off = n.strftime("%z") or "+0000"
     off = f"{off[:3]}:{off[3:]}"
@@ -102,6 +108,14 @@ _UNITS = (("year", 31536000), ("month", 2592000), ("week", 604800),
 
 
 def _humanize(seconds: float) -> str:
+    """Convert a duration in seconds to a human-readable string (e.g. '3 days').
+
+    Args:
+        seconds: Duration in seconds (sign is ignored).
+
+    Returns:
+        String like '2 years', '1 month', '5 days', or 'less than a minute'.
+    """
     secs = abs(int(seconds))
     for unit, n in _UNITS:
         if secs >= n:

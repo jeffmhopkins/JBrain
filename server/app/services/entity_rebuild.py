@@ -136,8 +136,16 @@ def _worker() -> None:
 
 
 def request_rebuild(conn) -> None:
-    """Request thread (called AFTER the decision is committed): mark the index dirty durably,
-    then ensure exactly one worker is/gets running (coalescing concurrent requests)."""
+    """Request an entity index rebuild (called after a decision is committed).
+
+    Marks the index dirty durably (committed before handing off so a crash here still
+    reconciles on the next boot), then ensures exactly one background worker is running
+    or will run (coalescing concurrent requests). In test mode (``run_inline=True``),
+    runs the rebuild synchronously.
+
+    Args:
+        conn: SQLite connection on the request thread.
+    """
     global _running, _pending
     set_meta(conn, _DIRTY, "1")
     conn.commit()                       # durable BEFORE we hand off — survives a crash here
@@ -160,9 +168,15 @@ def request_rebuild(conn) -> None:
 
 
 def reset_on_boot(conn) -> None:
-    """On boot, clear any stale 'running' status from a prior process and re-trigger a rebuild
-    if one was owed (dirty) — so a decision whose rebuild was interrupted by a restart is
-    reconciled. Idempotent; safe to call before the app serves traffic."""
+    """Clear stale state on startup and re-trigger any owed rebuild.
+
+    Clears any 'running' status left by a prior process and calls request_rebuild if
+    the dirty flag is set, so a decision whose rebuild was interrupted by a restart is
+    reconciled. Idempotent; safe to call before the app serves traffic.
+
+    Args:
+        conn: SQLite connection.
+    """
     st = get_meta(_STATUS, "idle", conn=conn) or "idle"
     if st == "running":
         set_meta(conn, _STATUS, "idle")

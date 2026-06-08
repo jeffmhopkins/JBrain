@@ -114,8 +114,13 @@ SUFFIXES: frozenset[str] = frozenset({"jr", "sr", "ii", "iii", "iv", "2nd", "3rd
 
 
 def _build_canon() -> dict[str, str]:
-    """token -> canonical token (the group's formal name, listed first in each entry).
-    Earlier groups win a token if it somehow appears twice (kept stable & deterministic)."""
+    """Build the token -> canonical-token lookup from _GROUPS at import time.
+
+    Earlier groups win when a token appears in more than one group (kept deterministic).
+
+    Returns:
+        Dict mapping every variant/formal token to the group's formal name.
+    """
     canon: dict[str, str] = {}
     for formal, variants in _GROUPS:
         for tok in (formal, *variants):

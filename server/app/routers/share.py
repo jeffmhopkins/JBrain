@@ -1004,6 +1004,21 @@ def _chat_landing(conn, link, request: Request) -> dict:
 
 
 def _resolve_chat(conn, request: Request, token: str):
+    """Resolve a token to an active chat link and channel.
+
+    Args:
+        conn: Active database connection.
+        request: The incoming request (rate-limit check).
+        token: Share link token from the URL path.
+
+    Returns:
+        Tuple of (link row, chat_channels row).
+
+    Raises:
+        HTTPException: 404 if the token is not a chat link or the channel is missing.
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 429 if the client is rate-limited.
+    """
     link = _resolve_or_404(conn, request, token)
     if link["kind"] != "chat":
         raise HTTPException(status_code=404, detail="Not found.")
@@ -1014,6 +1029,8 @@ def _resolve_chat(conn, request: Request, token: str):
 
 
 class ChatJoinIn(BaseModel):
+    """Request body for claiming a 1:1 encrypted-chat link."""
+
     name: str | None = Field(default=None, max_length=80)
 
 

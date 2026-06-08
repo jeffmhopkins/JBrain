@@ -146,8 +146,19 @@ def _plan_person(conn, people_title: str, content: str) -> dict | None:
 
 
 def _disambiguate(conn, people_title: str, leaf: str) -> str:
-    """A kb/Health/<leaf> already belongs to a DIFFERENT person (two same-named People under
-    different parents). Pick a stable, collision-free title that mirrors the People parent."""
+    """Pick a collision-free kb/Health title when the default is taken by a different person.
+
+    Handles two same-named People articles under different parent paths. The disambiguated
+    title mirrors the People parent path for stability.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the source People article.
+        leaf: Last path component of the People title (the person's name leaf).
+
+    Returns:
+        A kb/Health/* title string that is either unclaimed or already owned by this person.
+    """
     parts = people_title.split("/")
     parent = parts[-2] if len(parts) >= 4 else None             # kb/People/<parent>/<leaf>
     cand = f"kb/Health/{parent} {leaf}" if parent else f"kb/Health/{leaf} (2)"
@@ -161,8 +172,21 @@ def _disambiguate(conn, people_title: str, leaf: str) -> str:
 
 
 def _apply_person(conn, plan: dict, on_conflict: str) -> dict:
-    """Write one person's split (validated, versioned, committed). Never writes a structurally
-    broken page — a lint error aborts that person without touching their People article."""
+    """Write one person's health split (validated, versioned, committed).
+
+    Never writes a structurally broken page — a lint error aborts that person without
+    touching their People article.
+
+    Args:
+        conn: Database connection.
+        plan: Plan dict from _plan_person (must have no borderline issue).
+        on_conflict: 'skip' to leave an existing health page untouched, or 'append' to
+            merge the new sections onto the end of it.
+
+    Returns:
+        Dict with 'status' key: 'extracted' (success), 'conflict' (skipped due to existing
+        page), or 'error' (lint failure, with 'errors' key).
+    """
     people_title = plan["people_title"]
     target = f"kb/Health/{plan['leaf']}"
     existing = notes_svc.get_by_title(conn, target)

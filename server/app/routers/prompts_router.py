@@ -44,6 +44,14 @@ def set_prompt(key: str, body: PromptIn):
 
 @router.delete("/{key:path}")
 def reset_prompt(key: str):
+    """Reset a prompt override, reverting it to its built-in default.
+
+    Args:
+        key: Dot-separated prompt key path to reset.
+
+    Returns:
+        Dict with key 'ok' set to True.
+    """
     conn = get_conn()
     prompts.clear_override(conn, key)
     conn.commit()

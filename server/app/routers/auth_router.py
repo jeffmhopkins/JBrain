@@ -24,7 +24,7 @@ def verify():
     # Version is returned here (authed) so the PWA can do its compatibility check.
     # has_llm gates LLM-only UI; app_tz lets the UI render UTC timestamps in the
     # owner's configured local zone (labeled).
-    from ..services import clock, push, people
+    from ..services import clock, push, people, system_status
     from ..db import get_conn
     s = get_settings()
     # owner_set drives the first-run onboarding gate: false while the owner is still the
@@ -35,4 +35,8 @@ def verify():
             # Which provider keys are present, so the model picker can warn before you
             # select a model whose key isn't configured.
             "llm_keys": {"anthropic": s.has_anthropic, "xai": s.has_xai},
-            "vapid_public_key": push.public_key()}
+            "vapid_public_key": push.public_key(),
+            # Same `capabilities` shape as GET /api/system/status, so the PWA gets a
+            # FREE initial health snapshot on boot (one client adapter ingests both).
+            # NB: this makes /verify run one SELECT 1 — no longer DB-touch-free.
+            "capabilities": system_status.capabilities()}

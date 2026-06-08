@@ -170,6 +170,9 @@ def _guided_landing(conn, link) -> dict:
         "owner": get_settings().brain_name,
         "intro": spec["intro"],
         "goal": spec["goal"],
+        # So the public recipient page can show "temporarily unavailable" instead of a
+        # chat that 404s at start/turn (same has_credentials() predicate as the dot).
+        "llm_ready": llm_ready(),
         # Server-injected, non-editable consent + disclaimer:
         "consent": (f"You’re chatting with an AI assistant set up by {get_settings().brain_name} "
                     "to gather some information. Your conversation is shared with them and "
@@ -267,6 +270,8 @@ def _research_landing(conn, link) -> dict:
         "brain_name": get_settings().brain_name,
         "owner": get_settings().brain_name,
         "intro": spec["intro"],
+        # See _guided_landing: lets the recipient page gate on AI availability up front.
+        "llm_ready": llm_ready(),
         # When labs are attached the assistant can pull up specific shared results on demand; the
         # recipient page uses this only for the affordance — no charts/analytes are dumped up front.
         "has_labs": bool(research_svc.lab_allowed(spec)),

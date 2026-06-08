@@ -32,11 +32,20 @@ _TITLE_MAX = 60
 
 
 def _day_of(conn, title: str, created_at: str | None) -> str:
-    """The note's capture day as YYYY/MM/DD.
+    """Return the note's capture day as 'YYYY/MM/DD'.
 
-    For a PWA daily note (notes/daily/YYYY/MM/DD[/N]) the day comes from the TITLE path —
-    its created_at can fall on the next day (a summary rolled up just after midnight). For
-    any other loose note it's the created_at day (today if missing)."""
+    For a PWA daily note (notes/daily/YYYY/MM/DD[/N]) the day comes from the title path
+    because created_at can fall on the next day (a summary rolled up just after midnight).
+    For any other loose note the created_at day is used (today if missing).
+
+    Args:
+        conn: SQLite connection (used to read the current date when created_at is absent).
+        title: Note title (may match the PWA daily pattern).
+        created_at: ISO timestamp string from the DB, or None.
+
+    Returns:
+        Date string in 'YYYY/MM/DD' format.
+    """
     m = _DAILY.match(title or "")
     if m:
         return "/".join(m.groups())
@@ -82,12 +91,30 @@ _DEFAULT_TITLE_PROMPT = (
 
 
 def _sanitize_title(s: str) -> str:
+    """Sanitize an LLM-generated title to a safe filename-friendly string.
+
+    Strips slashes, brackets, quotes, pipes, newlines, and trims to _TITLE_MAX chars.
+
+    Args:
+        s: Raw title string from the LLM.
+
+    Returns:
+        Cleaned title string, possibly empty if nothing safe remains.
+    """
     s = re.sub(r"[\\/\[\]\"'\n\r|]+", " ", s or "")
     s = re.sub(r"\s+", " ", s).strip().strip("-").strip()
     return s[:_TITLE_MAX].strip()
 
 
 def _gen_title(content: str) -> str:
+    """Generate a short leaf title for a note using the LLM.
+
+    Args:
+        content: Note body text (truncated to 2000 chars for the prompt).
+
+    Returns:
+        Sanitized title string, or '' on LLM failure or empty result.
+    """
     prompt = prompts.get("actions.generate_note_title", _DEFAULT_TITLE_PROMPT) + "\n\nNOTE:\n" + (content or "")[:2000]
     try:
         out = llm.complete([{"role": "user", "content": prompt}], model=llm.model_for("cheap"), max_tokens=40)

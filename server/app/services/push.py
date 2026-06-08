@@ -109,6 +109,12 @@ def upsert_subscription(conn, endpoint: str, p256dh: str, auth: str, ua: str | N
 
 
 def delete_subscription(conn, endpoint: str) -> None:
+    """Remove a push subscription by endpoint.
+
+    Args:
+        conn: SQLite connection (commits internally).
+        endpoint: Push endpoint URL to remove.
+    """
     conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
     conn.commit()
 
@@ -116,10 +122,19 @@ def delete_subscription(conn, endpoint: str) -> None:
 # --- Sending ----------------------------------------------------------------
 
 def send_test(conn, delay_seconds: int = 0) -> dict:
-    """Fire a test push to every subscribed device, optionally after a delay (so
-    the user can close the app and confirm closed-app delivery). The delay is
-    server-side — it survives the app being backgrounded/closed. Returns what was
-    attempted so the UI can guide the user."""
+    """Fire a test push to every subscribed device, optionally after a server-side delay.
+
+    The delay survives the app being backgrounded/closed so the owner can verify
+    closed-app delivery. Returns a status dict so the UI can guide the user.
+
+    Args:
+        conn: SQLite connection (used for sync sends; async path opens its own).
+        delay_seconds: Seconds to wait before sending (clamped to 0–300). 0 = immediate.
+
+    Returns:
+        Dict with keys: subscriptions, vapid, delay, and (on immediate send) sent,
+        failed, errors.
+    """
     n = conn.execute("SELECT COUNT(*) AS c FROM push_subscriptions").fetchone()["c"]
     has_vapid = bool(get_meta(_PRIV_META))
     delay = max(0, min(int(delay_seconds or 0), 300))   # clamp 0–5min
@@ -137,17 +152,31 @@ def send_test(conn, delay_seconds: int = 0) -> dict:
 
 
 def notify_review_created(title: str = "JBrain", body: str = "1 pending") -> None:
-    """Fire-and-forget: spawn a worker that pushes to all subscriptions. Safe to
-    call from inside a request handler AFTER its commit — never raises."""
+    """Fire-and-forget push to all subscriptions on a daemon thread.
+
+    Safe to call from inside a request handler after its commit. Never raises.
+
+    Args:
+        title: Notification title.
+        body: Notification body text.
+    """
     threading.Thread(target=lambda: _send_all(get_conn(), title, body), daemon=True).start()
 
 
 def notify(title: str, body: str, url: str = "/") -> None:
-    """Fire-and-forget notification: post it to the in-app review bell AND push to
-    every device with a deep-link. Runs on its own connection in a daemon thread, so
-    it's safe from a request handler or the scheduler thread; never raises, never
-    touches the caller's transaction. Backs the `notify` pipeline primitive."""
+    """Post an in-app bell item and push a deep-link notification to every device.
+
+    Runs on its own connection in a daemon thread, so it is safe to call from a
+    request handler or the scheduler thread. Never raises, never touches the caller's
+    transaction. Backs the ``notify`` pipeline primitive.
+
+    Args:
+        title: Notification title (truncated to 120 chars in the bell item).
+        body: Notification body text (truncated to 400 chars in the bell item).
+        url: Deep-link URL opened when the user taps the notification.
+    """
     def _go():
+        """Open a fresh DB connection and dispatch the bell item + push."""
         conn = get_conn()
         # A bell item so the alarm icon mirrors the native push (link_slug carries a
         # path like "/map" — the bell opens it directly). Committed BEFORE the push so
@@ -162,9 +191,21 @@ def notify(title: str, body: str, url: str = "/") -> None:
 
 
 def _send_all(conn, title: str, body: str, url: str = "/shares", tag: str = "jbrain-reviews") -> dict:
-    """Send a push to every subscription. Returns {sent, failed, errors}. Logs each
-    attempt to stdout (visible in `docker compose logs api`) and prunes dead
-    endpoints. Never raises."""
+    """Send a Web Push notification to every active subscription.
+
+    Logs each attempt to stdout (visible in ``docker compose logs api``) and prunes
+    dead endpoints (HTTP 404/410). Never raises.
+
+    Args:
+        conn: SQLite connection used to read subscriptions and prune dead ones.
+        title: Notification title.
+        body: Notification body text.
+        url: Deep-link URL included in the payload.
+        tag: Notification tag for browser deduplication.
+
+    Returns:
+        Dict with keys: sent (int), failed (int), errors (list[str]).
+    """
     try:
         priv = get_meta(_PRIV_META)
         if not priv:

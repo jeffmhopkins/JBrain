@@ -10,6 +10,16 @@ router = APIRouter(prefix="/api/graph", tags=["graph"], dependencies=[CurrentUse
 
 @router.get("")
 def graph():
+    """Return knowledge-graph data: nodes (notes) and edges (resolved wiki-links).
+
+    Protected/system pages (any path segment starting with '_') are hidden from
+    both the node list and both ends of every edge, preventing phantom nodes from
+    links to hidden pages.
+
+    Returns:
+        Dict with 'nodes' list (id, title, slug, kind, val) and 'links' list
+        (source id, target id) for live, non-hidden, non-redirect notes.
+    """
     conn = get_conn()
     # Hide protected/system pages (any path segment starts with '_', e.g. kb/_index)
     # from the graph — as nodes and as either end of an edge, so no phantom node is

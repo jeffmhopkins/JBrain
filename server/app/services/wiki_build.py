@@ -707,16 +707,26 @@ def _alias_link_props(conn, body: str, title: str, surface_map: dict) -> list[di
 
 
 def add_links_to_content(conn, title: str, body: str):
-    """Deterministically link bare mentions in `body` to their kb article — the in-memory half
-    of check_needed_links, performing NO DB write so a caller (the live rebuild engine /
-    write_one) can apply it to a staged draft and persist it with the single article write.
-    Returns (new_body, proposals). Two passes: (1) EXACT article-leaf matches; (2) registered
-    ALIAS matches (e.g. prose "Jeff Hopkins" → [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]).
+    """Deterministically link bare mentions in body to their kb articles (in-memory only).
+
+    The in-memory half of check_needed_links — performs NO DB write so a caller (the live
+    rebuild engine / write_one) can apply it to a staged draft and persist it with the single
+    article write. Two passes: (1) EXACT article-leaf matches; (2) registered ALIAS matches
+    (e.g. prose "Jeff Hopkins" → [[kb/People/Jeffrey Hopkins|Jeff Hopkins]]).
 
     Self-guarding for the PII firewall: refuses entirely on a Reference or private (Health/
     Finance) TARGET article (those must stay unnamed / never link People), and never offers a
     private-domain target. Reuses ambiguity/short/common-word refusals and code/link/footnote
-    masking, so it can't link a stop-word, an ambiguous leaf/alias, or inside a citation."""
+    masking, so it can't link a stop-word, an ambiguous leaf/alias, or inside a citation.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the article being written.
+        body: Draft article text to scan and link.
+
+    Returns:
+        Tuple of (new_body_with_links, proposals_list).
+    """
     from . import entity_index
     if wiki_guides.is_private_title(title) or wiki_guides.domain_for_title(title) == "Reference":
         return body, []
@@ -734,6 +744,7 @@ def add_links_to_content(conn, title: str, body: str):
         pass
 
     def linkable(leaf_lower: str, leaf: str) -> bool:
+        """Return True if leaf is safe to auto-link (unambiguous, long enough, not a stop word)."""
         if leaf_lower in ambiguous or len(leaf) < 4:
             return False
         if " " not in leaf and leaf_lower in _STOP_LEAVES:
@@ -770,10 +781,21 @@ def add_links_to_content(conn, title: str, body: str):
 
 def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | None = None,
                        known_titles: list[str] | None = None) -> str:
-    """Assemble the actions.wiki_write prompt for one article from its already-loaded
-    sources + the domain guides. Single source of truth for the writer prompt, shared by
-    write_one (single-shot) and the live streaming rebuild engine. Mirror any change to the
-    prompt assembly in write_one below."""
+    """Assemble the actions.wiki_write prompt for one article.
+
+    Single source of truth for the writer prompt, shared by write_one (single-shot) and the
+    live streaming rebuild engine. Mirror any change to the prompt assembly in write_one below.
+
+    Args:
+        conn: SQLite connection.
+        art: Article dict with ``title``, ``domain``, ``scope``, and ``sources`` keys.
+        srcs: Already-loaded source notes from _load_sources.
+        instructions: Optional per-article guidance appended to the prompt.
+        known_titles: Full set of planned article titles for cross-link validation.
+
+    Returns:
+        Filled prompt string ready to send to the LLM.
+    """
     from . import people
     title = str(art.get("title") or "").strip()
     domain = art.get("domain") or wiki_guides.domain_for_title(title)
@@ -796,10 +818,23 @@ def build_write_prompt(conn, art: dict, srcs: list[dict], instructions: str | No
 
 def write_one(conn, art: dict, instructions: str | None = None,
               known_titles: list[str] | None = None) -> dict:
-    """Write one article from its raw sources + the domain guide, then ONE
-    self-critique/revise pass against the structure lint. `known_titles` is the set of
-    articles that will exist, so cross-links target real pages instead of inventing dead
-    ones. Returns {title, domain, content_md, ok, errors, warnings, stub, talk}."""
+    """Write one kb article from its raw source notes and apply a structure lint/revise pass.
+
+    Performs ONE self-critique/revise pass against the structure lint. ``known_titles`` is the
+    set of articles that will exist, so cross-links target real pages instead of inventing dead
+    ones. Retries once at a doubled token cap on truncation, then quarantines — never saves a
+    half-written article.
+
+    Args:
+        conn: SQLite connection.
+        art: Article dict with ``title``, ``domain``, ``scope``, and ``sources`` keys.
+        instructions: Optional per-article guidance appended to the writer prompt.
+        known_titles: Full planned article-title set for dead-link validation.
+
+    Returns:
+        Dict with keys ``title``, ``domain``, ``content_md``, ``ok``, ``errors``,
+        ``warnings``, ``stub``, and ``talk``.
+    """
     title = str(art.get("title") or "").strip()
     domain = art.get("domain") or wiki_guides.domain_for_title(title)
     scope = str(art.get("scope") or "")
@@ -904,10 +939,17 @@ def write_one(conn, art: dict, instructions: str | None = None,
 
 
 def dead_links(conn) -> list[dict]:
-    """Dangling [[links]] from a kb article to a target that doesn't exist — surfaced so
-    they can be fixed instead of silently rotting. Covers real articles AND the DERIVED
-    nav pages that link out (kb/_index, kb/_disambig/*); only the static guides are skipped
-    (they carry no article cross-links)."""
+    """Return all dangling [[links]] from kb articles to targets that no longer exist.
+
+    Covers real articles AND the derived nav pages (kb/_index, kb/_disambig/*); only the
+    static guides are skipped (they carry no article cross-links).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        List of {source_title, source_slug, target_title} dicts.
+    """
     rows = conn.execute(
         "SELECT s.title AS source_title, s.slug AS source_slug, l.target_title "
         "FROM links l JOIN notes s ON s.id = l.source_note_id AND s.deleted_at IS NULL "
@@ -920,12 +962,20 @@ def dead_links(conn) -> list[dict]:
 
 
 def flag_dead_links(conn) -> dict:
-    """Neutralize dead cross-links in saved articles and LOG the fix. Runs after every
-    article is saved, so it has ground truth: any [[link]] whose target still doesn't
-    exist (e.g. the target article was planned but quarantined) is unwrapped to plain text
-    and recorded as a RESOLVED note on the article's talk — the AI handled it, so it's a
-    log entry, never an open item awaiting a click. Also closes any dead-link items left
-    open by an earlier build/model."""
+    """Neutralize dead cross-links in saved articles and log each fix as a resolved talk entry.
+
+    Runs after every article is saved, so it has ground truth: any [[link]] whose target still
+    doesn't exist (e.g. the target article was planned but quarantined) is unwrapped to plain
+    text and recorded as a RESOLVED note on the article's talk — the AI handled it, so it's a
+    log entry, never an open item awaiting a click. Also closes any dead-link items left open
+    by an earlier build/model.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with keys ``dead_links``, ``articles``, and ``fixed``.
+    """
     from . import article_talk
     from . import notes as notes_svc
     items = dead_links(conn)
@@ -955,14 +1005,22 @@ def flag_dead_links(conn) -> dict:
 
 
 def link_owner(conn) -> dict:
-    """Connect the default person (the note-taker / 'me') to their People article, so the
-    owner's page isn't an orphan. Matches a LIVE (non-redirect) kb/People page by: (1) exact
-    normalized name/declared-alias; (2) a nickname-aware match (jeff↔jeffrey) GATED exactly
-    like the entity merge — a shared distinctive (surname) token, no conflicting generational
-    suffix, nickname-mapped token-subset — and only when EXACTLY ONE page matches (never guess
-    among several); (3) the generic placeholders an unnamed owner page uses ('Owner'/'Me').
-    Stores the matched (canonical) page's slug. Never guesses — returns linked:None rather than
-    risk attaching 'me' to a family member's page."""
+    """Connect the note owner to their kb/People article and store the matched slug.
+
+    Matches a LIVE (non-redirect) kb/People page by three strategies in order:
+    (1) exact normalized name/declared-alias; (2) a nickname-aware match (jeff↔jeffrey) gated
+    exactly like the entity merge — shared distinctive surname token, no generational-suffix
+    conflict, nickname-mapped token-subset — and only when EXACTLY ONE page matches (never
+    guess among several); (3) generic placeholder leaves an unnamed owner page uses
+    ('Owner'/'Me'). Never guesses — returns linked:None rather than risk attaching 'me' to a
+    family member's page.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with key ``linked`` (matched article title or None), and ``person`` when matched.
+    """
     from . import people, entity_index, nickname_lexicon
     o = people.owner(conn)
     if not o:
@@ -1012,12 +1070,20 @@ def link_owner(conn) -> dict:
 
 
 def reconcile_owner(conn) -> dict:
-    """E1+E2: bind the owner to their People article (link_owner) AND register the owner's
-    display name + declared aliases as DURABLE entity_decisions('alias') of that article's
-    entity, so prose using a nickname ("Jeff Hopkins") links to the canonical page. Split-gated
-    (never re-binds across a user split) and idempotent (entity_decisions.add de-dupes). The
-    seeded aliases materialize into entity_aliases on the next entity_index.rebuild. Safe on the
-    request path (no LLM/embeddings). Returns {linked, person, aliases_seeded}."""
+    """Bind the owner to their People article and seed their name/aliases as entity decisions.
+
+    E1+E2: runs link_owner AND registers the owner's display name + declared aliases as
+    DURABLE entity_decisions('alias') of that article's entity, so prose using a nickname
+    ("Jeff Hopkins") links to the canonical page. Split-gated (never re-binds across a user
+    split) and idempotent (entity_decisions.add de-dupes). The seeded aliases materialize into
+    entity_aliases on the next entity_index.rebuild. Safe on the request path (no LLM/embeddings).
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with keys ``linked``, ``person``, and ``aliases_seeded``.
+    """
     from . import people, entity_index, entity_decisions
     res = link_owner(conn)
     title = res.get("linked")
@@ -1053,18 +1119,35 @@ _MD_ESCAPE_RE = re.compile(r"([\\*_`\[\]])")
 
 
 def _md_escape(s: str) -> str:
-    """Escape the markdown emphasis/link chars in an alias display so a name like 'Bob *x*'
-    can't break the AKA line's own emphasis."""
+    """Escape markdown emphasis/link characters in an alias display string.
+
+    Prevents a name like 'Bob *x*' from breaking the AKA line's own emphasis.
+
+    Args:
+        s: Alias display string to escape.
+
+    Returns:
+        Escaped string safe for embedding in markdown emphasis.
+    """
     return _MD_ESCAPE_RE.sub(r"\\\1", s or "")
 
 
 def _apply_aka_line(body: str, aliases: list[str]) -> str:
-    """Idempotently set (or, with no aliases, remove) the '*Also known as: ...*' line directly
-    under the article's H1. Deterministic — rebuilds the H1/AKA/blank layout each call, so
-    repeated runs don't accumulate blanks. Robust to leading frontmatter (finds the first H1
-    by scanning, not line 0) and to code fences (never strips an AKA-looking line inside a
-    ``` block). If there's no H1 at all, the body is left unchanged (we never synthesize a
-    top-of-file AKA above frontmatter). The single source of truth for AKA display."""
+    """Idempotently set or remove the '*Also known as: ...*' line under the article's H1.
+
+    Deterministic — rebuilds the H1/AKA/blank layout each call, so repeated runs don't
+    accumulate blanks. Robust to leading frontmatter (finds the first H1 by scanning, not
+    line 0) and to code fences (never strips an AKA-looking line inside a ``` block). If
+    there's no H1 at all, the body is left unchanged (we never synthesize a top-of-file AKA
+    above frontmatter). The single source of truth for AKA display.
+
+    Args:
+        body: Article markdown to update.
+        aliases: Alias display strings; empty list removes any existing AKA line.
+
+    Returns:
+        Updated article body.
+    """
     body = body or ""
     lines = body.split("\n")
     h1 = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith("# ")), None)
@@ -1090,10 +1173,18 @@ def _apply_aka_line(body: str, aliases: list[str]) -> str:
 
 
 def surface_aliases(conn) -> dict:
-    """Ensure each person/animal article whose entity has aliases shows an '*Also known as:
-    ...*' line under its H1 (deterministic, no LLM — the AKA source of truth). Idempotent:
-    updates the line to the current alias set and removes it when there are none. Aliases
-    that equal the article's own leaf name are skipped. Returns {updated}."""
+    """Ensure each person/animal article shows a current '*Also known as:*' line under its H1.
+
+    Deterministic, no LLM — the AKA source of truth. Idempotent: updates the line to the
+    current alias set and removes it when there are none. Aliases that equal the article's own
+    leaf name are skipped.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with key ``updated`` (count of articles whose body changed).
+    """
     from . import notes as notes_svc, entity_index
     updated = 0
     for e in conn.execute(
@@ -1125,14 +1216,21 @@ _H1_RE = re.compile(r"(?m)^#\s")
 
 
 def _extract_maintain(text: str):
-    """Pull the maintain JSON + the article body out of a maintenance reply.
+    """Extract the article body and resolution payload from a maintenance reply.
 
     The body is the content of a ```article fence when present, so any preamble or commentary
     OUTSIDE the two fences ("here's the article", "I reconciled X…") is discarded by
     construction — the model can't leak talk into the saved article. Falls back, for older
     un-fenced output, to the text minus the maintain block; as a backstop it drops a
     non-article preamble before the first top-level "# " heading, but ONLY when an H1 exists
-    (never deletes an article that merely lacks one). Returns (article_body, {resolved, new})."""
+    (never deletes an article that merely lacks one).
+
+    Args:
+        text: Raw maintenance reply from the LLM.
+
+    Returns:
+        Tuple of (article_body_str, payload_dict) where payload has ``resolved`` and ``new``.
+    """
     text = text or ""
     data: dict = {}
     m = _MAINTAIN_RE.search(text)
@@ -1155,10 +1253,23 @@ def _extract_maintain(text: str):
 
 def maintain_one(conn, article_title: str, known_titles: list[str] | None = None,
                  extra_source_ids: list[int] | None = None, removed_titles: list[str] | None = None) -> dict:
-    """Component 3: update an article so it's faithful + current — address its OPEN talk
-    items, integrate NEW/CHANGED sources (extra_source_ids), and purge claims that relied
-    on REMOVED (deleted) sources (removed_titles). Returns the revised article + which
-    items the model resolved (with how) + any new items. Pure — the caller applies/records."""
+    """Update one article to be faithful and current (component 3 of the KB pipeline).
+
+    Addresses open talk items, integrates NEW/CHANGED sources (extra_source_ids), and purges
+    claims that relied on REMOVED (deleted) sources (removed_titles). Pure — the caller
+    applies/records the result.
+
+    Args:
+        conn: SQLite connection.
+        article_title: Title of the kb article to maintain.
+        known_titles: Full article-title set for dead-link validation.
+        extra_source_ids: Note ids of new/changed sources to integrate.
+        removed_titles: Titles of deleted source notes whose claims should be purged.
+
+    Returns:
+        Dict with keys ``title``, ``ok``, ``changed``, ``content_md``, ``resolved``,
+        ``new``, ``errors``, and ``warnings``.
+    """
     from . import article_talk
     base = {"title": article_title, "ok": False, "changed": False,
             "content_md": "", "resolved": [], "new": [], "errors": [], "warnings": []}
@@ -1197,6 +1308,7 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
     reps = article_talk.replies_for(conn, [it["id"] for it in open_items])
 
     def _item_line(it: dict) -> str:
+        """Format one open talk item (with any owner replies) as a prompt line."""
         head = (f"[{it['id']}] ("
                 f"{'correction — SOURCE OF TRUTH, authoritative' if it.get('is_correction') else it['kind']}, "
                 f"by {it['author']}) {it['body']}")
@@ -1291,7 +1403,15 @@ def maintain_one(conn, article_title: str, known_titles: list[str] | None = None
 
 
 def _cited_source_len(conn, content: str) -> int:
-    """Total length of the source notes a (kb) article cites — the grounding it can claim."""
+    """Return the total character length of source notes cited by a kb article.
+
+    Args:
+        conn: SQLite connection.
+        content: Article markdown (wikilinks to source notes are extracted from here).
+
+    Returns:
+        Sum of content_md lengths across all live cited non-kb notes.
+    """
     total = 0
     for t in wikilinks.extract_links(content):
         if t.lower().startswith("kb/"):
@@ -1304,10 +1424,21 @@ def _cited_source_len(conn, content: str) -> int:
 
 
 def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> dict:
-    """Flag Reference articles whose body far outweighs their cited sources — the signature
-    of the model padding with general 'common knowledge' from training instead of your
-    notes. Records a todo (the worklist for an approved external fill) and returns counts.
-    Forward-looking: the GROUNDING rule keeps new articles honest; this audits what's there."""
+    """Flag Reference articles whose body far outweighs their cited sources.
+
+    A body-to-sources ratio exceeding `ratio` is the signature of the model padding with
+    general 'common knowledge' from training instead of the owner's notes. Records a note (the
+    worklist for an approved external fill) and returns counts. Forward-looking: the GROUNDING
+    rule keeps new articles honest; this audits what's already there.
+
+    Args:
+        conn: SQLite connection.
+        ratio: Body-chars / cited-source-chars threshold above which an article is flagged.
+        min_body: Minimum body length to consider; stubs below this are fine.
+
+    Returns:
+        Dict with keys ``scanned`` and ``flagged``.
+    """
     from . import article_talk
     # Reclassify any flags left as 'todo' by an earlier build so they stop driving maintenance.
     conn.execute("UPDATE article_talk SET kind='note' WHERE kind='todo' AND resolved_at IS NULL "
@@ -1336,18 +1467,29 @@ def flag_ungrounded_reference(conn, ratio: float = 3.0, min_body: int = 500) -> 
 
 
 def _known_titles(conn) -> list[str]:
+    """Return a sorted list of all live non-protected kb article titles."""
     return sorted({r["title"] for r in conn.execute(
         r"SELECT title FROM notes WHERE kind='kb' AND deleted_at IS NULL AND redirect_to IS NULL "
         r"AND title NOT LIKE 'kb/\_%' ESCAPE '\'").fetchall()})
 
 
 def known_aliases_block(conn, title_set) -> str:
-    """The `{known_aliases}` writer-prompt block: for each registered alias whose canonical
-    article is in `title_set` (the relevance-scoped known_titles offered to the writer), a line
-    'alias → article'. Advisory — it tells the model that prose using a nickname should link to
-    the canonical article keeping the nickname as display ([[article|alias]]); the deterministic
-    add_links_to_content pass still guarantees the link. Reuses the SAME entity_index.alias_surface
-    the linker and hygiene allow-list use, so the offered set never drifts from what's linkable."""
+    """Build the {known_aliases} writer-prompt block for the given title set.
+
+    For each registered alias whose canonical article is in ``title_set``, emits a line
+    '"alias" → article'. Advisory — it tells the model that prose using a nickname should link
+    to the canonical article keeping the nickname as display ([[article|alias]]); the
+    deterministic add_links_to_content pass still guarantees the link. Reuses the SAME
+    entity_index.alias_surface the linker and hygiene allow-list use, so the offered set never
+    drifts from what's linkable.
+
+    Args:
+        conn: SQLite connection.
+        title_set: Iterable of article titles in scope for this writer call.
+
+    Returns:
+        Formatted alias block string, or "(none)" when empty.
+    """
     from . import entity_index
     title_set = {t for t in (title_set or [])}
     if not title_set:
@@ -1366,15 +1508,25 @@ def known_aliases_block(conn, title_set) -> str:
 
 def scoped_known_titles(conn, title: str, all_titles, budget: int = 600,
                         source_ids: list[int] | None = None) -> list[str]:
-    """Relevant cross-link candidates for `title`, replacing the old blind alphabetical
-    `[:600]` cap. When the whole KB fits in `budget` we return everything (no need to
-    scope). Past it, we PRIORITISE a relevant neighbourhood — articles that link to this
-    one (backlinks), this article's own current link targets, same-folder siblings, and the
-    kb pages of entities MENTIONED IN THE CHOSEN SOURCES (so the link vocabulary follows the
-    sources — the channel users intuitively expect) — then top up to `budget`, so we never
-    offer FEWER candidates than the old cap, but the ones we keep when truncating are the
-    relevant ones (the alphabetical slice dropped everything after ~'kb/R…' regardless of
-    relevance). Deterministic, no LLM."""
+    """Return a relevance-scoped cross-link candidate list for a writer prompt.
+
+    Replaces the old blind alphabetical ``[:600]`` cap. When the whole KB fits in ``budget``
+    returns everything. Past it, prioritises a relevant neighbourhood — articles that link to
+    this one (backlinks), this article's own current link targets, same-folder siblings, and
+    the kb pages of entities MENTIONED IN THE CHOSEN SOURCES (so the link vocabulary follows
+    the sources) — then tops up to ``budget`` so we never offer FEWER candidates than the old
+    cap but the ones kept when truncating are the relevant ones. Deterministic, no LLM.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the article being written.
+        all_titles: Full set of planned and existing article titles.
+        budget: Maximum number of titles to return.
+        source_ids: Source note ids used to find entity-linked articles.
+
+    Returns:
+        Sorted list of up to ``budget`` cross-link candidate titles.
+    """
     others = [t for t in (all_titles or []) if t and t != title]
     if len(others) <= budget:
         return others
@@ -1435,11 +1587,20 @@ _kb_lock_depth = threading.local()
 
 
 def kb_lock_acquire(conn, key: str = "kb_write", ttl_s: int = 1800) -> bool:
-    """Claim the KB write lock so manual ops, the scrub, and nightly jobs can't interleave
-    mutations across separate connections. Atomic: INSERT OR IGNORE on a unique key — exactly
-    one caller wins. A holder older than ttl_s is reclaimed so a crash can't wedge the KB.
-    Re-entrant within a thread: a nested acquire by the same holder succeeds without a new
-    DB claim (balanced by a nested release)."""
+    """Claim the KB write lock so concurrent ops can't interleave mutations.
+
+    Atomic: INSERT OR IGNORE on a unique key — exactly one caller wins. A holder older than
+    ttl_s is reclaimed so a crash can't wedge the KB. Re-entrant within a thread: a nested
+    acquire by the same holder succeeds without a new DB claim (balanced by a nested release).
+
+    Args:
+        conn: SQLite connection.
+        key: Lock name (default "kb_write").
+        ttl_s: Seconds after which an unclaimed lock is reclaimed.
+
+    Returns:
+        True if the lock was acquired (or re-entered), False if held by another connection.
+    """
     counts = getattr(_kb_lock_depth, "counts", None)
     if counts is None:
         counts = _kb_lock_depth.counts = {}
@@ -1459,6 +1620,12 @@ def kb_lock_acquire(conn, key: str = "kb_write", ttl_s: int = 1800) -> bool:
 
 
 def kb_lock_release(conn, key: str = "kb_write") -> None:
+    """Release the KB write lock (or decrement the re-entrancy counter).
+
+    Args:
+        conn: SQLite connection.
+        key: Lock name (must match the corresponding acquire call).
+    """
     counts = getattr(_kb_lock_depth, "counts", None) or {}
     if counts.get(key, 0) > 1:
         counts[key] -= 1       # inner (re-entrant) release: keep the DB claim
@@ -1469,12 +1636,21 @@ def kb_lock_release(conn, key: str = "kb_write") -> None:
 
 
 def rebuild_sources(conn, title: str, instructions: str | None = None):
-    """Resolve the PRIMARY SOURCES + merged writer instructions + scope for rebuilding
-    `title`. Sources = the article's prior citations (non-kb) ∪ the entity index for its
-    subject (search is never a seed); open directives/conflicts are carried into the writer.
-    Returns (art, instr, prior_content) where art = {title, domain, scope, sources}. Shared
-    by the nightly rebuild_article and the live streaming rebuild so both pick identical
-    inputs."""
+    """Resolve the primary sources, merged instructions, and scope for rebuilding an article.
+
+    Sources = the article's prior citations (non-kb) ∪ the entity index for its subject
+    (search is never a seed); open directives/conflicts are carried into the writer. Shared by
+    the nightly rebuild_article and the live streaming rebuild so both pick identical inputs.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the kb article to rebuild.
+        instructions: Optional caller-supplied guidance merged with any open directives.
+
+    Returns:
+        Tuple of (art_dict, merged_instructions, prior_content) where art_dict has
+        ``title``, ``domain``, ``scope``, and ``sources``.
+    """
     from . import entity_index, article_talk, notes as notes_svc
     title = (title or "").strip()
     note = notes_svc.get_by_title(conn, title)
@@ -1502,15 +1678,25 @@ def rebuild_sources(conn, title: str, instructions: str | None = None):
 
 def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
                      prior_note_id: int | None = None, rename_to: str | None = None) -> None:
-    """Persist a rebuilt article body and re-link it into the KB: upsert (revive-in-place,
-    keeping slug + version history), reconnect inbound links, record talk, rebuild the entity
-    index + disambiguation pages, and sweep dead links. The caller must hold the KB write lock
-    and commit afterwards. Shared by the nightly rebuild_article and the live Accept path so
-    they can't drift.
+    """Persist a rebuilt article and re-link it fully into the KB.
 
-    `rename_to` (live Accept only, with the user's explicit approval) retitles the article in
+    Upserts revive-in-place (keeping slug + version history), reconnects inbound links, records
+    talk, rebuilds the entity index + disambiguation pages, and sweeps dead links. The caller
+    must hold the KB write lock and commit afterwards. Shared by the nightly rebuild_article
+    and the live Accept path so they can't drift.
+
+    ``rename_to`` (live Accept only, with the user's explicit approval) retitles the article in
     place: an id-targeted write changes the slug and rewrites inbound [[links]], exactly as the
-    notes rename (PUT) path does."""
+    notes rename (PUT) path does.
+
+    Args:
+        conn: SQLite connection.
+        title: Current title of the article.
+        content_md: New article body.
+        talk: Optional list of talk entry dicts to record.
+        prior_note_id: Row id of the soft-deleted prior version (for revive-in-place).
+        rename_to: New title when the user approved a rename (live Accept only).
+    """
     from . import entity_index, article_talk, notes as notes_svc
     new_title = (rename_to or "").strip() or title
     if new_title.lower() != title.lower() and prior_note_id is not None:
@@ -1533,13 +1719,22 @@ def finalize_rebuild(conn, title: str, content_md: str, talk=None, *,
 
 
 def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
-    """Regenerate ONE existing kb article from scratch from its PRIMARY SOURCES (the owner's
-    notes), then re-link it into the KB. REGENERATE-IN-PLACE, never a wipe: it revives the
-    SAME row, so slug + version history + inbound links + the AI-talk ledger all survive.
-    Sources = the article's prior citations ∪ the entity index for its subject (search is
-    never a seed). Open directives/conflicts are carried into the writer. On a quarantine
-    (lint fail) the prior version is restored and an open todo is recorded — a failed rebuild
-    never leaves a hole. Runs under the KB write lock. Returns {ok, title, reason?, quarantined?}."""
+    """Regenerate one existing kb article from scratch from its primary sources.
+
+    REGENERATE-IN-PLACE, never a wipe: revives the SAME row, so slug + version history +
+    inbound links + the AI-talk ledger all survive. Sources = the article's prior citations ∪
+    the entity index for its subject (search is never a seed). Open directives/conflicts are
+    carried into the writer. On a quarantine (lint fail) the prior version is restored and an
+    open todo is recorded — a failed rebuild never leaves a hole. Runs under the KB write lock.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the kb article to rebuild.
+        instructions: Optional guidance forwarded to the writer.
+
+    Returns:
+        Dict with keys ``ok``, ``title``, and optionally ``reason`` and ``quarantined``.
+    """
     from . import notes as notes_svc, article_talk
     title = (title or "").strip()
     note = notes_svc.get_by_title(conn, title)
@@ -1569,12 +1764,22 @@ def rebuild_article(conn, title: str, instructions: str | None = None) -> dict:
 
 
 def maintain_now(conn, title: str) -> dict:
-    """Owner-triggered SURGICAL maintenance of ONE article right now — the on-demand twin of
-    the maintain_batch loop body, so an owner reply / new directive doesn't have to wait for
-    the nightly pass. Folds in the article's open items + their owner replies, integrates any
-    promoted source-of-truth corrections, and runs under the KB write lock so it can't
-    interleave with the batch. This is NOT a full rebuild (rebuild_article) — it edits in
-    place from the open items, exactly like the scheduled pass. Returns {ok, title, ...}."""
+    """Perform immediate surgical maintenance of one article on owner demand.
+
+    The on-demand twin of the maintain_batch loop body, so an owner reply / new directive
+    doesn't have to wait for the nightly pass. Folds in the article's open items + their owner
+    replies, integrates any promoted source-of-truth corrections, and runs under the KB write
+    lock so it can't interleave with the batch. NOT a full rebuild (rebuild_article) — it edits
+    in place from the open items, exactly like the scheduled pass.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the kb article to maintain.
+
+    Returns:
+        Dict with keys ``ok``, ``title``, ``changed``, ``resolved``, ``examined``,
+        ``kept_open``, and optionally ``reason``.
+    """
     from . import notes as notes_svc
     title = (title or "").strip()
     note = notes_svc.get_by_title(conn, title)
@@ -1608,8 +1813,17 @@ _STOP_LEAVES = {
 
 
 def _mask_spans(text: str) -> list[tuple[int, int]]:
-    """Char ranges where a link must NOT be inserted: fenced code, inline code, existing
-    [[wikilinks]], and footnote-definition lines (`[^sN]: …` — citations)."""
+    """Return character ranges where a wikilink must NOT be inserted.
+
+    Masks fenced code, inline code, existing [[wikilinks]], and footnote-definition lines
+    (`[^sN]: …` — citations).
+
+    Args:
+        text: Article text to scan.
+
+    Returns:
+        List of (start, end) character-offset pairs to exclude from linking.
+    """
     spans: list[tuple[int, int]] = []
     for pat, flags in ((r"```.*?```", re.DOTALL), (r"`[^`]+`", 0),
                        (r"\[\[.*?\]\]", 0), (r"(?m)^\[\^[^\]]+\]:.*$", 0)):
@@ -1618,12 +1832,23 @@ def _mask_spans(text: str) -> list[tuple[int, int]]:
 
 
 def check_needed_links(conn, title: str | None = None, mode: str = "propose") -> dict:
-    """Deterministic ADD-link backstop (the complement to flag_dead_links's remove): find
+    """Find bare mentions that should be wikilinks and propose or apply them.
+
+    Deterministic ADD-link backstop (the complement to flag_dead_links's remove): finds
     mentions in an article that EXACTLY match an existing kb article's leaf name but aren't
-    linked, and link them. Refuses ambiguous leaves (map to ≥2 articles, or in the entity
+    linked, and links them. Refuses ambiguous leaves (map to ≥2 articles, or in the entity
     index's ambiguous_terms) and short/common-word leaves; masks code, existing links, and
-    footnote-citation lines. mode='propose' (default) returns proposals for a Review card;
-    mode='auto' writes them (versioned). No See-also, no reciprocal edits. No 600 cap."""
+    footnote-citation lines. No See-also, no reciprocal edits.
+
+    Args:
+        conn: SQLite connection.
+        title: Specific article to check; None checks all live articles.
+        mode: "propose" (default) returns proposals for a Review card; "auto" writes them
+            (versioned).
+
+    Returns:
+        Dict with keys ``ok``, ``articles`` (per-article proposal lists), and ``count``.
+    """
     from . import notes as notes_svc, entity_index
     titles = _known_titles(conn)
     leafmap: dict[str, list[str]] = {}
@@ -1642,6 +1867,7 @@ def check_needed_links(conn, title: str | None = None, mode: str = "propose") ->
         pass
 
     def linkable(leaf_lower: str, leaf: str) -> bool:
+        """Return True if leaf is safe to auto-link (unambiguous, long enough, not a stop word)."""
         if leaf_lower in ambiguous or len(leaf) < 4:
             return False
         if " " not in leaf and leaf_lower in _STOP_LEAVES:
@@ -1701,12 +1927,23 @@ _REF_SUB = {"condition": "Medicine/Conditions", "medication": "Medicine/Medicati
 
 
 def create_article(conn, subject: str, etype: str | None = None, min_notes: int = 2) -> dict:
-    """Create ONE new-subject kb article from its notes — what the incremental loop used to
-    defer to the full rebuild. DEDUP BEFORE SPAWN: if the subject's canonical entity already
-    has an article, or an existing kb leaf normalises-equal, route there (fold) instead of
-    minting a near-duplicate. Spawns only a subject with ≥ min_notes notes (else fold, don't
-    stub). Picks kb/<Domain>/<Name> (Reference is foldered), writes from sources, relinks.
-    Runs under the KB write lock. Returns {ok, created?|folded?, title?, reason?}."""
+    """Create a new kb article for a subject from its source notes.
+
+    DEDUP BEFORE SPAWN: if the subject's canonical entity already has an article, or an
+    existing kb leaf normalises-equal, routes there (fold) instead of minting a near-duplicate.
+    Spawns only a subject with ≥ min_notes notes (else fold, don't stub). Picks
+    kb/<Domain>/<Name> (Reference is foldered), writes from sources, relinks. Runs under the
+    KB write lock.
+
+    Args:
+        conn: SQLite connection.
+        subject: Canonical name of the subject to create an article for.
+        etype: Entity type hint (e.g. "person", "org"); used for domain selection.
+        min_notes: Minimum note count to spawn a new article (default 2).
+
+    Returns:
+        Dict with keys ``ok``, ``title``, and one of ``created``, ``folded``, or ``reason``.
+    """
     from . import notes as notes_svc, entity_index, article_talk
     subject = (subject or "").strip()
     norm = entity_index.normalize(subject)
@@ -1757,8 +1994,17 @@ def create_article(conn, subject: str, etype: str | None = None, min_notes: int 
 
 
 def refresh_index(conn) -> int:
-    """Rebuild kb/_index from the live (non-protected) articles. No LLM. Run after any
-    structural op (create/merge/rename) so the org map can't go stale or dangle."""
+    """Rebuild kb/_index from the live (non-protected) articles.
+
+    No LLM. Run after any structural op (create/merge/rename) so the org map can't go stale
+    or dangle.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Number of articles included in the refreshed index.
+    """
     from . import notes as notes_svc
     arts = [{"title": r["title"], "domain": wiki_guides.domain_for_title(r["title"]) or "", "scope": ""}
             for r in conn.execute(
@@ -1770,12 +2016,32 @@ def refresh_index(conn) -> int:
 
 
 def _structure_log(conn, op: str, pair_key: str) -> None:
+    """Record a structural KB operation (merge/split) for hysteresis tracking.
+
+    Args:
+        conn: SQLite connection.
+        op: Operation name, e.g. "merge" or "split".
+        pair_key: Canonical key identifying the article pair (pipe-joined sorted titles).
+    """
     conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
     conn.execute("INSERT INTO kb_structure_log(op, pair_key, at) VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER))",
                  (op, pair_key))
 
 
 def _structure_recent(conn, op: str, pair_key: str, k_days: int = 3) -> bool:
+    """Return True if a structural operation on pair_key occurred within k_days.
+
+    Used for merge/split hysteresis — blocks the inverse operation if it was done too recently.
+
+    Args:
+        conn: SQLite connection.
+        op: Operation name to check.
+        pair_key: Canonical key identifying the article pair.
+        k_days: Look-back window in days.
+
+    Returns:
+        True if such an operation was logged within the window.
+    """
     conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
     return conn.execute(
         "SELECT 1 FROM kb_structure_log WHERE op=? AND pair_key=? "
@@ -1784,9 +2050,20 @@ def _structure_recent(conn, op: str, pair_key: str, k_days: int = 3) -> bool:
 
 
 def recategorize_article(conn, title: str, new_title: str) -> dict:
-    """Move/rename a kb article (e.g. fold it into a subcategory). Reuses upsert_note's
-    rename path, which rewrites inbound [[old]]→[[new]] links itself (never relies on the
-    dead-link sweep, which would unwrap them). Refreshes the index. Under the KB lock."""
+    """Move or rename a kb article (e.g. fold it into a subcategory).
+
+    Reuses upsert_note's rename path, which rewrites inbound [[old]]→[[new]] links itself
+    (never relies on the dead-link sweep, which would unwrap them). Refreshes the index.
+    Runs under the KB lock.
+
+    Args:
+        conn: SQLite connection.
+        title: Current article title.
+        new_title: Target title (must be a normal kb/… path, not kb/_…).
+
+    Returns:
+        Dict with keys ``ok``, ``from``, ``to``, or ``reason`` on failure.
+    """
     from . import notes as notes_svc, entity_index
     title, new_title = (title or "").strip(), (new_title or "").strip()
     note = notes_svc.get_by_title(conn, title)
@@ -1816,8 +2093,18 @@ def recategorize_article(conn, title: str, new_title: str) -> dict:
 
 
 def _resolve_redirect_chain(conn, title: str, _seen: set[str] | None = None) -> str:
-    """Follow redirect_to from `title` to a FINAL target (a non-redirect title). Cycle-safe:
-    stops and returns the last title if it loops back. Case-insensitive lookup."""
+    """Follow redirect_to chains from title to the final non-redirect target.
+
+    Cycle-safe: stops and returns the last title if it loops back. Case-insensitive lookup.
+
+    Args:
+        conn: SQLite connection.
+        title: Starting title to resolve.
+        _seen: Internal cycle-detection set (do not pass externally).
+
+    Returns:
+        The final non-redirect title.
+    """
     seen = _seen if _seen is not None else set()
     cur = title
     while True:
@@ -1834,17 +2121,27 @@ def _resolve_redirect_chain(conn, title: str, _seen: set[str] | None = None) -> 
 
 
 def create_redirect(conn, from_title: str, to_title: str) -> dict:
-    """Make `from_title` a REDIRECT to `to_title`: old [[from]] links / external URLs keep
-    resolving while the page drops out of browse/index. The target is resolved through any
-    existing redirect chain to a FINAL target, so we never point a redirect at a redirect.
-    Refuses a self-redirect or a cycle. Under the KB lock (re-entrant).
+    """Make from_title a redirect to to_title, keeping old links and URLs resolving.
 
-    If a row titled `from_title` already exists, it's CONVERTED IN PLACE: kept live
+    The target is resolved through any existing redirect chain to a FINAL target, so we never
+    point a redirect at a redirect. Refuses a self-redirect or a cycle. Runs under the KB lock
+    (re-entrant).
+
+    If a row titled from_title already exists, it's CONVERTED IN PLACE: kept live
     (deleted_at NULL) with the same slug, redirect_to set, kind='kb', body replaced with a
     one-line marker — because notes.title is UNIQUE and a soft-deleted source would keep the
     title slot, blocking a fresh redirect row. Otherwise a new kb redirect row is inserted.
     Inbound dangling [[from]] links are re-pointed at the (possibly revived) row. Does NOT
-    refresh the index — callers do."""
+    refresh the index — callers do.
+
+    Args:
+        conn: SQLite connection.
+        from_title: Title to redirect away from.
+        to_title: Target title (resolved through any existing redirect chain).
+
+    Returns:
+        Dict with keys ``ok``, ``from``, ``to``, or ``reason`` on failure.
+    """
     from . import embeddings
     from_title = (from_title or "").strip()
     to_title = (to_title or "").strip()
@@ -1885,6 +2182,15 @@ def create_redirect(conn, from_title: str, to_title: str) -> dict:
 
 
 def _unique_redirect_slug(conn, title: str) -> str:
+    """Generate a unique slug for a redirect row, appending a counter if needed.
+
+    Args:
+        conn: SQLite connection.
+        title: Redirect source title to slugify.
+
+    Returns:
+        A slug string not already used in the notes table.
+    """
     from . import notes as notes_svc
     base = notes_svc.slugify(title)
     slug, i = base, 2
@@ -1895,11 +2201,20 @@ def _unique_redirect_slug(conn, title: str) -> str:
 
 
 def merge_articles(conn, sources: list[str], into: str) -> dict:
-    """Fold one or more kb articles INTO another: rewrite the merged article from the union
-    of all their source notes, soft-delete the sources, and rewrite every inbound
-    [[source]]→[[into]] link (via _rename_inbound_links — NOT the dead-link sweep, which
-    would unwrap them and lose the connection). Inverse-pair hysteresis blocks merging
-    titles a recent split produced. Under the KB lock."""
+    """Fold one or more kb articles into another, rewriting from the union of their sources.
+
+    Soft-deletes the source articles and rewrites every inbound [[source]]→[[into]] link via
+    _rename_inbound_links (NOT the dead-link sweep, which would unwrap them). Inverse-pair
+    hysteresis blocks merging titles a recent split produced. Runs under the KB lock.
+
+    Args:
+        conn: SQLite connection.
+        sources: List of kb article titles to fold in.
+        into: Title of the target article that absorbs the sources.
+
+    Returns:
+        Dict with keys ``ok``, ``into``, ``merged``, or ``reason`` on failure.
+    """
     from . import notes as notes_svc, entity_index, article_talk
     into = (into or "").strip()
     sources = [s.strip() for s in (sources or []) if s and s.strip() and s.strip() != into]
@@ -1966,13 +2281,22 @@ _RESEARCH_TAU = 0.55
 
 
 def research_article(conn, title: str, mode: str = "propose") -> dict:
-    """Surface EXISTING kb/Reference/* articles related to this article's salient concepts by
-    MEANING (embeddings) — catching relationships check_needed_links misses because the body
-    never names the leaf. Gauntlet-constrained: PROPOSE-ONLY (never auto-writes, never adds
-    prose — the owner's accept/reject is the non-colluding adversary). A candidate must be
-    embedding-near (distance < tau) AND corroborated by the deterministic neighbourhood
-    (shared entity/citation/sibling) — embedding-alone nomination is the sprawl we refuse.
-    Returns {ok, proposals:[{target, why}]}."""
+    """Surface existing kb/Reference/* articles semantically related to this article.
+
+    Catches relationships check_needed_links misses because the body never names the leaf.
+    Gauntlet-constrained: PROPOSE-ONLY (never auto-writes, never adds prose — the owner's
+    accept/reject is the non-colluding adversary). A candidate must be embedding-near
+    (distance < tau) AND corroborated by the deterministic neighbourhood (shared
+    entity/citation/sibling) — embedding-alone nomination is the sprawl we refuse.
+
+    Args:
+        conn: SQLite connection.
+        title: Title of the kb article to research.
+        mode: Reserved (only "propose" is implemented; included for API symmetry).
+
+    Returns:
+        Dict with keys ``ok`` and ``proposals`` (list of {target} dicts).
+    """
     from . import notes as notes_svc, embeddings
     note = notes_svc.get_by_title(conn, title)
     if not note or note["kind"] != "kb":
@@ -2015,10 +2339,22 @@ def research_article(conn, title: str, mode: str = "propose") -> dict:
 
 
 def split_article(conn, parent: str, child: str, child_sources: list[str]) -> dict:
-    """Spin a child article OFF a parent: write `child` from the given source notes, then
-    re-write the parent from its REMAINING sources. Explicit partition (the owner or a
-    restructure hint says which notes go to the child) — deterministic, no auto-partition.
-    Inverse-pair hysteresis blocks splitting a pair a recent merge produced. Under the lock."""
+    """Spin a child article off a parent using an explicit source partition.
+
+    Writes ``child`` from the given source notes, then re-writes the parent from its remaining
+    sources. The partition is explicit (the owner or a restructure hint supplies which notes go
+    to the child) — deterministic, no auto-partition. Inverse-pair hysteresis blocks splitting
+    a pair a recent merge produced. Runs under the KB lock.
+
+    Args:
+        conn: SQLite connection.
+        parent: Title of the existing parent article.
+        child: New title for the child article (must be a new kb/… path).
+        child_sources: Titles of source notes assigned to the child.
+
+    Returns:
+        Dict with keys ``ok``, ``parent``, ``child``, or ``reason`` on failure.
+    """
     from . import notes as notes_svc, entity_index, article_talk
     parent, child = (parent or "").strip(), (child or "").strip()
     pnote = notes_svc.get_by_title(conn, parent)

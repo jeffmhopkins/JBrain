@@ -14,6 +14,14 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.get("/info")
 def info():
+    """Return public brain metadata for the key-entry screen.
+
+    The version is intentionally omitted here (it maps a public deployment to
+    specific commits); it is returned only after successful auth via /verify.
+
+    Returns:
+        Dict with 'brain_name'.
+    """
     # Public: brain name only (for the key-entry screen). The exact version is
     # NOT exposed pre-auth (it maps a public deployment to specific commits).
     return {"brain_name": get_settings().brain_name}
@@ -21,6 +29,16 @@ def info():
 
 @router.get("/verify", dependencies=[CurrentUser])
 def verify():
+    """Verify a valid access key and return a full boot configuration snapshot.
+
+    Returns version, LLM availability, timezone, owner state, LLM provider key
+    presence, VAPID public key, and an initial capabilities snapshot — so the PWA
+    gets a free health check on boot without an extra round-trip.
+
+    Returns:
+        Dict with ok, brain_name, version, has_llm, app_tz, owner_set, llm_keys,
+        vapid_public_key, and capabilities.
+    """
     # Version is returned here (authed) so the PWA can do its compatibility check.
     # has_llm gates LLM-only UI; app_tz lets the UI render UTC timestamps in the
     # owner's configured local zone (labeled).

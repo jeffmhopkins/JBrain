@@ -26,20 +26,50 @@ MODEL = "grok-e2e"
 
 
 def _tool_names(body: dict) -> set[str]:
+    """Extract the set of tool function names from a chat completions request body.
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        Set of tool function name strings.
+    """
     return {t.get("function", {}).get("name") for t in (body.get("tools") or [])}
 
 
 def _already_called_tool(body: dict) -> bool:
-    # If the transcript already contains a tool result, don't propose again — return text
-    # so the architect loop terminates.
+    """Return True if the transcript already contains a tool result message.
+
+    Used to terminate the architect loop: once a tool result is present, we return
+    plain text instead of proposing again.
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        True if any message has role 'tool'.
+    """
     return any(m.get("role") == "tool" for m in body.get("messages", []))
 
 
 def _wants_propose(body: dict) -> bool:
+    """Return True if the request should trigger a propose_actions tool call.
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        True when propose_actions is available and no tool result is in the transcript.
+    """
     return "propose_actions" in _tool_names(body) and not _already_called_tool(body)
 
 
 def _propose_args() -> str:
+    """Return the JSON arguments string for a deterministic propose_actions tool call.
+
+    Returns:
+        JSON string with a single CREATE action staging a test note.
+    """
     # Shape mirrors what the architect's propose_actions tool expects (see
     # server/app/services/architect.py `_TOOL_SCHEMAS["propose_actions"]` and
     # routers/staging.py `_apply_action`): a list of staged actions. A single CREATE of
@@ -56,6 +86,14 @@ def _propose_args() -> str:
 
 
 def _nonstream(body: dict) -> dict:
+    """Build a non-streaming chat.completion response dict.
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Returns:
+        OpenAI-shaped chat.completion dict with a tool_calls or text choice.
+    """
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     base = {"id": cid, "object": "chat.completion", "created": int(time.time()), "model": MODEL,
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18}}
@@ -71,10 +109,19 @@ def _nonstream(body: dict) -> dict:
 
 
 def _sse(body: dict):
+    """Yield SSE chunks for a streaming chat.completion response.
+
+    Args:
+        body: Parsed request JSON dict.
+
+    Yields:
+        SSE data lines (strings) in OpenAI streaming format, ending with [DONE].
+    """
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
     def chunk(delta, finish=None):
+        """Serialize one SSE chunk dict to a data line."""
         return "data: " + json.dumps({
             "id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}) + "\n\n"
@@ -98,6 +145,14 @@ def _sse(body: dict):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    """Handle POST /v1/chat/completions (streaming and non-streaming).
+
+    Args:
+        request: Incoming FastAPI request carrying the OpenAI-shaped JSON body.
+
+    Returns:
+        StreamingResponse (SSE) when stream=true, else JSONResponse.
+    """
     body = await request.json()
     if body.get("stream"):
         return StreamingResponse(_sse(body), media_type="text/event-stream")
@@ -106,4 +161,9 @@ async def chat_completions(request: Request):
 
 @app.get("/healthz")
 def healthz():
+    """Return a simple health-check response.
+
+    Returns:
+        JSON dict {"ok": True}.
+    """
     return {"ok": True}

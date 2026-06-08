@@ -20,7 +20,11 @@ _UTC = timezone.utc
 
 
 def _resolve_tz_name() -> str:
-    """meta 'app_tz' (settable without redeploy) -> container TZ env -> UTC."""
+    """Resolve the app timezone name: meta 'app_tz' -> container TZ env -> UTC.
+
+    Returns:
+        IANA timezone name string.
+    """
     name = None
     try:
         from ..db import get_meta
@@ -31,6 +35,13 @@ def _resolve_tz_name() -> str:
 
 
 def app_tz() -> ZoneInfo:
+    """Return the application's ZoneInfo, falling back to UTC on any error.
+
+    A bad or typo'd zone name must never brick scheduling.
+
+    Returns:
+        ZoneInfo object for the configured timezone, or UTC.
+    """
     name = _resolve_tz_name()
     try:
         return ZoneInfo(name)
@@ -39,7 +50,7 @@ def app_tz() -> ZoneInfo:
 
 
 def app_tz_name() -> str:
-    """The EFFECTIVE zone name (falls back to 'UTC' if the configured one is bad)."""
+    """Return the effective timezone name, falling back to 'UTC' if the configured one is invalid."""
     name = _resolve_tz_name()
     try:
         ZoneInfo(name)
@@ -49,14 +60,17 @@ def app_tz_name() -> str:
 
 
 def now_utc() -> datetime:
+    """Return the current UTC-aware datetime."""
     return datetime.now(_UTC)
 
 
 def now_local() -> datetime:
+    """Return the current local-timezone-aware datetime."""
     return datetime.now(app_tz())
 
 
 def today_local() -> date:
+    """Return today's date in the app timezone."""
     return now_local().date()
 
 

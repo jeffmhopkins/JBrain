@@ -19,15 +19,32 @@ from . import reviews as reviews_svc
 
 
 def mint_token() -> str:
+    """Generate a 256-bit URL-safe random token for a new share link.
+
+    Returns:
+        32-byte URL-safe base64 token string.
+    """
     return secrets.token_urlsafe(32)            # 256-bit, URL-safe
 
 
 def _utcnow() -> str:
+    """Return the current UTC time as a 'YYYY-MM-DD HH:MM:SS' string.
+
+    Returns:
+        UTC timestamp string.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def share_url(token: str) -> str:
-    """Absolute URL a recipient opens, built from JBRAIN_DOMAIN."""
+    """Build the absolute URL a recipient opens, using the JBRAIN_DOMAIN setting.
+
+    Args:
+        token: The share link token.
+
+    Returns:
+        Absolute URL string (https unless the domain is localhost/127.x).
+    """
     domain = (get_settings().jbrain_domain or "localhost").rstrip("/")
     if domain.startswith("http://") or domain.startswith("https://"):
         base = domain
@@ -38,9 +55,18 @@ def share_url(token: str) -> str:
 
 
 def resolve_active_link(conn, token: str):
-    """Return the share_links row (joined with note title/slug/content) for a valid,
-    active, non-expired token on a live note — else None. The single chokepoint that
-    every public route goes through. Uniform None means every failure looks alike."""
+    """Return the share_links row for a valid, active, non-expired token, or None.
+
+    Joins with the backing note's title/slug/content. This is the single chokepoint
+    every public share route passes through; uniform None means every failure looks alike.
+
+    Args:
+        conn: Database connection.
+        token: Raw token string from the request URL.
+
+    Returns:
+        Joined share_links + notes row, or None if the token is invalid/expired/revoked.
+    """
     if not token or len(token) < 20:            # cheap shape gate before any DB hit
         return None
     row = conn.execute(
@@ -60,22 +86,46 @@ def resolve_active_link(conn, token: str):
 
 
 def touch(conn, link_id: int) -> None:
+    """Update the last_used_at timestamp for a share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to touch.
+    """
     conn.execute("UPDATE share_links SET last_used_at = datetime('now') WHERE id = ?", (link_id,))
 
 
 # --- Owner: minting / listing / revoking -----------------------------------
 
 def _phi_clamp(ttl_days: int | None, bind: bool) -> tuple[int, bool]:
-    """The hardening for any private-domain (PII) share: browser-bind ON and a finite TTL
-    (the caller's, if positive, else 14 days). A medical/financial record is never a permanent,
-    copyable bearer credential — the same discipline create_labshare_link enforces for lab trends."""
+    """Apply the PII-share hardening policy: browser-bind ON and a finite TTL.
+
+    A medical or financial record is never a permanent, copyable bearer credential —
+    the same discipline create_labshare_link enforces for lab trends.
+
+    Args:
+        ttl_days: Caller-requested TTL; positive values are preserved, others become 14.
+        bind: Caller's bind preference (always overridden to True).
+
+    Returns:
+        A (ttl_days, bind=True) tuple with a positive TTL.
+    """
     days = int(ttl_days) if (ttl_days and int(ttl_days) > 0) else 14
     return days, True
 
 
 def _phi_harden(conn, note_id: int, ttl_days: int | None, bind: bool) -> tuple[int | None, bool]:
-    """Force hardening when note_id is a private-domain page (kb/Health/… or kb/Finance/…); pass
-    through otherwise."""
+    """Apply _phi_clamp when note_id is a private-domain (Health/Finance) page; pass through otherwise.
+
+    Args:
+        conn: Database connection.
+        note_id: The note whose title is checked.
+        ttl_days: Caller-requested TTL.
+        bind: Caller's bind preference.
+
+    Returns:
+        Possibly-hardened (ttl_days, bind) tuple.
+    """
     from . import wiki_guides
     row = conn.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
     if row and wiki_guides.is_private_title(row["title"]):
@@ -84,9 +134,15 @@ def _phi_harden(conn, note_id: int, ttl_days: int | None, bind: bool) -> tuple[i
 
 
 def assert_private_share_policy() -> None:
-    """Release-blocker (call at boot): the PII clamp must yield a bound, finite-TTL share even
-    when the caller asks for an unbound, never-expiring one — so no mint path can leak a permanent
-    health/finance-record link (this is THE chokepoint every note-share caller flows through)."""
+    """Release-blocker: verify the PII clamp always produces a bound, finite-TTL share.
+
+    Called at boot. Ensures no mint path can leak a permanent health/finance-record link
+    regardless of the caller's ttl_days/bind arguments. This is the chokepoint every
+    note-share caller flows through.
+
+    Raises:
+        RuntimeError: If the clamp fails to enforce bind=True and a positive TTL.
+    """
     days, bind = _phi_clamp(None, False)
     if not bind or not days or int(days) <= 0:
         raise RuntimeError("share PII policy broken: kb/Health/* and kb/Finance/* shares must be bound + finite-TTL")
@@ -94,6 +150,24 @@ def assert_private_share_policy() -> None:
 
 def create_link(conn, note_id: int, scope: str, label: str | None = None,
                 ttl_days: int | None = None, bind: bool = False) -> str:
+    """Mint a share token for a single note, applying the PII hardening policy.
+
+    The PII firewall silently overrides ttl_days/bind for kb/Health/… and kb/Finance/… notes
+    so they are never minted as permanent, unbound bearer credentials. This is the single
+    chokepoint every note-share caller (the /api/shares route and the architect's
+    create_share_link tool) flows through.
+
+    Args:
+        conn: Database connection.
+        note_id: The note to share.
+        scope: 'view' or 'edit'.
+        label: Optional human-readable label for the Shares page.
+        ttl_days: Expiry in days from now, or None for no expiry.
+        bind: Lock the link to the first browser that accepts it.
+
+    Returns:
+        The new share token string.
+    """
     # PII firewall: a private-domain note (kb/Health/… medical, kb/Finance/… financial) is a
     # sensitive record. Harden its share here — the single chokepoint every note-share caller
     # (the /api/shares mint route AND the architect's create_share_link tool) passes through — so
@@ -155,25 +229,49 @@ def create_labshare_link(conn, label: str | None = None, ttl_days: int = 14,
 
 
 def reset_bind(conn, link_id: int) -> None:
-    """Forget the bound browser (secret + claimer name) so the link can be accepted
-    fresh (e.g. it locked to the wrong in-app browser)."""
+    """Forget the bound browser so the link can be accepted fresh.
+
+    Useful when the link accidentally locked to the wrong in-app browser.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to unbind.
+    """
     conn.execute("UPDATE share_links SET bind_secret=NULL, bound_at=NULL, bound_name=NULL WHERE id=?", (link_id,))
 
 
 def revoke_link(conn, link_id: int) -> None:
+    """Revoke an active share link and dismiss any pending proposals for it.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to revoke.
+    """
     conn.execute("UPDATE share_links SET status='revoked', revoked_at=datetime('now') "
                  "WHERE id=? AND status='active'", (link_id,))
     _clear_pending(conn, link_id)
 
 
 def reactivate_link(conn, link_id: int) -> None:
-    """Un-revoke a link (e.g. recover from a false-positive abuse lock on a guided link)."""
+    """Un-revoke a link, restoring it to active status.
+
+    Used to recover from a false-positive abuse lock on a guided link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to reactivate.
+    """
     conn.execute("UPDATE share_links SET status='active', revoked_at=NULL "
                  "WHERE id=? AND status='revoked'", (link_id,))
 
 
 def _clear_pending(conn, link_id: int) -> None:
-    """Supersede any pending proposal for a link and dismiss its alert."""
+    """Supersede any pending edit proposal for a link and dismiss its review alert.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id whose pending proposals to clear.
+    """
     conn.execute(
         "UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id IN "
         "(SELECT review_item_id FROM share_proposals WHERE share_link_id=? AND status='pending' "
@@ -186,8 +284,27 @@ def _clear_pending(conn, link_id: int) -> None:
 
 def submit_proposal(conn, link, content: str, note: str | None, name: str | None,
                     client_ip: str | None) -> dict:
-    """Persist a proposed new content for the link's note. Supersedes any prior
-    pending proposal for the SAME link (one pending per link). Never writes the note."""
+    """Persist a proposed new note content from a recipient, superseding any prior pending proposal.
+
+    One pending proposal per link is maintained. This never writes the note directly;
+    the owner must accept it in the Review inbox.
+
+    Args:
+        conn: Database connection.
+        link: The resolved share_links row (must have scope='edit').
+        content: Proposed Markdown content string.
+        note: Optional cover note from the proposer.
+        name: Proposer display name (truncated to 80 chars).
+        client_ip: Originating IP for audit purposes.
+
+    Returns:
+        Dict with a proposal_id field.
+
+    Raises:
+        HTTPException: 403 if the link scope is not 'edit'.
+        HTTPException: 429 if too many proposals were submitted in the last 60 seconds.
+        HTTPException: 409 if the backing note no longer exists.
+    """
     from fastapi import HTTPException
     if link["scope"] != "edit":
         raise HTTPException(status_code=403, detail="This link is read-only.")
@@ -231,6 +348,17 @@ _MAX = 60
 
 
 def rate_limited(ip: str) -> bool:
+    """Check whether an IP address has exceeded the per-window request cap.
+
+    In-memory, best-effort defense-in-depth — the 256-bit token already makes
+    enumeration infeasible. The table is cleared when it grows beyond 10 000 entries.
+
+    Args:
+        ip: Client IP address string.
+
+    Returns:
+        True if the IP has exceeded _MAX requests within _WINDOW seconds.
+    """
     now = time.monotonic()
     recent = [t for t in _HITS.get(ip, []) if now - t < _WINDOW]
     recent.append(now)

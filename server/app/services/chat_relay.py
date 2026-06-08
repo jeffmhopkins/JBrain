@@ -20,15 +20,25 @@ from typing import Callable
 
 
 class _Sub:
+    """A single SSE subscriber with a role and a delivery queue."""
+
     __slots__ = ("queue", "role")
 
     def __init__(self, role: str):
+        """Initialize a subscriber.
+
+        Args:
+            role: 'owner' or 'guest'.
+        """
         self.role = role                       # 'owner' | 'guest'
         self.queue: asyncio.Queue = asyncio.Queue()
 
 
 class Hub:
+    """Per-channel in-memory state: live subscribers, the event loop, and the sequence counter."""
+
     def __init__(self):
+        """Initialize an empty hub for a chat channel."""
         self.subs: set[_Sub] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.lock = threading.Lock()
@@ -36,6 +46,11 @@ class Hub:
         self.last_owner_notify = 0.0           # monotonic ts of the last "guest waiting" push (debounce)
 
     def present(self) -> tuple[bool, bool]:
+        """Return (owner_present, guest_present) based on current subscribers.
+
+        Returns:
+            Tuple of booleans indicating whether an owner and/or guest subscriber is connected.
+        """
         with self.lock:
             roles = {s.role for s in self.subs}
         return ("owner" in roles, "guest" in roles)
@@ -46,6 +61,14 @@ _glock = threading.Lock()
 
 
 def hub(link_id: int) -> Hub:
+    """Return (creating if needed) the Hub for a chat channel.
+
+    Args:
+        link_id: The share_links.id identifying the channel.
+
+    Returns:
+        The Hub instance for the channel.
+    """
     with _glock:
         h = _hubs.get(link_id)
         if h is None:
@@ -62,6 +85,15 @@ def present(link_id: int) -> tuple[bool, bool]:
 
 
 async def subscribe(link_id: int, role: str) -> tuple[Hub, _Sub]:
+    """Register a new SSE subscriber for a channel and capture the running event loop.
+
+    Args:
+        link_id: The share_links.id identifying the channel.
+        role: 'owner' or 'guest'.
+
+    Returns:
+        A (hub, sub) tuple for use with unsubscribe and the SSE generator.
+    """
     h = hub(link_id)
     sub = _Sub(role)
     with h.lock:
@@ -72,6 +104,12 @@ async def subscribe(link_id: int, role: str) -> tuple[Hub, _Sub]:
 
 
 def unsubscribe(h: Hub, sub: _Sub) -> None:
+    """Remove a subscriber from its hub.
+
+    Args:
+        h: The Hub the subscriber belongs to.
+        sub: The subscriber to remove.
+    """
     with h.lock:
         h.subs.discard(sub)
 

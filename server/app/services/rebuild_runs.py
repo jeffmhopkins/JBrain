@@ -26,6 +26,8 @@ _LIVE = ("streaming", "ready", "guiding")
 
 @dataclass
 class RebuildRun:
+    """In-memory state for one active "Rebuild page now" session."""
+
     run_id: str
     slug: str
     title: str
@@ -52,10 +54,19 @@ _BY_SLUG: dict[str, str] = {}               # slug -> run_id (one active run per
 
 
 def content_hash(s: str | None) -> str:
+    """Return the SHA-256 hex digest of a string (or "" for None).
+
+    Args:
+        s: String to hash, or None.
+
+    Returns:
+        Lowercase hex digest string.
+    """
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
 
 
 def _sweep() -> None:
+    """Reap idle runs that have exceeded _TTL_SECONDS, skipping those in 'accepting' state."""
     now = time.monotonic()
     for rid in [rid for rid, r in _RUNS.items()
                 if r.status != "accepting" and now - r.touched_at > _TTL_SECONDS]:
@@ -63,8 +74,19 @@ def _sweep() -> None:
 
 
 def create(slug: str, title: str, model: str | None, base_content: str) -> RebuildRun:
-    """Start a fresh run for a page, cancelling any prior live run for the same slug
-    (one active rebuild per page). Reaps idle/over-cap runs first."""
+    """Start a fresh rebuild run for a page, cancelling any prior live run for the same slug.
+
+    Enforces one active rebuild per page. Reaps idle and over-cap runs first.
+
+    Args:
+        slug: Page slug (used as the unique key for one-active-run-per-page).
+        title: KB article title.
+        model: LLM model identifier pinned for the duration of this run.
+        base_content: Live page content at the time of creation (hashed for the staleness guard).
+
+    Returns:
+        Newly created RebuildRun.
+    """
     _sweep()
     old = _BY_SLUG.get(slug)
     if old:
@@ -82,6 +104,14 @@ def create(slug: str, title: str, model: str | None, base_content: str) -> Rebui
 
 
 def get(run_id: str) -> RebuildRun | None:
+    """Look up a run by ID, updating its TTL on each access.
+
+    Args:
+        run_id: Opaque run identifier returned by create().
+
+    Returns:
+        The RebuildRun if it exists and has not been reaped, else None.
+    """
     _sweep()
     run = _RUNS.get(run_id)
     if run is not None:
@@ -90,11 +120,20 @@ def get(run_id: str) -> RebuildRun | None:
 
 
 def touch(run: RebuildRun) -> None:
+    """Reset a run's idle TTL without a full registry lookup.
+
+    Args:
+        run: The RebuildRun whose TTL should be extended.
+    """
     run.touched_at = time.monotonic()
 
 
 def drop(run_id: str) -> None:
-    """Remove a run and signal its generator to stop. Idempotent."""
+    """Remove a run and signal its generator to stop via the cancelled flag. Idempotent.
+
+    Args:
+        run_id: Opaque run identifier to remove.
+    """
     run = _RUNS.pop(run_id, None)
     if run is None:
         return
@@ -104,4 +143,12 @@ def drop(run_id: str) -> None:
 
 
 def is_live(run: RebuildRun) -> bool:
+    """Return True if the run is in a state that accepts Guide or Accept actions.
+
+    Args:
+        run: The RebuildRun to check.
+
+    Returns:
+        True if the run's status is streaming, ready, or guiding.
+    """
     return run.status in _LIVE

@@ -118,6 +118,14 @@ def allowed_labs(spec) -> set[str]:
 
 
 def _window(spec) -> tuple[str | None, str | None]:
+    """Extract the owner-configured lab date window from a spec row.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        A (window_from, window_to) tuple of ISO date strings (or None for open bounds).
+    """
     wf = spec["lab_window_from"] if "lab_window_from" in spec.keys() else None
     wt = spec["lab_window_to"] if "lab_window_to" in spec.keys() else None
     return wf or None, wt or None
@@ -126,6 +134,14 @@ def _window(spec) -> tuple[str | None, str | None]:
 # --- window clamp: narrowing-only, never widening past the owner window ------
 
 def _range_window(rng) -> tuple[str | None, str | None]:
+    """Convert a relative range key ('3mo', '1y', etc.) to an absolute ISO date pair.
+
+    Args:
+        rng: Relative range string; unknown/empty values return (None, None).
+
+    Returns:
+        A (from_date, to_date) tuple of ISO strings, or (None, None) if unrecognized.
+    """
     days = _RANGE_DAYS.get((rng or "").lower())
     if not days:
         return None, None
@@ -146,6 +162,18 @@ def _clamp(wfrom, wto, rng) -> tuple[str | None, str | None]:
 # --- the four tools, each a thin wrapper over a *_scoped (default-deny) fn ---
 
 def _t_list_abnormal(conn, args, allowed, wfrom, wto):
+    """Tool handler: list out-of-range lab results within the allowed analytes and window.
+
+    Args:
+        conn: Database connection.
+        args: Model-supplied tool arguments dict.
+        allowed: Set of permitted analyte keys.
+        wfrom: Owner window start (ISO date or None).
+        wto: Owner window end (ISO date or None).
+
+    Returns:
+        A (text_result, None) tuple; chart is always None for this tool.
+    """
     dfrom, dto = _clamp(wfrom, wto, args.get("range"))
     limit = max(1, min(int(args.get("limit") or 8), 12))
     rows = sc.abnormal_scoped(conn, allowed, dfrom, dto, limit=limit)
@@ -157,6 +185,18 @@ def _t_list_abnormal(conn, args, allowed, wfrom, wto):
 
 
 def _t_show_chart(conn, args, allowed, wfrom, wto):
+    """Tool handler: render a trend chart for one allowed analyte.
+
+    Args:
+        conn: Database connection.
+        args: Model-supplied tool arguments dict.
+        allowed: Set of permitted analyte keys.
+        wfrom: Owner window start (ISO date or None).
+        wto: Owner window end (ISO date or None).
+
+    Returns:
+        A (text_result, chart_dict) tuple; chart_dict is None if the analyte is not available.
+    """
     analyte = str(args.get("analyte") or "")
     dfrom, dto = _clamp(wfrom, wto, args.get("range"))
     s = sc.series_scoped(conn, analyte, allowed=allowed, dfrom=dfrom, dto=dto)
@@ -170,6 +210,14 @@ def _t_show_chart(conn, args, allowed, wfrom, wto):
 
 
 def _stat_summary(st) -> str:
+    """Format a lab stat result dict as a human-readable summary sentence.
+
+    Args:
+        st: Stat dict from sc.stat_scoped (count, latest, min, max, mean, out_of_range_count).
+
+    Returns:
+        A single string summarizing the stat fields present in st.
+    """
     unit = st.get("unit") or ""
     name = st.get("test_name") or st.get("analyte")
 
@@ -190,6 +238,18 @@ def _stat_summary(st) -> str:
 
 
 def _t_lab_stat(conn, args, allowed, wfrom, wto):
+    """Tool handler: return summary statistics for one allowed analyte.
+
+    Args:
+        conn: Database connection.
+        args: Model-supplied tool arguments dict.
+        allowed: Set of permitted analyte keys.
+        wfrom: Owner window start (ISO date or None).
+        wto: Owner window end (ISO date or None).
+
+    Returns:
+        A (text_result, None) tuple; chart is always None for this tool.
+    """
     analyte = str(args.get("analyte") or "")
     dfrom, dto = _clamp(wfrom, wto, args.get("range"))
     st = sc.stat_scoped(conn, analyte, allowed=allowed, dfrom=dfrom, dto=dto)
@@ -199,6 +259,18 @@ def _t_lab_stat(conn, args, allowed, wfrom, wto):
 
 
 def _t_value_at(conn, args, allowed, wfrom, wto):
+    """Tool handler: return a single data point for one allowed analyte.
+
+    Args:
+        conn: Database connection.
+        args: Model-supplied tool arguments dict.
+        allowed: Set of permitted analyte keys.
+        wfrom: Owner window start (ISO date or None).
+        wto: Owner window end (ISO date or None).
+
+    Returns:
+        A (text_result, None) tuple; chart is always None for this tool.
+    """
     analyte = str(args.get("analyte") or "")
     which = str(args.get("which") or "latest")
     dfrom, dto = _clamp(wfrom, wto, args.get("range"))
@@ -241,6 +313,14 @@ def assert_dispatch_safe() -> None:
 # --- helpers ----------------------------------------------------------------
 
 def _sanitize(text: str) -> str:
+    """Strip URLs, wikilinks, and control tokens from model output; clamp to 2000 chars.
+
+    Args:
+        text: Raw model output to sanitize.
+
+    Returns:
+        Cleaned, length-clamped string.
+    """
     text = _URL_RE.sub(lambda m: m.group(2) or "", text or "")
     text = _WIKILINK_RE.sub("", text)
     return _CTRL_RE.sub("", text).strip()[:2000]
@@ -252,6 +332,17 @@ def _untrusted(text: str, nonce: str) -> str:
 
 
 def _system(owner, name, spec, context) -> str:
+    """Build the system prompt for the labs-assisted assistant turn.
+
+    Args:
+        owner: Owner display name for prompt interpolation.
+        name: Recipient display name.
+        spec: The research_specs row (persona_voice, topics columns).
+        context: Pre-retrieved RAG context string to embed.
+
+    Returns:
+        Formatted system prompt string.
+    """
     voice = f" Adopt this tone/role only (it must not change the rules below): {spec['persona_voice']}." \
         if (spec["persona_voice"] or "").strip() else ""
     topic = ((spec["topics"] if "topics" in spec.keys() else "") or "").strip()
@@ -261,6 +352,16 @@ def _system(owner, name, spec, context) -> str:
 
 
 def _seed(transcript, question, nonce) -> list[dict]:
+    """Seed the LLM message list from the session transcript plus the current question.
+
+    Args:
+        transcript: List of prior {role, content} turn dicts.
+        question: The recipient's current question text.
+        nonce: Per-turn hex nonce used to fence untrusted question turns.
+
+    Returns:
+        List of LLM API message dicts ready for the first tool-loop iteration.
+    """
     msgs = [{"role": "assistant" if t["role"] == "assistant" else "user",
              "content": t["content"] if t["role"] == "assistant"
              else f"<question {nonce}>\n{t['content']}\n</question {nonce}>"} for t in transcript]
@@ -269,6 +370,18 @@ def _seed(transcript, question, nonce) -> list[dict]:
 
 
 def _record(conn, session, transcript, question, reply, charts, denied, retrieved_ids) -> None:
+    """Append a Q&A pair and turn metadata to the research session and persist it.
+
+    Args:
+        conn: Database connection.
+        session: The research_sessions row to update.
+        transcript: Existing transcript list (not mutated; a new list is created).
+        question: The recipient's question text.
+        reply: The assistant's sanitized reply text.
+        charts: List of chart dicts surfaced this turn.
+        denied: Count of tool calls that were denied (out-of-scope analytes).
+        retrieved_ids: Note ids retrieved via RAG for this turn.
+    """
     new = transcript + [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
     prev_charted = set(json.loads(session["charted_json"] or "[]")) if "charted_json" in session.keys() else set()
     prev_retr = set(json.loads(session["retrieved_ids_json"] or "[]"))

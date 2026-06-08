@@ -44,12 +44,30 @@ _FN_DEF_RE = re.compile(r"(?m)^(\[\^([^\]\s]+)\]:\s.*)$")    # a footnote DEFINI
 
 
 def _truthy(v) -> bool:
+    """Return True for values that represent a logical true (non-falsy forms).
+
+    Args:
+        v: Value to test; checked against a set of common false-string forms.
+
+    Returns:
+        False for None, False, 0, '', '0', 'false', 'False', 'no', 'off'; True otherwise.
+    """
     return v not in (False, None, 0, "", "0", "false", "False", "no", "off")
 
 
 def _sections(content: str):
-    """Split markdown into (lead, [{name, text}]) on top-level ## headings; `text` includes
-    the heading line through the byte before the next ## (or EOF), right-stripped."""
+    """Split markdown into a lead and a list of top-level ## sections.
+
+    Each section's 'text' includes the heading line through the character before the next
+    ## (or EOF), right-stripped.
+
+    Args:
+        content: Markdown article body.
+
+    Returns:
+        Tuple of (lead: str, sections: list[dict]) where each section dict has 'name'
+        and 'text' keys.
+    """
     heads = list(_HEAD_RE.finditer(content))
     if not heads:
         return content, []
@@ -62,9 +80,22 @@ def _sections(content: str):
 
 
 def _plan_person(conn, people_title: str, content: str) -> dict | None:
-    """Plan the move for one People article. Returns None when there's nothing medical, a
-    {borderline: reason} dict when medical content exists but can't be safely auto-cut, else a
-    full plan {leaf, people_title, moved_names, health_body, new_people_body}."""
+    """Plan the medical section move for one People article.
+
+    Returns None when there are no medical sections, a {borderline: reason} dict when
+    medical content exists but cannot be safely auto-cut (e.g. in the lead/Key facts
+    rather than a dedicated ## heading), or a full plan dict otherwise.
+
+    Args:
+        conn: Database connection.
+        people_title: Full wiki title of the People article (e.g. 'kb/People/Jane Doe').
+        content: Markdown body of the People article.
+
+    Returns:
+        None if no medical content is found; {'borderline': reason} if content is
+        ambiguous; or a plan dict with keys: leaf, people_title, moved_names, health_body,
+        new_people_body, borderline (None).
+    """
     lead, secs = _sections(content)
     med = [s for s in secs if s["name"].lower() in _MED_HEADINGS
            and s["name"].lower() != "references" and _MED_SIGNAL.search(s["text"])]

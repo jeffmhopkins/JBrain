@@ -29,6 +29,12 @@ _state_lock = threading.Lock()
 
 
 def _set_state(s: str, err: str | None = None) -> None:
+    """Update the process-level embedding model readiness state under the state lock.
+
+    Args:
+        s: New state string: 'unknown', 'warming', 'ready', 'unavailable', or 'failed'.
+        err: Optional error message; truncated to 200 chars.
+    """
     global _state, _last_error, _state_since
     # Cross-thread: the boot warmer runs _get_model on an asyncio.to_thread worker,
     # so this write can race the snapshot read below — guard both with one lock.
@@ -43,6 +49,14 @@ def readiness() -> dict:
 
 
 def _get_model():
+    """Return the process-singleton TextEmbedding model, loading it on first call.
+
+    Updates readiness state as it warms. Raises ImportError when fastembed is not
+    installed, or the underlying fastembed exception on any other load failure.
+
+    Returns:
+        Loaded fastembed TextEmbedding model instance.
+    """
     global _model
     if _model is None:
         with _model_lock:
@@ -67,11 +81,26 @@ def _get_model():
 
 
 def embed(text: str) -> list[float]:
-    """Embed a single string."""
+    """Return the embedding vector for a single string.
+
+    Args:
+        text: Text to embed.
+
+    Returns:
+        List of floats of length EMBEDDING_DIM.
+    """
     return embed_many([text])[0]
 
 
 def embed_many(texts: Iterable[str]) -> list[list[float]]:
+    """Return embedding vectors for a batch of strings.
+
+    Args:
+        texts: Iterable of strings to embed.
+
+    Returns:
+        List of float vectors, one per input string, each of length EMBEDDING_DIM.
+    """
     model = _get_model()
     return [vec.tolist() for vec in model.embed(list(texts))]
 
@@ -113,6 +142,15 @@ def upsert_note_chunk_embeddings(conn, note_id: int, full_text: str) -> None:
 
 
 def delete_note_chunk_embeddings(conn, note_id: int) -> None:
+    """Delete all chunk rows and their vectors for a note.
+
+    vec_note_chunks is a virtual table — FK CASCADE on note_chunks won't reach it,
+    so vectors are deleted explicitly first.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose chunks and vectors should be removed.
+    """
     # vec_note_chunks is a virtual table: the FK CASCADE on note_chunks won't reach
     # it, so delete its vectors explicitly first (mirrors delete_attachment_embeddings).
     for r in conn.execute(
@@ -123,6 +161,12 @@ def delete_note_chunk_embeddings(conn, note_id: int) -> None:
 
 
 def delete_note_embedding(conn, note_id: int) -> None:
+    """Delete the whole-note vector and all chunk vectors for a note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose embeddings should be removed.
+    """
     conn.execute("DELETE FROM vec_notes WHERE note_id = ?", (note_id,))
     delete_note_chunk_embeddings(conn, note_id)
 
@@ -377,13 +421,25 @@ def semantic_search_attachments(conn, query: str, limit: int = 10, *,
 
 
 def store_entity_vector(conn, entity_id: int, vec: list[float]) -> None:
-    """Replace one canonical entity's semantic vector (vec_entities)."""
+    """Replace one canonical entity's semantic vector in vec_entities.
+
+    Args:
+        conn: SQLite connection.
+        entity_id: Entity row ID.
+        vec: New embedding vector.
+    """
     conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
     conn.execute("INSERT INTO vec_entities (entity_id, embedding) VALUES (?, ?)",
                  (entity_id, sqlite_vec.serialize_float32(vec)))
 
 
 def delete_entity_embedding(conn, entity_id: int) -> None:
+    """Remove a canonical entity's semantic vector from vec_entities.
+
+    Args:
+        conn: SQLite connection.
+        entity_id: Entity row ID whose vector should be deleted.
+    """
     conn.execute("DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,))
 
 
@@ -411,8 +467,19 @@ def semantic_search_entities(conn, query: str, limit: int = 10,
 
 
 def _flag_gate(require_tool_access: bool, require_kb_ingest: bool, alias: str = "n") -> str:
-    """SQL fragment to gate note rows by the per-note governance flags. Empty unless a
-    caller opts in, so owner-facing search/browse is unaffected by default."""
+    """Build a SQL fragment gating note rows by per-note governance flags.
+
+    Empty string when both gates are off, so owner-facing search/browse is unaffected
+    by default.
+
+    Args:
+        require_tool_access: If True, add AND <alias>.tool_access = 1 condition.
+        require_kb_ingest: If True, add AND <alias>.kb_ingest = 1 condition.
+        alias: SQL table alias to qualify the flag columns (default 'n').
+
+    Returns:
+        SQL fragment string (may be empty).
+    """
     conds = []
     if require_tool_access:
         conds.append(f" AND {alias}.tool_access = 1")

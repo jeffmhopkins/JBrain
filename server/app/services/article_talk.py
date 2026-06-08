@@ -29,6 +29,18 @@ OPEN_KINDS = {"conflict", "question", "todo", "directive", "correction"}
 
 
 def add(conn, article_title: str, kind: str, body: str, author: str = "ai") -> int | None:
+    """Insert a single talk entry for an article; returns the new id, or None for an empty body.
+
+    Args:
+        conn: Database connection.
+        article_title: Title of the KB article this entry belongs to.
+        kind: Entry kind; unknown values fall back to 'note'.
+        body: Entry text (truncated to 2000 chars).
+        author: 'ai' or 'user'.
+
+    Returns:
+        The new article_talk.id, or None if body is empty.
+    """
     body = (body or "").strip()
     if not body:
         return None
@@ -49,17 +61,37 @@ _NOTE_CAP = 6   # keep at most this many OPEN, ai-authored 'note' rows per artic
 
 
 def _norm(body: str) -> str:
-    """Dedup key for a body: lowercased, whitespace-collapsed, trailing punctuation dropped —
-    so a reworded-but-identical observation ('still a stub.' vs 'Still a  stub') dedups."""
+    """Build a dedup key from a talk body.
+
+    Lowercases, collapses whitespace, and drops trailing punctuation so that
+    reworded-but-identical observations ('still a stub.' vs 'Still a  stub') dedup.
+
+    Args:
+        body: Raw entry body text.
+
+    Returns:
+        Normalized key string.
+    """
     return _WS.sub(" ", (body or "").lower()).strip().rstrip(".!?,;:- ")
 
 
 def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
-    """Add a batch of {kind, body} entries. Log entries (note/decision) dedup against ALL
-    history so they don't pile up each run; actionable entries (conflict/question/todo/
-    directive) dedup against OPEN only, so a genuinely re-emerged issue can resurface after
-    an earlier resolution. Dedup is on a NORMALIZED body (case/whitespace/punctuation
-    insensitive). Returns how many were added."""
+    """Add a batch of {kind, body} entries with smart deduplication.
+
+    Log entries (note/decision) dedup against ALL history so they don't pile up each
+    run; actionable entries (conflict/question/todo/directive) dedup against OPEN only,
+    so a genuinely re-emerged issue can resurface after an earlier resolution. Dedup is
+    on a normalized body (case/whitespace/punctuation insensitive).
+
+    Args:
+        conn: Database connection.
+        article_title: Title of the KB article.
+        entries: List of {kind, body} dicts; invalid dicts are skipped.
+        author: 'ai' or 'user'.
+
+    Returns:
+        Number of entries actually inserted.
+    """
     rows = conn.execute("SELECT kind, body, resolved_at FROM article_talk WHERE article_title=?",
                         (article_title,)).fetchall()
     all_keys = {(r["kind"], _norm(r["body"])) for r in rows}
@@ -86,10 +118,16 @@ def record(conn, article_title: str, entries: list, author: str = "ai") -> int:
 
 
 def _cap_notes(conn, article_title: str) -> None:
-    """Bound clutter: keep only the newest _NOTE_CAP OPEN, ai-authored 'note' rows per article
-    (they're informational logs, not actionable). NEVER touches actionable kinds, owner
-    directives, user-authored rows, resolved history, or any note the owner has REPLIED to
-    (a reply would cascade-delete with the row — owner words are never dropped)."""
+    """Prune stale OPEN ai-authored 'note' rows to keep at most _NOTE_CAP per article.
+
+    These are informational logs, not actionable. Never touches actionable kinds, owner
+    directives, user-authored rows, resolved history, or any note the owner has replied to
+    (a reply would cascade-delete with the row — owner words are never dropped).
+
+    Args:
+        conn: Database connection.
+        article_title: Title of the KB article to prune.
+    """
     ids = [r["id"] for r in conn.execute(
         "SELECT id FROM article_talk WHERE article_title=? AND kind='note' AND author='ai' "
         "AND resolved_at IS NULL "
@@ -109,10 +147,20 @@ _STUB_LIKE = ["%stub%", "%more source%", "%additional source%", "%more notes bec
 
 
 def demote_stub_notes(conn, article_title: str | None = None) -> int:
-    """Reclassify ai-authored, unresolved 'todo'/'question' items that merely observe the
-    article is a stub / needs more source notes / should be revisited later into inert
-    'note' logs (then cap), so they stop driving maintenance + Review cards. NEVER touches
-    conflicts, owner directives, user items, or resolved rows. Returns how many were demoted."""
+    """Reclassify stub-observation todos/questions into inert 'note' logs and cap them.
+
+    Matches ai-authored, unresolved 'todo'/'question' items that merely observe the article
+    is a stub / needs more source notes / should be revisited later, so they stop driving
+    maintenance passes and Review cards. Never touches conflicts, owner directives, user
+    items, or resolved rows.
+
+    Args:
+        conn: Database connection.
+        article_title: Limit demotions to this article, or None to sweep all articles.
+
+    Returns:
+        Number of entries demoted.
+    """
     like = " OR ".join(["body LIKE ?"] * len(_STUB_LIKE))
     where = f"kind IN ('todo','question') AND author='ai' AND resolved_at IS NULL AND ({like})"
     args = list(_STUB_LIKE)
@@ -128,9 +176,19 @@ def demote_stub_notes(conn, article_title: str | None = None) -> int:
 
 
 def reply(conn, talk_id: int, body: str, author: str = "user") -> int | None:
-    """Add a reply to a talk item — the owner↔AI maintenance conversation. Replies are
-    deliberate utterances and bypass record()'s dedup entirely. Returns the new reply id,
-    or None for an empty body / unknown parent."""
+    """Add a reply to a talk item, bypassing record()'s deduplication entirely.
+
+    Replies are deliberate utterances in the owner↔AI maintenance conversation.
+
+    Args:
+        conn: Database connection.
+        talk_id: The article_talk.id to reply to.
+        body: Reply text (truncated to 2000 chars).
+        author: 'ai' or 'user'.
+
+    Returns:
+        The new article_talk_reply.id, or None for an empty body or unknown parent.
+    """
     body = (body or "").strip()
     if not body:
         return None

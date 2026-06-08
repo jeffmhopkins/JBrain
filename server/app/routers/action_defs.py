@@ -16,10 +16,23 @@ router = APIRouter(prefix="/api/action-defs", tags=["actions"], dependencies=[Cu
 
 
 class RecipeIn(BaseModel):
+    """Input body carrying a YAML recipe string."""
+
     recipe_yaml: str
 
 
 def _parse(text: str) -> dict:
+    """Parse a YAML string into a dict, raising HTTP 400 on invalid YAML or non-mapping.
+
+    Args:
+        text: Raw YAML string to parse.
+
+    Returns:
+        Parsed YAML as a dict.
+
+    Raises:
+        HTTPException: 400 if the YAML is invalid or the top-level value is not a mapping.
+    """
     try:
         doc = yaml.safe_load(text)
     except Exception as e:  # noqa: BLE001
@@ -30,6 +43,14 @@ def _parse(text: str) -> dict:
 
 
 def _flatten(steps) -> list[str]:
+    """Flatten a recipe step tree into an ordered list of action/for_each tokens.
+
+    Args:
+        steps: List of step dicts from a parsed recipe.
+
+    Returns:
+        Flat list of step names (e.g. ['for_each', 'llm', 'note_append']).
+    """
     out: list[str] = []
     for s in steps or []:
         if isinstance(s, dict) and "for_each" in s:
@@ -41,6 +62,15 @@ def _flatten(steps) -> list[str]:
 
 
 def _ref_count(conn, type_: str) -> int:
+    """Return the number of workflows currently referencing an action type.
+
+    Args:
+        conn: Active database connection.
+        type_: Action type name to count references for.
+
+    Returns:
+        Integer count of referencing workflows.
+    """
     return conn.execute(
         "SELECT COUNT(*) c FROM workflows WHERE action_type = ?", (type_,)
     ).fetchone()["c"]
@@ -48,22 +78,48 @@ def _ref_count(conn, type_: str) -> int:
 
 @router.get("/primitives")
 def primitives():
+    """Return the catalog of built-in pipeline primitives.
+
+    Returns:
+        Primitive catalog dict from pipeline.primitive_catalog.
+    """
     return pipeline.primitive_catalog()
 
 
 @router.post("/validate")
 def validate(body: RecipeIn):
+    """Parse and validate a recipe YAML, returning warnings and the parsed recipe.
+
+    Args:
+        body: YAML string of the recipe to validate.
+
+    Returns:
+        Dict with 'warnings' list and 'recipe' parsed dict.
+
+    Raises:
+        HTTPException: 400 if the YAML is invalid.
+    """
     recipe = _parse(body.recipe_yaml)
     return {"warnings": pipeline.validate_recipe(recipe), "recipe": recipe}
 
 
 @router.post("/sync")
 def sync():
+    """Re-ingest repo action definitions from YAML files.
+
+    Returns:
+        Dict with 'synced' count of action definitions ingested.
+    """
     return {"synced": pipeline.ingest_repo_action_defs(get_conn())}
 
 
 @router.get("")
 def list_defs():
+    """List all action definitions with a summary of their step pipeline.
+
+    Returns:
+        List of dicts with type, source, locked, category, num_steps, and summary.
+    """
     rows = get_conn().execute(
         "SELECT type, recipe_yaml, source, locked FROM action_defs ORDER BY type"
     ).fetchall()
@@ -84,6 +140,17 @@ def list_defs():
 
 @router.get("/{type}")
 def get_def(type: str):
+    """Return a single action definition with parsed recipe, warnings, and workflow ref count.
+
+    Args:
+        type: Action type identifier.
+
+    Returns:
+        Dict with type, source, locked, recipe_yaml, recipe, warnings, and ref_count.
+
+    Raises:
+        HTTPException: 404 if the action type does not exist.
+    """
     row = get_conn().execute(
         "SELECT type, recipe_yaml, source, locked FROM action_defs WHERE type = ?", (type,)
     ).fetchone()
@@ -100,6 +167,18 @@ def get_def(type: str):
 
 @router.post("")
 def create_def(body: RecipeIn):
+    """Create a new user-owned action definition from a YAML recipe.
+
+    Args:
+        body: YAML string for the new recipe (must declare a 'type' field).
+
+    Returns:
+        Dict with 'ok', 'type', and 'warnings'.
+
+    Raises:
+        HTTPException: 400 if the YAML is invalid or missing a 'type' field.
+        HTTPException: 409 if the type already exists or is a reserved alias.
+    """
     recipe = _parse(body.recipe_yaml)
     t = recipe.get("type")
     if not t:
@@ -120,6 +199,22 @@ def create_def(body: RecipeIn):
 
 @router.put("/{type}")
 def update_def(type: str, body: RecipeIn):
+    """Replace a user-owned action definition's YAML recipe.
+
+    Shipped (source='repo') actions are read-only and cannot be updated here.
+
+    Args:
+        type: Action type identifier to update.
+        body: New YAML recipe (must declare the same 'type').
+
+    Returns:
+        Dict with 'ok' and 'warnings'.
+
+    Raises:
+        HTTPException: 400 if the YAML is invalid or attempts a rename.
+        HTTPException: 403 if the action is a shipped (repo-sourced) definition.
+        HTTPException: 404 if the action type does not exist.
+    """
     conn = get_conn()
     row = conn.execute("SELECT source FROM action_defs WHERE type = ?", (type,)).fetchone()
     if not row:
@@ -141,6 +236,22 @@ def update_def(type: str, body: RecipeIn):
 
 @router.delete("/{type}")
 def delete_def(type: str):
+    """Delete a user-owned action definition.
+
+    Shipped (source='repo') actions cannot be deleted. The type must not be
+    referenced by any workflow.
+
+    Args:
+        type: Action type identifier to delete.
+
+    Returns:
+        Dict with key 'ok' set to True.
+
+    Raises:
+        HTTPException: 403 if the action is a shipped (repo-sourced) definition.
+        HTTPException: 404 if the action type does not exist.
+        HTTPException: 409 if one or more workflows still reference this action type.
+    """
     conn = get_conn()
     row = conn.execute("SELECT source FROM action_defs WHERE type = ?", (type,)).fetchone()
     if not row:

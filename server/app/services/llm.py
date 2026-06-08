@@ -416,6 +416,12 @@ class AnthropicProvider:
         yield TurnEnd(calls, usage=usage, stop_reason=getattr(final, "stop_reason", None))
 
     def append_tool_results(self, messages, results):
+        """Append tool results as an Anthropic-style user turn.
+
+        Args:
+            messages: Conversation history to mutate.
+            results: Tool call answers to append.
+        """
         messages.append({
             "role": "user",
             "content": [
@@ -428,13 +434,24 @@ class AnthropicProvider:
 # --- xAI (Grok) adapter — OpenAI-compatible (api.x.ai/v1) -------------------
 
 class XAIProvider:
+    """LLMProvider adapter for the xAI Grok API (OpenAI-compatible, api.x.ai/v1)."""
+
     name = "xai"
 
     def _key(self) -> str:
+        """Return the xAI API key, falling back to the generic LLM key."""
         s = get_settings()
         return s.xai_api_key or s.llm_api_key
 
     def _client(self, async_: bool = False):
+        """Return a cached OpenAI-compatible client pointed at the xAI base URL.
+
+        Args:
+            async_: If True, return an AsyncOpenAI client; otherwise OpenAI.
+
+        Returns:
+            Cached sync or async OpenAI-compatible client.
+        """
         from openai import AsyncOpenAI, OpenAI
         s = get_settings()
         cls = AsyncOpenAI if async_ else OpenAI
@@ -443,18 +460,30 @@ class XAIProvider:
                               lambda: cls(api_key=key, base_url=base, timeout=_LLM_TIMEOUT))
 
     def has_credentials(self) -> bool:
+        """Return True if an xAI (or fallback LLM) API key is configured."""
         return bool(self._key())
 
     def default_model(self) -> str:
+        """Return the configured model if it starts with 'grok', else 'grok-4.3'."""
         m = get_settings().llm_model
         return m if (m or "").lower().startswith("grok") else "grok-4.3"
 
     def supports_tools(self) -> bool:
+        """Return True; xAI Grok supports tool use."""
         return True
 
     def _translate(self, m: Message) -> Message:
-        """Translate any Anthropic-style content blocks (e.g. vision images) in a
-        message to OpenAI/xAI shape. Plain string content passes through."""
+        """Translate Anthropic-style content blocks to OpenAI/xAI shape.
+
+        Handles text, image (base64), and tool_result blocks. Plain string content
+        passes through unchanged.
+
+        Args:
+            m: Message dict, possibly with a list 'content' of typed blocks.
+
+        Returns:
+            Message dict with content translated to OpenAI-compatible blocks.
+        """
         content = m.get("content")
         if not isinstance(content, list):
             return m
@@ -474,6 +503,15 @@ class XAIProvider:
         return {**m, "content": out}
 
     def _wire(self, messages: list[Message], system: str | None) -> list[dict]:
+        """Convert messages + optional system prompt to the OpenAI-compatible wire format.
+
+        Args:
+            messages: Conversation history in neutral format.
+            system: Optional system prompt; prepended as a 'system' role message.
+
+        Returns:
+            List of OpenAI-compatible message dicts.
+        """
         out: list[dict] = []
         if system:
             out.append({"role": "system", "content": system})
@@ -481,12 +519,35 @@ class XAIProvider:
         return out
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
+        """Return the model's text reply (non-streaming, xAI).
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Model reply as a plain string.
+        """
         text, _ = self.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
         return text
 
     def complete_with_meta(self, messages, *, system=None, model=None, max_tokens=1024) -> tuple[str, str | None]:
-        """Like complete(), but also returns the OpenAI-compatible finish reason. "length"
-        means the body was cut off — batch writers fail rather than save a half-written one."""
+        """Like complete(), but also returns the OpenAI-compatible finish reason.
+
+        "length" means the body was cut off — batch writers fail rather than save a
+        half-written one.
+
+        Args:
+            messages: Conversation history.
+            system: Optional system prompt.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, finish_reason).
+        """
         client = self._client()
         resp = client.chat.completions.create(
             model=model or self.default_model(), max_tokens=max_tokens,
@@ -495,9 +556,21 @@ class XAIProvider:
         return (resp.choices[0].message.content or "").strip(), getattr(resp.choices[0], "finish_reason", None)
 
     def complete_with_tools(self, messages, *, system=None, tools, model=None, max_tokens=1024):
-        """Synchronous tool-capable turn (OpenAI-compatible). Mirrors the Anthropic adapter:
-        appends the assistant turn (incl. any tool_calls) to `messages` and returns
-        (text, tool_calls, usage)."""
+        """Synchronous tool-capable turn (OpenAI-compatible, xAI).
+
+        Mirrors the Anthropic adapter: appends the assistant turn (including any
+        tool_calls) to messages and returns (text, tool_calls, usage).
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            Tuple of (text, tool_calls, usage_dict).
+        """
         client = self._client()
         wire_tools = [{"type": "function", "function": {
             "name": t.name, "description": t.description, "parameters": t.json_schema}} for t in tools] or None
@@ -526,6 +599,24 @@ class XAIProvider:
         return text, calls, usage
 
     async def stream_turn(self, messages, *, system, tools, model, max_tokens, thinking=False):
+        """Stream one assistant turn via the xAI (Grok) API, yielding StreamEvent instances.
+
+        xAI/Grok has no extended-thinking concept — the thinking flag is accepted and
+        ignored (no ThinkingDelta events will be yielded on this provider). Stops as soon
+        as a finish_reason is seen rather than waiting for trailing usage/[DONE] chunks,
+        which some xAI responses don't close promptly.
+
+        Args:
+            messages: Conversation history; mutated to append the assistant turn.
+            system: System prompt.
+            tools: Tool definitions available this turn.
+            model: Model id override; uses default_model() when None.
+            max_tokens: Maximum output tokens.
+            thinking: Accepted but ignored on xAI.
+
+        Yields:
+            TextDelta, ToolCallEvent, and TurnEnd events.
+        """
         # xAI/Grok has no extended-thinking concept — the flag is accepted and ignored
         # (the rebuild engine simply won't receive ThinkingDelta events on this provider).
         client = self._client(async_=True)
@@ -597,11 +688,24 @@ class XAIProvider:
         yield TurnEnd(calls, usage=uu, stop_reason=finish)
 
     def append_tool_results(self, messages, results):
+        """Append tool results as individual OpenAI-compatible tool role messages.
+
+        Args:
+            messages: Conversation history to mutate.
+            results: Tool call answers to append.
+        """
         for r in results:
             messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
 
 
 def _record_openai_usage(model: str, u, context: str | None = None) -> None:
+    """Log OpenAI-compatible token usage to the meter (best-effort).
+
+    Args:
+        model: Model id string for the meter record.
+        u: OpenAI usage object with prompt_tokens/completion_tokens, or None.
+        context: Optional label (e.g. 'agent' or 'action') for the usage record.
+    """
     if u is None:
         return
     try:
@@ -613,9 +717,16 @@ def _record_openai_usage(model: str, u, context: str | None = None) -> None:
 
 
 def _record_usage(model: str, u, context: str | None = None) -> None:
-    """Log a call's token usage to the meter (best-effort). Reads the standard +
-    prompt-cache token fields the Anthropic SDK reports so the cost estimate is
-    sane when caching is on."""
+    """Log Anthropic token usage to the meter (best-effort).
+
+    Reads the standard and prompt-cache token fields the Anthropic SDK reports so
+    the cost estimate is accurate when caching is on.
+
+    Args:
+        model: Model id string for the meter record.
+        u: Anthropic usage object, or None.
+        context: Optional label (e.g. 'agent' or 'action') for the usage record.
+    """
     if u is None:
         return
     try:
@@ -642,7 +753,14 @@ _REGISTRY: dict[str, type] = {
 
 
 def _provider_for_model(model: str | None) -> str | None:
-    """Infer the provider from a model id so the picker is the only control needed."""
+    """Infer the provider name from a model id prefix, or None if unrecognised.
+
+    Args:
+        model: Model id string, e.g. 'claude-sonnet-4' or 'grok-4.3'.
+
+    Returns:
+        Provider name ('anthropic' or 'xai'), or None.
+    """
     m = (model or "").lower()
     if m.startswith("grok"):
         return "xai"
@@ -652,18 +770,35 @@ def _provider_for_model(model: str | None) -> str | None:
 
 
 def get_provider(model: str | None = None) -> LLMProvider:
-    """The provider for a given model id — inferred from the id (grok*/claude*), else
-    the configured LLM_PROVIDER default. Cheap + stateless, constructed per use."""
+    """Return the LLMProvider for a given model id.
+
+    Provider is inferred from the model id prefix (grok*/claude*); falls back to the
+    configured LLM_PROVIDER setting. Cheap and stateless — constructed per use.
+
+    Args:
+        model: Optional model id; None uses the configured default provider.
+
+    Returns:
+        An instantiated LLMProvider.
+    """
     name = _provider_for_model(model) or (get_settings().llm_provider or "anthropic").lower()
     cls = _REGISTRY.get(name, AnthropicProvider)
     return cls()
 
 
 def model_for(tier: str) -> str | None:
-    """Resolve a task tier (prompts.yaml `models.<tier>`) to a model id, or None to
-    use the provider default. Lets routine jobs (tags, summaries, filing) run on a
-    cheaper model than the interactive agent. Fallback: models.<tier> ->
-    models.default -> None (provider default = LLM_MODEL)."""
+    """Resolve a task tier to a model id from prompts.yaml, or None for the provider default.
+
+    Lets routine jobs (tags, summaries, filing) run on a cheaper model than the
+    interactive agent. Fallback chain: models.<tier> → models.default → None
+    (None means use the provider's LLM_MODEL setting).
+
+    Args:
+        tier: Tier key, e.g. 'cheap', 'synthesis', or 'default'.
+
+    Returns:
+        Model id string, or None to use the provider default.
+    """
     from . import prompts
     m = (prompts.get(f"models.{tier}") or "").strip()
     if m:
@@ -672,28 +807,70 @@ def model_for(tier: str) -> str | None:
 
 
 def has_credentials() -> bool:
+    """Return True if the default provider has an API key configured."""
     return get_provider().has_credentials()
 
 
 def complete(messages: list[Message], *, system: str | None = None,
              model: str | None = None, max_tokens: int = 1024) -> str:
+    """Non-streaming text completion via the appropriate provider.
+
+    Args:
+        messages: Conversation history.
+        system: Optional system prompt.
+        model: Model id; provider is inferred from it when given.
+        max_tokens: Maximum output tokens.
+
+    Returns:
+        Model reply as a plain string.
+    """
     return get_provider(model).complete(messages, system=system, model=model, max_tokens=max_tokens)
 
 
 def complete_with_meta(messages: list[Message], *, system: str | None = None,
                        model: str | None = None, max_tokens: int = 1024) -> tuple[str, str | None]:
-    """Non-streaming completion that ALSO surfaces the provider's finish reason. A
-    stop_reason of "max_tokens" (Anthropic) / "length" (xAI) means the output was cut off
-    at the token cap — batch writers (wiki_build) use this to retry-then-fail instead of
-    silently saving a truncated article. Mirrors the live engine's TurnEnd.stop_reason."""
+    """Non-streaming completion that also surfaces the provider's finish reason.
+
+    A stop_reason of "max_tokens" (Anthropic) / "length" (xAI) means the output was cut
+    off at the token cap — batch writers (wiki_build) use this to retry-then-fail instead
+    of silently saving a truncated article. Mirrors the live engine's TurnEnd.stop_reason.
+
+    Args:
+        messages: Conversation history.
+        system: Optional system prompt.
+        model: Model id; provider is inferred from it when given.
+        max_tokens: Maximum output tokens.
+
+    Returns:
+        Tuple of (text, stop_reason).
+    """
     return get_provider(model).complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
 
 
 def complete_with_tools(messages: list[Message], *, system: str | None = None, tools: list[ToolDef],
                         model: str | None = None, max_tokens: int = 1024) -> tuple[str, list[ToolCall], dict | None]:
+    """Synchronous tool-capable completion via the appropriate provider.
+
+    Args:
+        messages: Conversation history; mutated to append the assistant turn.
+        system: Optional system prompt.
+        tools: Tool definitions available this turn.
+        model: Model id; provider is inferred from it when given.
+        max_tokens: Maximum output tokens.
+
+    Returns:
+        Tuple of (text, tool_calls, usage_dict).
+    """
     return get_provider(model).complete_with_tools(messages, system=system, tools=tools,
                                                    model=model, max_tokens=max_tokens)
 
 
 def append_tool_results(messages: list[Message], results: list[ToolResult], *, model: str | None = None) -> None:
+    """Append tool results to the conversation using the appropriate provider's format.
+
+    Args:
+        messages: Conversation history to mutate.
+        results: Tool call answers to append.
+        model: Model id used to infer the provider format.
+    """
     get_provider(model).append_tool_results(messages, results)

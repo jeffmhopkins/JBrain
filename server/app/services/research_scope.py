@@ -22,6 +22,15 @@ from . import embeddings
 # --- spec accessors ---------------------------------------------------------
 
 def _ids(spec, col: str) -> set[int]:
+    """Parse a JSON integer-list column from a spec row into a set.
+
+    Args:
+        spec: A research_specs row.
+        col: Column name holding a JSON array of integers.
+
+    Returns:
+        Set of integer ids, or an empty set on parse failure.
+    """
     try:
         return {int(x) for x in json.loads(spec[col] or "[]")}
     except Exception:
@@ -34,6 +43,14 @@ def approved_ids(spec) -> set[int]:
 
 
 def _scope(spec) -> dict:
+    """Parse the scope_json candidate-filter dict from a spec row.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Parsed scope dict, or an empty dict on parse failure.
+    """
     try:
         return json.loads(spec["scope_json"] or "{}")
     except Exception:
@@ -84,12 +101,30 @@ def candidate_ids(conn, spec) -> set[int]:
 # --- scoped retrieval (the only path that returns note content) -------------
 
 def _fts_query(q: str) -> str:
+    """Build a prefix-match FTS5 query from a plain-text query string.
+
+    Each token is quoted to neutralize FTS operators and suffixed with * for prefix matching.
+
+    Args:
+        q: Plain-text query from the recipient.
+
+    Returns:
+        FTS5 query string safe for use in a MATCH clause.
+    """
     # Prefix-match each token; quote to neutralise FTS operators.
     toks = [t for t in (q or "").replace('"', " ").split() if t]
     return " ".join(f'"{t}"*' for t in toks) or '""'
 
 
 def _placeholders(n: int) -> str:
+    """Return a comma-separated string of n SQL parameter placeholders.
+
+    Args:
+        n: Number of placeholders needed.
+
+    Returns:
+        String like '?,?,?' with n entries.
+    """
     return ",".join("?" * n)
 
 

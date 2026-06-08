@@ -1263,9 +1263,23 @@ def _alarm_label(cap, all_day) -> str:
 
 
 def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
-    """Fire owner-set per-event reminders: notify at occurrence_start − offset, once per
-    (occurrence, offset), only while the event hasn't started yet (so downtime never
-    blasts past-due reminders). Owner-local/DST-correct. No reminders set → no-op."""
+    """Fire owner-set per-event reminders for all due occurrences.
+
+    Notifies at ``occurrence_start − offset_minutes``, once per (occurrence, offset).
+    Fires only while the event has not yet started, so downtime never blasts past-due
+    alarms. Owner-local and DST-correct. No-op when no reminders are set.
+
+    Args:
+        conn: SQLite connection.
+        workflow_id: Non-None workflow ID used as the dedup scope.
+        push: When True, also send Web Push notifications for fired alarms.
+
+    Returns:
+        Dict with key ``fired`` counting alarms that were posted.
+
+    Raises:
+        ValueError: When ``workflow_id`` is None.
+    """
     if workflow_id is None:
         raise ValueError("due_event_alarms requires a workflow_id (dedup integrity)")
     from datetime import timedelta
@@ -1285,6 +1299,7 @@ def due_event_alarms(conn, workflow_id, push: bool = True) -> dict:
     pending: list[tuple[str, str, str]] = []
 
     def fire_for(ik, occ_iso, all_day, title, slug):
+        """Fire all due reminders for one event occurrence, respecting the per-tick cap."""
         if len(pending) >= _MAX_FIRES_PER_TICK:        # hard backstop against a storm
             return
         for rem in conn.execute(

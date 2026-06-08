@@ -927,8 +927,21 @@ def research_remove(link_id: int, body: IdsIn):
 
 @router.post("/research/{link_id}/activate")
 def research_activate(link_id: int):
-    """Make a draft research link live. Refuses if nothing has been approved yet
-    (an active link with an empty allowlist would expose nothing but still bill)."""
+    """Activate a draft research link so recipients can start Q&A sessions.
+
+    Refuses if neither notes nor lab results have been approved — an active link
+    with an empty allowlist would expose nothing and still consume AI quota.
+
+    Args:
+        link_id: Primary key of the research share link.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the spec does not exist.
+        HTTPException: 400 if no notes or lab results have been approved yet.
+    """
     conn = get_conn()
     spec = research_svc.get_spec(conn, link_id)
     if not spec:
@@ -945,6 +958,14 @@ def research_activate(link_id: int):
 # derived from the access key. The server only relays + persists opaque ciphertext.
 
 class ChatCreateIn(BaseModel):
+    """Request body for creating an encrypted-chat link.
+
+    Attributes:
+        owner_wrap: Channel key sealed under the access-key KEK {salt, iv, ct}.
+        guest_wrap: Channel key sealed under the link-fragment secret [+ OTP].
+        owner_name: Display name shown to the recipient in the chat UI.
+    """
+
     owner_wrap: str = Field(max_length=4000)     # channel key sealed under the access-key KEK {salt,iv,ct}
     guest_wrap: str = Field(max_length=4000)     # channel key sealed under the link-fragment secret [+ OTP]
     persist: bool = True
@@ -957,8 +978,17 @@ class ChatCreateIn(BaseModel):
 
 @router.post("/chat")
 def chat_create(body: ChatCreateIn):
-    """Mint an encrypted-chat link + its channel. Returns the token (the client appends the
-    secret fragment locally) so the raw key never transits the server."""
+    """Mint an encrypted-chat link and its channel.
+
+    The client appends the secret fragment to the URL locally, so the raw channel
+    key never transits the server.
+
+    Args:
+        body: Both key wraps, persistence flag, OTP requirement, label, TTL, and single-use flag.
+
+    Returns:
+        Dict with token, link_id, and full share URL.
+    """
     conn = get_conn()
     token, link_id = chat_svc.create_channel(
         conn, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap,
@@ -971,18 +1001,38 @@ def chat_create(body: ChatCreateIn):
 
 @router.get("/chat/{link_id}")
 def chat_detail(link_id: int):
+    """Return owner-side channel metadata for an encrypted-chat link.
+
+    Args:
+        link_id: Primary key of the chat share link.
+
+    Returns:
+        Channel detail dict from chat_share.owner_detail.
+    """
     return chat_svc.owner_detail(get_conn(), link_id)
 
 
 class ChatFinalizeIn(BaseModel):
+    """Request body for finalizing an AI-drafted chat link with owner-minted key wraps."""
+
     owner_wrap: str = Field(max_length=4000)
     guest_wrap: str = Field(max_length=4000)
 
 
 @router.post("/chat/{link_id}/finalize")
 def chat_finalize(link_id: int, body: ChatFinalizeIn):
-    """Complete an AI-drafted chat link: the owner's browser minted the key and supplies the
-    two wraps, which makes the link usable. The raw key still never reaches the server."""
+    """Complete an AI-drafted chat link by supplying the owner-minted key wraps.
+
+    The owner's browser mints the channel key and supplies both wraps; the raw key
+    never reaches the server.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        body: Owner and guest key wraps.
+
+    Returns:
+        Dict with 'ok': True and the full share URL.
+    """
     conn = get_conn()
     chat_svc.finalize_channel(conn, link_id, owner_wrap=body.owner_wrap, guest_wrap=body.guest_wrap)
     conn.commit()
@@ -991,7 +1041,18 @@ def chat_finalize(link_id: int, body: ChatFinalizeIn):
 
 @router.get("/chat/{link_id}/stream")
 async def chat_owner_stream(link_id: int, after: int = 0):
-    """Owner SSE: replay the (persisted) backlog after `after`, then live messages + presence."""
+    """Stream owner-side SSE events: backlog replay, live messages, and presence updates.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        after: Sequence number to resume from; replays persisted messages with seq > after.
+
+    Returns:
+        StreamingResponse (text/event-stream) with presence, message, and closed events.
+
+    Raises:
+        HTTPException: 404 if the chat channel does not exist.
+    """
     conn = get_conn()
     ch = chat_svc.get_channel(conn, link_id)
     if ch is None:
@@ -1028,24 +1089,55 @@ async def chat_owner_stream(link_id: int, after: int = 0):
 
 
 class ChatSendIn(BaseModel):
+    """Request body for sending one encrypted message."""
+
     iv: str = Field(max_length=64)
     ct: str = Field(max_length=700_000)
 
 
 @router.post("/chat/{link_id}/send")
 def chat_owner_send(link_id: int, body: ChatSendIn):
+    """Send one encrypted message as the owner on a chat channel.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        body: AES-GCM iv and ciphertext of the message.
+
+    Returns:
+        Dict with 'ok': True and the assigned sequence number.
+    """
     ev = chat_svc.append_message(get_conn(), link_id, "owner", body.iv, body.ct)
     return {"ok": True, "seq": ev["seq"]}
 
 
 @router.post("/chat/{link_id}/file")
 def chat_owner_file(link_id: int, iv: str = Form(...), file: UploadFile = File(...)):
+    """Upload one encrypted file blob as the owner on a chat channel.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        iv: AES-GCM initialisation vector (form field, max 64 chars).
+        file: Encrypted file blob.
+
+    Returns:
+        Dict with 'ok': True and the assigned file_id.
+    """
     fid = chat_svc.store_file(get_conn(), link_id, iv[:64], file.file.read())
     return {"ok": True, "file_id": fid}
 
 
 @router.get("/chat/{link_id}/file/{file_id}")
 def chat_owner_file_download(link_id: int, file_id: int):
+    """Download an encrypted file blob as the owner.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        file_id: Primary key of the stored file.
+
+    Returns:
+        Opaque octet-stream with X-Chat-IV header carrying the AES-GCM iv.
+        Cache-Control is set to no-store.
+    """
     row = chat_svc.get_file(get_conn(), link_id, file_id)
     return Response(content=bytes(row["blob"]), media_type="application/octet-stream",
                     headers={"X-Chat-IV": row["iv"], "Cache-Control": "no-store"})
@@ -1053,11 +1145,26 @@ def chat_owner_file_download(link_id: int, file_id: int):
 
 @router.post("/chat/{link_id}/close")
 def chat_close(link_id: int):
+    """Close an encrypted-chat channel, signalling the recipient that the conversation has ended.
+
+    Args:
+        link_id: Primary key of the chat share link.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     chat_svc.close_channel(get_conn(), link_id)
     return {"ok": True}
 
 
 class ChatSaveIn(BaseModel):
+    """Request body for committing a decrypted chat transcript to the brain.
+
+    Attributes:
+        attachments: List of dicts with keys name, mime, and data (base64 of the
+            DECRYPTED bytes).
+    """
+
     transcript_md: str = Field(max_length=2_000_000)
     title: str | None = Field(default=None, max_length=120)
     guest_name: str | None = Field(default=None, max_length=80)
@@ -1067,8 +1174,18 @@ class ChatSaveIn(BaseModel):
 
 @router.post("/chat/{link_id}/save")
 def chat_save(link_id: int, body: ChatSaveIn):
-    """Commit the owner's client-decrypted transcript into the brain (auto-save on close).
-    Idempotent per channel."""
+    """Commit the owner-decrypted chat transcript into the brain.
+
+    Called automatically on channel close. Idempotent per channel — re-saving
+    the same channel overwrites the previous save.
+
+    Args:
+        link_id: Primary key of the chat share link.
+        body: Decrypted transcript markdown, optional title, guest name, and attachments.
+
+    Returns:
+        Dict with 'ok': True plus any additional fields from chat_share.save_to_brain.
+    """
     conn = get_conn()
     out = chat_svc.save_to_brain(conn, link_id, transcript_md=body.transcript_md, title=body.title,
                                  attachments=body.attachments, guest_name=body.guest_name)
@@ -1077,6 +1194,14 @@ def chat_save(link_id: int, body: ChatSaveIn):
 
 @router.post("/{link_id}/revoke")
 def revoke(link_id: int):
+    """Revoke a share link immediately, making it inaccessible to recipients.
+
+    Args:
+        link_id: Primary key of the share link to revoke.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     share_svc.revoke_link(conn, link_id)
     conn.commit()
@@ -1085,8 +1210,16 @@ def revoke(link_id: int):
 
 @router.post("/{link_id}/reset-bind")
 def reset_bind(link_id: int):
-    """Forget the bound browser so a 'bind' link can be opened fresh (e.g. it
-    locked to the wrong in-app browser)."""
+    """Forget the bound browser so a bind-locked link can be accepted by a different browser.
+
+    Useful when the link locked to the wrong in-app browser.
+
+    Args:
+        link_id: Primary key of the share link to reset.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     share_svc.reset_bind(conn, link_id)
     conn.commit()
@@ -1094,13 +1227,25 @@ def reset_bind(link_id: int):
 
 
 class ExpiryIn(BaseModel):
+    """Request body for updating a share link's TTL (0 = never expires)."""
+
     ttl_days: int = 0
 
 
 @router.post("/{link_id}/expiry")
 def set_expiry(link_id: int, body: ExpiryIn):
-    """Edit a view/edit link's expiry post-creation (0 = never) — parity with the
-    AI links, which can already edit expiry via their details panels."""
+    """Update a view/edit link's expiry post-creation (0 = never expires).
+
+    Provides parity with guided and research links, which can already edit expiry
+    via their details panels.
+
+    Args:
+        link_id: Primary key of the share link to update.
+        body: TTL in days from now; 0 clears the expiry.
+
+    Returns:
+        Dict with key 'ok': True on success.
+    """
     conn = get_conn()
     _set_link_expiry(conn, link_id, body.ttl_days)
     conn.commit()
@@ -1109,8 +1254,22 @@ def set_expiry(link_id: int, body: ExpiryIn):
 
 @router.post("/proposals/{prop_id}/accept")
 def accept_proposal(prop_id: int):
-    """Apply the proposed content through the SAME staged-UPDATE path (content-hash
-    basis), so it 409s instead of clobbering an intervening owner edit."""
+    """Accept an edit proposal and apply it via the staged-UPDATE path.
+
+    Uses the content-hash basis check so the apply 409s instead of clobbering
+    an intervening owner edit. Claims the row atomically to prevent double-accept.
+
+    Args:
+        prop_id: Primary key of the pending share proposal.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if no pending proposal with that id exists.
+        HTTPException: 409 if the proposal is no longer pending, or if the target
+            note no longer exists, or if the basis hash is stale.
+    """
     conn = get_conn()
     p = conn.execute("SELECT * FROM share_proposals WHERE id=? AND status='pending'", (prop_id,)).fetchone()
     if not p:
@@ -1140,7 +1299,17 @@ def accept_proposal(prop_id: int):
 
 @router.post("/proposals/{prop_id}/reject")
 def reject_proposal(prop_id: int):
-    """Reject but LEAVE THE LINK ACTIVE — the editor can re-propose."""
+    """Reject an edit proposal while leaving the share link active for re-proposals.
+
+    Args:
+        prop_id: Primary key of the pending share proposal.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if no pending proposal with that id exists.
+    """
     conn = get_conn()
     p = conn.execute("SELECT review_item_id FROM share_proposals WHERE id=? AND status='pending'", (prop_id,)).fetchone()
     if not p:

@@ -36,25 +36,61 @@ _LINE_RE = re.compile(r"(?m)^<!-- medref -->.*$")
 
 
 def _now() -> str:
+    """Return the current UTC timestamp as a string for cache writes.
+
+    Returns:
+        UTC timestamp in '%Y-%m-%d %H:%M:%f' format.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%f")
 
 
 def _http_get(url: str):
-    """One NLM GET -> parsed JSON. Factored out so tests stub it (no network)."""
+    """Fetch a URL and return parsed JSON. Factored out so tests can stub it without network.
+
+    Args:
+        url: Full NLM API URL.
+
+    Returns:
+        Parsed JSON object (dict or list).
+
+    Raises:
+        urllib.error.URLError: On network or HTTP error.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def _http_get_text(url: str) -> str:
-    """One NLM GET -> response text (for the XML health-topics service). Stubbable in tests."""
+    """Fetch a URL and return the response body as text. Stubbable in tests.
+
+    Used for the XML health-topics web service rather than the JSON endpoints.
+
+    Args:
+        url: Full NLM API URL.
+
+    Returns:
+        Response body decoded as UTF-8.
+
+    Raises:
+        urllib.error.URLError: On network or HTTP error.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
         return r.read().decode("utf-8", "replace")
 
 
 def _host_ok(url: str) -> bool:
-    """True only if `url`'s host is a public NLM host — so we never store/cite an off-NLM href."""
+    """Return True only if the URL's host is a public NLM host.
+
+    Prevents storing or citing an off-NLM href if a feed is spoofed or compromised.
+
+    Args:
+        url: URL string to validate.
+
+    Returns:
+        True if the hostname is medlineplus.gov, nlm.nih.gov, or any subdomain thereof.
+    """
     try:
         host = (urllib.parse.urlparse(url).hostname or "").lower()
     except Exception:  # noqa: BLE001
@@ -63,8 +99,18 @@ def _host_ok(url: str) -> bool:
 
 
 def _parse_first_topic(xml_text: str) -> dict:
-    """First MedlinePlus health-topic <document>: {url, title, snippet} (highlight tags stripped),
-    or {} . The url's host is re-validated by the caller before use."""
+    """Parse the first MedlinePlus health-topic document from an XML response.
+
+    Strips highlight/markup tags from content fields. The caller re-validates the returned
+    URL's host before storing or citing it.
+
+    Args:
+        xml_text: Raw XML response from the MedlinePlus health-topics web service.
+
+    Returns:
+        Dict with keys url, title, snippet; or {} if no document was found or parsing
+        failed.
+    """
     import xml.etree.ElementTree as ET
     try:
         root = ET.fromstring(xml_text)
@@ -90,8 +136,19 @@ def _parse_first_topic(xml_text: str) -> dict:
 
 
 def health_topic(conn, query: str) -> dict | None:
-    """Resolve a health-topic query to {url, title, snippet} from the MedlinePlus health-topics web
-    service (NLM, public domain). Cached; fail-soft to None; the returned URL is HOST-PINNED to NLM."""
+    """Resolve a health-topic query to a MedlinePlus reference.
+
+    Uses the MedlinePlus health-topics web service (NLM, public domain). Cached in
+    medref_cache; fail-soft to None on network error. The returned URL is host-pinned to
+    a public NLM domain.
+
+    Args:
+        conn: Database connection (for cache reads/writes).
+        query: Health topic search query string.
+
+    Returns:
+        Dict with keys url, title, snippet; or None if no result was found.
+    """
     key = _norm_key(query)
     if not key:
         return None
@@ -110,6 +167,16 @@ def health_topic(conn, query: str) -> dict | None:
 
 
 def _cache_get(conn, kind: str, key: str):
+    """Read a cached medref entry.
+
+    Args:
+        conn: Database connection.
+        kind: Cache entry type (e.g. 'rxcui', 'mplus', 'approx', 'mplus_topic').
+        key: Normalized lookup key.
+
+    Returns:
+        Parsed JSON payload, or None if the entry is absent or malformed.
+    """
     row = conn.execute("SELECT payload_json FROM medref_cache WHERE kind=? AND key=?", (kind, key)).fetchone()
     if not row:
         return None
@@ -120,6 +187,14 @@ def _cache_get(conn, kind: str, key: str):
 
 
 def _cache_put(conn, kind: str, key: str, payload) -> None:
+    """Write or update a medref cache entry.
+
+    Args:
+        conn: Database connection.
+        kind: Cache entry type.
+        key: Normalized lookup key.
+        payload: JSON-serializable payload to store (empty dict {} caches a negative result).
+    """
     conn.execute(
         "INSERT INTO medref_cache (kind, key, payload_json, fetched_at) VALUES (?,?,?,?) "
         "ON CONFLICT(kind, key) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at",
@@ -128,12 +203,31 @@ def _cache_put(conn, kind: str, key: str, payload) -> None:
 
 
 def _norm_key(name: str) -> str:
+    """Normalize a drug or topic name to a stable lowercase cache key.
+
+    Args:
+        name: Raw name string.
+
+    Returns:
+        Lowercased, whitespace-collapsed string truncated to 200 characters.
+    """
     return " ".join((name or "").lower().split())[:200]
 
 
 def _rxcui_exact(conn, name: str) -> str | None:
-    """Exact/normalized RxNorm concept id (RxCUI) for a drug name, or None. '' is cached as
-    a negative result so a miss isn't re-fetched."""
+    """Look up the exact/normalized RxNorm concept ID (RxCUI) for a drug name.
+
+    Uses search=0 (exact match including known synonyms/spellings). search=1 (normalized)
+    is too loose — it maps 'metformin' to a combination product. An empty string '' is
+    cached as a negative result so a miss isn't re-fetched.
+
+    Args:
+        conn: Database connection (for cache).
+        name: Drug name to look up.
+
+    Returns:
+        RxCUI string if an exact match was found, or None.
+    """
     key = _norm_key(name)
     cached = _cache_get(conn, "rxcui", key)
     if cached is not None:
@@ -152,10 +246,19 @@ def _rxcui_exact(conn, name: str) -> str | None:
 
 
 def _rxcui_approx(conn, name: str) -> dict | None:
-    """Top APPROXIMATE RxNorm candidate {rxcui, score, name}, or None. NB: the approximateTerm
-    `score` is NOT a reliable confidence gate (a good typo can score lower than a garbage
-    phrase), so we do NOT threshold on it — the approximate path only ever *proposes* a match
-    for the owner to confirm, never auto-links."""
+    """Return the top approximate RxNorm candidate for a drug name, or None.
+
+    The approximateTerm score is NOT a reliable confidence gate (a good typo can score
+    lower than a garbage phrase), so we do not threshold on it — the approximate path only
+    ever proposes a match for the owner to confirm, never auto-links.
+
+    Args:
+        conn: Database connection (for cache).
+        name: Drug name to look up.
+
+    Returns:
+        Dict with keys rxcui, score, name; or None if no candidate was found.
+    """
     key = _norm_key(name)
     cached = _cache_get(conn, "approx", key)
     if cached is not None:
@@ -179,8 +282,17 @@ def _rxcui_approx(conn, name: str) -> dict | None:
 
 
 def medlineplus_url(conn, rxcui: str) -> dict | None:
-    """{url, title} of the MedlinePlus consumer drug page for an RxCUI (via MedlinePlus
-    Connect), or None."""
+    """Return the MedlinePlus consumer drug page reference for an RxCUI.
+
+    Uses the MedlinePlus Connect API. Cached in medref_cache; fail-soft to None.
+
+    Args:
+        conn: Database connection (for cache).
+        rxcui: RxNorm concept ID string.
+
+    Returns:
+        Dict with keys url, title, and optionally summary; or None if not found.
+    """
     cached = _cache_get(conn, "mplus", str(rxcui))
     if cached is not None:
         return cached or None
@@ -212,9 +324,20 @@ def medlineplus_url(conn, rxcui: str) -> dict | None:
 
 
 def resolve(conn, name: str) -> dict | None:
-    """Resolve a drug NAME to a MedlinePlus reference. Tries an exact RxNorm match first,
-    then an approximate one. Returns {match:'exact'|'approx', rxcui, url, title[, candidate,
-    score]} or None (no confident match / nothing on MedlinePlus / offline)."""
+    """Resolve a drug name to a MedlinePlus reference.
+
+    Tries an exact RxNorm match first, then an approximate one. Returns None when no
+    confident match is found, MedlinePlus has no page for the RxCUI, or the service is
+    offline.
+
+    Args:
+        conn: Database connection (for cache).
+        name: Drug name to resolve.
+
+    Returns:
+        Dict with keys match ('exact' or 'approx'), rxcui, url, title, and optionally
+        summary, score, candidate; or None.
+    """
     name = (name or "").strip()
     if not name:
         return None
@@ -237,11 +360,21 @@ def resolve(conn, name: str) -> dict | None:
 
 
 def drug_topic(conn, name: str) -> dict | None:
-    """Resolve a medication NAME to a host-pinned MedlinePlus consumer drug page (NLM, public domain).
-    Thin wrapper over resolve(): returns {match, rxcui, url, title[, candidate, score]} or None, with the
-    returned URL HOST-PINNED to a public NLM host (a feed can't redirect us off-NLM). The outbound
-    RxNav / MedlinePlus Connect fetch happens here (cached); fail-soft to None. This is the single
-    drug-info entry point the gated drug_reference tool and its approval endpoint both call."""
+    """Resolve a medication name to a host-pinned MedlinePlus consumer drug page.
+
+    Thin wrapper over resolve() that adds a final host-pin check: the returned URL must be
+    on a public NLM host so a feed can't redirect off-NLM. The outbound RxNav / MedlinePlus
+    Connect fetch is cached; fails soft to None. This is the single drug-info entry point
+    the gated drug_reference tool and its approval endpoint both call.
+
+    Args:
+        conn: Database connection (for cache).
+        name: Medication name to resolve.
+
+    Returns:
+        Dict with keys match, rxcui, url, title, and optionally summary, score, candidate;
+        or None if no result is found or the URL is off-NLM.
+    """
     res = resolve(conn, name)
     if not res or not _host_ok(res.get("url", "")):
         return None
@@ -249,8 +382,20 @@ def drug_topic(conn, name: str) -> dict | None:
 
 
 def _apply_link(conn, article_title: str, url: str) -> bool:
-    """Ensure the medication article carries a single marked MedlinePlus 'Further reading'
-    line (idempotent; replaces a stale URL). Versioned; returns True if it changed the body."""
+    """Ensure a medication KB article carries a single marked MedlinePlus 'Further reading' line.
+
+    Idempotent: replaces a stale URL if one already exists. The note is versioned so the
+    change is restorable.
+
+    Args:
+        conn: Database connection.
+        article_title: Exact title of the kb note to update.
+        url: MedlinePlus consumer drug page URL.
+
+    Returns:
+        True if the article body was changed, False if it already had the correct link or
+        the note was not found.
+    """
     from . import notes as notes_svc
     row = conn.execute(
         "SELECT id, content_md FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL AND kind='kb'",
@@ -268,10 +413,19 @@ def _apply_link(conn, article_title: str, url: str) -> bool:
 
 
 def link_medications(conn, limit: int = 200) -> dict:
-    """Add MedlinePlus drug references to medication KB articles. Walks medication entities
-    that already have an article; an EXACT RxNorm match auto-links the article, an
-    APPROXIMATE match is recorded as a talk todo for the owner to confirm. Link-only; cached;
-    no LLM. Returns {checked, linked, proposed}."""
+    """Add MedlinePlus drug references to medication KB articles.
+
+    Walks medication entities that already have an article. An exact RxNorm match auto-links
+    the article; an approximate match is recorded as a talk todo for the owner to confirm.
+    Link-only; cached; no LLM.
+
+    Args:
+        conn: Database connection.
+        limit: Maximum number of medication entities to process.
+
+    Returns:
+        Dict with keys: checked, linked, proposed.
+    """
     from . import article_talk
     rows = conn.execute(
         "SELECT canonical_name, article_title FROM entities "

@@ -27,6 +27,8 @@ MIN_MINUTES = 60.0     # …OR at least this long since the last stored point
 
 
 class LocationIn(BaseModel):
+    """Input schema for a single location fix."""
+
     lat: float
     lon: float
     accuracy_m: float | None = None
@@ -39,10 +41,23 @@ class LocationIn(BaseModel):
 
 
 class LocationBatch(BaseModel):
+    """Input schema for a bulk location upload."""
+
     points: list[LocationIn]
 
 
 def _parse(ts: str | None) -> datetime | None:
+    """Parse an ISO timestamp string to a timezone-aware datetime.
+
+    Normalises common variants (space separator, trailing Z) and assumes UTC
+    when no timezone is present.
+
+    Args:
+        ts: ISO 8601 timestamp string, or ``None``.
+
+    Returns:
+        Timezone-aware datetime, or ``None`` if ``ts`` is falsy or unparseable.
+    """
     if not ts:
         return None
     try:
@@ -55,6 +70,22 @@ def _parse(ts: str | None) -> datetime | None:
 
 @router.post("")
 def add_location(body: LocationIn, writer=Depends(require_location_writer)):
+    """Ingest a single location fix, deduplicating against the source's last stored point.
+
+    A fix is stored only when the device has moved at least ``MIN_METERS`` OR
+    at least ``MIN_MINUTES`` have elapsed since the same source's previous fix.
+    A per-person location key overrides ``body.source`` to the key holder's
+    name.
+
+    Args:
+        body: Location fix with coordinates, optional accuracy/motion fields,
+            and optional recorded timestamp.
+        writer: Resolved location writer (full-key owner or per-person key holder).
+
+    Returns:
+        JSON ``{"stored": bool, "id": int}`` if stored, or
+        ``{"stored": false, "reason": str}`` if deduplicated away.
+    """
     conn = get_conn()
     now = datetime.now(timezone.utc)
     rec_dt = _parse(body.recorded_at) or now
@@ -103,12 +134,21 @@ def add_location(body: LocationIn, writer=Depends(require_location_writer)):
 
 @router.post("/bulk")
 def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
-    """Ingest a batch of fixes (a native tracker's offline-queue flush) in one call.
+    """Ingest a batch of location fixes from a native tracker's offline queue.
 
-    The keep-if-far-enough-OR-long-enough rule is applied IN ORDER — points are sorted
-    chronologically and each compared against the last KEPT point (the DB's newest,
-    then whatever we just stored), so an offline burst dedups exactly as a live stream
-    would. Capped per request so one flush can't run unbounded."""
+    Points are sorted chronologically and each compared against the last kept
+    point for the same source, so an offline burst deduplicates exactly as a
+    live stream would. Capped at 5000 points per request. Per-source dedup
+    ensures one device's burst does not discard another person's concurrent
+    fixes.
+
+    Args:
+        body: Batch of up to 5000 location fixes.
+        writer: Resolved location writer (full-key owner or per-person key holder).
+
+    Returns:
+        JSON ``{"stored": int, "received": int}`` with counts.
+    """
     conn = get_conn()
     now = datetime.now(timezone.utc)
     pts = sorted(body.points or [], key=lambda p: _parse(p.recorded_at) or now)[:5000]
@@ -167,13 +207,41 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
 
 
 def _norm(ts: str | None) -> str | None:
-    # Normalise an ISO bound ("2026-06-01T00:00:00Z") to the stored format so string
-    # comparison against recorded_at ("YYYY-MM-DD HH:MM:SS") works.
+    """Normalise an ISO timestamp bound to the ``YYYY-MM-DD HH:MM:SS`` stored format.
+
+    Converts the ``T`` separator to a space and strips the trailing ``Z`` so
+    the value can be compared directly against ``recorded_at`` in SQLite.
+
+    Args:
+        ts: ISO 8601 timestamp string such as ``"2026-06-01T00:00:00Z"``, or
+            ``None``.
+
+    Returns:
+        Normalised string, or ``None`` if ``ts`` is falsy.
+    """
     return ts.strip().replace("T", " ").replace("Z", "").strip() if ts else None
 
 
 @router.get("", dependencies=[CurrentUser])
 def list_locations(response: Response, since: str | None = None, until: str | None = None, limit: int = 12000):
+    """Return location fixes in chronological order, newest-first within the cap.
+
+    Results are sliced to the most recent ``limit`` fixes and reversed to
+    chronological order for the trail viewer. When the result was truncated,
+    the response header ``X-Locations-Truncated: 1`` is set so clients can
+    display a notice.
+
+    Args:
+        response: FastAPI Response used to set ``X-Locations-Truncated`` and
+            ``X-Locations-Count`` headers.
+        since: Optional ISO lower bound for ``recorded_at`` (inclusive).
+        until: Optional ISO upper bound for ``recorded_at`` (inclusive).
+        limit: Maximum fixes to return (1–20000, default 12000).
+
+    Returns:
+        List of fix dicts with ``id``, ``lat``, ``lon``, ``accuracy_m``,
+        ``recorded_at``, and ``source``, in chronological order.
+    """
     sql = "SELECT id, lat, lon, accuracy_m, recorded_at, source FROM locations WHERE 1=1"
     params: list = []
     s, u = _norm(since), _norm(until)

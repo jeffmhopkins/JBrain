@@ -24,7 +24,16 @@ _state = threading.local()
 
 
 def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
-    """Replace a note's tags (lower-cased, de-duped). Populates tags/note_tags."""
+    """Replace a note's tags (lower-cased, de-duped), populating tags and note_tags.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note to update.
+        tags: New tag list; duplicates and blank entries are silently dropped.
+
+    Returns:
+        Normalised, de-duplicated tag list that was actually stored.
+    """
     norm: list[str] = []
     for t in tags:
         t = (t or "").strip().lower()
@@ -41,6 +50,14 @@ def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
 
 
 def _fire_entry_created(conn, note_id: int, title: str, *, commit: bool = False) -> None:
+    """Fire the entry_created workflow event, guarded against re-entrancy.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Newly created note's ID.
+        title: Note title passed to the event context.
+        commit: Whether to commit after the event fires (False when inside a txn).
+    """
     if getattr(_state, "suppress", False):
         return
     _state.suppress = True
@@ -64,14 +81,20 @@ def flush_entry_events(conn) -> None:
 
 
 def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int) -> None:
-    """When a note is renamed, rewrite [[old title]] -> [[new title]] in every OTHER note
-    that links to it, so inline links keep resolving. Backlinks (tracked by note id) already
-    survive; this fixes the link *text/href* in referencing notes.
+    """Rewrite [[old title]] → [[new title]] in every note that links to the renamed note.
 
-    A |display alias is preserved EXCEPT when it merely echoed the old name (any path form
-    of the old title): that alias would otherwise become a stale label naming a now-different
-    article (e.g. renaming People/Jeff → People/Summer would leave [[…Summer…|Jeff]]). Such an
-    echo is dropped — the bare link renders the new article's clean short name (wikiLabel)."""
+    Backlinks (tracked by note id) already survive renaming; this fixes the link text/href
+    in referencing notes. A |display alias is preserved EXCEPT when it merely echoed the
+    old name (any path form of old_title): that alias would otherwise become a stale label
+    (e.g. renaming People/Jeff → People/Summer would leave [[…Summer…|Jeff]]). Such an echo
+    is dropped — the bare link renders the new article's clean short name (wikiLabel).
+
+    Args:
+        conn: SQLite connection.
+        old_title: Previous title of the renamed note.
+        new_title: New title of the renamed note.
+        renamed_id: Note ID of the renamed note (its own content is skipped).
+    """
     from .wikilinks import _path_forms
     old_forms = _path_forms(old_title)   # {'jeff', 'people/jeff', 'kb/people/jeff'}
 
@@ -103,6 +126,17 @@ def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int)
 
 
 def slugify(title: str) -> str:
+    """Convert a note title to a URL-safe slug.
+
+    Non-ASCII titles (emoji, CJK, RTL) that collapse to empty get a stable, distinct
+    slug derived from the title hash so they don't all become "note".
+
+    Args:
+        title: Raw note title.
+
+    Returns:
+        Lowercase, hyphen-separated slug string.
+    """
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     # Non-ASCII titles (emoji/CJK/RTL) collapse to empty — derive a stable,
     # distinct slug from the title so they don't all become "note".
@@ -114,18 +148,35 @@ def slugify(title: str) -> str:
 # title roots means an entry and its KB article never collide (and the "/"-path
 # tree groups them automatically).
 def protected_title_sql(col: str = "title") -> str:
-    """SQL predicate matching a 'protected'/system note — any path segment starts with
-    '_' (kb/_index, _scratch, kb/People/_Guide). The SQL twin of wiki_guides.is_protected,
-    used to hide these from the notes list and graph (they stay directly reachable by
-    slug). The '_' is backslash-escaped so LIKE matches a literal underscore, not its
-    single-char wildcard. `col` is always a trusted, hard-coded column name."""
+    """Return a SQL predicate matching 'protected' system notes.
+
+    Matches any note whose path has a segment starting with '_' (e.g. kb/_index,
+    _scratch, kb/People/_Guide). The SQL twin of wiki_guides.is_protected, used to
+    hide these from the notes list and graph (they stay directly reachable by slug).
+    The '_' is backslash-escaped so LIKE treats it as a literal underscore.
+
+    Args:
+        col: Column name to test; must be a trusted, hard-coded identifier.
+
+    Returns:
+        SQL fragment string (no leading AND).
+    """
     return rf"({col} LIKE '\_%' ESCAPE '\' OR {col} LIKE '%/\_%' ESCAPE '\')"
 
 
 def root_title(title: str, root: str) -> str:
-    """Place `title` under the given root ('notes' or 'kb') without doubling or
-    cross-prefixing. 'Jeff'->'notes/Jeff'; 'kb/Jeff' under 'kb' stays 'kb/Jeff';
-    'notes/Jeff' under 'kb' becomes 'kb/Jeff'. Deeper sub-paths are preserved."""
+    """Place a title under the given root folder without doubling or cross-prefixing.
+
+    'Jeff' → 'notes/Jeff'; 'kb/Jeff' under 'kb' stays 'kb/Jeff';
+    'notes/Jeff' under 'kb' becomes 'kb/Jeff'. Deeper sub-paths are preserved.
+
+    Args:
+        title: Note title, possibly already prefixed.
+        root: Target root folder name (e.g. 'notes' or 'kb').
+
+    Returns:
+        Title string with exactly one root prefix applied.
+    """
     t = (title or "").strip().strip("/")
     low = t.lower()
     for r in ("notes/", "kb/", "lists/", "logs/", "loc/"):
@@ -136,6 +187,18 @@ def root_title(title: str, root: str) -> str:
 
 
 def _unique_slug(conn, title: str, exclude_id: int | None = None) -> str:
+    """Return a slug for title that is not already used by any other note.
+
+    Appends '-2', '-3', … until an unused slug is found.
+
+    Args:
+        conn: SQLite connection.
+        title: Note title to slugify.
+        exclude_id: Note ID that may already own the base slug (e.g. on rename).
+
+    Returns:
+        Unique slug string.
+    """
     base = slugify(title)
     slug = base
     i = 2
@@ -151,8 +214,18 @@ def _unique_slug(conn, title: str, exclude_id: int | None = None) -> str:
 
 
 def _unique_title(conn, base: str, exclude_id: int | None = None) -> str:
-    """A title not already used by a live note (case-insensitive), suffixing
-    ' (2)', ' (3)', … on collision. Used to avoid clobbering an existing note."""
+    """Return a title not already in use by any live note (case-insensitive).
+
+    Appends ' (2)', ' (3)', … on collision to avoid clobbering an existing note.
+
+    Args:
+        conn: SQLite connection.
+        base: Desired title string.
+        exclude_id: Note ID to exclude from the collision check (e.g. the note itself).
+
+    Returns:
+        Unique title string.
+    """
     base = base.strip()[:120] or "Untitled"
     title, i = base, 2
     while conn.execute(
@@ -200,12 +273,21 @@ CAPTURE_ROOTS = ("medical", "financial")
 
 
 def sanitize_dest(dest: str, root: str = _MED_ROOT) -> str:
-    """A safe folder path under notes/<root>/ from a user-supplied destination name.
+    """Sanitize a user-supplied destination name into a safe folder path.
 
     Collapses whitespace, drops empty/'.'/'..' segments (no path traversal), caps each
-    segment and the whole path, and strips a leading 'notes' or ANY capture root the caller
-    may have included (so a financial dest typed as 'medical/X' can't land cross-tree).
-    Nested names ('Cardiology/Visits') are preserved. '' if nothing safe remains."""
+    segment and the whole path, and strips any leading capture root (so a financial dest
+    typed as 'medical/X' can't land cross-tree). Nested names ('Cardiology/Visits') are
+    preserved.
+
+    Args:
+        dest: Raw user-supplied destination path string.
+        root: Root name kept for call-site clarity; all capture roots are stripped
+            regardless of which root is passed.
+
+    Returns:
+        Sanitized relative folder path, or '' if nothing safe remains.
+    """
     _ = root  # kept for call-site clarity; all capture roots are stripped regardless
     raw = (dest or "").strip().strip("/")
     segs: list[str] = []
@@ -220,10 +302,20 @@ def sanitize_dest(dest: str, root: str = _MED_ROOT) -> str:
 
 
 def next_capture_title(conn, root: str, dest: str) -> str:
-    """Next capture slot under an Entry sub-selector root: notes/<root>/<dest>/NN (dest
-    sanitized; falls back to notes/<root>/General when empty). `root` is clamped to a known
-    capture root. Reuses the dated-tree per-folder numbering, so a destination's captures
-    sort .../01, .../02, … and never collide with a deleted one."""
+    """Return the next capture slot under an Entry sub-selector root.
+
+    Format: notes/<root>/<dest>/NN (dest sanitized; falls back to General when empty).
+    root is clamped to a known capture root. Reuses the dated-tree per-folder numbering,
+    so a destination's captures sort .../01, .../02, … and never collide with a deleted one.
+
+    Args:
+        conn: SQLite connection.
+        root: Capture root name; clamped to CAPTURE_ROOTS.
+        dest: User-supplied sub-folder path, sanitized before use.
+
+    Returns:
+        Full note title string for the next capture slot.
+    """
     r = root if root in CAPTURE_ROOTS else _MED_ROOT
     d = sanitize_dest(dest, r) or "General"
     folder = f"{r}/{d}"
@@ -231,11 +323,29 @@ def next_capture_title(conn, root: str, dest: str) -> str:
 
 
 def next_medical_title(conn, dest: str) -> str:
-    """Back-compat wrapper for medical capture: notes/medical/<dest>/NN."""
+    """Return the next medical capture title (notes/medical/<dest>/NN).
+
+    Back-compat wrapper around next_capture_title for the medical root.
+
+    Args:
+        conn: SQLite connection.
+        dest: Sub-folder destination within notes/medical/.
+
+    Returns:
+        Full note title string for the next medical capture slot.
+    """
     return next_capture_title(conn, _MED_ROOT, dest)
 
 
 def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
+    """Rebuild the FTS index row for a note, skipping redirect-only notes.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note to index.
+        title: Current note title.
+        content_md: Current note body.
+    """
     conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
     # A redirect row must NOT be a keyword hit: its old title still occupies the UNIQUE
     # title slot, but a search for that title should surface the canonical article, not the
@@ -250,6 +360,15 @@ def _sync_fts(conn, note_id: int, title: str, content_md: str) -> None:
 
 
 def get_by_title(conn, title: str) -> sqlite3.Row | None:
+    """Return the live note row for a title (case-insensitive), or None.
+
+    Args:
+        conn: SQLite connection.
+        title: Note title to look up.
+
+    Returns:
+        sqlite3.Row for the note, or None if not found or soft-deleted.
+    """
     return conn.execute(
         "SELECT * FROM notes WHERE lower(title) = lower(?) AND deleted_at IS NULL",
         (title,),
@@ -257,6 +376,12 @@ def get_by_title(conn, title: str) -> sqlite3.Row | None:
 
 
 def _prune_versions(conn, note_id: int) -> None:
+    """Trim note_versions to the MAX_VERSIONS_PER_NOTE most recent rows.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note whose version history should be pruned.
+    """
     conn.execute(
         "DELETE FROM note_versions WHERE note_id = ? AND id NOT IN ("
         "  SELECT id FROM note_versions WHERE note_id = ? "
@@ -434,6 +559,14 @@ def upsert_note(
 
 
 def soft_delete(conn, note_id: int) -> None:
+    """Soft-delete a note: stamp deleted_at, clear FTS/links/embeddings/attachment indexes.
+
+    Attachment rows are kept so a restore can re-index them.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Note to soft-delete.
+    """
     conn.execute(
         "UPDATE notes SET deleted_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?", (note_id,)
     )
@@ -471,6 +604,15 @@ def restore(conn, note_id: int) -> None:
 
 
 def backlinks(conn, note_id: int) -> list[dict]:
+    """Return all live notes that link to the given note.
+
+    Args:
+        conn: SQLite connection.
+        note_id: Target note ID to look up backlinks for.
+
+    Returns:
+        List of dicts with 'id', 'title', and 'slug', sorted by title.
+    """
     rows = conn.execute(
         """
         SELECT DISTINCT n.id, n.title, n.slug

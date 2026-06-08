@@ -12,13 +12,32 @@ router = APIRouter(prefix="/api/entities", tags=["entities"], dependencies=[Curr
 
 @router.get("")
 def list_entities(type: str | None = None, q: str | None = None, limit: int = 500):
-    """Canonical entities, most-mentioned first. Optional type (person/org/place/thing)
-    and name substring filters."""
+    """List canonical entities, most-mentioned first.
+
+    Args:
+        type: Optional type filter (person/org/place/thing).
+        q: Optional name substring filter.
+        limit: Maximum number of entities to return (default 500).
+
+    Returns:
+        List of entity dicts from entity_index.index.
+    """
     return entity_index.index(get_conn(), type=type, q=q, limit=limit)
 
 
 def _entity(conn, entity_id: int):
-    """(type, normalized_key, canonical_name) for an entity id, or 404."""
+    """Fetch a single entity row by id, or raise 404.
+
+    Args:
+        conn: Active database connection.
+        entity_id: Entity id to look up.
+
+    Returns:
+        Row with id, type, normalized_key, and canonical_name.
+
+    Raises:
+        HTTPException: 404 if the entity is not found.
+    """
     row = conn.execute(
         "SELECT id, type, normalized_key, canonical_name FROM entities WHERE id=?", (entity_id,)
     ).fetchone()
@@ -29,20 +48,39 @@ def _entity(conn, entity_id: int):
 
 @router.get("/status")
 def rebuild_status():
-    """Poll target for the Entities page's "refreshing…" indicator. Returns
-    {rebuilding, status, generation, last_error}: a mutating op records its decision
-    synchronously but defers the (slow) entity_index.rebuild to a coalesced background
-    worker, so the UI watches `generation` advance to know the fold has materialized.
-    Defined before /{entity_id} so the literal path wins."""
+    """Return the entity index rebuild status for the Entities page loading indicator.
+
+    A mutating operation records its decision synchronously but defers the slow
+    entity_index.rebuild to a coalesced background worker; the UI watches 'generation'
+    advance to know the fold has materialized. Defined before /{entity_id} so the
+    literal path wins.
+
+    Returns:
+        Dict with rebuilding, status, generation, and last_error keys.
+    """
     return entity_rebuild.status(get_conn())
 
 
 @router.post("/merge")
 def merge_entities(source_id: int = Body(...), into_id: int = Body(...)):
-    """Durably merge `source_id` into `into_id`: record the ruling synchronously, kick a
-    deferred (coalesced, background) index rebuild, and return the survivor (the `into`
-    entity) with `rebuilding: true`. The survivor id is stable across rebuilds; the
-    source's notes fold in once the deferred rebuild completes (the UI polls /status)."""
+    """Durably merge source_id into into_id and kick a background index rebuild.
+
+    Records the ruling synchronously, kicks a deferred (coalesced, background) index
+    rebuild, and returns the survivor (the into entity) with rebuilding: true. The
+    survivor id is stable across rebuilds; the source's notes fold in once the deferred
+    rebuild completes (the UI polls /status).
+
+    Args:
+        source_id: Entity id to merge away.
+        into_id: Entity id to merge into (the survivor).
+
+    Returns:
+        Survivor entity detail dict with 'rebuilding' flag.
+
+    Raises:
+        HTTPException: 400 if source_id equals into_id.
+        HTTPException: 404 if either entity or the survivor entity is not found.
+    """
     conn = get_conn()
     src = _entity(conn, source_id)
     dst = _entity(conn, into_id)
@@ -68,7 +106,19 @@ def merge_entities(source_id: int = Body(...), into_id: int = Body(...)):
 
 @router.post("/split")
 def split_entities(a_id: int = Body(...), b_id: int = Body(...)):
-    """Durably split a pair: forbid the heuristic auto-union of these two, rebuild."""
+    """Durably split a pair of entities, forbidding the heuristic auto-union.
+
+    Args:
+        a_id: First entity id.
+        b_id: Second entity id.
+
+    Returns:
+        Dict with 'ok' and 'rebuilding' keys.
+
+    Raises:
+        HTTPException: 400 if a_id equals b_id.
+        HTTPException: 404 if either entity is not found.
+    """
     conn = get_conn()
     a = _entity(conn, a_id)
     b = _entity(conn, b_id)
@@ -85,7 +135,19 @@ def split_entities(a_id: int = Body(...), b_id: int = Body(...)):
 
 @router.post("/{entity_id}/aliases")
 def add_alias(entity_id: int, display: str = Body(..., embed=True)):
-    """Attach an extra alias (by display label) to this entity, rebuild, return the detail."""
+    """Attach an extra display-label alias to an entity, then rebuild the index.
+
+    Args:
+        entity_id: Entity to receive the alias.
+        display: Human-readable alias label to attach.
+
+    Returns:
+        Updated entity detail dict with 'rebuilding' flag.
+
+    Raises:
+        HTTPException: 404 if the entity is not found.
+        HTTPException: 422 if the display label is blank.
+    """
     conn = get_conn()
     e = _entity(conn, entity_id)
     if not (display or "").strip():
@@ -103,7 +165,18 @@ def add_alias(entity_id: int, display: str = Body(..., embed=True)):
 
 @router.delete("/{entity_id}/aliases/{alias_norm}")
 def remove_alias(entity_id: int, alias_norm: str):
-    """Remove a user 'alias' decision for this entity (by its normalized key), rebuild."""
+    """Remove a user alias decision for this entity by normalized key, then rebuild.
+
+    Args:
+        entity_id: Entity whose alias to remove.
+        alias_norm: Normalized key of the alias decision to remove.
+
+    Returns:
+        Dict with 'ok' and 'rebuilding' keys.
+
+    Raises:
+        HTTPException: 404 if the entity is not found.
+    """
     conn = get_conn()
     e = _entity(conn, entity_id)
     na = entity_index.normalize(alias_norm)
@@ -119,7 +192,17 @@ def remove_alias(entity_id: int, alias_norm: str):
 
 @router.get("/{entity_id}/decisions")
 def list_decisions(entity_id: int):
-    """The identity decisions touching this entity's type (merge/split/alias ledger)."""
+    """List identity decisions (merge/split/alias) for this entity's type.
+
+    Args:
+        entity_id: Entity whose type's decision ledger to return.
+
+    Returns:
+        List of decision dicts from entity_decisions.list_for.
+
+    Raises:
+        HTTPException: 404 if the entity is not found.
+    """
     conn = get_conn()
     e = _entity(conn, entity_id)
     return entity_decisions.list_for(conn, type=e["type"])
@@ -127,9 +210,17 @@ def list_decisions(entity_id: int):
 
 @router.get("/resolve")
 def resolve_entity(name: str):
-    """Resolve a name OR alias to its CANONICAL entity (so a nickname search collapses to one
-    person card that links to the canonical article). Returns the entity + its notes, or
-    {"resolved": None}. Defined before /{entity_id} so the literal path wins."""
+    """Resolve a name or alias to its canonical entity.
+
+    A nickname search collapses to one person card that links to the canonical article.
+    Defined before /{entity_id} so the literal path wins.
+
+    Args:
+        name: Display name or alias string to resolve.
+
+    Returns:
+        Entity detail dict, or {'resolved': None} if not found.
+    """
     conn = get_conn()
     norm = entity_index.normalize(name or "")
     if not norm:
@@ -147,7 +238,17 @@ def resolve_entity(name: str):
 
 @router.get("/{entity_id}")
 def get_entity(entity_id: int):
-    """One entity plus the notes that mention it (and its kb article, if any)."""
+    """Return one entity with the notes that mention it and its kb article if any.
+
+    Args:
+        entity_id: Entity id to retrieve.
+
+    Returns:
+        Entity detail dict from entity_index.notes_for.
+
+    Raises:
+        HTTPException: 404 if the entity is not found.
+    """
     out = entity_index.notes_for(get_conn(), entity_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Entity not found")

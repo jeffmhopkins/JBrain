@@ -24,7 +24,17 @@ _DEBOUNCE_SECONDS = 600  # at most once per 10 min per event
 @router.post("/{event}")
 def fire(event: str):
     """Fire an allow-listed client event, running its subscribed event-workflows.
-    Debounced — returns {fired:false, debounced:true} if it ran too recently."""
+
+    Debounced at 10 minutes per event: returns {fired: false, debounced: true} if
+    the same event fired too recently. Returns {fired: false, reason: ...} for
+    unknown events.
+
+    Args:
+        event: Event name to fire (must be in the allow-list, e.g. 'wiki_viewed').
+
+    Returns:
+        Dict with 'fired' bool; includes 'debounced' or 'reason' when fired is false.
+    """
     if event not in _CLIENT_EVENTS:
         return {"fired": False, "reason": "unknown event"}
     conn = get_conn()

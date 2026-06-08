@@ -31,6 +31,11 @@ _PUSH_DEBOUNCE_SECONDS = 45.0          # don't re-push "someone's waiting" more 
 
 
 def _utcnow() -> str:
+    """Return the current UTC time as a 'YYYY-MM-DD HH:MM:SS' string.
+
+    Returns:
+        UTC timestamp string.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -39,9 +44,25 @@ def _utcnow() -> str:
 def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp_required: bool,
                    label: str | None, ttl_days: int | None, single_use: bool,
                    owner_name: str | None = None) -> tuple[str, int]:
-    """Mint a chat link (always browser-bound — chat is strictly 1:1) and its channel
-    row holding the wrapped keys. Returns (token, link_id). The raw channel key is never
-    seen here: owner_wrap/guest_wrap are sealed client-side."""
+    """Mint a chat link and its channel row holding the wrapped keys.
+
+    Chat is always browser-bound (strictly 1:1). The raw channel key is never seen
+    here — owner_wrap/guest_wrap are sealed client-side.
+
+    Args:
+        conn: Database connection.
+        owner_wrap: Owner's sealed copy of the channel key.
+        guest_wrap: Guest's sealed copy of the channel key.
+        persist: Retain encrypted message history after the session.
+        otp_required: Require a one-time passcode before the guest can connect.
+        label: Optional human-readable label for the Shares page.
+        ttl_days: Expiry in days from now, or None for no expiry.
+        single_use: Revoke after the first guest connection.
+        owner_name: Owner's display name shown to the guest.
+
+    Returns:
+        A (token, link_id) tuple for the new share link.
+    """
     token = share_svc.mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     cur = conn.execute(
@@ -61,10 +82,23 @@ def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp
 
 def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: str | None,
                            owner_name: str | None, ttl_days: int | None) -> tuple[str, int]:
-    """Mint a DRAFT chat link the AI set up. The channel key can only be generated in the
-    owner's browser (zero-knowledge), so the wraps are left empty and pending_setup=1 until
-    the owner FINALIZES it in Shares (one tap) — mirroring guided/research's draft→activate.
-    A pending link is inert to recipients (no key exists yet)."""
+    """Mint a DRAFT chat link with empty key wraps, pending owner finalization.
+
+    The channel key can only be generated in the owner's browser (zero-knowledge), so
+    pending_setup=1 until the owner finalizes it in Shares. Mirrors guided/research
+    draft→activate. A pending link is inert to recipients (no key exists yet).
+
+    Args:
+        conn: Database connection.
+        persist: Retain encrypted message history after the session.
+        otp_required: Require a one-time passcode before the guest can connect.
+        label: Optional human-readable label for the Shares page.
+        owner_name: Owner's display name shown to the guest.
+        ttl_days: Expiry in days from now, or None for no expiry.
+
+    Returns:
+        A (token, link_id) tuple for the new share link.
+    """
     token = share_svc.mint_token()
     exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
     cur = conn.execute(
@@ -82,8 +116,19 @@ def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: st
 
 
 def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) -> None:
-    """Complete a draft chat link: store the browser-generated wrapped keys and clear the
-    pending flag, so the link becomes usable. No-op-safe if already finalized."""
+    """Complete a draft chat link by storing the browser-generated wrapped keys.
+
+    Clears pending_setup so the link becomes usable. No-op-safe if already finalized.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to finalize.
+        owner_wrap: Owner's sealed copy of the channel key.
+        guest_wrap: Guest's sealed copy of the channel key.
+
+    Raises:
+        HTTPException: 404 if the channel does not exist.
+    """
     ch = get_channel(conn, link_id)
     if ch is None:
         raise HTTPException(status_code=404, detail="Chat not found.")
@@ -93,12 +138,34 @@ def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) ->
 
 
 def get_channel(conn, link_id: int):
+    """Fetch the chat_channels row for a share link.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id to look up.
+
+    Returns:
+        The chat_channels row, or None if not found.
+    """
     return conn.execute("SELECT * FROM chat_channels WHERE share_link_id = ?", (link_id,)).fetchone()
 
 
 def channel_for_link(conn, link) -> dict:
-    """The recipient-facing channel descriptor (no secrets the fragment can't already
-    unlock). guest_wrap is opaque without the link fragment, so it's safe to expose."""
+    """Build the recipient-facing channel descriptor for an active chat link.
+
+    Returns no secrets the link fragment can't already unlock. guest_wrap is opaque
+    without the fragment, so it is safe to expose over the public API.
+
+    Args:
+        conn: Database connection.
+        link: The resolved share_links row.
+
+    Returns:
+        Dict with kind, persist, otp_required, guest_wrap, guest_name, and status.
+
+    Raises:
+        HTTPException: 404 if the channel is missing, inactive, or still pending setup.
+    """
     ch = get_channel(conn, link["id"])
     if ch is None or ch["status"] != "active" or ch["pending_setup"]:
         raise HTTPException(status_code=404, detail="This link isn't available.")
@@ -115,9 +182,22 @@ def channel_for_link(conn, link) -> dict:
 # --- Messaging ---------------------------------------------------------------
 
 def append_message(conn, link_id: int, sender: str, iv: str, ciphertext: str) -> dict:
-    """Allocate the next seq, persist the ciphertext for 'persist' channels, and fan the
-    event out to the other side. Returns the broadcast event (so the sender's own POST can
-    echo the assigned seq)."""
+    """Allocate the next sequence number, optionally persist, and fan out the message event.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+        sender: 'owner' or 'guest'.
+        iv: AES-GCM initialization vector (hex/base64, max 64 chars).
+        ciphertext: Encrypted message body (max ~700 KB).
+
+    Returns:
+        The broadcast event dict with type, seq, sender, iv, ct, and at fields.
+
+    Raises:
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 413 if iv or ciphertext exceeds size limits.
+    """
     ch = get_channel(conn, link_id)
     if ch is None or ch["status"] != "active":
         raise HTTPException(status_code=409, detail="This chat has ended.")
@@ -142,8 +222,18 @@ def append_message(conn, link_id: int, sender: str, iv: str, ciphertext: str) ->
 
 
 def backlog(conn, link_id: int, after_seq: int = 0) -> list[dict]:
-    """Persisted ciphertext history after `after_seq` (resume support). Empty for
-    ephemeral channels, which keep nothing."""
+    """Return persisted ciphertext history after a given sequence number.
+
+    Empty for ephemeral channels, which retain nothing.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+        after_seq: Only return messages with seq > this value (resume support).
+
+    Returns:
+        List of message event dicts (type, seq, sender, iv, ct, at).
+    """
     rows = conn.execute(
         "SELECT seq, sender, iv, ciphertext, created_at FROM chat_messages "
         "WHERE share_link_id = ? AND seq > ? ORDER BY seq",
@@ -153,8 +243,24 @@ def backlog(conn, link_id: int, after_seq: int = 0) -> list[dict]:
 
 
 def store_file(conn, link_id: int, iv: str, blob: bytes) -> int:
-    """Persist one encrypted file blob; returns its id (the sender then references it
-    inside an encrypted message, so the filename/mime never reach the server)."""
+    """Persist one encrypted file blob and return its id.
+
+    The sender references the id inside an encrypted message, so the filename and
+    MIME type never reach the server.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+        iv: AES-GCM initialization vector.
+        blob: Raw encrypted file bytes (max 100 MB + 4096).
+
+    Returns:
+        The new chat_files.id.
+
+    Raises:
+        HTTPException: 409 if the channel has ended.
+        HTTPException: 413 if the blob exceeds MAX_CHAT_FILE_BYTES.
+    """
     ch = get_channel(conn, link_id)
     if ch is None or ch["status"] != "active":
         raise HTTPException(status_code=409, detail="This chat has ended.")
@@ -168,8 +274,21 @@ def store_file(conn, link_id: int, iv: str, blob: bytes) -> int:
 
 
 def get_file(conn, link_id: int, file_id: int):
-    """Fetch one encrypted file blob — scoped to its channel so a token can never reach
-    another channel's files."""
+    """Fetch one encrypted file blob scoped to its channel.
+
+    Scoping ensures a token can never reach another channel's files.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel (scope guard).
+        file_id: The chat_files.id to retrieve.
+
+    Returns:
+        Row with iv and blob fields.
+
+    Raises:
+        HTTPException: 404 if the file does not exist or belongs to a different channel.
+    """
     row = conn.execute(
         "SELECT iv, blob FROM chat_files WHERE id = ? AND share_link_id = ?", (file_id, link_id)).fetchone()
     if row is None:
@@ -180,9 +299,15 @@ def get_file(conn, link_id: int, file_id: int):
 # --- Presence + push ---------------------------------------------------------
 
 def handle_presence(conn, link_id: int) -> None:
-    """Broadcast the current presence and, when a recipient is waiting with no owner
-    attached, push the owner (debounced) so they can join in one tap. Called whenever a
-    subscriber attaches or detaches."""
+    """Broadcast current presence state and debounced-push the owner when a guest is waiting.
+
+    Called whenever a subscriber attaches or detaches. The push is suppressed if the
+    owner was notified within _PUSH_DEBOUNCE_SECONDS.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+    """
     owner_present, guest_present = chat_relay.present(link_id)
     chat_relay.publish(link_id, {"type": "presence", "owner": owner_present, "guest": guest_present})
     if guest_present and not owner_present:
@@ -202,8 +327,15 @@ def handle_presence(conn, link_id: int) -> None:
 # --- Owner: close + save -----------------------------------------------------
 
 def close_channel(conn, link_id: int) -> None:
-    """End the chat: mark it closed, revoke the link (so the recipient is dropped), purge
-    an ephemeral channel's transient blobs, and tell both sides over the relay."""
+    """End the chat: mark it closed, revoke the link, purge ephemeral blobs, and notify both sides.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel to close.
+
+    Raises:
+        HTTPException: 404 if the channel does not exist.
+    """
     ch = get_channel(conn, link_id)
     if ch is None:
         raise HTTPException(status_code=404, detail="Chat not found.")
@@ -220,10 +352,26 @@ def close_channel(conn, link_id: int) -> None:
 
 def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
                   attachments: list[dict], guest_name: str | None) -> dict:
-    """Commit the owner's CLIENT-DECRYPTED transcript (+ any decrypted attachments) into the
-    brain as a normal note. Idempotent per channel: a second call returns the existing note
-    (auto-save can fire from more than one owner device). This is the only point plaintext
-    ever reaches the server, and only because the owner chose to keep it."""
+    """Commit the owner's client-decrypted transcript and attachments into the brain as a note.
+
+    Idempotent per channel: a second call returns the existing note (auto-save may fire
+    from more than one owner device). This is the only point plaintext ever reaches the
+    server, and only because the owner chose to keep it.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+        transcript_md: Owner-decrypted Markdown transcript text.
+        title: Optional note title; defaults to 'Chat with {guest} — {date}'.
+        attachments: List of {name, mime, data (base64)} dicts to save alongside.
+        guest_name: Guest display name used in the note title and footer.
+
+    Returns:
+        Dict with note_slug and already_saved fields.
+
+    Raises:
+        HTTPException: 404 if the channel does not exist.
+    """
     from . import attachments as att_svc
     ch = get_channel(conn, link_id)
     if ch is None:
@@ -262,8 +410,22 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
 
 
 def owner_detail(conn, link_id: int) -> dict:
-    """Everything the owner's chat view needs to attach: the wrapped key for THIS device to
-    unseal, channel settings, presence, and whether it still needs an auto-save."""
+    """Return everything the owner's chat view needs to attach to a channel.
+
+    Includes the wrapped key for the owner's device to unseal, channel settings,
+    current presence state, and whether the transcript still needs an auto-save.
+
+    Args:
+        conn: Database connection.
+        link_id: The share_links.id for the channel.
+
+    Returns:
+        Dict with link_id, token, url, owner_wrap, persist, otp_required, pending_setup,
+        status, guest_name, owner_name, saved_note_slug, expires_at, and present.
+
+    Raises:
+        HTTPException: 404 if the channel does not exist.
+    """
     ch = get_channel(conn, link_id)
     if ch is None:
         raise HTTPException(status_code=404, detail="Chat not found.")
@@ -292,7 +454,14 @@ def owner_detail(conn, link_id: int) -> dict:
 
 
 def list_channels(conn) -> list[dict]:
-    """Owner-side list of chat channels (active + closed) for the Shares page."""
+    """Return the owner-side list of chat channels (active + closed) for the Shares page.
+
+    Args:
+        conn: Database connection.
+
+    Returns:
+        List of channel detail dicts, most recent first (up to 100).
+    """
     rows = conn.execute(
         "SELECT c.share_link_id AS link_id, c.persist, c.otp_required, c.pending_setup, c.status, "
         "       c.guest_name, c.owner_name, c.created_at, c.closed_at, c.last_guest_at, c.last_owner_at, "
@@ -314,5 +483,12 @@ def list_channels(conn) -> list[dict]:
 
 
 def sse(event: dict) -> str:
-    """Encode one event in the same SSE envelope the rest of the app uses."""
+    """Encode one event in the SSE envelope used across the app.
+
+    Args:
+        event: Dict with at least a 'type' key.
+
+    Returns:
+        SSE-formatted string ending with double newline.
+    """
     return f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"

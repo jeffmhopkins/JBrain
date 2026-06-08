@@ -32,7 +32,16 @@ _COLORS = ["#4ea1ff", "#ff7043", "#66bb6a", "#ab47bc", "#ffca28", "#26c6da"]
 
 
 def _ensure_person(conn, name: str, color: str) -> int:
-    """Create the person (idempotent by unique name) so source→colour mapping works."""
+    """Create a person row if one does not already exist, idempotent by name.
+
+    Args:
+        conn: SQLite connection (caller owns commit).
+        name: Person's display name (unique key).
+        color: Hex color string assigned to this person's track.
+
+    Returns:
+        The person's primary key id.
+    """
     row = conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone()
     if row:
         return row["id"]
@@ -43,8 +52,21 @@ def _ensure_person(conn, name: str, color: str) -> int:
 
 
 def _walk(n: int, start: datetime, span_s: float, lat0: float, lon0: float):
-    """Yield (lat, lon, recorded_at) for a plausible moving track of n fixes whose
-    timestamps spread, on average, across `span_s` seconds (jittered per step)."""
+    """Yield location fixes for a plausible random-walk track.
+
+    Each fix advances from the previous by a jittered distance (dwell, walk, or
+    long-hop) and a jittered time interval. Latitude is clamped to ±85°.
+
+    Args:
+        n: Number of fixes to generate.
+        start: Starting datetime (timezone-aware).
+        span_s: Target total span in seconds; step duration averages span_s / n.
+        lat0: Starting latitude in decimal degrees.
+        lon0: Starting longitude in decimal degrees.
+
+    Yields:
+        Tuple of (lat, lon, recorded_at_utc_str) for each fix.
+    """
     lat, lon = lat0, lon0
     t = start
     mean_step = max(1.0, span_s / max(1, n))   # average seconds between fixes
@@ -67,6 +89,7 @@ def _walk(n: int, start: datetime, span_s: float, lat0: float, lon0: float):
 
 
 def main() -> None:
+    """Parse CLI arguments and seed synthetic location fixes directly into the DB."""
     ap = argparse.ArgumentParser(description="Seed synthetic location fixes (direct DB insert).")
     ap.add_argument("--count", type=int, default=18000, help="total fixes across all people")
     ap.add_argument("--people", default="Mom,Dad", help="comma-separated person names")

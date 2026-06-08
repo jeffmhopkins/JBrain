@@ -497,8 +497,18 @@ def transcribe(att_id: int) -> None:
 
 
 def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
-    """Request thread: guard double-runs, mark pending, spawn the worker. Needs no
-    LLM credentials — the model is local. Returns {"status": ...}."""
+    """Guard against double-runs, mark pending, and spawn the transcription worker.
+
+    Called on the request thread. No LLM credentials are needed — the model is local.
+
+    Args:
+        conn: Database connection.
+        att_id: Attachment row ID to transcribe.
+        force: If True, restart even a pending or already-done transcription.
+
+    Returns:
+        Status dict with at least a "status" key.
+    """
     row = conn.execute(
         "SELECT filename, mime, analysis_status FROM attachments WHERE id = ?", (att_id,)
     ).fetchone()

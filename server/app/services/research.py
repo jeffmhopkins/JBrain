@@ -347,6 +347,14 @@ def find_session(conn, link_id: int, secret: str | None):
 
 
 def _transcript(session) -> list[dict]:
+    """Deserialize the session transcript from JSON, returning an empty list on error.
+
+    Args:
+        session: A research_sessions row with a transcript_json column.
+
+    Returns:
+        List of transcript turn dicts, or an empty list if parsing fails.
+    """
     try:
         return json.loads(session["transcript_json"]) or []
     except Exception:
@@ -354,6 +362,14 @@ def _transcript(session) -> list[dict]:
 
 
 def _global_budget_ok(conn) -> bool:
+    """Atomically increment today's global research-reply counter; return False if the cap is hit.
+
+    Args:
+        conn: Database connection (must support the meta KV table).
+
+    Returns:
+        True if the counter was incremented, False if the daily cap is already reached.
+    """
     from . import clock
     key = f"research:replies:{clock.today_iso()}"
     conn.execute("INSERT INTO meta(key,value) VALUES(?, '0') ON CONFLICT(key) DO NOTHING", (key,))
@@ -448,6 +464,16 @@ def answer(conn, link, spec, session, question: str) -> dict:
 
 
 def _record(conn, session, transcript, question, reply, retrieved_ids) -> None:
+    """Append a Q&A pair to the session transcript and persist it.
+
+    Args:
+        conn: Database connection.
+        session: The research_sessions row to update.
+        transcript: Existing transcript list (not mutated; a new list is created).
+        question: The recipient's question text.
+        reply: The assistant's sanitized reply text.
+        retrieved_ids: Note ids retrieved for this turn (merged into the session audit set).
+    """
     transcript = transcript + [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
     prev = set(json.loads(session["retrieved_ids_json"] or "[]"))
     conn.execute(

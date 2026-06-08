@@ -40,7 +40,15 @@ BACKFILL_DAYS = 90         # how far back to consider history on first detection
 
 
 def _secs(a: str, b: str) -> float:
-    """Signed seconds from a→b on 'YYYY-MM-DD HH:MM:SS' UTC strings."""
+    """Return the signed elapsed seconds from timestamp a to timestamp b.
+
+    Args:
+        a: Start timestamp in 'YYYY-MM-DD HH:MM:SS' UTC format.
+        b: End timestamp in 'YYYY-MM-DD HH:MM:SS' UTC format.
+
+    Returns:
+        Signed seconds (b - a), or 0.0 on parse failure.
+    """
     fmt = "%Y-%m-%d %H:%M:%S"
     try:
         return (datetime.strptime(b[:19], fmt) - datetime.strptime(a[:19], fmt)).total_seconds()
@@ -49,16 +57,35 @@ def _secs(a: str, b: str) -> float:
 
 
 def _now_str() -> str:
+    """Return the current UTC time as a 'YYYY-MM-DD HH:MM:SS' string."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _floor_str(days: int) -> str:
+    """Return a UTC timestamp string 'days' days in the past from now.
+
+    Args:
+        days: Number of days to look back.
+
+    Returns:
+        UTC timestamp string in 'YYYY-MM-DD HH:MM:SS' format.
+    """
     return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # --- cursor management ------------------------------------------------------
 
 def ensure_cursor(conn, person_id: int, backfill_days: int = BACKFILL_DAYS) -> dict:
+    """Return the trip cursor for a person, creating it if it does not yet exist.
+
+    Args:
+        conn: Database connection.
+        person_id: Person whose cursor to retrieve or initialise.
+        backfill_days: How far back to initialise the watermark on first creation.
+
+    Returns:
+        Dict with keys person_id, watermark, and backfilled_to.
+    """
     row = conn.execute("SELECT * FROM trip_cursor WHERE person_id = ?", (person_id,)).fetchone()
     if row is None:
         floor = _floor_str(backfill_days)
@@ -71,9 +98,16 @@ def ensure_cursor(conn, person_id: int, backfill_days: int = BACKFILL_DAYS) -> d
 
 
 def rewind_cursor(conn, person_id, recorded_at: str) -> None:
-    """A fix landed for `recorded_at` (possibly older than where we'd processed to);
-    move the watermark back so the next pass re-segments over it. Clamped to the
-    backfill floor so we never reprocess pre-window history."""
+    """Move the watermark back so the next detection pass re-segments from recorded_at.
+
+    Called when a fix lands older than the current watermark (late or out-of-order).
+    Clamped to the backfill floor so pre-window history is never reprocessed.
+
+    Args:
+        conn: Database connection.
+        person_id: Person whose watermark to rewind.
+        recorded_at: Timestamp of the late-arriving fix.
+    """
     if person_id is None:
         return
     row = conn.execute("SELECT watermark, backfilled_to FROM trip_cursor WHERE person_id = ?",
@@ -93,8 +127,22 @@ def rewind_cursor(conn, person_id, recorded_at: str) -> None:
 # --- geometry helpers -------------------------------------------------------
 
 def _seg_point_m(plat, plon, alat, alon, blat, blon) -> float:
-    """Distance (m) from point P to segment AB, local equirectangular projection
-    (accurate at trail scales). Used for geofence fly-by detection."""
+    """Return the distance in metres from point P to segment AB.
+
+    Uses a local equirectangular projection accurate at trail scales. Used for
+    geofence fly-by detection.
+
+    Args:
+        plat: Point latitude.
+        plon: Point longitude.
+        alat: Segment start latitude.
+        alon: Segment start longitude.
+        blat: Segment end latitude.
+        blon: Segment end longitude.
+
+    Returns:
+        Distance in metres from P to the nearest point on AB.
+    """
     mlat = 111320.0
     mlon = 111320.0 * math.cos(math.radians(alat))
     bx, by = (blon - alon) * mlon, (blat - alat) * mlat
@@ -105,8 +153,19 @@ def _seg_point_m(plat, plon, alat, alon, blat, blon) -> float:
 
 
 def _place_at(conn, lat, lon):
-    """(place_id, label) for a coordinate: the saved place whose circle contains it
-    (nearest wins), else a nearby coord-note label, else (None, None)."""
+    """Return the (place_id, label) for a coordinate.
+
+    Returns the saved place whose geofence circle contains the point (nearest wins),
+    else a nearby coord-note label, else (None, None).
+
+    Args:
+        conn: Database connection.
+        lat: Latitude of the point.
+        lon: Longitude of the point.
+
+    Returns:
+        Tuple of (place_id or None, label string or None).
+    """
     best = None
     for p in conn.execute("SELECT id, name, lat, lon, radius_m FROM places").fetchall():
         d = geo.haversine_km(lat, lon, p["lat"], p["lon"]) * 1000.0
@@ -120,8 +179,18 @@ def _place_at(conn, lat, lon):
 # --- segmentation -----------------------------------------------------------
 
 def _stays(fixes: list[dict]) -> list[tuple[int, int]]:
-    """Index ranges [i, j] where the person stayed put for >= STAY_MIN_S. A long gap
-    between co-located fixes counts as continued stay (GPS slept), not a boundary."""
+    """Find index ranges [i, j] of dwell clusters in an ordered fix list.
+
+    A cluster qualifies as a stay when the person remained within STAY_RADIUS_M of
+    the anchor fix for at least STAY_MIN_S. A long gap between co-located fixes
+    counts as a continued stay (GPS slept), not a trip boundary.
+
+    Args:
+        fixes: Ordered list of fix dicts with lat, lon, and recorded_at.
+
+    Returns:
+        List of (start_index, end_index) tuples for each stay.
+    """
     out, i, n = [], 0, len(fixes)
     while i < n:
         j = i
@@ -138,7 +207,17 @@ def _stays(fixes: list[dict]) -> list[tuple[int, int]]:
 
 
 def _trip_metrics(conn, slice_: list[dict]) -> dict:
-    """All server-computed analytics for one trip's ordered fix slice."""
+    """Compute all server-side analytics for one trip's ordered fix slice.
+
+    Args:
+        conn: Database connection (for place lookups and distance calculation).
+        slice_: Ordered list of fix dicts spanning the trip.
+
+    Returns:
+        Dict with trip metrics including started_at, ended_at, distance_km,
+        displacement_km, duration_s, max_speed_kmh, avg_speed_kmh, fix_count,
+        start/end place info, and a private _endpoints set for geofence exclusion.
+    """
     a, b = slice_[0], slice_[-1]
     distance_km = geotrail.distance_km(conn, pts=slice_)
     displacement_km = geo.haversine_km(a["lat"], a["lon"], b["lat"], b["lon"])
@@ -179,8 +258,20 @@ def _trip_metrics(conn, slice_: list[dict]) -> dict:
 
 
 def _crossings(conn, slice_: list[dict], exclude: set) -> list[dict]:
-    """Geofences the trip passed through (excludes its start/end places), via
-    segment-vs-circle so a fly-by between two sparse fixes still counts."""
+    """Return geofences the trip passed through, excluding its start and end places.
+
+    Uses segment-vs-circle detection so a fly-by between two sparse fixes still
+    counts as a crossing.
+
+    Args:
+        conn: Database connection.
+        slice_: Ordered fix list for the trip.
+        exclude: Set of place_ids to exclude (the trip's endpoints).
+
+    Returns:
+        List of crossing dicts sorted by entered_at, each with place_id, place_name,
+        lat, lon, entered_at, left_at, and dwell_s.
+    """
     out = []
     for p in conn.execute("SELECT id, name, lat, lon, radius_m FROM places").fetchall():
         if p["id"] in exclude:
@@ -211,6 +302,19 @@ def _crossings(conn, slice_: list[dict], exclude: set) -> list[dict]:
 # --- detection --------------------------------------------------------------
 
 def _insert_trip(conn, person_id, source, m: dict, status: str) -> int:
+    """Insert a trip row and its geofence crossings into the database.
+
+    Args:
+        conn: Database connection.
+        person_id: Person this trip belongs to.
+        source: Device/source identifier for the fix stream.
+        m: Metrics dict from _trip_metrics, must also carry a '_slice' key with
+            the ordered fix list.
+        status: Trip status string ('open' or 'closed').
+
+    Returns:
+        ID of the newly inserted trip row.
+    """
     cur = conn.execute(
         "INSERT INTO trips (person_id, source, started_at, ended_at, start_lat, start_lon, "
         "end_lat, end_lon, start_place_id, start_place, end_place_id, end_place, distance_km, "
@@ -233,11 +337,32 @@ def _insert_trip(conn, person_id, source, m: dict, status: str) -> int:
 
 
 def _qualifies(m: dict) -> bool:
+    """Return True if a trip's metrics meet the minimum displacement or duration thresholds.
+
+    Args:
+        m: Metrics dict from _trip_metrics.
+
+    Returns:
+        True if the trip is long enough or lasted long enough to be worth recording.
+    """
     return m["displacement_km"] * 1000.0 >= MIN_TRIP_M or m["duration_s"] >= MIN_TRIP_S
 
 
 def detect_for_person(conn, person_id: int, source_hint: str | None = None) -> int:
-    """One bounded detection pass for a person. Returns trips written."""
+    """Run one bounded detection pass for a person and return the number of trips written.
+
+    Reads fixes from the watermark forward (capped at _FIX_CAP), segments them into
+    stays and trips, replaces stored trips in the window, and advances the watermark.
+
+    Args:
+        conn: Database connection.
+        person_id: Person to detect trips for.
+        source_hint: Device/source label to record on new trips; defaults to the
+            last fix's source when omitted.
+
+    Returns:
+        Number of trip rows written this pass.
+    """
     cur = ensure_cursor(conn, person_id)
     since = cur["watermark"] or cur["backfilled_to"] or _floor_str(BACKFILL_DAYS)
     fixes = [dict(r) for r in conn.execute(
@@ -304,8 +429,18 @@ def detect_for_person(conn, person_id: int, source_hint: str | None = None) -> i
 
 
 def run_detection(conn, max_people: int | None = None) -> int:
-    """Detect trips for every person with a tracker stream. Bounded per pass; commits
-    per person so a long backfill never holds one big transaction. Scheduler entrypoint."""
+    """Detect trips for every person with a tracker stream. Scheduler entrypoint.
+
+    Bounded per person per pass; commits per person so a long backfill never holds
+    one large transaction. One person's bad data does not wedge the rest.
+
+    Args:
+        conn: Database connection.
+        max_people: If set, process at most this many people per call.
+
+    Returns:
+        Total number of trip rows written across all people.
+    """
     people = conn.execute("SELECT id FROM people ORDER BY id").fetchall()
     total = 0
     for i, row in enumerate(people):
@@ -320,6 +455,18 @@ def run_detection(conn, max_people: int | None = None) -> int:
 
 
 def query_trips(conn, person_id=None, since=None, until=None, limit=20) -> list[dict]:
+    """Query trips with optional filters, ordered by started_at descending.
+
+    Args:
+        conn: Database connection.
+        person_id: If set, return only this person's trips.
+        since: Lower bound on started_at (inclusive).
+        until: Upper bound on started_at (inclusive).
+        limit: Maximum rows to return (clamped to 1–200).
+
+    Returns:
+        List of trip row dicts.
+    """
     sql, params = "SELECT * FROM trips WHERE 1=1", []
     if person_id is not None:
         sql += " AND person_id = ?"; params.append(person_id)
@@ -332,6 +479,15 @@ def query_trips(conn, person_id=None, since=None, until=None, limit=20) -> list[
 
 
 def trip_detail(conn, trip_id: int):
+    """Return a trip row and its ordered place crossings, or None if not found.
+
+    Args:
+        conn: Database connection.
+        trip_id: Trip row ID.
+
+    Returns:
+        Tuple of (trip_dict, list_of_place_dicts), or None if the trip does not exist.
+    """
     t = conn.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()
     if t is None:
         return None
@@ -341,8 +497,14 @@ def trip_detail(conn, trip_id: int):
 
 
 def reattribute(conn) -> None:
-    """Re-resolve person_id on fixes + trips after a people/alias change, and rewind the
-    affected cursors so detection re-segments. Cheap: keyed on distinct sources."""
+    """Re-resolve person_id on all fixes and trips after a people/alias change.
+
+    Rewinds affected cursors so detection re-segments with the updated attribution.
+    Cheap: iterates over distinct sources only.
+
+    Args:
+        conn: Database connection.
+    """
     for r in conn.execute("SELECT DISTINCT source FROM locations").fetchall():
         s = r["source"]
         p = people_svc.resolve(conn, s or "")

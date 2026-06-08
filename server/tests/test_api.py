@@ -2738,6 +2738,9 @@ def test_create_article_dedups_and_gates_thin_subjects(client, monkeypatch):
     monkeypatch.setattr(llm, "has_credentials", lambda: True)
     monkeypatch.setattr(llm, "complete", lambda *a, **k:
         "# Marlow\nMarlow is a bush pilot in Alaska.[^s1]\n\n## References\n[^s1]: [[notes/mar1]] — 2026-06-01\n")
+    # write_one drafts via complete_with_meta (returns text, stop) — stub it too, mirroring
+    # test_wiki_write_honors_instructions; otherwise the draft hits a real LLM client and fails.
+    monkeypatch.setattr(llm, "complete_with_meta", lambda *a, **k: (llm.complete(*a, **k), None))
 
     res = wiki_build.create_article(conn, "Marlow", etype="person")
     assert res["ok"] and res.get("created") and res["title"] == "kb/People/Marlow", res

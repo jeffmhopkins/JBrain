@@ -19,6 +19,7 @@ pytest.importorskip("openai")
 from app.services import llm  # noqa: E402
 from app.services.llm import (  # noqa: E402
     AnthropicProvider,
+    LocalProvider,
     ToolCall,
     ToolDef,
     ToolResult,
@@ -37,9 +38,20 @@ def _settings(**over):
         llm_model="claude-sonnet-4-6",
         xai_api_key="",
         xai_base_url="https://api.x.ai/v1",
+        llm_local_enable=False,
+        llm_local_base_url="http://ollama:11434/v1",
+        llm_local_admin_url="http://ollama:11434",
+        llm_local_model="",
+        llm_local_prefixes="",
+        llm_local_fallback=True,
+        llm_timeout_seconds=120.0,
     )
     base.update(over)
-    return SimpleNamespace(**base)
+    ns = SimpleNamespace(**base)
+    # Mirror the real Settings.has_local property for the fake (recompute from the
+    # final enable/url so callers can't set an inconsistent pair).
+    ns.has_local = bool(ns.llm_local_enable and ns.llm_local_base_url)
+    return ns
 
 
 @pytest.fixture()
@@ -166,6 +178,163 @@ def test_get_provider_grok_alias(patch_settings):
 def test_get_provider_unknown_default_falls_back_to_anthropic(patch_settings):
     patch_settings(llm_provider="totally-unknown")
     assert isinstance(llm.get_provider(), AnthropicProvider)
+
+
+# ===========================================================================
+# Local provider — recognition, routing, client, fallback
+# ===========================================================================
+
+def test_provider_for_model_local_when_enabled(patch_settings):
+    patch_settings(llm_local_enable=True)
+    assert llm._provider_for_model("qwen2.5:7b") == "local"
+
+
+def test_provider_for_model_local_ignored_when_disabled(patch_settings):
+    # The default fixture has local disabled — a ':' id must NOT route local (backward
+    # compatible: it falls through to the configured default).
+    patch_settings(llm_local_enable=False)
+    assert llm._provider_for_model("qwen2.5:7b") is None
+
+
+def test_provider_for_model_local_prefix_match(patch_settings):
+    patch_settings(llm_local_enable=True, llm_local_prefixes="mistral, phi")
+    assert llm._provider_for_model("mistral") == "local"
+    assert llm._provider_for_model("phi3") == "local"
+    # An unlisted tagless id is still not local.
+    assert llm._provider_for_model("gpt-4o") is None
+
+
+def test_provider_for_model_local_needs_base_url(patch_settings):
+    # Enabled but no base URL → has_local is False → not local.
+    patch_settings(llm_local_enable=True, llm_local_base_url="")
+    assert llm._provider_for_model("qwen2.5:7b") is None
+
+
+def test_get_provider_returns_local_for_local_id_and_claude_stays_cloud(patch_settings):
+    # The hybrid invariant: in ONE settings state, a local id routes local while a
+    # claude id still routes to Anthropic — single-tier offload, agent unaffected.
+    patch_settings(llm_local_enable=True)
+    assert isinstance(llm.get_provider("qwen2.5:7b"), LocalProvider)
+    assert isinstance(llm.get_provider("claude-sonnet-4-6"), AnthropicProvider)
+
+
+def test_get_provider_local_alias(patch_settings):
+    patch_settings(llm_provider="ollama")
+    assert isinstance(llm.get_provider(), LocalProvider)
+
+
+def test_local_has_credentials_tracks_enable(patch_settings):
+    patch_settings(llm_local_enable=False)
+    assert LocalProvider().has_credentials() is False
+    patch_settings(llm_local_enable=True)
+    assert LocalProvider().has_credentials() is True
+
+
+def test_local_default_model(patch_settings):
+    patch_settings(llm_local_model="qwen2.5:7b")
+    assert LocalProvider().default_model() == "qwen2.5:7b"
+
+
+def test_local_client_factory_passes_local_base_url(patch_settings, monkeypatch):
+    patch_settings(llm_local_enable=True, llm_local_base_url="http://ollama:11434/v1")
+    llm._client_cache.clear()
+    import openai
+    built = []
+
+    def _fake_ctor(name):
+        def _ctor(**kw):
+            built.append((name, kw))
+            return SimpleNamespace(kind=name, **kw)
+        return _ctor
+
+    monkeypatch.setattr(openai, "OpenAI", _fake_ctor("sync"))
+    monkeypatch.setattr(openai, "AsyncOpenAI", _fake_ctor("async"))
+    p = LocalProvider()
+    sync = p._client()
+    sync2 = p._client()
+    assert sync is sync2  # cached on ("local", sync, key, base)
+    assert sync.base_url == "http://ollama:11434/v1"
+    assert sync.api_key == "ollama"        # placeholder key; Ollama ignores auth
+
+
+def test_local_complete_with_meta_uses_local_id(patch_settings, monkeypatch, _no_usage_sink):
+    patch_settings(llm_local_enable=True, llm_local_model="qwen2.5:7b")
+    resp = _oa_resp(content="tags: a, b", finish_reason="stop", usage=_oa_usage())
+    client = FakeOpenAIClient(resp)
+    p = LocalProvider()
+    monkeypatch.setattr(p, "_client", lambda async_=False: client)
+    text, stop = p.complete_with_meta([{"role": "user", "content": "hi"}], model="qwen2.5:7b")
+    assert text == "tags: a, b"
+    assert stop == "stop"
+    assert client.kwargs["model"] == "qwen2.5:7b"
+    # usage recorded under the local id so the meter can zero-cost it.
+    assert _no_usage_sink and _no_usage_sink[-1]["model"] == "qwen2.5:7b"
+
+
+def test_timeout_reads_settings(patch_settings):
+    patch_settings(llm_timeout_seconds=600.0)
+    assert llm._timeout() == 600.0
+
+
+# --- cloud fallback when the local call fails -------------------------------
+
+def test_complete_falls_back_to_cloud_on_local_failure(patch_settings, monkeypatch):
+    # local enabled + the cloud default (anthropic) has a key + fallback on.
+    patch_settings(llm_local_enable=True, llm_provider="anthropic",
+                   llm_api_key="sk-ant", llm_local_fallback=True)
+
+    class _BoomLocal(LocalProvider):
+        def complete(self, *a, **k):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(llm, "get_provider",
+                        lambda model=None: _BoomLocal() if model == "qwen2.5:7b" else None)
+    called = {}
+
+    def _fake_fb():
+        prov = AnthropicProvider()
+
+        def _complete(messages, **kw):
+            called["hit"] = kw
+            return "cloud-reply"
+
+        prov.complete = _complete
+        return prov
+
+    monkeypatch.setattr(llm, "_cloud_fallback_provider", _fake_fb)
+    out = llm.complete([{"role": "user", "content": "x"}], model="qwen2.5:7b")
+    assert out == "cloud-reply"
+    assert called["hit"]["model"] is None        # retry uses the cloud default model
+
+
+def test_complete_reraises_when_no_fallback(patch_settings, monkeypatch):
+    patch_settings(llm_local_enable=True)
+
+    class _BoomLocal(LocalProvider):
+        def complete(self, *a, **k):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(llm, "get_provider", lambda model=None: _BoomLocal())
+    monkeypatch.setattr(llm, "_cloud_fallback_provider", lambda: None)
+    with pytest.raises(RuntimeError, match="boom"):
+        llm.complete([{"role": "user", "content": "x"}], model="qwen2.5:7b")
+
+
+def test_cloud_fallback_provider_none_when_off(patch_settings):
+    patch_settings(llm_local_fallback=False, llm_provider="anthropic", llm_api_key="sk")
+    assert llm._cloud_fallback_provider() is None
+
+
+def test_cloud_fallback_provider_none_for_all_local(patch_settings):
+    # All-local install: the default provider is local → nothing cloud to fall back to.
+    patch_settings(llm_local_fallback=True, llm_provider="local")
+    assert llm._cloud_fallback_provider() is None
+
+
+def test_cloud_fallback_provider_returns_cloud_when_keyed(patch_settings):
+    patch_settings(llm_local_fallback=True, llm_provider="anthropic", llm_api_key="sk-ant")
+    fb = llm._cloud_fallback_provider()
+    assert isinstance(fb, AnthropicProvider)
 
 
 # ===========================================================================

@@ -9,6 +9,7 @@ export interface Row { key: string; label: string; level: Level; icon: string }
 // Plain strings, so this stays React-free and the module remains pure/testable.
 export const SUBSYS_ICON: Record<keyof Capabilities, string> = {
   llm: "robot",
+  local_llm: "robot",
   embeddings: "search",
   transcription: "mic",
   push: "bell",
@@ -21,6 +22,13 @@ const SUBSYS_LABEL: Record<keyof Capabilities, Partial<Record<string, string>>> 
     ready: "AI assistant: ready",
     absent: "AI assistant: no API key configured",
     degraded: "AI assistant: last request failed (key may be revoked or over quota)",
+  },
+  local_llm: {
+    ready: "Local AI: ready",
+    pulling: "Local AI: downloading model…",
+    warming: "Local AI: loading model…",
+    unavailable: "Local AI: server not reachable",
+    failed: "Local AI: failed",
   },
   embeddings: {
     ready: "Semantic search: ready",
@@ -52,11 +60,15 @@ export function stateLevel(state: string): Level {
 
 function deriveRows(caps: Capabilities | undefined): Row[] {
   if (!caps) return [];
-  return (Object.keys(caps) as (keyof Capabilities)[]).map((k) => {
-    const state = (caps[k] as any).state as string;
-    const label = SUBSYS_LABEL[k]?.[state] ?? `${k}: ${state}`;
-    return { key: k, label, level: stateLevel(state), icon: SUBSYS_ICON[k] };
-  });
+  return (Object.keys(caps) as (keyof Capabilities)[])
+    // local_llm is opt-in: when 'absent' (not configured — the norm) it isn't shown, so
+    // it never degrades the rollup for installs that don't run a local model.
+    .filter((k) => !(k === "local_llm" && (caps[k] as any)?.state === "absent"))
+    .map((k) => {
+      const state = (caps[k] as any).state as string;
+      const label = SUBSYS_LABEL[k]?.[state] ?? `${k}: ${state}`;
+      return { key: k, label, level: stateLevel(state), icon: SUBSYS_ICON[k] };
+    });
 }
 
 export function deriveStatus(m: HealthModel, brain: string): { level: Level; summary: string; rows: Row[] } {

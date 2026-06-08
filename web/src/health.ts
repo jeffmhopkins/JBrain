@@ -15,7 +15,8 @@ import { useSyncExternalStore } from "react";
 import { getAccessKey, getStatus, type StatusResult } from "./api";
 
 export type CapState =
-  | "unknown" | "warming" | "ready" | "failed" | "unavailable" | "absent" | "degraded";
+  | "unknown" | "warming" | "ready" | "failed" | "unavailable" | "absent" | "degraded"
+  | "pulling";   // local_llm: model download in progress
 
 // Reachability of OUR server, distinct from navigator.onLine (the browser's link).
 export type Reachability = "online" | "server-unreachable" | "browser-offline";
@@ -26,7 +27,10 @@ interface Cap { state: CapState; last_error?: string | null; since?: number }
 export interface Capabilities {
   // llm.state is the AUTHORITATIVE has_credentials() rollup ("ready"|"absent"|"degraded").
   // providers is INFORMATIONAL ONLY (ModelPicker hint) — it never gates.
-  llm: Cap & { verified?: boolean | null; providers?: { anthropic: boolean; xai: boolean } };
+  llm: Cap & { verified?: boolean | null; providers?: { anthropic: boolean; xai: boolean; local?: boolean } };
+  // Optional: present only when the server reports the local-LLM subsystem. Informational
+  // (a per-tier offload), never an authoritative gate. May carry the configured model id.
+  local_llm?: Cap & { model?: string | null };
   embeddings: Cap;
   transcription: Cap & { model?: string | null; compute_type?: string | null };
   push: Cap;

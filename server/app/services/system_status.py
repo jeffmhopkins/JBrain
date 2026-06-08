@@ -42,11 +42,11 @@ def capabilities() -> dict:
     calls, no LLM tokens are consumed.
 
     Returns:
-        Dict with per-subsystem readiness dicts keyed by: llm, embeddings,
+        Dict with per-subsystem readiness dicts keyed by: llm, local_llm, embeddings,
         transcription, push, geocoder, db. Each value has at least a 'state' key
         ('ready', 'absent', or 'failed').
     """
-    from . import embeddings, audio_transcription, push, geocode, llm
+    from . import embeddings, audio_transcription, push, geocode, llm, local_models
     from ..config import get_settings
     from ..db import get_conn
     s = get_settings()
@@ -71,11 +71,14 @@ def capabilities() -> dict:
             "state": "ready" if llm.has_credentials() else "absent",
             "verified": None,                                  # never live-checked (cost)
             # INFORMATIONAL ONLY — per-provider key presence for ModelPicker's hint.
-            "providers": {"anthropic": s.has_anthropic, "xai": s.has_xai},
+            "providers": {"anthropic": s.has_anthropic, "xai": s.has_xai, "local": s.has_local},
         }
 
     return {
         "llm":           _safe(_llm),
+        # Local LLM is INFORMATIONAL (like embeddings): a per-tier offload, not the
+        # authoritative `llm` predicate above. Returns 'absent' on default installs.
+        "local_llm":     _safe(local_models.readiness),
         "embeddings":    _safe(embeddings.readiness),
         "transcription": _safe(audio_transcription.readiness),
         "push":          _safe(lambda: {"state": "ready" if push.public_key() else "absent"}),

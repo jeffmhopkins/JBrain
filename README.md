@@ -426,6 +426,52 @@ docker compose down              # stop
 > mounts the Docker socket (host-root-equivalent) — leave it **off** unless you
 > want PWA-triggered updates, and use `./update.sh` for manual updates instead.
 
+## Local LLM (Ollama) — optional, hybrid
+
+Routine, high-volume jobs (tags, day summaries, note filing, date/place extraction —
+the `models.cheap` tier) can run on a **local** OpenAI-compatible model via
+[Ollama](https://ollama.com), with **no API key and nothing leaving the box**, while
+the interactive agent, KB synthesis, and vision stay on the cloud API. Embeddings and
+speech-to-text are already local. A local-tier failure falls back to the cloud default
+(`LLM_LOCAL_FALLBACK`), so an outage degrades rather than breaks.
+
+Two ways to run it:
+
+- **Mode A — turnkey (recommended).** Add `localllm` to `COMPOSE_PROFILES`; JBrain runs
+  Ollama in a container and pulls `LLM_LOCAL_MODEL` on first boot (background, resumable).
+  Use the default URLs (`http://ollama:11434…`).
+- **Mode B — bring your own.** Install Ollama on the host
+  (`curl -fsSL https://ollama.com/install.sh | sh`) and set the URLs to
+  `http://host.docker.internal:11434(/v1)`.
+
+```dotenv
+# .env
+COMPOSE_PROFILES=localllm
+LLM_LOCAL_ENABLE=true
+LLM_LOCAL_BASE_URL=http://ollama:11434/v1
+LLM_LOCAL_ADMIN_URL=http://ollama:11434
+LLM_LOCAL_MODEL=qwen2.5:7b
+LLM_TIMEOUT_SECONDS=600
+```
+
+Then assign a tier to the model in **System → Model** (or set `models.cheap: "qwen2.5:7b"`
+in `prompts.yaml`). Manage installed models — pull/remove with live progress — in
+**System → Local models**, which is hardware-aware and warns when a model won't fit.
+
+**Hardware:** local inference is CPU/RAM-bandwidth bound. On a 32 GB box, use a **7–8 B**
+quantized model (≈ 6 GB resident), allow up to ~13 B, and **avoid 70 B**. Generation runs
+at tens of tokens/sec on a GPU box but only a few tok/s on a DDR4 CPU — fine for the
+background `cheap` tier, which is exactly what to offload. Health (`down`/`pulling`/
+`warming`/`ready`) shows on the status dot.
+
+Both `install.sh` and **System → Local models** also offer **larger models** —
+`qwen2.5:14b` (~12 GB), `qwen2.5:32b` (~26 GB), `llama3.3:70b` (~56 GB), and the
+`gpt-oss:120b` MoE (~85 GB) — for a **high-memory machine** (e.g. a 128 GB unified-memory
+Strix Halo mini PC). The RAM each needs is shown next to it, and the UI **disables any
+model that won't fit** the detected memory, so the big ones are selectable only where the
+box can actually run them. With enough memory you can route the chat agent locally too —
+not just the `cheap` tier.
+
 ## Hosting the PWA on GitHub Pages (optional)
 
 The PWA can run from GitHub Pages instead of being served by your server — useful
@@ -609,6 +655,12 @@ read at runtime, so changes apply with no restart).
 | `LLM_API_KEY` | — | Key for the chosen provider (legacy `ANTHROPIC_API_KEY` aliases this) |
 | `LLM_MODEL` | `claude-sonnet-4-6` | Model id (legacy `ANTHROPIC_MODEL` aliases this) |
 | `XAI_API_KEY` / `XAI_BASE_URL` | — / `https://api.x.ai/v1` | xAI Grok credentials/endpoint |
+| `LLM_LOCAL_ENABLE` | `false` | Enable local (Ollama) model routing — see **Local LLM** below |
+| `LLM_LOCAL_BASE_URL` | `http://ollama:11434/v1` | Local OpenAI-compatible endpoint (Mode A in-compose; Mode B `host.docker.internal`) |
+| `LLM_LOCAL_MODEL` | — | Ollama model tag to pull/serve, e.g. `qwen2.5:7b` |
+| `LLM_LOCAL_FALLBACK` | `true` | On local failure, retry on the cloud default (degrade, not break) |
+| `LLM_TIMEOUT_SECONDS` | `120` | Per-request LLM timeout — raise (~600) for slow CPU inference |
+| `OLLAMA_MEM_LIMIT` | `8g` | RSS cap for the in-compose Ollama container (Mode A) |
 | `BRAIN_NAME` | `My Brain` | Display name |
 | `JBRAIN_ACCESS_KEY` | *(generated)* | The cert; if blank the server generates one on first boot |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model (384-dim) |

@@ -234,6 +234,19 @@ async def lifespan(app: FastAPI):
             print(f"[audio] transcription model not warmed: {str(exc)[:120]}", flush=True)
     asyncio.create_task(_warm_audio())
 
+    # Probe the optional local LLM (Ollama) once so the health dot reflects its state
+    # immediately. Cheap HTTP to /api/tags off the event loop; nothing waits on it, and
+    # on default installs (local disabled) it just records 'absent'.
+    async def _warm_local_llm():
+        """Probe local-LLM readiness so the health indicator reflects it from boot."""
+        try:
+            from .services import local_models
+            r = await asyncio.to_thread(local_models.warm)
+            print(f"[local-llm] readiness: {r.get('state')}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — optional subsystem; never fatal
+            print(f"[local-llm] not probed: {str(exc)[:120]}", flush=True)
+    asyncio.create_task(_warm_local_llm())
+
     task = asyncio.create_task(_scheduler_loop())
     try:
         yield

@@ -5,8 +5,11 @@
 import { http, HttpResponse } from "msw";
 
 // A fully-ready capability set so feature UIs render their enabled state by default.
+// local_llm defaults to 'absent' (the norm — local LLM is opt-in), which the status
+// derivation hides so it never degrades the health dot.
 export const READY_CAPS = {
-  llm: { state: "ready", providers: { anthropic: true, xai: false } },
+  llm: { state: "ready", providers: { anthropic: true, xai: false, local: false } },
+  local_llm: { state: "absent" },
   embeddings: { state: "ready" },
   transcription: { state: "ready" },
   push: { state: "ready" },
@@ -17,6 +20,11 @@ export const READY_CAPS = {
 export const handlers = [
   http.get("*/api/system/status", () =>
     HttpResponse.json({ ok: true, version: "test", capabilities: READY_CAPS }),
+  ),
+  // Local-LLM management defaults: not running (no models), so SystemPage renders the
+  // calm "Ollama isn't running" state unless a test overrides this.
+  http.get("*/api/system/local-models", () =>
+    HttpResponse.json({ running: false, models: [], hardware: { usable_ram_bytes: 0, total_ram_bytes: 0, cpu_only: true, note: "" } }),
   ),
   http.get("*/api/auth/info", () => HttpResponse.json({ brain_name: "Test Brain" })),
   http.get("*/api/auth/verify", () =>

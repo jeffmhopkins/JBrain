@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { get, post, u } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { get, getLocalModels, post, u, type LocalModelsResponse } from "../api";
 import { useAuth } from "../App";
 import { enablePush, pushSupported, pushSupportReason } from "../push";
 import { useGeo, useTts, useTheme, type Theme } from "../hooks";
 import UpdateConsole from "../components/UpdateConsole";
 import ModelPicker from "../components/ModelPicker";
+import LocalModelsPanel from "../components/LocalModelsPanel";
 import OwnerSetting from "../components/OwnerSetting";
 import MediaSettings from "../components/MediaSettings";
 import AutoAnalyzeSetting from "../components/AutoAnalyzeSetting";
@@ -49,8 +50,14 @@ export default function SystemPage() {
     : tts.voices.filter((v) => /^en\b/i.test(v.lang) || v.voiceURI === tts.voiceURI)
   ).slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
 
+  // Shared local-models state: the source of truth for both LocalModelsPanel (manage)
+  // and ModelPicker (assign). A pull/delete calls refresh() so both update together.
+  const [localModels, setLocalModels] = useState<LocalModelsResponse | null>(null);
+  const refreshLocal = useCallback(() => { getLocalModels().then(setLocalModels).catch(() => {}); }, []);
+
   useEffect(() => { get("/api/system/version").then(setInfo).catch(() => {}); }, []);
   useEffect(() => { get("/api/system/stats").then(setStats).catch(() => {}); }, []);
+  useEffect(() => { refreshLocal(); }, [refreshLocal]);
   useEffect(() => () => { if (pollRef.current) window.clearTimeout(pollRef.current); }, []);
 
   const ping = () =>
@@ -256,7 +263,9 @@ export default function SystemPage() {
 
       <OwnerSetting />
 
-      <ModelPicker />
+      <LocalModelsPanel data={localModels} onRefresh={refreshLocal} />
+
+      <ModelPicker localModels={localModels?.models ?? []} />
 
       <MediaSettings />
 

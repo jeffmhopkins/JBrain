@@ -669,6 +669,60 @@ export const getMediaSettings = () => get<MediaSettings>("/api/system/settings/m
 export const setMediaSettings = (s: Partial<MediaSettings>) =>
   put<MediaSettings>("/api/system/settings/media", s);
 
+// --- Local LLM (Ollama) model management -----------------------------------
+export interface LocalModel {
+  name: string;
+  size_bytes: number;
+  ram_estimate_bytes: number;
+  fits: boolean;            // server verdict vs usable RAM
+  warn: string | null;     // e.g. "Large model — slow on CPU", else null
+  state: "ready" | "warming" | "pulling" | "failed" | "unavailable" | "absent" | "unknown";
+}
+export interface LocalModelsResponse {
+  running: boolean;         // Ollama reachable?
+  models: LocalModel[];
+  hardware: { usable_ram_bytes: number; total_ram_bytes: number; cpu_only: boolean; note: string };
+}
+export const getLocalModels = () => get<LocalModelsResponse>("/api/system/local-models");
+export const deleteLocalModel = (name: string) =>
+  del<{ removed: boolean }>(`/api/system/local-models/${encodeURIComponent(name)}`);
+
+export type PullEvent =
+  | { type: "status"; status: string }
+  | { type: "progress"; completed: number; total: number; status?: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+// Stream a model pull (multi-GB) as SSE. A dedicated reader (not the rebuild streamSSE,
+// which reports rebuild-specific health events) so a long download doesn't touch LLM
+// health state. Returns abort() so a Cancel button can stop the read.
+export function pullLocalModel(name: string, onEvent: (e: PullEvent) => void): SSEHandle {
+  const ctrl = new AbortController();
+  const done = (async () => {
+    const res = await fetch(u("/api/system/local-models/pull"), {
+      method: "POST", headers: authHeaders(), body: JSON.stringify({ name }), signal: ctrl.signal,
+    });
+    if (!res.body) throw new ApiError("No response stream", 500);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      let r: ReadableStreamReadResult<Uint8Array>;
+      try { r = await reader.read(); } catch { break; }
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        try { onEvent(JSON.parse(dataLine.slice(6)) as PullEvent); } catch { /* ignore */ }
+      }
+    }
+  })();
+  return { done, abort: () => ctrl.abort() };
+}
+
 export interface AutoAnalyzeSettings { enabled: boolean }
 export const getAutoAnalyze = () => get<AutoAnalyzeSettings>("/api/system/settings/auto-analyze");
 export const setAutoAnalyze = (enabled: boolean) =>

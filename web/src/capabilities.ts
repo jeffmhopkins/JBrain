@@ -3,7 +3,7 @@
 // call fail. Reads the health store (declared caps + observed overlay).
 import { useHealth, type CapState } from "./health";
 
-export type CapId = "llm" | "embeddings" | "transcription" | "push" | "geocoder";
+export type CapId = "llm" | "local_llm" | "embeddings" | "transcription" | "push" | "geocoder";
 
 // Single source of truth for the "why it's unavailable" copy, keyed by capability +
 // the non-ready state. (ready → no copy.) The status panel and gates both read this.
@@ -27,13 +27,19 @@ export const CAP_COPY: Record<CapId, Partial<Record<CapState, string>>> = {
   },
   geocoder: { absent: "Address lookup is disabled (no geocoder configured)." },
   push: { absent: "Push notifications aren’t configured on this server." },
+  local_llm: {
+    pulling: "The local model is still downloading — this can take a while.",
+    warming: "The local model is loading — try again in a moment.",
+    unavailable: "The local model server (Ollama) isn’t reachable.",
+    failed: "The local model failed to load.",
+  },
 };
 
 export interface CapStatus {
   ready: boolean;
   state: CapState;
   reason: string;            // "" when ready
-  providers?: { anthropic: boolean; xai: boolean };   // llm only, informational
+  providers?: { anthropic: boolean; xai: boolean; local?: boolean };   // llm only, informational
 }
 
 // Selects primitive slices (reachability, the cap's state string) so the common path

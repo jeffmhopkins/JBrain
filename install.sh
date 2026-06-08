@@ -14,12 +14,83 @@ bold "=== JBrain installer ==="
 echo
 
 # --- Prerequisites ----------------------------------------------------------
+# Install Docker Engine + Compose v2 via Docker's official convenience script.
+# Works on most Linux distros (Ubuntu/Debian/Fedora/CentOS/etc.). The script
+# also installs the Compose v2 plugin, so this covers both checks below.
+install_docker() {
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    err "Automatic Docker install is only supported on Linux."
+    err "Install Docker Desktop manually: https://docs.docker.com/get-docker/"
+    exit 1
+  fi
+
+  local sudo=""
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo="sudo"
+    else
+      err "Need root to install Docker, but 'sudo' is not available. Re-run as root."
+      exit 1
+    fi
+  fi
+
+  info "Downloading Docker's official install script (https://get.docker.com)…"
+  local script
+  script="$(mktemp)"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o "$script"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$script" https://get.docker.com
+  else
+    rm -f "$script"
+    err "Neither 'curl' nor 'wget' is available to download the installer."
+    exit 1
+  fi
+
+  info "Installing Docker (this may take a minute and will ask for your password)…"
+  $sudo sh "$script"
+  rm -f "$script"
+
+  # Enable and start the daemon (no-op if systemd isn't the init system).
+  if command -v systemctl >/dev/null 2>&1; then
+    $sudo systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
+
+  # Let the current non-root user talk to the daemon without sudo.
+  if [[ "$(id -u)" -ne 0 ]]; then
+    $sudo usermod -aG docker "$USER" >/dev/null 2>&1 || true
+    warn "Added '$USER' to the 'docker' group. You may need to log out and back in"
+    warn "for that to take effect. This run will fall back to 'sudo docker' if needed."
+  fi
+}
+
+# Resolve how we invoke docker for this run (handles the group-not-yet-applied case).
+DOCKER="docker"
+
 if ! command -v docker >/dev/null 2>&1; then
-  err "Docker is not installed. Install Docker Engine first: https://docs.docker.com/engine/install/"
-  exit 1
+  warn "Docker is not installed."
+  read -r -p "Install Docker Engine + Compose now? [Y/n] " do_install
+  if [[ "${do_install,,}" == "n" ]]; then
+    err "Docker is required. Install it manually: https://docs.docker.com/engine/install/"
+    exit 1
+  fi
+  install_docker
 fi
-if ! docker compose version >/dev/null 2>&1; then
-  err "Docker Compose v2 is not available ('docker compose'). Install the Compose plugin."
+
+# Verify the daemon is reachable; fall back to sudo if the group change is pending.
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    DOCKER="sudo docker"
+  else
+    err "Docker is installed but the daemon isn't reachable."
+    err "Start it (e.g. 'sudo systemctl start docker') and re-run this installer."
+    exit 1
+  fi
+fi
+
+if ! $DOCKER compose version >/dev/null 2>&1; then
+  err "Docker Compose v2 is not available ('docker compose'). Install the Compose plugin:"
+  err "  https://docs.docker.com/compose/install/linux/"
   exit 1
 fi
 
@@ -113,7 +184,7 @@ read -r -p "Build and start JBrain now? [Y/n] " go
 if [[ "${go,,}" != "n" ]]; then
   info "Building and starting (first run downloads the embedding model)…"
   export GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
-  docker compose up -d --build
+  $DOCKER compose up -d --build
   echo
   bold "JBrain is starting. In a minute, open: https://$JBRAIN_DOMAIN"
   echo "Paste the access key above, then use your browser's 'Install app' / 'Add to Home Screen'."

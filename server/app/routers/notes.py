@@ -663,12 +663,26 @@ def set_note_flags(slug: str, body: FlagsIn):
 
 @entry_router.post("/entry")
 def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
-    """'Make entry' mode: store text directly as a NEW note (unique title), no LLM.
-    Fires the entry_created hooks (auto-tag, etc.).
+    """Store a dictation or typed capture as a new note with no LLM processing.
 
-    `writer` is None for the full access key (PWA / owner) or a person row when a
-    family phone authenticates with its per-person location key — in which case the
-    dictation is attributed to that person so you can tell whose watch it came from.
+    Routes the note title based on priority: explicit title > dest sub-selector >
+    chronological dated tree. Fires entry_created hooks (auto-tag etc.) after commit
+    so they don't block the 'no-LLM' fast path.
+
+    writer is None for the full access key (PWA/owner) or a person row when a family
+    phone authenticates with its per-person location key — dictation is attributed to
+    that person so you can tell whose watch it came from.
+
+    Args:
+        body: Entry text, optional explicit title, dest, root, source, and coordinates.
+        writer: Injected by require_capture_writer; None for the owner, or a person row
+            for a per-person family capture key.
+
+    Returns:
+        Dict with id, title, and slug of the created note.
+
+    Raises:
+        HTTPException: 422 if both text and title are empty.
     """
     conn = get_conn()
     text = body.text.strip()
@@ -719,6 +733,22 @@ def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
 
 @router.delete("/{slug}")
 def delete_note(slug: str):
+    """Soft-delete a note by slug.
+
+    Returns a user-friendly 503 when the database is busy (e.g. a background
+    analysis is mid-write) instead of a bare 500.
+
+    Args:
+        slug: URL slug of the note to delete.
+
+    Returns:
+        Dict with key 'ok': True on success.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+        HTTPException: 503 if the database is locked; the caller should retry.
+        HTTPException: 500 for other unexpected failures.
+    """
     conn = get_conn()
     row = conn.execute(
         "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
@@ -742,7 +772,20 @@ def delete_note(slug: str):
 
 @router.get("/{slug}/versions")
 def versions(slug: str):
-    """Timeline of authored states, newest first. The newest is the current one."""
+    """Return the version timeline for a note, newest state first.
+
+    The first entry is the current live version.
+
+    Args:
+        slug: URL slug of the note (includes soft-deleted).
+
+    Returns:
+        List of version dicts with version_id, title, source, conversation_id,
+        note, created_at, size, and is_current.
+
+    Raises:
+        HTTPException: 404 if the note does not exist.
+    """
     conn = get_conn()
     row = _note_by_slug(conn, slug, include_deleted=True)
     rows = conn.execute(
@@ -760,6 +803,18 @@ def versions(slug: str):
 
 @router.get("/{slug}/versions/{version_id}")
 def get_version(slug: str, version_id: int):
+    """Fetch a single historical version of a note.
+
+    Args:
+        slug: URL slug of the note.
+        version_id: Primary key of the note_versions row.
+
+    Returns:
+        Full note_versions row as a dict.
+
+    Raises:
+        HTTPException: 404 if the note or version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
     v = conn.execute(
@@ -773,6 +828,20 @@ def get_version(slug: str, version_id: int):
 
 @router.get("/{slug}/diff/{from_id}/{to_id}")
 def diff_versions(slug: str, from_id: int, to_id: int):
+    """Return a line diff between two historical versions of a note.
+
+    Args:
+        slug: URL slug of the note.
+        from_id: Primary key of the 'before' version.
+        to_id: Primary key of the 'after' version.
+
+    Returns:
+        Dict with from/to metadata, title_changed flag, before/after raw markdown,
+        and hunks (line-level diff for plain-text consumers).
+
+    Raises:
+        HTTPException: 404 if the note or either version does not exist.
+    """
     conn = get_conn()
     note = _note_by_slug(conn, slug, include_deleted=True)
 
@@ -800,12 +869,19 @@ def diff_versions(slug: str, from_id: int, to_id: int):
 
 @router.get("/links/audit")
 def links_audit():
-    """List [[Target|Display]] links whose shortened label names a different article than
-    the target (high-confidence only) — the interactive Wiki link-label audit."""
+    """Return wiki links whose display label names a different article than the target.
+
+    High-confidence mismatches only. Powers the interactive Wiki link-label audit.
+
+    Returns:
+        Dict with 'findings' — list of mismatch records.
+    """
     return {"findings": wikilinks.audit_display_mismatches(get_conn())}
 
 
 class LinkFixIn(BaseModel):
+    """Request body for correcting one flagged wiki link-label mismatch."""
+
     note_id: int
     target: str
     display: str

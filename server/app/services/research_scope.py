@@ -38,7 +38,14 @@ def _ids(spec, col: str) -> set[int]:
 
 
 def approved_ids(spec) -> set[int]:
-    """The exposed allowlist — the ONLY thing that gates retrieval."""
+    """Return the exposed note-id allowlist — the only thing that gates retrieval.
+
+    Args:
+        spec: A research_specs row.
+
+    Returns:
+        Set of approved note ids.
+    """
     return _ids(spec, "approved_ids_json")
 
 
@@ -60,10 +67,23 @@ def _scope(spec) -> dict:
 # --- candidate detection (the FILTER; never a retrieval gate) ---------------
 
 def filter_match_ids(conn, scope: dict) -> set[int]:
-    """Notes matching the owner's candidate filter: folder prefixes AND/OR explicit
-    note titles, optional kinds. Empty/root prefixes match NOTHING (F10) — an empty
-    filter can't expose the whole brain. This only surfaces candidates; approval is
-    what exposes."""
+    """Return note ids matching the owner's candidate filter.
+
+    Matches on folder prefixes AND/OR explicit note titles, with optional kind
+    filtering. Empty/root prefixes match NOTHING (F10) — an empty filter cannot expose
+    the whole brain. This only surfaces candidates for approval; it never gates
+    retrieval directly.
+
+    Private-domain pages (kb/Health/…, kb/Finance/…) are excluded even if the owner's
+    prefix would match, as a defence-in-depth measure on top of the approved-id gate.
+
+    Args:
+        conn: Database connection.
+        scope: Candidate filter dict with optional 'prefixes', 'titles', and 'kinds' keys.
+
+    Returns:
+        Set of matching note ids.
+    """
     prefixes = [p.strip().strip("/") for p in (scope.get("prefixes") or [])]
     prefixes = [p for p in prefixes if p]                       # drop "", "/", whitespace
     titles = [t.strip().strip("/") for t in (scope.get("titles") or [])]
@@ -94,7 +114,17 @@ def filter_match_ids(conn, scope: dict) -> set[int]:
 
 
 def candidate_ids(conn, spec) -> set[int]:
-    """Filter matches the owner has NOT yet approved or dismissed — the pending tray."""
+    """Return filter matches the owner has not yet approved or dismissed.
+
+    This is the pending-tray set shown in the owner's candidate review UI.
+
+    Args:
+        conn: Database connection.
+        spec: A research_specs row.
+
+    Returns:
+        Set of note ids that match the scope filter but are neither approved nor dismissed.
+    """
     return filter_match_ids(conn, _scope(spec)) - approved_ids(spec) - _ids(spec, "dismissed_ids_json")
 
 

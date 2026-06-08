@@ -396,10 +396,27 @@ def _record(conn, session, transcript, question, reply, charts, denied, retrieve
 
 def answer_with_labs(conn, *, link, spec, session, question, transcript, rag_context,
                      owner, name, retrieved_ids=()) -> dict:
-    """One turn for an assisted link with labs attached. The shared per-turn guard (turn cap,
-    atomic reply_count, global budget, injection redirect) has ALREADY run in research.answer —
-    this is only the bounded model<->tool loop, recording, and the on-demand chart specs.
-    Returns {phase, message, charts}. Caps: iterations, tool calls/iter, charts/turn, token budget."""
+    """Execute one turn for an assisted link with labs attached.
+
+    The shared per-turn guard (turn cap, atomic reply_count, global budget, injection
+    redirect) has already run in research.answer — this is only the bounded
+    model-to-tool loop, recording, and the on-demand chart specs.
+
+    Args:
+        conn: Database connection.
+        link: The share_links row.
+        spec: The research_specs row.
+        session: The research_sessions row.
+        question: Recipient question text (already scrubbed).
+        transcript: Existing session transcript list.
+        rag_context: Pre-retrieved note context string to include in the system prompt.
+        owner: Owner display name for prompt interpolation.
+        name: Recipient display name.
+        retrieved_ids: Note ids retrieved via RAG for this turn (for audit logging).
+
+    Returns:
+        Dict with phase, message, and charts fields.
+    """
     allowed = allowed_labs(spec)              # re-read each turn → mid-session narrowing is instant
     wfrom, wto = _window(spec)
     budget = (spec["token_budget"] if "token_budget" in spec.keys() else None) or _DEFAULT_TOKEN_BUDGET
@@ -462,8 +479,21 @@ def answer_with_labs(conn, *, link, spec, session, question, transcript, rag_con
 
 
 def _run_tool(conn, call, allowed, wfrom, wto):
-    """Fail-closed dispatch: an unknown tool name (a forged/jailbroken call) is NEVER executed —
-    it returns the same 'not available' a denied analyte gets, and is counted as a denied attempt."""
+    """Dispatch a single tool call fail-closed.
+
+    An unknown tool name (forged or jailbroken) is never executed — it returns the same
+    'not available' response a denied analyte gets, and is counted as a denied attempt.
+
+    Args:
+        conn: Database connection.
+        call: Tool call object with name and args attributes.
+        allowed: Set of permitted analyte keys.
+        wfrom: Owner window start (ISO date or None).
+        wto: Owner window end (ISO date or None).
+
+    Returns:
+        A (text_result, chart_dict_or_None) tuple.
+    """
     fn = _DISPATCH.get(call.name)
     if fn is None:
         return _NOT_AVAILABLE, None

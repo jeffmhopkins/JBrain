@@ -170,6 +170,7 @@ def expand_tokens(text: str, *, snapshot: bool = False, now: datetime | None = N
     today = now.date()
 
     def repl(m: re.Match) -> str:
+        """Replace one @t[...] match with its computed live or snapshot value."""
         kind, arg = m.group(1), m.group(2).strip()
         dt = _to_dt(arg, tz)
         if dt is None:

@@ -437,6 +437,26 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .status-rows li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
 .status-refresh { font-size: 12px; padding: 4px 10px; }
 
+/* Toasts: non-blocking, stacked bottom-centre, auto-expiring. */
+.toaster {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px; width: min(440px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+  background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim); border-radius: 10px; padding: 10px 12px;
+  font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+.toast.error { border-left-color: var(--danger); }
+.toast.success { border-left-color: var(--good); }
+.toast.info { border-left-color: var(--accent); }
+.toast-msg { flex: 1; }
+.toast-x { background: transparent; border: none; color: var(--text-dim); font-size: 18px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.toast-x:hover { color: var(--text); }
+
 .applied-chip { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev-2); font-size: 14px; }
 .applied-chip .ghost { margin-left: auto; }
 .list-item { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--bg-elev); }

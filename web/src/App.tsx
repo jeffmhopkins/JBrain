@@ -30,6 +30,7 @@ import PromptsPanel from "./components/PromptsPanel";
 import SharePage from "./pages/SharePage";
 import SharesPage from "./pages/SharesPage";
 import OwnerChatPage from "./pages/OwnerChatPage";
+import Toaster from "./components/Toaster";
 
 interface AuthState {
   authenticated: boolean;
@@ -128,6 +129,7 @@ export default function App() {
 
   return (
     <AuthCtx.Provider value={auth}>
+      <Toaster />
       <Routes>
         {/* Ungated, standalone public route — no key, no Shell. */}
         <Route path="/share/:token" element={<SharePage />} />

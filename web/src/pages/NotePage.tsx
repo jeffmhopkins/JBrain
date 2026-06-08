@@ -13,6 +13,7 @@ import LabImportPanel from "../components/LabImportPanel";
 import TalkPanel from "../components/TalkPanel";
 import { DiffView, HistoryTimeline, TimelineEntry, VersionViewer } from "../components/VersionViewer";
 import { Icon } from "../components/Icon";
+import { showToast, explainError } from "../toast";
 import ListEditor from "../components/ListEditor";
 import NoteActionsMenu from "../components/NoteActionsMenu";
 import RebuildPanel from "../components/RebuildPanel";
@@ -93,7 +94,7 @@ export default function NotePage() {
   async function remove() {
     if (!note || !confirm(`Delete “${note.title}”? It's soft-deleted (restorable from history) and the wiki will update.`)) return;
     try { await del(`/api/notes/${note.slug}`); navigate("/wiki"); }
-    catch (e: any) { alert(e?.message || "Couldn't delete."); }
+    catch (e: any) { showToast(explainError(e, "Couldn't delete.")); }
   }
 
   async function mintShare(scope: "view" | "edit") {

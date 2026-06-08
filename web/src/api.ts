@@ -64,6 +64,32 @@ export class ApiError extends Error {
   }
 }
 
+// Health-status poll helper. Deliberately does NOT go through api(): it must never
+// throw (so a failed poll can't bubble into the auth/logout path) and must never
+// clear the key. On a soft-auth route a missing/rotated key returns a 200 skeleton
+// (no `capabilities`), so the *store* — not this helper — decides "needs-auth"
+// (skeleton + a stored key). The only failure here is "unreachable" (network/5xx/abort).
+export type StatusResult =
+  | { ok: true; data: any }                         // skeleton OR full doc
+  | { ok: false; reason: "unreachable" };
+
+export async function getStatus(timeoutMs = 8000): Promise<StatusResult> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);   // a dead VM flips the dot in <=8s
+  try {
+    const res = await fetch(u("/api/system/status"), {
+      headers: authHeaders(),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { ok: false, reason: "unreachable" };   // 5xx/4xx → unreachable
+    return { ok: true, data: await res.json() };                // 200 skeleton or full doc
+  } catch {
+    return { ok: false, reason: "unreachable" };          // network OR the 8s abort
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export const get = <T = any>(p: string) => api<T>(p);
 export const post = <T = any>(p: string, body?: unknown) =>
   api<T>(p, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });

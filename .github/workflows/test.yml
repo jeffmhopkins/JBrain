@@ -25,6 +25,11 @@ jobs:
   back:
     name: backend (pytest)
     runs-on: ubuntu-latest
+    # Pin fastembed's model cache to a stable path so we can cache it across runs (and so
+    # the pre-warm step + pytest share it). The app reads this too — embeddings.py builds
+    # TextEmbedding() with no cache_dir, so fastembed falls back to FASTEMBED_CACHE_PATH.
+    env:
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
     defaults:
       run:
         working-directory: server
@@ -37,6 +42,15 @@ jobs:
           cache-dependency-path: |
             server/requirements.txt
             server/requirements-dev.txt
+      # Cache the embedding model (BAAI/bge-small-en-v1.5 via fastembed) so CI doesn't
+      # re-download it from HuggingFace every run — a HF hiccup was timing the suite out
+      # (test_foldback_coalesce loads the real model). Bump the key suffix if
+      # EMBEDDING_MODEL (server/app/config.py) changes.
+      - name: Cache the local embedding model
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FASTEMBED_CACHE_PATH }}
+          key: fastembed-${{ runner.os }}-bge-small-en-v1.5
       - name: Install backend deps
         # fastapi/pydantic MUST be installed before pytest collects, or import fails.
         # pywebpush (-> py-vapid/http-ece) is split out and best-effort: it doesn't always
@@ -46,6 +60,21 @@ jobs:
           grep -v '^pywebpush' requirements.txt > /tmp/reqs-core.txt
           pip install -r /tmp/reqs-core.txt -r requirements-dev.txt
           pip install pywebpush==2.0.0 || echo "::warning::pywebpush unavailable; push tests will skip"
+      # Warm the embedding model BEFORE pytest, with retries, so a transient HuggingFace
+      # failure is retried here (longer backoff than the in-test fastembed retries, which
+      # pytest-timeout was killing) instead of flaking the gate. On a cache hit this loads
+      # from FASTEMBED_CACHE_PATH instantly. Best-effort: it never fails the job — pytest
+      # still runs if warming couldn't complete.
+      - name: Pre-warm the local embedding model
+        run: |
+          for i in 1 2 3 4 5; do
+            if python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5'); print('embedding model ready')"; then
+              exit 0
+            fi
+            echo "::warning::embedding warm attempt $i failed (HuggingFace hiccup?); retrying in $((i * 15))s…"
+            sleep $((i * 15))
+          done
+          echo "::warning::could not pre-warm the embedding model after retries; the suite will try during tests"
       - name: Test + coverage gate
         # Full suite (incl. the `concurrency` tier) so coverage is the true number;
         # fail_under=75 lives in pyproject.toml. Locally `./jt` default skips the

@@ -102,6 +102,34 @@ def _cached_client(key: tuple, factory):
     return cli
 
 
+def reset_clients() -> int:
+    """Drop all cached SDK clients so the next call builds fresh ones — provider-wedge recovery.
+
+    A streaming turn that was abruptly cancelled (e.g. an "Edit with AI" panel closed mid-turn)
+    can leave the cached AsyncAnthropic/AsyncOpenAI client's httpx pool holding a half-open
+    connection, which a later turn (chat/research) waits behind. Dropping the cached clients
+    forces a fresh pool on the next call; the orphaned ones are closed best-effort and GC'd.
+    Backs the status panel's "Reset AI" control.
+
+    Returns:
+        Number of cached clients dropped.
+    """
+    with _client_lock:
+        clients = list(_client_cache.values())
+        _client_cache.clear()
+    for c in clients:
+        # Close SYNC clients eagerly. Async clients' close() is a coroutine — we can't await it
+        # from this sync recovery path (and calling it would just leak an un-awaited coroutine),
+        # so we drop the reference and let GC reclaim the httpx pool. Best-effort: never raise.
+        try:
+            close = getattr(c, "close", None)
+            if callable(close) and not asyncio.iscoroutinefunction(close):
+                close()
+        except Exception:  # noqa: BLE001
+            pass
+    return len(clients)
+
+
 @dataclass
 class ToolDef:
     """Definition of a tool the LLM may call."""

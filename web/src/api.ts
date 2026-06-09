@@ -122,6 +122,12 @@ export const put = <T = any>(p: string, body?: unknown) =>
   api<T>(p, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
 export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 
+// Recover a wedged AI layer: drop cached LLM SDK clients (releasing any half-open provider
+// connection a cancelled stream left behind) and cancel orphaned rebuild runs. Backs the
+// status panel's "Reset AI" button. No data loss — the next AI request reconnects fresh.
+export const resetAi = () =>
+  post<{ ok: boolean; clients_dropped: number; runs_cancelled: number }>("/api/system/reset-ai");
+
 // Wiki-link label audit: links whose shortened [[Target|Display]] label names a different
 // article than the target (e.g. a stale alias left behind by a rename). Fix = correct the
 // label to the target's bare name (deterministic, undoable).

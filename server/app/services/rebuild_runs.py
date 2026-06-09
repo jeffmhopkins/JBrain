@@ -150,6 +150,24 @@ def drop(run_id: str) -> None:
         _BY_SLUG.pop(run.slug, None)
 
 
+def cancel_all() -> int:
+    """Cancel and drop every active run; signal each generator to stop. Idempotent.
+
+    The recovery hook behind the status panel's "Reset AI": orphaned rebuild/suggest streams
+    (e.g. a panel closed mid-turn whose generator hasn't observed the cancel yet) are signalled
+    to stop and removed from the registry.
+
+    Returns:
+        Number of runs that were active and cancelled.
+    """
+    n = len(_RUNS)
+    for run in list(_RUNS.values()):
+        run.cancelled = True
+    _RUNS.clear()
+    _BY_SLUG.clear()
+    return n
+
+
 def is_live(run: RebuildRun) -> bool:
     """Return True if the run is in a state that accepts Guide or Accept actions.
 

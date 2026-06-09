@@ -158,6 +158,25 @@ def _current_label(build_ref: str | None) -> str:
     return f"{APP_VERSION} ({build_ref[:7]})" if build_ref else APP_VERSION
 
 
+@router.post("/reset-ai")
+def reset_ai():
+    """Reset the AI layer to recover from a wedged provider: drop cached SDK clients + cancel runs.
+
+    A streaming turn cancelled mid-flight (e.g. closing the "Edit with AI" panel) can leave the
+    cached LLM client's connection pool holding a half-open socket that a later chat/research turn
+    waits behind, and can orphan a rebuild run. This owner-only recovery drops the cached clients
+    (forcing a fresh pool next call) and cancels every active rebuild/suggest run, with no data
+    loss — the next AI request reconnects cleanly.
+
+    Returns:
+        JSON ``{"ok": true, "clients_dropped": int, "runs_cancelled": int}``.
+    """
+    from ..services import llm, rebuild_runs
+    return {"ok": True,
+            "clients_dropped": llm.reset_clients(),
+            "runs_cancelled": rebuild_runs.cancel_all()}
+
+
 @router.get("/version")
 def version():
     """Return the running version and whether a newer release or main commit exists.

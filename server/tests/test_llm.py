@@ -1247,3 +1247,31 @@ def test_xai_stream_turn_close_errors_swallowed(patch_settings, monkeypatch, _no
         max_tokens=50, thinking=False)))
     # close() raised but was swallowed; turn still completed
     assert any(isinstance(e, llm.TurnEnd) for e in out)
+
+
+def test_reset_clients_clears_cache_and_closes_only_sync_clients():
+    """reset_clients drops every cached client; it closes SYNC clients but must NOT call an
+    async client's coroutine close() (that would leak an un-awaited coroutine — the warning the
+    e2e run surfaced). Async clients are simply dropped for GC to reclaim."""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    sync_closed = {"n": 0}
+
+    async def _async_close():           # mimics AsyncAnthropic/AsyncOpenAI.close (a coroutine)
+        pass
+
+    sync_client = SimpleNamespace(close=lambda: sync_closed.__setitem__("n", sync_closed["n"] + 1))
+    async_client = SimpleNamespace(close=_async_close)
+    assert _asyncio.iscoroutinefunction(async_client.close)
+
+    llm._client_cache.clear()
+    llm._client_cache[("sync",)] = sync_client
+    llm._client_cache[("async",)] = async_client
+
+    dropped = llm.reset_clients()
+
+    assert dropped == 2
+    assert llm._client_cache == {}              # cache fully cleared → fresh clients next call
+    assert sync_closed["n"] == 1                # sync client closed
+    # async client's coroutine close was NOT invoked (no un-awaited-coroutine leak); just dropped.

@@ -125,7 +125,17 @@ def _connect(*, query_only: bool = False) -> sqlite3.Connection:
     """
     settings = get_settings()
     Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.db_path, check_same_thread=False)
+    # check_same_thread=True (the default) makes connections THREAD-AFFINE: a connection may
+    # only be used by the thread that created it. The correct path always satisfies this —
+    # get_conn() is thread-local, and an offloaded worker opens its OWN connection inside its
+    # closure — so this never trips legitimate code. What it DOES catch is the one dangerous
+    # mistake: reaching across an `await` onto the shared event-loop connection from a pool
+    # thread. The event loop is one thread, so every concurrent async turn shares one get_conn()
+    # connection; handing it to asyncio.to_thread lets two turns drive one sqlite3.Connection at
+    # once. That was the root cause of the "Edit with AI / chat hangs" class of bug — a silent
+    # deadlock on the connection mutex. With this flag it becomes an immediate, localized
+    # ProgrammingError at the offending call instead, so the invariant is enforced, not honor-code.
+    conn = sqlite3.connect(settings.db_path, check_same_thread=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

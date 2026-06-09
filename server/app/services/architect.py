@@ -3793,11 +3793,17 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 # (fastembed ONNX), blocking urllib geocode/medref calls (with time.sleep
                 # under a lock), and synchronous LLM calls for the kb_* tools. Running any
                 # of that inline would freeze the single event loop for the whole turn (and
-                # thus every other request); offload it to a worker thread. The connection
-                # is only touched here (serialized — we await before resuming), so sharing
-                # it across the thread boundary is safe.
-                result_text, event = await asyncio.to_thread(
-                    _run_tool, conn, conversation_id, call.name, call.args, mode)
+                # thus every other request); offload it to a worker thread. The worker opens
+                # its OWN thread-local connection (get_conn() inside the closure) — NEVER the
+                # event-loop `conn` captured above, which a CONCURRENT turn may be driving at
+                # the same time. Reaching across the await onto that shared connection from a
+                # pool thread wedges it ("recursive use of cursors" / deadlock) — the
+                # "research mode stops responding" hang. Each write tool commits on the
+                # connection it's handed, so a separate connection stays fully consistent.
+                def _dispatch(_call=call):
+                    """Dispatch the tool on a worker-local connection (never the loop's)."""
+                    return _run_tool(get_conn(), conversation_id, _call.name, _call.args, mode)
+                result_text, event = await asyncio.to_thread(_dispatch)
             except Exception as exc:  # noqa: BLE001 — a bad tool call must not kill the stream
                 # Feed the error back as a tool result so the model can recover,
                 # rather than aborting the whole turn (and losing its text). Fence the

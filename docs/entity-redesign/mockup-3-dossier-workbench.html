@@ -138,7 +138,7 @@ input.fld:focus, select.fld:focus{outline:none; border-color:var(--accent);}
   color:var(--text-dim); cursor:pointer; display:inline-flex; align-items:center; gap:5px;
 }
 .pill.on{background:var(--accent-soft); border-color:var(--accent); color:var(--text); font-weight:600;}
-.pill .badge{background:var(--m-medical); color:#111; border-radius:99px; font-size:11px; font-weight:700; padding:0 6px; min-width:18px; text-align:center;}
+.pill .badge{background:var(--m-research); color:#111; border-radius:99px; font-size:11px; font-weight:700; padding:0 6px; min-width:18px; text-align:center;}
 
 .sortrow{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
 .sortrow .cnt{font-size:12px; color:var(--text-dim);}
@@ -327,7 +327,7 @@ input.fld:focus, select.fld:focus{outline:none; border-color:var(--accent);}
   padding:4px; display:flex; gap:4px; margin-bottom:6px;
 }
 .canon-pick button{
-  flex:1; font-family:inherit; font-size:12.5px; min-height:40px; border:none; cursor:pointer;
+  flex:1; font-family:inherit; font-size:12.5px; min-height:44px; border:none; cursor:pointer;
   border-radius:99px; background:transparent; color:var(--text-dim); font-weight:600;
   padding:0 6px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
@@ -362,7 +362,7 @@ input.fld:focus, select.fld:focus{outline:none; border-color:var(--accent);}
 .samples{list-style:none; padding:0; margin:0;}
 .samples li{font-size:11.5px; color:var(--text-dim); padding:3px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3;}
 
-.merge-arrow{text-align:center; font-size:13px; color:var(--ok); margin:6px 0 10px; font-weight:600;}
+.merge-arrow{text-align:center; font-size:13px; color:var(--ok); margin:6px 0 10px; font-weight:600; overflow-wrap:anywhere; line-height:1.4;}
 
 /* sticky confirm bar in workbench */
 .wb-confirm{
@@ -766,12 +766,12 @@ function renderDossier(){
     ? e.aiAliases.map(a=>`<span class="chip">${esc(a)}</span>`).join('')
     : `<span style="font-size:13px;color:var(--text-dim)">None detected.</span>`;
   const userAl = e.userAliases.length
-    ? e.userAliases.map(a=>`<span class="chip removable">${esc(a)}<span class="x" onclick="removeAlias('${e.id}','${esc(a)}')">×</span></span>`).join('')
+    ? e.userAliases.map(a=>`<span class="chip removable">${esc(a)}<span class="x" title="Remove alias" onclick="removeAlias('${e.id}',${jsStr(a)})">×</span></span>`).join('')
     : `<span style="font-size:13px;color:var(--text-dim)">None yet.</span>`;
 
   // mentions
   const mentions = e.mentions.map(mn=>`
-    <div class="mention" onclick="toast('Opening note: ${esc(mn.title)}')">
+    <div class="mention" onclick="toast('Opening note: '+${jsStr(mn.title)})">
       <span class="mt">${esc(mn.title)}</span>
       <span class="md">${fmtDate(mn.date)}</span>
       <span class="arr">›</span>
@@ -1192,6 +1192,8 @@ function toast(msg){
    HELPERS
    ============================================================ */
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// Safe single-quoted JS string literal for use inside an HTML attribute (e.g. onclick="fn(...)").
+function jsStr(s){return "'"+String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/&/g,'&amp;').replace(/"/g,'&quot;')+"'";}
 function trunc(s){return s.length>16?s.slice(0,15)+'…':s;}
 function today(){return '2026-06-09';}
 function fmtDate(d){

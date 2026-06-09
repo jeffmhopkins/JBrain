@@ -141,7 +141,8 @@
   .edge.dim{ opacity:.18; }
 
   .node{ cursor:pointer; }
-  .node circle.body{ stroke:var(--bg); stroke-width:2; transition:opacity .2s; }
+  .node circle.hit{ pointer-events:all; }
+  .node circle.body{ stroke:var(--bg); stroke-width:2; transition:opacity .2s; pointer-events:none; }
   .node.center circle.body{ stroke:var(--accent); stroke-width:2.5; }
   .node text.lbl{
     fill:var(--text); font-size:10px; text-anchor:middle; pointer-events:none;
@@ -618,7 +619,11 @@ function computeLayout(){
   let neigh = neighborsOf(cid).filter(n=> ENT[n.id]);
   // honor type filter (but always keep dup-suggestion neighbors so user can merge)
   neigh = neigh.filter(n=> passesFilter(ENT[n.id]) || n.kind==='dup');
-  neigh = neigh.slice(0, MAX_NEIGHBORS);
+  // Cap to keep the phone legible, but NEVER drop dup-suggestion connectors — they
+  // are the whole point (tap to merge). Keep all dups + the strongest co-mentions.
+  const dupN = neigh.filter(n=> n.kind==='dup');
+  const coN  = neigh.filter(n=> n.kind!=='dup').slice(0, Math.max(0, MAX_NEIGHBORS - dupN.length));
+  neigh = [...coN, ...dupN];
 
   const pos = {};
   pos[cid] = { x:CX, y:CY, r:radius(center.notes), e:center, center:true };
@@ -663,8 +668,9 @@ function renderGraph(){
     // weight label on stronger edges
     if(kind!=='dup' && w>=10){
       const tx=(pos[a].x+pos[b].x)/2, ty=(pos[a].y+pos[b].y)/2;
-      const t = el('text',{ x:tx, y:ty, class:'flag' }); t.textContent=w;
-      t.setAttribute('fill','#5a6164'); t.setAttribute('font-size','9'); t.setAttribute('text-anchor','middle');
+      const t = el('text',{ x:tx, y:ty, class:'edgew' }); t.textContent=w;
+      t.setAttribute('fill','#828a8e'); t.setAttribute('font-size','9'); t.setAttribute('text-anchor','middle');
+      t.setAttribute('paint-order','stroke'); t.setAttribute('stroke','#111315'); t.setAttribute('stroke-width','2.5px'); t.setAttribute('stroke-linejoin','round');
       g.appendChild(t);
     }
   });
@@ -673,6 +679,10 @@ function renderGraph(){
   ids.forEach(id=>{
     const p = pos[id], e = p.e;
     const node = el('g',{ class:'node t-'+e.type + (p.center?' center':''), 'data-id':id });
+    // Invisible hit-area so every node is at least a 44px touch target even when
+    // its visible body is small (low note_count). Sits behind the visible circle.
+    const hit = el('circle',{ cx:p.x, cy:p.y, r:Math.max(p.r, 23), class:'hit', fill:'transparent' });
+    node.appendChild(hit);
     const circle = el('circle',{ cx:p.x, cy:p.y, r:p.r, class:'body' });
     circle.setAttribute('fill', typeColor(e.type));
     circle.setAttribute('fill-opacity', '0.92');

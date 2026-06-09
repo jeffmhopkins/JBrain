@@ -14,6 +14,7 @@ register it in _REGISTRY, and select it via the LLM_PROVIDER setting.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -45,6 +46,27 @@ def _timeout() -> float:
         return float(get_settings().llm_timeout_seconds) or _LLM_TIMEOUT
     except Exception:  # noqa: BLE001 — settings not ready / bad value → safe default
         return _LLM_TIMEOUT
+
+# Provider SDK retry budget. The Anthropic/OpenAI SDKs default to max_retries=2 and retry on
+# 429/5xx/timeout — but the timeout above is PER-ATTEMPT, so the default silently triples the
+# effective wait on a slow/overloaded provider (2 retries × per-request timeout + backoff), with
+# no log line. That multi-minute wait is one of the most common "the chat just hangs" reports.
+# Keep the retry budget low so a wedged provider surfaces an error quickly instead.
+_LLM_MAX_RETRIES = 1
+
+
+def _max_retries() -> int:
+    """Return the configured provider-SDK retry budget (LLM_MAX_RETRIES).
+
+    Falls back to _LLM_MAX_RETRIES when settings are unavailable or the value is unset.
+
+    Returns:
+        Maximum SDK retry attempts per request (0 disables retries).
+    """
+    try:
+        return int(get_settings().llm_max_retries)
+    except Exception:  # noqa: BLE001 — settings not ready / bad value → safe default
+        return _LLM_MAX_RETRIES
 
 # LLM SDK clients each own an httpx connection pool (persistent sockets / file descriptors)
 # and are designed to be long-lived and reused. Constructing a fresh one per call leaked FDs,
@@ -283,14 +305,14 @@ class AnthropicProvider:
         from anthropic import Anthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "sync", key),
-                              lambda: Anthropic(api_key=key, timeout=_timeout()))
+                              lambda: Anthropic(api_key=key, timeout=_timeout(), max_retries=_max_retries()))
 
     def _async_client(self):
         """Return a cached async Anthropic client for the current API key."""
         from anthropic import AsyncAnthropic
         key = get_settings().llm_api_key
         return _cached_client(("anthropic", "async", key),
-                              lambda: AsyncAnthropic(api_key=key, timeout=_timeout()))
+                              lambda: AsyncAnthropic(api_key=key, timeout=_timeout(), max_retries=_max_retries()))
 
     def complete(self, messages, *, system=None, model=None, max_tokens=1024) -> str:
         """Return the model's text reply (non-streaming, Anthropic).
@@ -425,7 +447,12 @@ class AnthropicProvider:
         for c in calls:
             yield ToolCallEvent(c)
         u = getattr(final, "usage", None)
-        _record_usage(model or self.default_model(), u, "agent")
+        # Offload the usage write: it opens a fresh connection and commits a row (a WAL writer),
+        # which under write-lock contention blocks up to busy_timeout. Doing that inline here would
+        # block the EVENT LOOP (stream_turn is iterated on it), freezing every other chat/keepalive/
+        # poll — and the SSE no-progress watchdog can't save a frozen loop. Awaited so the write
+        # still completes (and stays ordered) before the turn ends.
+        await asyncio.to_thread(_record_usage, model or self.default_model(), u, "agent")
         usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
                  "output_tokens": getattr(u, "output_tokens", 0) or 0} if u else None
         yield TurnEnd(calls, usage=usage, stop_reason=getattr(final, "stop_reason", None))
@@ -472,7 +499,7 @@ class XAIProvider:
         cls = AsyncOpenAI if async_ else OpenAI
         key, base = self._key(), s.xai_base_url
         return _cached_client(("xai", "async" if async_ else "sync", key, base),
-                              lambda: cls(api_key=key, base_url=base, timeout=_timeout()))
+                              lambda: cls(api_key=key, base_url=base, timeout=_timeout(), max_retries=_max_retries()))
 
     def has_credentials(self) -> bool:
         """Return True if an xAI (or fallback LLM) API key is configured."""
@@ -697,7 +724,8 @@ class XAIProvider:
             len(calls), ",".join(c.name for c in calls))
         for c in calls:
             yield ToolCallEvent(c)
-        _record_openai_usage(model or self.default_model(), usage, "agent")
+        # Offload the usage write off the event loop — see the note in AnthropicProvider.stream_turn.
+        await asyncio.to_thread(_record_openai_usage, model or self.default_model(), usage, "agent")
         uu = {"input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
               "output_tokens": getattr(usage, "completion_tokens", 0) or 0} if usage else None
         yield TurnEnd(calls, usage=uu, stop_reason=finish)
@@ -746,7 +774,7 @@ class LocalProvider(XAIProvider):
         cls = AsyncOpenAI if async_ else OpenAI
         key, base = self._key(), s.llm_local_base_url
         return _cached_client(("local", "async" if async_ else "sync", key, base),
-                              lambda: cls(api_key=key, base_url=base, timeout=_timeout()))
+                              lambda: cls(api_key=key, base_url=base, timeout=_timeout(), max_retries=_max_retries()))
 
     def has_credentials(self) -> bool:
         """Return True when local-LLM support is enabled (no API key is required)."""

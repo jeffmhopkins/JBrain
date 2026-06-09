@@ -838,6 +838,14 @@ export async function streamChat(
     else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   }
   let res: Response;
+  // First-byte (headers) watchdog. The stall watchdog below only arms AFTER res.body exists,
+  // so without this a backend that accepts the connection but never returns headers (a wedged
+  // worker / half-open proxy) would leave `await fetch` pending forever — the caller's `streaming`
+  // latch never clears and the composer is stuck at "Thinking…". Mirrors getStatus's timed abort.
+  // Generous: a healthy server sends headers immediately and keepalives begin within ~15s.
+  let headersTimedOut = false;
+  const HEADERS_MS = 30000;
+  const headersTimer = window.setTimeout(() => { headersTimedOut = true; ctrl.abort(); }, HEADERS_MS);
   try {
     res = await fetch(u(`/api/chat/conversations/${conversationId}/message`), {
       method: "POST",
@@ -846,10 +854,12 @@ export async function streamChat(
       signal: ctrl.signal,
     });
   } catch (e) {
-    // A network failure opening the stream is a health signal — but a USER-initiated
-    // abort (leaving chat / starting a new turn) is not. Only report a real net error.
-    if (!ctrl.signal.aborted) report({ kind: "neterr" });
+    // A network failure opening the stream is a health signal — as is a headers timeout (a wedged
+    // backend) — but a USER-initiated abort (leaving chat / starting a new turn) is not.
+    if (headersTimedOut || !ctrl.signal.aborted) report({ kind: "neterr" });
     throw e;
+  } finally {
+    clearTimeout(headersTimer);
   }
   report({ kind: "http", status: res.status });
   if (!res.body) throw new ApiError("No response stream", 500);

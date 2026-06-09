@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Per-request LLM timeout (seconds). CPU-only local inference can exceed the cloud
     # default — raise to ~600 when running local models on a CPU box.
     llm_timeout_seconds: float = Field(120.0, validation_alias=AliasChoices("LLM_TIMEOUT_SECONDS", "llm_timeout_seconds"))
+    # Provider SDK retry budget per request. The SDK default (2) silently triples the effective
+    # wait on a slow/overloaded provider, since llm_timeout_seconds is per-attempt — a chat that
+    # "just hangs" for minutes. Keep it low so a wedged provider surfaces an error quickly.
+    llm_max_retries: int = Field(1, validation_alias=AliasChoices("LLM_MAX_RETRIES", "llm_max_retries"))
 
     # The pasteable access key (the "cert"). If set, it is authoritative and
     # seeded/rotated into the DB on boot. If empty, the server generates one on

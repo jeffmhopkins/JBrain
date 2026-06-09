@@ -8094,3 +8094,39 @@ def test_sse_error_helper_stamps_type_for_the_client():
     data = next(l[6:] for l in frame.split("\n") if l.startswith("data: "))
     obj = _json.loads(data)
     assert obj["type"] == "error" and obj["message"] == "nope"
+
+
+def test_architect_persist_uses_worker_thread_connection_not_the_loop_conn(client, monkeypatch):
+    # C2 regression: the architect offloads its DB writes to a pool thread but must use THAT
+    # thread's own connection (get_conn is thread-local) — never the event-loop connection it
+    # captured. All async handlers share one loop connection, so reaching across the await onto it
+    # from a pool thread lets two concurrent turns drive one sqlite3.Connection at once →
+    # "recursive use of cursors" / wedged transaction → a failed or hung turn. The discriminator:
+    # post-fix the persists call get_conn() from a worker thread; pre-fix they never did.
+    import asyncio
+    import threading
+    from app.db import get_conn as real_get_conn
+    from app.services import architect, llm
+    conn = real_get_conn(); cid = _new_conv(conn); conn.commit()
+
+    loop_ident = threading.get_ident()
+    worker_idents: set[int] = set()
+
+    def _spy():
+        ident = threading.get_ident()
+        if ident != loop_ident:
+            worker_idents.add(ident)
+        return real_get_conn()
+
+    monkeypatch.setattr(architect, "get_conn", _spy)
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _NoToolProvider())
+
+    async def go():
+        async for _ in architect.run(cid, "hello", None, "assisted"):
+            pass
+
+    asyncio.run(go())
+    assert worker_idents, "offloaded persists must call get_conn() on their own worker thread"
+    # And the turn still persisted correctly on that worker-thread connection.
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 1

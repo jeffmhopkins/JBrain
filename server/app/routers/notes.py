@@ -264,9 +264,10 @@ def note_analysis(slug: str):
 def refresh_note_analysis(slug: str):
     """Force-recompute a note's AI analysis sidecar, bypassing the content-hash cache.
 
-    Also runs the title-normalization pass (a bare dated note may be renamed) and
-    re-aggregates the entity index when the analysis changes. Returns the fresh
-    analysis plus the note's (possibly renamed) slug and title.
+    Also runs the title-normalization pass (a bare numbered leaf — a dated note or a
+    medical/financial capture — may be given a generated title) and re-aggregates the
+    entity index when the analysis changes. Returns the fresh analysis plus the note's
+    (possibly renamed) slug and title.
 
     Args:
         slug: URL slug of the note to reanalyze.
@@ -286,6 +287,9 @@ def refresh_note_analysis(slug: str):
     from ..services import note_analysis as na
     from ..services import entity_index, note_normalize
     note_normalize.title_one(conn, row["id"])          # title check first (may rename the note)
+    conn.commit()                                       # commit the rename NOW: never hold its write
+    # lock across the analyze LLM call below (WAL serialises writes — a held lock deadlocks a
+    # concurrent attachment fold-back worker for the busy_timeout, hanging the request).
     if na.analyze(conn, row["id"], force=True):
         entity_index.rebuild(conn)                     # rebuild commits; refresh browse/search too
     conn.commit()

@@ -322,6 +322,18 @@ def _p_taxonomy_health(ctx):
     return wiki_build.taxonomy_health(ctx.conn)
 
 
+def _p_reorg_taxonomy(ctx, max_moves=5, max_llm=3, cooldown_days=7, dry_run=False, post_card=True):
+    """Autonomously fold un-foldered Reference pages into existing subcategories.
+
+    Surgical move only (no content regen); capped per run with a cooldown and a permanent
+    inverse-move refusal so the layout converges. Orphans are reported, never moved.
+    """
+    from . import wiki_build
+    return wiki_build.reorg_taxonomy(ctx.conn, max_moves=int(max_moves), max_llm=int(max_llm),
+                                     cooldown_days=int(cooldown_days), dry_run=_truthy(dry_run),
+                                     post_card=_truthy(post_card))
+
+
 def _p_extract_health(ctx, dry_run=True, limit=200, on_conflict="skip"):
     """One-time migration: move each person's personal medical section out of their kb/People
     article into a dedicated kb/Health/<Person> PHI page. Deterministic + versioned/undoable;
@@ -470,9 +482,26 @@ def _p_redate_notes(ctx, limit=2000, dry_run=False):
 
 
 def _p_title_notes(ctx, limit=40, dry_run=False):
-    """Give bare dated notes a generated leaf title (notes/<date>/N - <title>)."""
+    """Give bare numbered notes a generated leaf title (notes/<date>/N or a capture-root
+    leaf notes/<root>/<dest>/NN -> "… - <title>").
+    """
     from . import note_normalize
     return note_normalize.title_batch(ctx.conn, int(limit), bool(dry_run))
+
+
+def _p_title_note(ctx, id):
+    """Title ONE note if it's a bare numbered leaf (the per-note counterpart of title_notes:
+    a fresh dated or medical/financial capture gets a generated title before it's analyzed).
+    Returns the new title, or None when it's already titled / not a bare leaf / no LLM.
+    """
+    from . import note_normalize
+    title = note_normalize.title_one(ctx.conn, int(id))
+    if title is not None:
+        # Commit the rename now so its WAL write lock isn't held across a following analyze_note
+        # step's LLM call (a held lock deadlocks a concurrent attachment fold-back for the
+        # busy_timeout). Mirrors the refresh_note_analysis endpoint's commit-then-analyze order.
+        ctx.conn.commit()
+    return {"id": int(id), "title": title}
 
 
 def _p_seed_kb_watermark(ctx):
@@ -1569,6 +1598,7 @@ _PRIMITIVES = {
     "check_needed_links": _p_check_needed_links,
     "create_article": _p_create_article,
     "taxonomy_health": _p_taxonomy_health,
+    "reorg_taxonomy": _p_reorg_taxonomy,
     "recategorize_article": _p_recategorize_article,
     "merge_articles": _p_merge_articles,
     "refresh_index": _p_refresh_index,
@@ -1589,6 +1619,7 @@ _PRIMITIVES = {
     "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
+    "title_note": _p_title_note,
     "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
@@ -1731,6 +1762,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                                    {"name": "min_notes", "type": "int"}], "output": "dict"},
     "taxonomy_health": {"summary": "Read-only KB taxonomy-drift report (orphans, un-foldered Reference).",
                         "inputs": [], "output": "dict"},
+    "reorg_taxonomy": {"summary": "Autonomously fold un-foldered Reference pages into existing subcategories (surgical move; capped + cooldown + inverse-refusal; orphans reported, not moved).",
+                       "inputs": [{"name": "max_moves", "type": "int"}, {"name": "max_llm", "type": "int"},
+                                  {"name": "cooldown_days", "type": "int"}, {"name": "dry_run", "type": "bool"},
+                                  {"name": "post_card", "type": "bool"}], "output": "dict"},
     "recategorize_article": {"summary": "Move/rename a kb article (rewrites inbound links + index).",
                         "inputs": [{"name": "title", "type": "str"}, {"name": "new_title", "type": "str"}], "output": "dict"},
     "merge_articles": {"summary": "Fold kb articles into another (union sources, rewrite inbound links).",
@@ -1771,8 +1806,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",
                      "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
-    "title_notes": {"summary": "Give bare dated notes a generated leaf title (notes/<date>/N - title).",
+    "title_notes": {"summary": "Give bare numbered notes a generated leaf title (notes/<date>/N or notes/<root>/<dest>/NN - title).",
                     "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
+    "title_note": {"summary": "Title ONE note if it's a bare numbered leaf (dated or medical/financial capture).",
+                   "inputs": [{"name": "id", "type": "int", "required": True}], "output": "dict"},
     "seed_kb_watermark": {"summary": "Reset the incremental-update watermark to now (after a full build).",
                           "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",

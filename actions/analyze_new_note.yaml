@@ -17,12 +17,21 @@
 # effect across the async timeline: attachments get analyzed, then the note's analysis
 # reflects them.
 #
-# This NEVER writes the note body (analysis is a sidecar in note_analysis), so it
-# can't re-fire entry_created — keep it that way (no write_note here).
+# First give a bare numbered capture a generated leaf title (notes/<date>/N or a
+# medical/financial capture notes/<root>/<dest>/NN -> "… - title"), THEN analyze — same
+# order as the note-view reanalyze button, and so the analysis hashes against the final
+# title. title_note RENAMES the note (a versioned write) but only ever updates an EXISTING
+# note, which sets created=False, so entry_created does NOT re-fire — no loop. The analysis
+# itself still never writes the note body (it's a sidecar in note_analysis). Don't add a
+# write_note here.
 type: analyze_new_note
 category: Notes
 config: []
 steps:
+  - do: title_note
+    when: "{{ trigger.note_id }}"
+    with:
+      id: "{{ trigger.note_id }}"
   - do: analyze_note
     when: "{{ trigger.note_id }}"
     with:

@@ -1,0 +1,24 @@
+# Knowledge-base SURGICAL REORG (on-demand; the nightly maintenance already runs it as step 4).
+#
+# Folds un-foldered kb/Reference/<Name> pages into existing subcategories WITHOUT regenerating
+# any article content (it moves pages and rewrites inbound links). Unlike the destructive
+# "Reorganize knowledge base" (wiki-build) rebuild, this is surgical, capped, and convergent.
+#
+# Shipped DISABLED so the scheduler never fires it — the nightly wiki-maintain workflow already
+# performs the reorg. Run this on demand with "Run now" on the Workflows page when you want to
+# fold a backlog immediately. Manual runs ignore the enabled flag.
+#
+# Requires an LLM key only for ambiguous tie-breaks; confident placements need none.
+key: wiki-reorg
+name: Reorganize knowledge base (surgical)
+enabled: false
+
+trigger:
+  type: schedule
+  interval_seconds: 31536000   # 1 year — but enabled:false means it never auto-fires
+
+action:
+  type: wiki_reorg
+  config:
+    max_moves: 5
+    review: true

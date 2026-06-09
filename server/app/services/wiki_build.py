@@ -2899,6 +2899,270 @@ def taxonomy_health(conn, post_card: bool = True) -> dict:
     return report
 
 
+# --- Autonomous taxonomy reorg (surgical, content-preserving) -------------------------- #
+# Folds un-foldered kb/Reference/<Name> pages into an EXISTING subcategory using a
+# deterministic-first, LLM-only-as-tie-breaker selector, then MOVES them via
+# recategorize_article (which rewrites inbound links — the article body is never
+# regenerated). Bounded per run, with a cooldown plus a permanent inverse-move refusal so
+# the layout converges to a stable state instead of churning night after night. Orphans are
+# reported, never moved: an orphan needs inbound LINKS (a different, riskier op that edits
+# other articles' prose), which we keep owner-gated.
+_REORG_TAU = 0.55           # embedding-distance ceiling for a sibling to count (mirrors _RESEARCH_TAU)
+_REORG_CORROBORATION = 1.0  # score a subcategory earns when it already holds a linked neighbour
+
+
+def _reference_subfolders(conn) -> dict[str, list[str]]:
+    """Map each existing ``kb/Reference/<Sub>`` subcategory to the live titles under it.
+
+    These prefixes are the ONLY legal move destinations — the reorg never invents a folder.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict of subcategory prefix to member titles (depth >= 3 under Reference).
+    """
+    subs: dict[str, list[str]] = {}
+    for t in _known_titles(conn):
+        if t.startswith("kb/Reference/") and t.count("/") >= 3:
+            subs.setdefault("/".join(t.split("/")[:3]), []).append(t)
+    return subs
+
+
+def _reorg_neighbourhood(conn, title: str) -> set[str]:
+    """Return kb titles this article links to or that link to it (deterministic corroboration).
+
+    Args:
+        conn: SQLite connection.
+        title: Article whose link neighbourhood to gather.
+
+    Returns:
+        Set of neighbouring kb titles.
+    """
+    neigh: set[str] = set()
+    row = conn.execute("SELECT id FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                       (title,)).fetchone()
+    if row:
+        for r in conn.execute(
+            "SELECT DISTINCT t.title FROM links l JOIN notes t ON t.id=l.target_note_id "
+            "WHERE l.source_note_id=? AND t.kind='kb' AND t.deleted_at IS NULL", (row["id"],)):
+            neigh.add(r["title"])
+    for r in conn.execute(
+        "SELECT DISTINCT s.title FROM links l JOIN notes s ON s.id=l.source_note_id "
+        "WHERE lower(l.target_title)=lower(?) AND s.kind='kb' AND s.deleted_at IS NULL", (title,)):
+        neigh.add(r["title"])
+    return neigh
+
+
+def _reorg_salient(conn, title: str) -> str:
+    """Build the salient-facts query for an article (first line + ``##`` headings).
+
+    Args:
+        conn: SQLite connection.
+        title: Article title.
+
+    Returns:
+        A short query string, falling back to the leaf name when the body is empty.
+    """
+    row = conn.execute("SELECT content_md FROM notes WHERE lower(title)=lower(?) AND deleted_at IS NULL",
+                       (title,)).fetchone()
+    body = (row["content_md"] if row else "") or ""
+    lines = body.splitlines()
+    return (" ".join(([lines[0]] if lines else []) + [ln for ln in lines if ln.startswith("##")]).strip()[:600]
+            or title.rsplit("/", 1)[-1])
+
+
+def _score_subfolders(conn, title: str, subfolders: dict[str, list[str]]) -> list[tuple[str, float]]:
+    """Score each candidate subcategory for an un-foldered Reference page (no mutation).
+
+    Deterministic signals only: embedding similarity to a subcategory's members (capped at
+    ``_REORG_TAU``) plus a corroboration bonus when the subcategory already holds a linked
+    neighbour of the page. Embedding failures degrade to the link signal alone.
+
+    Args:
+        conn: SQLite connection.
+        title: The un-foldered Reference page being placed.
+        subfolders: Candidate subcategories from ``_reference_subfolders``.
+
+    Returns:
+        ``(subcategory, score)`` pairs sorted high-to-low.
+    """
+    from . import embeddings
+    scores = {sub: 0.0 for sub in subfolders}
+    member_sub = {m: sub for sub, members in subfolders.items() for m in members}
+    try:
+        for hit in embeddings.semantic_search(conn, _reorg_salient(conn, title), 25):
+            t = hit.get("title") or ""
+            d = float(hit.get("distance", 1.0))
+            if d < _REORG_TAU and t in member_sub:
+                scores[member_sub[t]] += (1.0 - d)
+    except Exception:  # noqa: BLE001 — embeddings are best-effort; the link signal still stands
+        pass
+    neigh = _reorg_neighbourhood(conn, title)
+    for sub, members in subfolders.items():
+        if any(m in neigh for m in members):
+            scores[sub] += _REORG_CORROBORATION
+    return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+
+
+def _reorg_llm_pick(conn, title: str, candidate_subs: list[str], subfolders: dict[str, list[str]]) -> str | None:
+    """Adjudicate an ambiguous placement: pick one subcategory from a deterministic shortlist.
+
+    The article's salient text is fenced as UNTRUSTED DATA; the model may only return one of
+    the supplied subcategories (membership-validated) or null — it can never name a
+    destination outside the shortlist, so an injected instruction cannot redirect a move.
+
+    Args:
+        conn: SQLite connection.
+        title: The page being placed.
+        candidate_subs: Shortlist of existing subcategory prefixes to choose among.
+        subfolders: Subcategory to members map (for showing example members).
+
+    Returns:
+        The chosen subcategory prefix, or None when the model declines or hallucinates.
+    """
+    if not llm.has_credentials() or not candidate_subs:
+        return None
+    leads = [f"- {sub}: " + ", ".join(m.split("/")[-1] for m in subfolders.get(sub, [])[:5])
+             for sub in candidate_subs]
+    prompt = (prompts.get("actions.reorg_taxonomy", "")
+              .replace("{title}", title)
+              .replace("{salient}", _reorg_salient(conn, title))
+              .replace("{candidates}", "\n".join(leads)))
+    try:
+        picked = json.loads(_strip_fence(llm.complete([{"role": "user", "content": prompt}], max_tokens=200)))
+        sub = picked.get("subfolder") if isinstance(picked, dict) else None
+        return sub if sub in candidate_subs else None      # validate membership (anti-hallucination)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _recat_recent(conn, title: str, k_days: int) -> bool:
+    """Return True if ``title`` was a recategorize endpoint within k_days (anti-churn cooldown).
+
+    Uses a recat-specific ``kb_structure_log`` op with a directional ``from|to`` pair_key (the
+    merge/split key conventions are not reused). A just-moved page is untouchable for the
+    window, which is the primary oscillation guard.
+
+    Args:
+        conn: SQLite connection.
+        title: Article title to check as either endpoint.
+        k_days: Look-back window in days.
+
+    Returns:
+        True if a recent recat touched this title.
+    """
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
+    rows = conn.execute(
+        "SELECT pair_key FROM kb_structure_log WHERE op='recat' "
+        "AND at > CAST(strftime('%s','now') AS INTEGER) - ?", (int(k_days) * 86400,)).fetchall()
+    for r in rows:
+        frm, _sep, to = (r["pair_key"] or "").partition("|")
+        if title in (frm, to):
+            return True
+    return False
+
+
+def _recat_inverse_blocked(conn, frm: str, to: str) -> bool:
+    """Return True if the reverse move (to -> frm) was EVER logged (permanent anti-oscillation).
+
+    Args:
+        conn: SQLite connection.
+        frm: Proposed move source title.
+        to: Proposed move target title.
+
+    Returns:
+        True if the inverse move is on record, making A<->B oscillation impossible.
+    """
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_structure_log (op TEXT, pair_key TEXT, at INTEGER)")
+    return conn.execute("SELECT 1 FROM kb_structure_log WHERE op='recat' AND pair_key=? LIMIT 1",
+                        (f"{to}|{frm}",)).fetchone() is not None
+
+
+def reorg_taxonomy(conn, *, max_moves: int = 5, max_llm: int = 3, cooldown_days: int = 7,
+                   min_score: float = 0.6, margin: float = 0.15, dry_run: bool = False,
+                   post_card: bool = True) -> dict:
+    """Autonomously fold un-foldered Reference pages into existing subcategories (no regen).
+
+    Deterministic-first selection; the LLM is only a confidence-gated tie-breaker over a
+    shortlist of EXISTING subcategories, and low-confidence pages are left and surfaced on a
+    card rather than guessed. Each move goes through ``recategorize_article`` (rewrites inbound
+    links, refreshes the index — the body is never regenerated). Bounded by ``max_moves`` per
+    run, an N-day cooldown, and a permanent inverse-move refusal, so the layout converges.
+    Orphans are reported, never moved.
+
+    Args:
+        conn: SQLite connection.
+        max_moves: Hard cap on moves applied per run.
+        max_llm: Hard cap on LLM tie-break calls per run.
+        cooldown_days: Skip any page recategorized within this many days.
+        min_score: Minimum top-subcategory score to move without the LLM.
+        margin: Minimum lead of the top subcategory over the runner-up to be "confident".
+        dry_run: Plan and report intended moves without applying them.
+        post_card: Post a summary Review card.
+
+    Returns:
+        Dict with keys ``moved``, ``carded``, ``skipped``, ``orphans``, ``llm_used``, ``dry_run``.
+    """
+    from . import reviews as reviews_svc
+    health = taxonomy_health(conn, post_card=False)
+    subfolders = _reference_subfolders(conn)
+    flat = [t for t in _known_titles(conn) if t.startswith("kb/Reference/") and t.count("/") == 2]
+    moved: list[dict] = []
+    carded: list[str] = []
+    skipped: list[dict] = []
+    llm_used = 0
+    for title in flat:
+        if len(moved) >= max_moves:
+            break
+        if _recat_recent(conn, title, cooldown_days):
+            skipped.append({"title": title, "reason": "cooldown"})
+            continue
+        scored = _score_subfolders(conn, title, subfolders)
+        sub = None
+        if scored and scored[0][1] > 0:
+            top = scored[0]
+            second = scored[1] if len(scored) > 1 else None
+            if top[1] >= min_score and (second is None or top[1] - second[1] >= margin):
+                sub = top[0]                                # confident — no LLM spend
+            elif llm_used < max_llm:
+                sub = _reorg_llm_pick(conn, title, [s for s, sc in scored[:4] if sc > 0], subfolders)
+                llm_used += 1
+        if not sub or sub not in subfolders:                # low-confidence / no fit → leave it
+            carded.append(title)
+            continue
+        new_title = f"{sub}/{title.rsplit('/', 1)[-1]}"
+        if _recat_inverse_blocked(conn, title, new_title):
+            skipped.append({"title": title, "reason": "inverse-blocked"})
+            continue
+        if dry_run:
+            moved.append({"from": title, "to": new_title, "dry_run": True})
+            continue
+        res = recategorize_article(conn, title, new_title)
+        if res.get("ok"):
+            _structure_log(conn, "recat", f"{title}|{new_title}")
+            conn.commit()
+            moved.append({"from": title, "to": new_title})
+        else:
+            skipped.append({"title": title, "reason": res.get("reason")})
+    if post_card and (moved or carded):
+        parts = []
+        if moved:
+            parts.append(f"folded {len(moved)} Reference page(s) into subcategories"
+                         + (" (dry run — nothing applied)" if dry_run else ""))
+        if carded:
+            parts.append(f"{len(carded)} couldn't be placed confidently — file by hand")
+        if health["orphans"]:
+            parts.append(f"{health['orphans']} orphan(s) still need inbound links")
+        card = "Knowledge base reorganized"
+        if not conn.execute("SELECT 1 FROM review_items WHERE title=? AND status='pending'",
+                            (card,)).fetchone():
+            reviews_svc.create_review_item(conn, None, title=card, message="; ".join(parts) + ".")
+        conn.commit()
+    return {"moved": moved, "carded": carded, "skipped": skipped,
+            "orphans": health["orphans"], "llm_used": llm_used, "dry_run": dry_run}
+
+
 def _create_new_subjects(conn, orphans: list[dict], min_notes: int) -> dict:
     """Create articles for recurring subjects that have changed notes but no article yet.
 

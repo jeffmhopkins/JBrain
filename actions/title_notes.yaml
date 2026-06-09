@@ -1,9 +1,10 @@
-# Declarative action: TITLE bare dated notes.
+# Declarative action: TITLE bare numbered notes.
 #
-# For each note already at notes/YYYY/MM/DD/N (a bare number leaf), generates a concise
-# title and renames it to notes/YYYY/MM/DD/N - <title> (e.g. ".../2 - cardiology invoice").
-# One cheap LLM call per note; bounded by limit; idempotent (already-titled notes are
-# skipped), so re-run to drain the backlog. Run redate_notes FIRST.
+# For each note at a bare number leaf — the dated tree notes/YYYY/MM/DD/N, or a
+# medical/financial capture notes/<root>/<dest>/NN — generates a concise title and renames
+# it to "… - <title>" (e.g. ".../2 - cardiology invoice", "notes/medical/Cardiology/01 - echo
+# results"). One cheap LLM call per note; bounded by limit; idempotent (already-titled notes
+# are skipped), so re-run to drain the backlog. Run redate_notes FIRST.
 #
 # Renames are versioned and rewrite inbound [[links]]; follow a large run with a KB rebuild.
 #

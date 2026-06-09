@@ -2,8 +2,9 @@
 
   redate_batch()  — file every non-conforming entry note under the flat dated tree
                     notes/YYYY/MM/DD/N (N = next per-day sequence). Deterministic, no LLM.
-  title_batch()   — give each bare dated note a generated leaf title, so
-                    notes/2026/06/04/2  ->  notes/2026/06/04/2 - cardiology invoice. LLM.
+  title_batch()   — give each bare numbered leaf a generated leaf title, so
+                    notes/2026/06/04/2  ->  notes/2026/06/04/2 - cardiology invoice, and a
+                    capture-root leaf notes/medical/Cardiology/01 -> "… - echo results". LLM.
 
 This also collapses the PWA's own notes/daily/ capture tree into the unified dated tree:
 the raw captures (notes/daily/YYYY/MM/DD/N) and the day's summary rollup (kind='daily',
@@ -26,9 +27,30 @@ from . import notes as notes_svc
 # Flat dated leaf: notes/YYYY/MM/DD/N, optionally "N - title".
 _DATED = re.compile(r"^notes/\d{4}/\d{2}/\d{2}/\d+( - .+)?$")
 _BARE_DATED = re.compile(r"^notes/\d{4}/\d{2}/\d{2}/\d+$")
+# Bare capture-root leaf: notes/<root>/<dest>/NN with NO title yet (e.g. a fresh
+# medical/financial capture, notes/medical/Cardiology/01). The dest may be nested; the
+# leaf is the trailing number. An already-titled one (".../01 - Foo") fails the trailing
+# /\d+ and is left alone, so this is idempotent the same way _BARE_DATED is.
+_CAP_ROOTS_RE = "|".join(re.escape(r) for r in notes_svc.CAPTURE_ROOTS)
+_BARE_CAPTURE = re.compile(rf"^notes/(?:{_CAP_ROOTS_RE})/.+/\d+$")
 # PWA daily capture/rollup: notes/daily/YYYY/MM/DD optionally /N (raw capture).
 _DAILY = re.compile(r"^notes/daily/(\d{4})/(\d{2})/(\d{2})(?:/\d+)?$")
 _TITLE_MAX = 60
+
+
+def _is_bare_leaf(title: str) -> bool:
+    """Return True for a bare, untitled leaf eligible for a generated title.
+
+    Covers both the flat dated tree (notes/YYYY/MM/DD/N) and a capture-root folder
+    (notes/<medical|financial>/<dest>/NN) — i.e. a numbered leaf with no " - title" yet.
+
+    Args:
+        title: Note title to test.
+
+    Returns:
+        True when the title is a bare numbered leaf, False otherwise.
+    """
+    return bool(_BARE_DATED.match(title) or _BARE_CAPTURE.match(title))
 
 
 def _day_of(conn, title: str, created_at: str | None) -> str:
@@ -125,15 +147,16 @@ def _gen_title(content: str) -> str:
 
 
 def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
-    """Add a generated leaf title to bare dated notes: notes/<date>/N -> notes/<date>/N - title.
-    One cheap LLM call per note; bounded by limit; idempotent (titled notes are skipped).
+    """Add a generated leaf title to bare numbered notes: notes/<date>/N (or a capture-root
+    leaf notes/<medical|financial>/<dest>/NN) -> "… - title". One cheap LLM call per note;
+    bounded by limit; idempotent (titled notes are skipped).
     """
     if not llm.has_credentials():
         return {"count": 0, "skipped": "no LLM credentials"}
     cands = conn.execute(
         "SELECT id, title, content_md FROM notes WHERE kind IN ('entry','daily') AND deleted_at IS NULL "
-        "AND title LIKE 'notes/%/%/%/%' ORDER BY created_at, id").fetchall()
-    rows = [r for r in cands if _BARE_DATED.match(r["title"])][:max(1, int(limit))]
+        "AND title LIKE 'notes/%/%/%' ORDER BY created_at, id").fetchall()
+    rows = [r for r in cands if _is_bare_leaf(r["title"])][:max(1, int(limit))]
     done = []
     for r in rows:
         gen = _gen_title(r["content_md"])
@@ -151,16 +174,18 @@ def title_batch(conn, limit: int = 40, dry_run: bool = False) -> dict:
 
 
 def title_one(conn, note_id: int) -> str | None:
-    """Title ONE note if it's a bare dated leaf (notes/YYYY/MM/DD/N -> '… - generated title').
-    The per-note version of title_batch (for the note-view reanalyze button). No-op (returns
-    None) for an already-titled note, a non-dated/kb note, or with no LLM. Does NOT commit.
+    """Title ONE note if it's a bare numbered leaf (notes/YYYY/MM/DD/N, or a capture-root
+    leaf notes/<medical|financial>/<dest>/NN) -> '… - generated title'. The per-note version
+    of title_batch (for the note-view reanalyze button — so analyzing a medical capture titles
+    it too). No-op (returns None) for an already-titled note, a non-leaf/kb note, or with no
+    LLM. Does NOT commit.
     """
     if not llm.has_credentials():
         return None
     r = conn.execute(
         "SELECT id, title, content_md, kind FROM notes WHERE id=? AND deleted_at IS NULL", (note_id,)
     ).fetchone()
-    if not r or r["kind"] not in ("entry", "daily") or not _BARE_DATED.match(r["title"]):
+    if not r or r["kind"] not in ("entry", "daily") or not _is_bare_leaf(r["title"]):
         return None
     gen = _gen_title(r["content_md"])
     if not gen:

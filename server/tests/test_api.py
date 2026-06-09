@@ -2031,6 +2031,84 @@ def test_note_normalize_redate_and_title(client, monkeypatch):
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
 
 
+def test_title_capture_root_notes(client, monkeypatch):
+    """A bare medical/financial capture leaf (notes/<root>/<dest>/NN) gets a generated title
+    — both via the per-note title_one (the reanalyze path) and the title_batch sweep — while
+    an already-titled capture is left alone (idempotent)."""
+    from app.db import get_conn
+    from app.services import note_normalize, llm
+    from app.services import notes as ns
+    conn = get_conn()
+
+    med = ns.upsert_note(conn, "notes/medical/Cardiology/01", "echo shows normal EF")
+    fin = ns.upsert_note(conn, "notes/financial/Receipts/02", "lunch receipt $12")
+    nested = ns.upsert_note(conn, "notes/medical/Labs/Bloodwork/01", "CBC within range")
+    titled = ns.upsert_note(conn, "notes/medical/Cardiology/03 - Existing Title", "already named")
+    conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Echo Results")
+
+    # Per-note path (what the reanalyze button runs before analysis): titles the medical leaf,
+    # is a no-op on the already-titled one.
+    assert note_normalize.title_one(conn, med) == "notes/medical/Cardiology/01 - Echo Results"
+    assert note_normalize.title_one(conn, titled) is None
+    conn.commit()
+
+    # Batch sweep picks up the remaining bare capture leaves (single- and nested-dest).
+    res = note_normalize.title_batch(conn, limit=10)
+    assert res["count"] == 2                                         # fin + nested (med already done)
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (fin,)).fetchone()["title"] == "notes/financial/Receipts/02 - Echo Results"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (nested,)).fetchone()["title"] == "notes/medical/Labs/Bloodwork/01 - Echo Results"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (titled,)).fetchone()["title"] == "notes/medical/Cardiology/03 - Existing Title"
+    assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent
+
+
+def test_reanalyze_commits_title_before_analyze(client, monkeypatch):
+    """The reanalyze endpoint commits a title-rename BEFORE running analyze, so the rename's WAL
+    write lock isn't held across the analyze LLM call — which otherwise deadlocks a concurrent
+    attachment fold-back worker for the 60s busy_timeout and hangs the request. Proven by a
+    SEPARATE connection already seeing the renamed note by the time analyze is invoked."""
+    import json
+    import sqlite3
+    from app.db import get_conn
+    from app.config import get_settings
+    from app.services import llm, note_analysis as na
+    from app.services import notes as ns
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    # The analysis prompt carries "NOTE BODY:"; the title prompt only "NOTE:".
+    monkeypatch.setattr(llm, "complete", lambda messages, **k:
+                        json.dumps({"gist": "g", "facts": [], "entities": [], "domain": "Unsure", "dates": []})
+                        if "NOTE BODY:" in messages[0]["content"] else "Echo Results")
+
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "notes/medical/Cardiology/01", "echo normal EF")
+    conn.commit()
+    slug = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()["slug"]
+
+    seen = {}
+    real_analyze = na.analyze
+
+    def spy_analyze(c, note_id, **k):
+        # A separate connection must ALREADY see the committed rename here; if the endpoint were
+        # still holding the rename's write lock, this read would show the pre-rename title.
+        other = sqlite3.connect(get_settings().db_path)
+        try:
+            seen["title"] = other.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()[0]
+        finally:
+            other.close()
+        return real_analyze(c, note_id, **k)
+
+    monkeypatch.setattr(na, "analyze", spy_analyze)
+
+    r = client.post(f"/api/notes/{slug}/analysis").json()
+    assert seen["title"] == "notes/medical/Cardiology/01 - Echo Results"   # committed before analyze ran
+    assert r["title"] == "notes/medical/Cardiology/01 - Echo Results"      # endpoint reports the rename
+
+
 def test_owner_self_reference_folds_into_named_owner(client):
     """Once the owner has a real name, self-references ('the owner', 'me', 'I') merge into
     that named person entity — so the index never forks an 'Owner' from e.g. 'Jeff', and
@@ -3649,6 +3727,37 @@ def test_empty_entry_rejected(client):
 def test_out_of_range_coords_rejected(client):
     r = client.post("/api/notes/entry", json={"text": "here", "lat": 999, "lon": 0})
     assert r.status_code == 422
+
+
+def test_entry_survives_embedder_outage(client, monkeypatch):
+    """A capture must persist even when the local embedder is unavailable.
+
+    Regression: the vector index is computed inline inside the note's write txn, so a
+    fastembed load/inference failure (e.g. the one-time weights download is blocked or
+    stalls past HF_HUB_DOWNLOAD_TIMEOUT) used to roll the transaction back — 500ing the
+    capture and silently dropping the user's note. The index is DERIVED; a write must
+    never be lost over it. Resetting the LLM key wouldn't help: embeddings use no key.
+    """
+    from app.services import embeddings
+
+    def boom(*a, **k):
+        raise RuntimeError("fastembed weights download stalled")
+
+    # The client fixture stubs this to a no-op; override it to fail like a cold model load.
+    monkeypatch.setattr(embeddings, "upsert_note_embedding", boom)
+
+    r = client.post("/api/notes/entry",
+                    json={"text": "pacemaker implant: Medtronic Azure XT DR",
+                          "dest": "Procedures", "root": "medical"})
+    assert r.status_code == 200, r.text
+    slug = r.json()["slug"]
+    # The note is durably saved (it files under the chosen medical destination) and stays
+    # keyword-searchable via FTS even though no vector was written.
+    got = client.get(f"/api/notes/{slug}").json()
+    assert "pacemaker" in got["content_md"].lower()
+    assert got["title"].startswith("notes/medical/Procedures/")
+    hits = client.get("/api/search?q=pacemaker&mode=keyword").json()
+    assert any(h.get("slug") == slug for h in hits)
 
 
 def test_research_mode_blocks_write_tools():
@@ -7444,6 +7553,40 @@ def test_new_entry_auto_analyzed_only_when_enabled(client, monkeypatch):
     on = client.post("/api/notes/entry", json={"text": "call the dentist", "title": "On List"}).json()
     on_id = conn.execute("SELECT id FROM notes WHERE slug = ?", (on["slug"],)).fetchone()["id"]
     assert (na.get(conn, on_id) or {}).get("gist") == "a kept thought"
+
+
+def test_new_capture_auto_titled_when_enabled(client, monkeypatch):
+    # With auto-analyze ON, a bare numbered capture leaf (notes/<root>/<dest>/NN — medical OR
+    # financial) is given a generated title at capture time, then analyzed (same order as the
+    # reanalyze button). An explicit-title note is left alone (not a bare leaf).
+    import json
+    from app.db import get_conn
+    from app.services import llm
+
+    def fake_complete(messages, **k):
+        # The analysis prompt carries "NOTE BODY:"; the title prompt only "NOTE:".
+        body = messages[0]["content"]
+        if "NOTE BODY:" in body:
+            return json.dumps({"gist": "a kept thought", "facts": [], "entities": [],
+                               "domain": "Unsure", "dates": []})
+        return "Lunch Receipt"
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    conn = get_conn()
+    client.put("/api/system/settings/auto-analyze", json={"enabled": True})
+
+    # A financial capture lands at notes/financial/Receipts/NN and is auto-titled.
+    cap = client.post("/api/notes/entry",
+                      json={"text": "lunch $12", "dest": "Receipts", "root": "financial"}).json()
+    titled = conn.execute("SELECT title FROM notes WHERE id = ?", (cap["id"],)).fetchone()["title"]
+    import re as _re
+    assert _re.match(r"^notes/financial/Receipts/\d+ - Lunch Receipt$", titled)
+
+    # An explicit-title note is not a bare leaf → untouched name, still analyzed.
+    named = client.post("/api/notes/entry", json={"text": "call dentist", "title": "Errands"}).json()
+    assert conn.execute("SELECT title FROM notes WHERE id = ?", (named["id"],)).fetchone()["title"] == "notes/Errands"
 
 
 def test_image_analysis_completion_refreshes_note_when_enabled(client, monkeypatch):

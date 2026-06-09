@@ -6,11 +6,14 @@ identically.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sqlite3
 import threading
 
 from . import embeddings, wikilinks
+
+log = logging.getLogger("jbrain")
 
 # Keep at most this many version rows per note (newest wins). Markdown versions
 # are tiny, so this is generous; it just bounds runaway growth on churny notes.
@@ -533,7 +536,18 @@ def upsert_note(
 
     _sync_fts(conn, note_id, title, content_md)
     wikilinks.reconcile_links(conn, note_id, content_md)
-    embeddings.upsert_note_embedding(conn, note_id, title, content_md)
+    # The vector index is DERIVED data; the note row + version + FTS above are the durable
+    # record. A note write — above all a capture (the no-LLM fast path) — must NEVER be lost
+    # because the embedder is momentarily unavailable: fastembed loads its weights lazily on
+    # first use and a blocked/stalled download errors out (bounded by HF_HUB_DOWNLOAD_TIMEOUT),
+    # which would otherwise propagate, roll back the whole transaction, and silently drop the
+    # user's entry. Swallow it (keyword search still works via FTS) and let the startup
+    # reindex_missing_note_chunks backfill restore the vectors once the model loads. Mirrors
+    # restore() and the attachment analyzer, which also fall through rather than dropping data.
+    try:
+        embeddings.upsert_note_embedding(conn, note_id, title, content_md)
+    except Exception:  # noqa: BLE001 — derived index; never fail a note write on it (see above)
+        log.warning("note embedding skipped (embedder unavailable) for note %s", note_id, exc_info=True)
 
     # Renamed? Rewrite [[old title]] references in other notes so their inline
     # links don't dangle at the old slug.

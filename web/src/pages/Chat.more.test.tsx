@@ -198,7 +198,9 @@ describe("Chat — compose-box attachment upload", () => {
     expect(streamCalls[0].mode).toBe("assisted");
     // The saved-note wikilink is folded into the streamed turn's user text.
     expect(streamCalls[0].text).toMatch(/I attached a file/i);
-    await screen.findByText(/Got the file\./i);
+    // Streamed text is revealed by the timer-paced typewriter; use the same generous findByText
+    // window as the other streamed-reply assertions so a slow CI worker can't race the reveal.
+    await screen.findByText(/Got the file\./i, {}, { timeout: 4000 });
   });
 });
 

@@ -8130,3 +8130,35 @@ def test_architect_persist_uses_worker_thread_connection_not_the_loop_conn(clien
     # And the turn still persisted correctly on that worker-thread connection.
     asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
     assert len(asst) == 1
+
+
+def test_architect_persists_on_dedicated_executor_not_the_shared_pool(client, monkeypatch):
+    # M3 regression: interactive chat persists run on the dedicated `jbrain-persist` pool, NOT the
+    # shared asyncio to_thread pool — so a saturated batch/warmer/tool workload there can't queue
+    # ahead of a reply's commit. Discriminator: the persist closures run on a thread whose name
+    # carries the dedicated prefix (pre-change they ran on a generic to_thread/anyio worker).
+    import asyncio
+    import threading
+    from app.db import get_conn as real_get_conn
+    from app.services import architect, llm
+    conn = real_get_conn(); cid = _new_conv(conn); conn.commit()
+
+    persist_thread_names: set[str] = set()
+
+    def _spy():
+        name = threading.current_thread().name
+        if name.startswith("jbrain-persist"):
+            persist_thread_names.add(name)
+        return real_get_conn()
+
+    monkeypatch.setattr(architect, "get_conn", _spy)
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _NoToolProvider())
+
+    async def go():
+        async for _ in architect.run(cid, "hello", None, "assisted"):
+            pass
+
+    asyncio.run(go())
+    assert persist_thread_names, "persists must run on the dedicated jbrain-persist executor"
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 1

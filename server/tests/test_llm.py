@@ -326,6 +326,60 @@ def test_cloud_fallback_provider_none_when_off(patch_settings):
     assert llm._cloud_fallback_provider() is None
 
 
+def test_local_known_down_states(monkeypatch):
+    import app.services.local_models as lm
+    cases = {"unavailable": True, "failed": True, "absent": True,
+             "ready": False, "warming": False, "pulling": False, "unknown": False}
+    for state, expected in cases.items():
+        monkeypatch.setattr(lm, "readiness", lambda s=state: {"state": s})
+        assert llm._local_known_down() is expected
+
+
+def test_complete_fast_fails_known_down_local_without_attempting_it(patch_settings, monkeypatch):
+    # When the readiness probe already shows local is down, go straight to cloud — don't first wait
+    # out the local request's (CPU-box: ~600s) timeout. Pre-fix local was attempted then fell back.
+    patch_settings(llm_local_enable=True, llm_provider="anthropic", llm_api_key="sk-ant",
+                   llm_local_fallback=True)
+    import app.services.local_models as lm
+    monkeypatch.setattr(lm, "readiness", lambda: {"state": "unavailable"})
+    hits: list[str] = []
+
+    class _Local(LocalProvider):
+        def complete(self, *a, **k):
+            hits.append("local")
+            raise RuntimeError("attempted")
+
+    monkeypatch.setattr(llm, "get_provider", lambda model=None: _Local())
+
+    def _fake_fb():
+        prov = AnthropicProvider()
+        prov.complete = lambda messages, **kw: "cloud-reply"
+        return prov
+
+    monkeypatch.setattr(llm, "_cloud_fallback_provider", _fake_fb)
+    assert llm.complete([{"role": "user", "content": "x"}], model="qwen2.5:7b") == "cloud-reply"
+    assert hits == []   # local was never attempted
+
+
+def test_complete_attempts_local_when_readiness_is_ready(patch_settings, monkeypatch):
+    # The gate must not divert a healthy local to cloud — only a known-down one.
+    patch_settings(llm_local_enable=True, llm_provider="anthropic", llm_api_key="sk-ant",
+                   llm_local_fallback=True)
+    import app.services.local_models as lm
+    monkeypatch.setattr(lm, "readiness", lambda: {"state": "ready"})
+    hits: list[str] = []
+
+    class _Local(LocalProvider):
+        def complete(self, *a, **k):
+            hits.append("local")
+            return "local-reply"
+
+    monkeypatch.setattr(llm, "get_provider", lambda model=None: _Local())
+    monkeypatch.setattr(llm, "_cloud_fallback_provider", lambda: AnthropicProvider())  # exists, unused
+    assert llm.complete([{"role": "user", "content": "x"}], model="qwen2.5:7b") == "local-reply"
+    assert hits == ["local"]
+
+
 def test_cloud_fallback_provider_none_for_all_local(patch_settings):
     # All-local install: the default provider is local → nothing cloud to fall back to.
     patch_settings(llm_local_fallback=True, llm_provider="local")

@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import sqlite_vec
@@ -11,6 +12,46 @@ from .config import get_settings
 _local = threading.local()
 _init_lock = threading.Lock()
 _initialized = False
+
+# Dedicated thread pool for INTERACTIVE DB writes (chat-turn persists). Isolated from the default
+# asyncio (to_thread) and anyio pools so a saturated batch/warmer/tool workload there can never queue
+# ahead of an interactive reply's commit — the "first chats after boot freeze behind the re-embed"
+# symptom. Reset by init_db() so each test's fresh DB gets fresh worker threads (a worker caches a
+# thread-local connection to the DB_PATH it first saw, which would go stale when the path changes
+# between tests); a one-time no-op at production boot, where the path never changes.
+_persist_executor: ThreadPoolExecutor | None = None
+_persist_executor_lock = threading.Lock()
+
+
+def persist_executor() -> ThreadPoolExecutor:
+    """Return the dedicated thread pool for interactive DB writes, creating it on first use.
+
+    Keeps chat-turn persists off the shared asyncio/anyio executors so batch jobs, the boot
+    warmers, and tool dispatch cannot queue ahead of an interactive reply's commit.
+
+    Returns:
+        The process-wide persist ThreadPoolExecutor.
+    """
+    global _persist_executor
+    if _persist_executor is None:
+        with _persist_executor_lock:
+            if _persist_executor is None:
+                _persist_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jbrain-persist")
+    return _persist_executor
+
+
+def _reset_persist_executor() -> None:
+    """Drop the persist executor so its worker threads (and their cached connections) are discarded.
+
+    A worker thread caches a thread-local connection to the DB_PATH it first saw; when the path
+    changes (every test swaps to a fresh temp DB) those connections go stale. init_db() calls this
+    on each (re)initialisation so persists always run against the current database.
+    """
+    global _persist_executor
+    with _persist_executor_lock:
+        ex, _persist_executor = _persist_executor, None
+    if ex is not None:
+        ex.shutdown(wait=False, cancel_futures=True)
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -205,6 +246,8 @@ def init_db() -> None:
     with _init_lock:
         if _initialized:
             return
+        # Fresh DB → drop any persist threads holding connections to a prior path (test isolation).
+        _reset_persist_executor()
         conn = get_conn()
         # Upgrade an EXISTING DB before applying the full schema. schema.sql carries
         # indexes on columns the migration runner adds to PRE-EXISTING tables (e.g.

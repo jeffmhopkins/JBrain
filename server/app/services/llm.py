@@ -930,6 +930,26 @@ def has_credentials() -> bool:
     return get_provider().has_credentials()
 
 
+def _local_known_down() -> bool:
+    """Return True when the local LLM is in a known-unavailable readiness state.
+
+    Lets the cloud fallback fire IMMEDIATELY instead of first waiting out a local
+    request's full timeout (which on a CPU box is raised toward ~600s) when the
+    readiness probe already shows the local box is unreachable, its last warm/pull
+    failed, or the model isn't present. A wedged-but-listening local still reports
+    'ready' and stays bounded only by the request timeout — this catches the cheap,
+    detectable cases without second-guessing a transient warming/pulling state.
+
+    Returns:
+        True if local readiness is 'unavailable', 'failed', or 'absent'.
+    """
+    try:
+        from . import local_models
+        return local_models.readiness().get("state") in ("unavailable", "failed", "absent")
+    except Exception:  # noqa: BLE001 — readiness must never break a generation
+        return False
+
+
 def _cloud_fallback_provider() -> LLMProvider | None:
     """Return a non-local cloud provider with credentials, for local-failure fallback.
 
@@ -970,10 +990,15 @@ def complete(messages: list[Message], *, system: str | None = None,
         Model reply as a plain string.
     """
     prov = get_provider(model)
+    fb = _cloud_fallback_provider() if getattr(prov, "name", None) == "local" else None
+    # Fast-fail: when local is already known-down, go straight to cloud rather than waiting out
+    # the local request's full timeout before the except below would fall back anyway.
+    if fb is not None and _local_known_down():
+        logging.getLogger("jbrain").warning("local LLM unavailable; using %s without attempting local", fb.name)
+        return fb.complete(messages, system=system, model=None, max_tokens=max_tokens)
     try:
         return prov.complete(messages, system=system, model=model, max_tokens=max_tokens)
     except Exception:  # noqa: BLE001 — local outage → degrade to cloud when configured
-        fb = _cloud_fallback_provider() if prov.name == "local" else None
         if fb is None:
             raise
         logging.getLogger("jbrain").warning("local LLM failed; falling back to %s", fb.name)
@@ -998,10 +1023,14 @@ def complete_with_meta(messages: list[Message], *, system: str | None = None,
         Tuple of (text, stop_reason).
     """
     prov = get_provider(model)
+    fb = _cloud_fallback_provider() if getattr(prov, "name", None) == "local" else None
+    # Fast-fail: skip a known-down local outright (see complete() for the rationale).
+    if fb is not None and _local_known_down():
+        logging.getLogger("jbrain").warning("local LLM unavailable; using %s without attempting local", fb.name)
+        return fb.complete_with_meta(messages, system=system, model=None, max_tokens=max_tokens)
     try:
         return prov.complete_with_meta(messages, system=system, model=model, max_tokens=max_tokens)
     except Exception:  # noqa: BLE001 — local outage → degrade to cloud when configured
-        fb = _cloud_fallback_provider() if prov.name == "local" else None
         if fb is None:
             raise
         logging.getLogger("jbrain").warning("local LLM failed; falling back to %s", fb.name)

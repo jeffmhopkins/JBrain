@@ -3651,6 +3651,37 @@ def test_out_of_range_coords_rejected(client):
     assert r.status_code == 422
 
 
+def test_entry_survives_embedder_outage(client, monkeypatch):
+    """A capture must persist even when the local embedder is unavailable.
+
+    Regression: the vector index is computed inline inside the note's write txn, so a
+    fastembed load/inference failure (e.g. the one-time weights download is blocked or
+    stalls past HF_HUB_DOWNLOAD_TIMEOUT) used to roll the transaction back — 500ing the
+    capture and silently dropping the user's note. The index is DERIVED; a write must
+    never be lost over it. Resetting the LLM key wouldn't help: embeddings use no key.
+    """
+    from app.services import embeddings
+
+    def boom(*a, **k):
+        raise RuntimeError("fastembed weights download stalled")
+
+    # The client fixture stubs this to a no-op; override it to fail like a cold model load.
+    monkeypatch.setattr(embeddings, "upsert_note_embedding", boom)
+
+    r = client.post("/api/notes/entry",
+                    json={"text": "pacemaker implant: Medtronic Azure XT DR",
+                          "dest": "Procedures", "root": "medical"})
+    assert r.status_code == 200, r.text
+    slug = r.json()["slug"]
+    # The note is durably saved (it files under the chosen medical destination) and stays
+    # keyword-searchable via FTS even though no vector was written.
+    got = client.get(f"/api/notes/{slug}").json()
+    assert "pacemaker" in got["content_md"].lower()
+    assert got["title"].startswith("notes/medical/Procedures/")
+    hits = client.get("/api/search?q=pacemaker&mode=keyword").json()
+    assert any(h.get("slug") == slug for h in hits)
+
+
 def test_research_mode_blocks_write_tools():
     # The mode boundary is enforced in _run_tool, not just by tool advertisement.
     from app.services import architect

@@ -55,6 +55,9 @@ A change is not "done" until:
 results before merging; a red check means the Definition of Done isn't met yet.
 
 ## Conventions
+- **Bump the version on every PR.** Patch-increment the synced version in all of:
+  `server/app/version.py` (`APP_VERSION`), `web/package.json`, and `web/package-lock.json`
+  (two spots) — they must always match (the PWA self-update check compares them).
 - Don't commit generated artifacts (coverage/, server/static/, build/, node_modules/)
   — they're gitignored.
 - Backend LLM calls go through the `app.services.llm` seam; tests mock there, never

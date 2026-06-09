@@ -363,6 +363,50 @@ def test_gather_append_merges_without_dupes(conn, monkeypatch):
     assert sorted(titles) == ["notes/2026/01/a", "notes/2026/01/b"]   # no duplicate of a
 
 
+def test_suggest_gather_shows_seeds_immediately_without_an_llm_call(conn, monkeypatch):
+    """REGRESSION: 'Edit with AI' (suggest) must open straight to the curate screen from the
+    deterministic seed sources — never block on the agentic gather (the cheap-model loop + entity
+    rebind) that left it stuck on 'Gathering context…'. The provider records any stream_turn call;
+    the suggest-open path must make ZERO (reverting to the agentic path would call it ≥1)."""
+    from app.services import rebuild_engine, rebuild_runs
+
+    _mk(conn, "kb/Things/Truck", "# Truck\nSee [[notes/2026/01/seed]].\n")
+    _mk(conn, "notes/2026/01/seed", "the seed note", kind="entry")
+    called = {"n": 0}
+
+    class _NoLLM:
+        async def stream_turn(self, *a, **k):
+            called["n"] += 1
+            raise AssertionError("suggest-open gather must not invoke the LLM")
+            yield  # pragma: no cover — makes this an async generator
+
+    _install_provider(monkeypatch, _NoLLM())
+    run = rebuild_runs.create("Things/Truck", "kb/Things/Truck", "claude-x", "# Truck\n", kind="suggest")
+    evs = _drain(rebuild_engine.run_gather(run))
+
+    assert called["n"] == 0, "suggest open must not call the gather agent (it blocked → hang)"
+    assert run.status == "sources_ready"
+    assert [e["type"] for e in evs] == ["sources_proposed"]      # straight to curate, one event
+    assert any(c["title"] == "notes/2026/01/seed" for c in run.candidates), run.candidates
+
+
+def test_suggest_regather_still_runs_the_agentic_discovery(conn, monkeypatch):
+    """Re-gather (append=True) in suggest mode still invokes the agentic source discovery, so
+    AI-proposed sources remain available on demand — only the initial open is the fast seed path."""
+    from app.services import rebuild_engine
+
+    _mk(conn, "kb/Things/Truck", "# Truck\n")
+    _mk(conn, "notes/2026/01/buy-truck", "Bought a Ford truck.", kind="entry")
+    monkeypatch.setattr(rebuild_engine.asyncio, "to_thread", _aiowrap(lambda *a, **k: []))
+    prov = FakeProvider([[_ev_propose("c1", sources=[{"title": "notes/2026/01/buy-truck", "reason": "x"}])]])
+    _install_provider(monkeypatch, prov)
+    run = _new_run()                                  # default kind="rebuild" → agentic path
+    run.kind = "suggest"
+    _drain(rebuild_engine.run_gather(run, hint="ford", append=True))
+    assert prov.turn >= 1, "Re-gather must run the agentic gather"
+    assert any(c["title"] == "notes/2026/01/buy-truck" for c in run.candidates)
+
+
 def test_gather_search_runs_on_a_worker_local_connection(conn, monkeypatch):
     """REGRESSION GATE: the gather search offload must run on a WORKER thread with its OWN
     connection — never the shared event-loop connection. Passing the captured event-loop `conn`

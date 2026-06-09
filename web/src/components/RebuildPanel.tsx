@@ -353,8 +353,10 @@ export default function RebuildPanel({ slug, note, onClose, onAccepted, mode = "
             <button className="rb-send" onClick={sendGuide} disabled={busy || !guideInput.trim()} aria-label="Send">
               <Icon name="send" size={18} /></button>
           </div>);
+      // The segmented Draft/Guide toggle above already switches back to Guide, so the
+      // footer's slot is better spent on a way out: Cancel (requestClose guards mid-stream).
       return (<>
-        <button className="ghost rb-foot-btn" onClick={() => setTab("guide")}>💬 Guide</button>
+        <button className="ghost rb-foot-btn" onClick={requestClose}>Cancel</button>
         <button className="primary rb-foot-btn" onClick={doAccept} disabled={accepting}>
           {accepting ? "Saving…" : "Accept"}</button>
       </>);

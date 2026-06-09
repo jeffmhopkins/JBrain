@@ -747,6 +747,42 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 .entity-row { display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
   background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 4px; cursor: pointer; color: var(--text); }
 .entity-row:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
+
+/* ── Entity identity modal (launcher + focused sub-views) ─────────────────── */
+.id-ent { font-size: 14px; margin-bottom: 14px; }
+.id-ent b { font-weight: 600; }
+.id-err { color: var(--danger); font-size: 13px; margin: 0 0 10px; }
+.id-back { padding: 0; font-weight: 600; font-size: 15px; color: var(--text); }
+/* Launcher: full-width action tiles, one focused task each. */
+.id-menu { display: flex; flex-direction: column; gap: 4px; }
+.id-row { --mc: var(--accent); display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  padding: 12px; border-radius: 11px; min-height: 60px; }
+.id-row:hover { background: var(--bg-elev-2); border-color: var(--border); }
+.id-tile { width: 40px; height: 40px; flex: none; border-radius: 10px; font-size: 19px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--mc) 14%, var(--bg-elev)); border: 1px solid color-mix(in srgb, var(--mc) 35%, var(--border)); }
+.id-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.id-label { font-size: 15px; font-weight: 600; }
+.id-sub { font-size: 12.5px; color: var(--text-dim); }
+.id-arrow { margin-left: auto; color: var(--text-dim); font-size: 20px; padding-left: 8px; }
+/* Sub-views */
+.id-field-label { font-size: 13px; color: var(--text-dim); margin: 0 0 8px; }
+.id-add { display: flex; gap: 8px; }
+.id-add input { flex: 1; }
+.id-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.id-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--border); }
+.id-chip button { padding: 0 4px; line-height: 1; }
+.id-recognized { font-size: 12.5px; color: var(--text-dim); margin: 14px 0 0; }
+.id-results { list-style: none; padding: 0; margin: 6px 0 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.id-results li + li .entity-row { border-top: 1px solid var(--border); }
+.id-results .entity-row { border-bottom: none; padding: 10px 12px; }
+.id-history { list-style: none; padding: 0; margin: 0; }
+.id-history li { font-size: 13px; padding: 9px 2px; border-top: 1px solid var(--border); }
+.id-history li:first-child { border-top: none; }
+.id-kind { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--accent); margin-right: 8px; }
+
 /* AI talk panel */
 .talk-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 4px 0;
   min-width: 0; overflow-wrap: anywhere; }            /* match .msg: long tokens wrap, item can shrink */

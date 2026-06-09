@@ -2,9 +2,18 @@
 // page-import graph isn't pulled in; drives the REAL health store and asserts the dot
 // colour + panel rows actually render.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("./App", () => ({ useAuth: () => ({ brainName: "Test Brain" }) }));
+
+// Stub only the resetAi recovery call; keep the rest of ../api real (setAccessKey, etc.).
+const { resetAiMock } = vi.hoisted(() => ({
+  resetAiMock: vi.fn(async () => ({ ok: true, clients_dropped: 1, runs_cancelled: 0 })),
+}));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api")>()),
+  resetAi: resetAiMock,
+}));
 
 import StatusDot from "./StatusDot";
 import { __reset, applyPoll, ingestVerify, setOnline } from "../health";
@@ -54,6 +63,15 @@ describe("StatusDot", () => {
     expect(dotLevel(container)).toBe("unknown");
     fireEvent.click(container.querySelector(".status-dot-btn")!);
     expect(screen.getByText(/offline/i)).toBeInTheDocument();
+  });
+
+  it("'Reset AI' triggers the recovery endpoint", async () => {
+    resetAiMock.mockClear();
+    const { container } = render(<StatusDot />);
+    act(() => { ingestVerify(fullCaps()); });
+    fireEvent.click(container.querySelector(".status-dot-btn")!);   // open the panel
+    fireEvent.click(screen.getByRole("button", { name: /Reset AI/i }));
+    await waitFor(() => expect(resetAiMock).toHaveBeenCalledTimes(1));
   });
 
   it("renders amber 'Re-authenticate' on a rotated key (skeleton + stored key)", () => {

@@ -8098,6 +8098,23 @@ def test_sse_error_helper_stamps_type_for_the_client():
     assert obj["type"] == "error" and obj["message"] == "nope"
 
 
+def test_reset_ai_drops_cached_clients_and_cancels_runs(client):
+    # The status panel's "Reset AI" recovery: a wedged provider connection (cached client) and
+    # an orphaned rebuild run are both cleared so the next AI request reconnects cleanly.
+    from app.services import llm, rebuild_runs
+    llm._client_cache[("anthropic", "async", "k")] = object()    # a (fake) cached client
+    run = rebuild_runs.create("s/p", "kb/s/p", "m", "body")
+
+    r = client.post("/api/system/reset-ai")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["clients_dropped"] >= 1 and body["runs_cancelled"] >= 1
+    assert llm._client_cache == {}                 # cache cleared → fresh client next call
+    assert run.cancelled is True                   # orphaned run signalled to stop
+    assert rebuild_runs.get(run.run_id) is None    # and removed from the registry
+
+
 def test_architect_persist_uses_worker_thread_connection_not_the_loop_conn(client, monkeypatch):
     # C2 regression: the architect offloads its DB writes to a pool thread but must use THAT
     # thread's own connection (get_conn is thread-local) — never the event-loop connection it

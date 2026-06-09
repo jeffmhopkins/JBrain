@@ -458,87 +458,26 @@ def test_entity_rebuild_skips_embeddings_when_flagged(conn, monkeypatch):
     assert seen == [True]
 
 
-def test_gather_rebinds_entity_index_once_cheaply(conn, monkeypatch):
-    """A session start freshens the entity index (embeddings-free), and only once per run."""
-    from app.services import rebuild_engine, entity_index
-    _mk(conn, "kb/Things/Truck", "# Truck\n")
-    calls = []
-    monkeypatch.setattr(entity_index, "rebuild",
-                        lambda c, *a, **k: calls.append(k.get("sync_embeddings", True)) or 0)
+def test_gather_does_not_run_the_entity_rebind_on_the_interactive_path(conn, monkeypatch):
+    """REGRESSION: gather must NOT run entity_index.rebuild on the live request.
 
-    async def _passthru(f, *a, **k):        # run the offloaded fn inline so the spy fires
-        return f(*a, **k)
-    monkeypatch.setattr(rebuild_engine.asyncio, "to_thread", _passthru)
-
-    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
-    _install_provider(monkeypatch, prov)
-    run = _new_run()
-    _drain(rebuild_engine.run_gather(run))
-    assert calls == [False]                 # one rebind, embeddings-free
-    assert run.rebound is True
-    _drain(rebuild_engine.run_gather(run, append=True))
-    assert calls == [False]                 # a re-gather does NOT rebind again
-
-
-def test_gather_rebind_is_bounded_and_never_hangs(conn, monkeypatch):
-    """A slow/stuck entity rebind can't stall gather — it's bounded and gather proceeds anyway.
-
-    Regression for the deadlock where the rebind ran on the request's OWN connection (two threads
-    sharing one sqlite3 connection → an unkillable hang). It now runs on a thread-local connection
-    under a timeout, so gather always moves on to propose sources.
+    The rebind reaggregates the whole corpus inside one write transaction, holding the WAL write
+    lock for many seconds on a large KB — long enough to block an interactive chat/research turn's
+    offloaded message INSERT (the "research goes unresponsive after opening Edit with AI" wedge).
+    It was only a best-effort freshness boost; the next full/nightly rebuild + Accept re-sync the
+    index. Reinstating the interactive rebind (any mode) fails this test.
     """
-    import threading
-    import time as _time
-    from app.services import rebuild_engine, entity_index
+    from app.services import rebuild_engine, rebuild_runs, entity_index
     _mk(conn, "kb/Things/Truck", "# Truck\n")
-    started = threading.Event()
-
-    def slow_rebuild(c, *a, **k):
-        started.set()
-        _time.sleep(0.5)                    # longer than the (shrunk) timeout below
-        return 0
-    monkeypatch.setattr(entity_index, "rebuild", slow_rebuild)
-    monkeypatch.setattr(rebuild_engine, "_REBIND_TIMEOUT_S", 0.05)
-    # Spy the module logger directly (the 'jbrain' logger doesn't reliably propagate to caplog
-    # under the full-suite logging config).
-    warns: list[str] = []
-    monkeypatch.setattr(rebuild_engine.log, "warning", lambda msg, *a, **k: warns.append(str(msg)))
-    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
+    called = {"n": 0}
+    monkeypatch.setattr(entity_index, "rebuild", lambda c, *a, **k: called.__setitem__("n", called["n"] + 1) or 0)
+    prov = FakeProvider([[_ev_propose("c1", sources=[])]])      # rebuild-mode agentic gather
     _install_provider(monkeypatch, prov)
-    run = _new_run()
 
-    evs = _drain(rebuild_engine.run_gather(run))       # bounded — does not wait for the 0.5s rebind
-    assert started.is_set()                            # the rebind did start (in a worker thread)
-    assert any("entity rebind skipped" in w for w in warns)   # timed out, gather moved on
-    assert run.status == "sources_ready"
-    assert evs[-1]["type"] == "sources_proposed"
-
-
-def test_gather_rebind_uses_its_own_connection_off_thread(conn, monkeypatch):
-    """The rebind must run on its OWN connection in a WORKER thread, never the request's.
-
-    Encodes the invariant behind the gather hang: under uvicorn every async request shares one
-    event-loop-thread sqlite3 connection, so handing that connection to a worker thread is a
-    cross-thread-sharing deadlock. Reverting to ``entity_index.rebuild(conn, …)`` fails here.
-    """
-    import threading
-    from app.services import rebuild_engine, entity_index
-    _mk(conn, "kb/Things/Truck", "# Truck\n")
-    seen: dict = {}
-
-    def capture(c, *a, **k):
-        seen["conn"] = c
-        seen["thread"] = threading.current_thread()
-        return 0
-    monkeypatch.setattr(entity_index, "rebuild", capture)
-    prov = FakeProvider([[_ev_propose("c1", sources=[])]])
-    _install_provider(monkeypatch, prov)
-    run = _new_run()
-
-    _drain(rebuild_engine.run_gather(run))
-    assert "conn" in seen                               # the rebind ran
-    assert seen["conn"] is not conn                     # …on its OWN connection, not the request's
-    assert seen["thread"] is not threading.current_thread()   # …and off the calling thread
+    _drain(rebuild_engine.run_gather(_new_run()))               # rebuild mode
+    sug = rebuild_runs.create("Things/Truck", "kb/Things/Truck", "claude-x", "# Truck\n", kind="suggest")
+    _drain(rebuild_engine.run_gather(sug))                      # suggest mode
+    assert called["n"] == 0, "gather must not run the heavy entity rebind on the interactive path"
 
 
 # =========================================================================================

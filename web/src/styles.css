@@ -447,6 +447,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .status-rows li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
 .status-rows .status-row-icon { flex: none; color: var(--text-dim); }
 .status-refresh { font-size: 12px; padding: 4px 10px; }
+.status-actions { display: flex; gap: 8px; align-items: center; }
+.status-actions .status-refresh, .status-actions .status-reset { flex: 1; }
+.status-reset { font-size: 12px; padding: 4px 10px; }
 
 /* "Verdict + promote" layout: lead with the verdict, float problems to the top
    with their reason always visible, and collapse ONLY the healthy remainder

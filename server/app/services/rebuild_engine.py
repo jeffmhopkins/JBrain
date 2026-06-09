@@ -51,9 +51,6 @@ def _clamp_tokens(n) -> int:
 _GATHER_MAX_ITER = 5
 _GATHER_MAX_TOKENS = 1500
 _GATHER_SEARCH_LIMIT = 8
-# Max seconds to wait on the session-start entity rebind before proceeding without it. The
-# rebind keeps running in the background; this just caps how long it can delay the gather UI.
-_REBIND_TIMEOUT_S = 10
 
 _GATHER_TOOLS = [
     llm.ToolDef(
@@ -133,7 +130,7 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         Event dicts of type tool_use, tool_result, sources_proposed, or error.
     """
     from ..db import get_conn
-    from . import entity_index, search, wiki_build, wiki_guides
+    from . import search, wiki_build, wiki_guides
 
     conn = get_conn()
     run.status = "gathering"
@@ -159,31 +156,13 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         yield {"type": "sources_proposed", "candidates": run.candidates, "skipped": run.skipped}
         return
 
-    # Freshen the entity index (cheap, embeddings-free) so a People page created or renamed
-    # since the last full rebuild — and any freshly-seeded nickname alias — is linkable at
-    # draft time. Without this the deterministic add_links backstop and the known-aliases
-    # block work off a stale index and leave a known person plain.
-    #
-    # CRITICAL: open a FRESH connection inside the worker thread — a sqlite3 connection must
-    # never be shared across threads. Connections are opened check_same_thread=False, so passing
-    # this request's `conn` into the thread does NOT raise; instead the two threads contend on the
-    # connection's mutex and can DEADLOCK (an unkillable hang that the try/except can't catch).
-    # Bounded by a timeout so a large KB can't stall the gather UI either; the rebind keeps
-    # running in the background and is best-effort, so any failure/timeout just falls back to the
-    # existing index.
-    if not getattr(run, "rebound", False):
-        run.rebound = True
-
-        def _rebind() -> None:
-            """Rebuild the entity index on a thread-local connection (never the request's)."""
-            from ..db import get_conn as _thread_conn
-            entity_index.rebuild(_thread_conn(), sync_embeddings=False)
-
-        try:
-            await asyncio.wait_for(asyncio.to_thread(_rebind), timeout=_REBIND_TIMEOUT_S)
-        except Exception as exc:  # noqa: BLE001 — incl. asyncio.TimeoutError; rebind is best-effort
-            log.warning("rebuild: entity rebind skipped (%s)", exc)
-
+    # NOTE: we deliberately do NOT freshen the entity index here. entity_index.rebuild reaggregates
+    # the whole corpus inside ONE write transaction (committed only at the end), so on a large KB it
+    # holds the WAL write lock for many seconds — long enough to block an interactive chat/research
+    # turn's offloaded message INSERT (busy_timeout), which surfaced as "research goes unresponsive
+    # after opening Edit with AI". The rebind was only a best-effort freshness boost for draft-time
+    # linking; the deterministic add_links backstop still links against the existing index, and the
+    # next full/nightly rebuild (and Accept's finalize) re-sync it. Not worth wedging live chat.
     art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
     run.known = wiki_build._known_titles(conn)
     pool: dict[str, dict] = {}            # title(lower) -> {id,title,date}

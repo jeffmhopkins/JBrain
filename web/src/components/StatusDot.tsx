@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../App";
+import { resetAi } from "../api";
 import { refreshNow, useHealth } from "../health";
 import { deriveStatus } from "../statusDerive";
 import { Icon } from "./Icon";
@@ -9,7 +10,18 @@ export default function StatusDot() {
   const model = useHealth((m) => m);
   const [open, setOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Recovery for a wedged AI layer (e.g. a chat/research turn that stopped responding after an
+  // "Edit with AI" panel was closed mid-stream): drop the cached provider clients + cancel any
+  // orphaned rebuild runs server-side, then re-poll health. No data loss.
+  async function doResetAi() {
+    if (resetting) return;
+    setResetting(true);
+    try { await resetAi(); } catch { /* best-effort recovery */ }
+    finally { setResetting(false); refreshNow(); }
+  }
 
   useEffect(() => {
     if (!open) { setShowAll(false); return; }   // always reopen in the calm, collapsed state
@@ -97,7 +109,12 @@ export default function StatusDot() {
             </>
           )}
 
-          <button className="ghost status-refresh" onClick={() => refreshNow()}>Refresh</button>
+          <div className="status-actions">
+            <button className="ghost status-refresh" onClick={() => refreshNow()}>Refresh</button>
+            <button className="ghost status-reset" onClick={doResetAi} disabled={resetting}
+                    title="Drop cached AI connections and cancel stuck rebuilds — use if the AI stops responding">
+              {resetting ? "Resetting…" : "Reset AI"}</button>
+          </div>
         </div>
       )}
     </div>

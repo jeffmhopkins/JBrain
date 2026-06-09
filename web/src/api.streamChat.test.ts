@@ -37,3 +37,23 @@ describe("streamChat initial-fetch (headers) watchdog", () => {
     await expect(p).resolves.toBeUndefined();   // completed normally, no abort-driven throw
   });
 });
+
+describe("streamChat `done` is authoritative", () => {
+  it("resolves on a `done` event even if the server holds the connection open after", async () => {
+    // A body that emits a token + `done`, then never closes — a wedged proxy/server holding the
+    // socket open. Pre-fix the read loop would block on the next read() (until the 90s watchdog or
+    // forever), leaving the composer stuck; post-fix `done` breaks the loop and streamChat resolves.
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(enc.encode('data: {"type":"token","text":"hi"}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"done"}\n\n'));
+        // deliberately never call controller.close()
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 200 })));
+    const events: any[] = [];
+    await streamChat(1, "hi", (e) => events.push(e));   // must resolve, not hang
+    expect(events.map((e) => e.type)).toEqual(["token", "done"]);
+  });
+});

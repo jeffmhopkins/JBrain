@@ -892,6 +892,7 @@ export async function streamChat(
       buffer += decoder.decode(r.value, { stream: true });
       const chunks = buffer.split("\n\n");
       buffer = chunks.pop() ?? "";
+      let sawDone = false;
       for (const chunk of chunks) {
         const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
         if (!dataLine) continue;
@@ -899,10 +900,14 @@ export async function streamChat(
           const ev = JSON.parse(dataLine.slice(6)) as ChatEvent;
           // Observed LLM health from real chat traffic (zero token cost).
           if (ev.type === "error") report({ kind: "llm-fail" });
-          else if (ev.type === "done") report({ kind: "llm-ok" });
+          else if (ev.type === "done") { report({ kind: "llm-ok" }); sawDone = true; }
           onEvent(ev);
         } catch { /* ignore */ }
       }
+      // `done` is authoritative: resolve the turn NOW instead of waiting for the server to
+      // half-close the body (or the 90s stall watchdog) — a proxy/server that holds the socket
+      // open after `done` would otherwise leave the composer stuck at "Responding…" indefinitely.
+      if (sawDone) break;
     }
   } finally {
     if (idle) clearTimeout(idle);

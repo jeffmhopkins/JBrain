@@ -437,7 +437,7 @@ def transcribe(att_id: int) -> None:
         # Embed the transcript BEFORE the first write opens the implicit write txn below. The embed
         # is multi-second fastembed inference; running it between the UPDATE and the commit would
         # hold the single WAL write lock across it and wedge every other writer within busy_timeout
-        # (5s) — including the owner chat persisting its turn on the event loop. (The prior comment
+        # (60s) — including the owner chat persisting its turn on the event loop. (The prior comment
         # here claimed this was already done, but only chunk_text was outside the lock — embed_many,
         # the slow part, still ran under it.) A failure is best-effort: commit the transcript anyway
         # with empty vectors; reindex_missing_attachment_analysis backfills them on next boot.

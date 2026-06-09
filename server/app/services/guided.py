@@ -432,7 +432,7 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
         (spec["id"],),
     ).rowcount == 1
     # Release the write lock the billing UPDATE opened BEFORE any LLM call — never hold it
-    # across the (up to 120s) model round-trip, or other writers wedge within busy_timeout (5s).
+    # across the (up to 120s) model round-trip, or other writers wedge within busy_timeout (60s).
     if budget_ok:
         conn.commit()
     else:

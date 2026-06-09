@@ -405,7 +405,7 @@ def analyze(att_id: int) -> None:
 
         # Embed the summary BEFORE opening the write txn. embed_attachment_chunks() is multi-second
         # fastembed inference (and may trigger the one-time model load on a cold start); holding the
-        # BEGIN IMMEDIATE write lock across it would wedge every other writer within the 5s
+        # BEGIN IMMEDIATE write lock across it would wedge every other writer within the 60s
         # busy_timeout — including the owner chat persisting its turn on the event loop, the actual
         # "all AI went unresponsive" failure. A failure here must NOT lose the summary: we fall
         # through with empty vectors and commit the summary anyway; the startup

@@ -4,11 +4,21 @@ The model is loaded lazily on first use and cached for the process lifetime.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Iterable
 
 import sqlite_vec
+
+# Bound the first-run model download. fastembed pulls the ONNX weights via huggingface_hub on
+# first use, INSIDE _model_lock and (in the chat path) inside a tool's worker thread — with no
+# overall deadline, a stalled CDN/captive-portal read would hang that download forever, wedging the
+# turn and serialising every other embedding caller behind the held lock. huggingface_hub honours
+# HF_HUB_DOWNLOAD_TIMEOUT as a PER-READ socket timeout, so a stalled read now errors (releasing the
+# lock) instead of hanging; a healthy download still proceeds (each successful read resets it). Set
+# before any hub import; an operator can override via their own env. (setdefault → never clobbered.)
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
 # bge-small-en-v1.5 produces 384-dim vectors. If you change the model, update
 # this to match its output dimension (the vec table is sized from it).
@@ -324,7 +334,7 @@ def embed_attachment_chunks(chunks: list[str]) -> list[list[float]]:
     """Run the (slow, CPU-bound) embedding for an attachment's chunks WITHOUT touching the DB,
     so a background worker can compute vectors BEFORE it opens its write transaction. Holding the
     single WAL write lock across multi-second fastembed inference wedges every other writer within
-    busy_timeout (5s) — including the owner chat persisting its turn — so the embed must never run
+    busy_timeout (60s) — including the owner chat persisting its turn — so the embed must never run
     under a lock. Pair with write_attachment_embeddings(), which does the fast row writes.
     """
     return embed_many(chunks) if chunks else []

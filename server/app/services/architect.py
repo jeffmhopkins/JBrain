@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from ..config import get_settings
-from ..db import get_conn
+from ..db import get_conn, persist_executor
 from . import clock
 from . import embeddings
 from . import geo
@@ -3706,7 +3706,9 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
     # hold the WAL write lock; a synchronous commit here would block the loop (busy_timeout, up to
     # 60s under contention) and freeze EVERY other request/stream. The closure uses its own
     # thread-local connection, so two concurrent turns offloading writes never share one connection.
-    await asyncio.to_thread(_persist_user_turn)
+    # Runs on the dedicated persist pool — never the shared to_thread pool — so a saturated batch /
+    # warmer / tool workload can't queue ahead of this interactive write.
+    await asyncio.get_running_loop().run_in_executor(persist_executor(), _persist_user_turn)
 
     system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
@@ -3880,7 +3882,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 )
             tconn.commit()
             return mid
-        # Offload off the event loop (see _persist_user_turn above) — the lock-contention freeze
-        # otherwise surfaces exactly here, when the model finishes and the reply commits.
-        message_id = await asyncio.to_thread(_persist_reply)
+        # Offload off the event loop onto the dedicated persist pool (see _persist_user_turn) — the
+        # lock-contention freeze otherwise surfaces exactly here, when the model finishes and commits.
+        message_id = await asyncio.get_running_loop().run_in_executor(persist_executor(), _persist_reply)
     yield {"type": "done"}

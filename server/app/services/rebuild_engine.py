@@ -142,6 +142,23 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
         yield {"type": "error", "message": "No LLM credentials configured."}
         return
 
+    # SUGGEST mode ("Edit with AI"): a conversational edit doesn't need agentic source discovery
+    # up front. Blocking the panel on the cheap-model gather agent (several LLM turns) AND the
+    # session-start entity rebind is what left "Edit with AI" stuck on "Gathering context…". Show
+    # the article's DETERMINISTIC source notes (prior citations ∪ entity index) IMMEDIATELY — no
+    # LLM, no rebind — so the owner can curate, add links, and start the conversation at once.
+    # AI-proposed sources stay available on demand via Re-gather (append=True, which falls through
+    # to the agentic path below); the full agentic gather is kept for "Rebuild from scratch"
+    # (kind="rebuild"). This is the fast, can't-hang open path the combined modal needs.
+    if run.kind == "suggest" and not append:
+        art, _instr, _prior = wiki_build.rebuild_sources(conn, run.title)
+        run.known = wiki_build._known_titles(conn)
+        seed_titles = [m["title"] for m in _notes_meta(conn, art.get("sources") or [])]
+        run.candidates, run.skipped = _build_candidates(conn, run.title, {}, None, seed_titles, wiki_guides)
+        run.status = "sources_ready"
+        yield {"type": "sources_proposed", "candidates": run.candidates, "skipped": run.skipped}
+        return
+
     # Freshen the entity index (cheap, embeddings-free) so a People page created or renamed
     # since the last full rebuild — and any freshly-seeded nickname alias — is linkable at
     # draft time. Without this the deterministic add_links backstop and the known-aliases

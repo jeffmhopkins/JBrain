@@ -482,9 +482,20 @@ def _p_redate_notes(ctx, limit=2000, dry_run=False):
 
 
 def _p_title_notes(ctx, limit=40, dry_run=False):
-    """Give bare dated notes a generated leaf title (notes/<date>/N - <title>)."""
+    """Give bare numbered notes a generated leaf title (notes/<date>/N or a capture-root
+    leaf notes/<root>/<dest>/NN -> "… - <title>").
+    """
     from . import note_normalize
     return note_normalize.title_batch(ctx.conn, int(limit), bool(dry_run))
+
+
+def _p_title_note(ctx, id):
+    """Title ONE note if it's a bare numbered leaf (the per-note counterpart of title_notes:
+    a fresh dated or medical/financial capture gets a generated title before it's analyzed).
+    Returns the new title, or None when it's already titled / not a bare leaf / no LLM.
+    """
+    from . import note_normalize
+    return {"id": int(id), "title": note_normalize.title_one(ctx.conn, int(id))}
 
 
 def _p_seed_kb_watermark(ctx):
@@ -1602,6 +1613,7 @@ _PRIMITIVES = {
     "tidy_talk": _p_tidy_talk,
     "redate_notes": _p_redate_notes,
     "title_notes": _p_title_notes,
+    "title_note": _p_title_note,
     "seed_kb_watermark": _p_seed_kb_watermark,
     "write_kb_index": _p_write_kb_index,
     "kb_reset": _p_kb_reset,
@@ -1788,8 +1800,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                   "inputs": [], "output": "dict"},
     "redate_notes": {"summary": "File loose entry notes under the flat dated tree notes/YYYY/MM/DD/N.",
                      "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
-    "title_notes": {"summary": "Give bare dated notes a generated leaf title (notes/<date>/N - title).",
+    "title_notes": {"summary": "Give bare numbered notes a generated leaf title (notes/<date>/N or notes/<root>/<dest>/NN - title).",
                     "inputs": [{"name": "limit", "type": "int"}, {"name": "dry_run", "type": "bool"}], "output": "dict"},
+    "title_note": {"summary": "Title ONE note if it's a bare numbered leaf (dated or medical/financial capture).",
+                   "inputs": [{"name": "id", "type": "int", "required": True}], "output": "dict"},
     "seed_kb_watermark": {"summary": "Reset the incremental-update watermark to now (after a full build).",
                           "inputs": [], "output": "dict"},
     "write_kb_index": {"summary": "Write kb/_index from the saved articles (excludes quarantined).",

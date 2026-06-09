@@ -7511,6 +7511,40 @@ def test_new_entry_auto_analyzed_only_when_enabled(client, monkeypatch):
     assert (na.get(conn, on_id) or {}).get("gist") == "a kept thought"
 
 
+def test_new_capture_auto_titled_when_enabled(client, monkeypatch):
+    # With auto-analyze ON, a bare numbered capture leaf (notes/<root>/<dest>/NN — medical OR
+    # financial) is given a generated title at capture time, then analyzed (same order as the
+    # reanalyze button). An explicit-title note is left alone (not a bare leaf).
+    import json
+    from app.db import get_conn
+    from app.services import llm
+
+    def fake_complete(messages, **k):
+        # The analysis prompt carries "NOTE BODY:"; the title prompt only "NOTE:".
+        body = messages[0]["content"]
+        if "NOTE BODY:" in body:
+            return json.dumps({"gist": "a kept thought", "facts": [], "entities": [],
+                               "domain": "Unsure", "dates": []})
+        return "Lunch Receipt"
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    conn = get_conn()
+    client.put("/api/system/settings/auto-analyze", json={"enabled": True})
+
+    # A financial capture lands at notes/financial/Receipts/NN and is auto-titled.
+    cap = client.post("/api/notes/entry",
+                      json={"text": "lunch $12", "dest": "Receipts", "root": "financial"}).json()
+    titled = conn.execute("SELECT title FROM notes WHERE id = ?", (cap["id"],)).fetchone()["title"]
+    import re as _re
+    assert _re.match(r"^notes/financial/Receipts/\d+ - Lunch Receipt$", titled)
+
+    # An explicit-title note is not a bare leaf → untouched name, still analyzed.
+    named = client.post("/api/notes/entry", json={"text": "call dentist", "title": "Errands"}).json()
+    assert conn.execute("SELECT title FROM notes WHERE id = ?", (named["id"],)).fetchone()["title"] == "notes/Errands"
+
+
 def test_image_analysis_completion_refreshes_note_when_enabled(client, monkeypatch):
     # Parity with audio: when an image's vision summary lands, the note's AI analysis re-runs
     # with the summary folded in — but ONLY when "auto-analyze new notes" is on.

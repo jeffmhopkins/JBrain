@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn, get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta, submit_write
 from ..services import calendar as cal
 from ..services import clock
 from ..services import notes as notes_svc
@@ -345,15 +345,14 @@ def set_event_reminders(event_id: int, body: RemindersIn):
     Raises:
         HTTPException: 404 if the event does not exist.
     """
-    conn = get_conn()
-    ik = _event_ik(conn, event_id)
-    try:
-        out = cal.set_reminders(conn, ik, body.reminders)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Resolve the event's identity key and replace its reminders on the writer connection."""
+        c = get_conn()
+        out = cal.set_reminders(c, _event_ik(c, event_id), body.reminders)
+        c.commit()
+        return out
+
+    return submit_write(_write).result()
 
 
 @router.get("/recently-added")
@@ -377,10 +376,14 @@ def mark_reviewed():
     Returns:
         JSON ``{"ok": true}``.
     """
-    conn = get_conn()
-    now = conn.execute("SELECT datetime('now')").fetchone()[0]
-    set_meta(conn, _REVIEW_WATERMARK, now)
-    conn.commit()
+    def _write():
+        """Advance the review watermark to now on the writer connection."""
+        c = get_conn()
+        now = c.execute("SELECT datetime('now')").fetchone()[0]
+        set_meta(c, _REVIEW_WATERMARK, now)
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}
 
 
@@ -400,15 +403,14 @@ def dismiss_event_route(event_id: int):
     Raises:
         HTTPException: 404 if the event does not exist.
     """
-    conn = get_conn()
-    ik = _event_ik(conn, event_id)
-    try:
-        out = cal.dismiss_event(conn, ik)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Resolve the event's identity key and dismiss it on the writer connection."""
+        c = get_conn()
+        out = cal.dismiss_event(c, _event_ik(c, event_id))
+        c.commit()
+        return out
+
+    return submit_write(_write).result()
 
 
 class UndismissIn(BaseModel):
@@ -427,11 +429,11 @@ def undismiss_event_route(body: UndismissIn):
     Returns:
         Restored event dict from the service layer.
     """
-    conn = get_conn()
-    try:
-        out = cal.undismiss_event(conn, body.identity_key)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Restore the dismissed event on the writer connection."""
+        c = get_conn()
+        out = cal.undismiss_event(c, body.identity_key)
+        c.commit()
+        return out
+
+    return submit_write(_write).result()

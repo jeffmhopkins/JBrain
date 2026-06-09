@@ -68,7 +68,7 @@ def _cost(model: str, i: int, o: int, cr: int, cw: int) -> float:
 
 def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
            cache_read: int = 0, cache_write: int = 0, context: str | None = None) -> None:
-    """Log one LLM call to the usage ledger on a dedicated connection.
+    """Log one LLM call to the usage ledger via the single-writer layer.
 
     Never raises — metering must never break a generation.
 
@@ -96,9 +96,13 @@ def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
             )
             conn.commit()
 
-        # Fire-and-forget: discard the Future so metering never blocks generation. Ordering
-        # is still preserved by the single-writer queue. Slow work (none here) stays out.
-        submit_write(_write)
+        # Block until the row is committed (.result()) so a caller that reads usage back in the
+        # same flow sees it — /api/system/stats records then immediately re-reads the meter. Both
+        # callers (_record_usage / _record_openai_usage) run on an asyncio.to_thread worker, off the
+        # event loop, so blocking here is safe and keeps the "write completes before the turn ends"
+        # ordering the offload was designed for. On the writer thread itself, submit_write runs the
+        # unit inline, so .result() returns immediately (no deadlock).
+        submit_write(_write).result()
     except Exception:  # noqa: BLE001
         pass
 

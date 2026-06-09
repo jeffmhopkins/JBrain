@@ -322,6 +322,18 @@ def _p_taxonomy_health(ctx):
     return wiki_build.taxonomy_health(ctx.conn)
 
 
+def _p_reorg_taxonomy(ctx, max_moves=5, max_llm=3, cooldown_days=7, dry_run=False, post_card=True):
+    """Autonomously fold un-foldered Reference pages into existing subcategories.
+
+    Surgical move only (no content regen); capped per run with a cooldown and a permanent
+    inverse-move refusal so the layout converges. Orphans are reported, never moved.
+    """
+    from . import wiki_build
+    return wiki_build.reorg_taxonomy(ctx.conn, max_moves=int(max_moves), max_llm=int(max_llm),
+                                     cooldown_days=int(cooldown_days), dry_run=_truthy(dry_run),
+                                     post_card=_truthy(post_card))
+
+
 def _p_extract_health(ctx, dry_run=True, limit=200, on_conflict="skip"):
     """One-time migration: move each person's personal medical section out of their kb/People
     article into a dedicated kb/Health/<Person> PHI page. Deterministic + versioned/undoable;
@@ -1569,6 +1581,7 @@ _PRIMITIVES = {
     "check_needed_links": _p_check_needed_links,
     "create_article": _p_create_article,
     "taxonomy_health": _p_taxonomy_health,
+    "reorg_taxonomy": _p_reorg_taxonomy,
     "recategorize_article": _p_recategorize_article,
     "merge_articles": _p_merge_articles,
     "refresh_index": _p_refresh_index,
@@ -1731,6 +1744,10 @@ _PRIMITIVE_META: dict[str, dict] = {
                                    {"name": "min_notes", "type": "int"}], "output": "dict"},
     "taxonomy_health": {"summary": "Read-only KB taxonomy-drift report (orphans, un-foldered Reference).",
                         "inputs": [], "output": "dict"},
+    "reorg_taxonomy": {"summary": "Autonomously fold un-foldered Reference pages into existing subcategories (surgical move; capped + cooldown + inverse-refusal; orphans reported, not moved).",
+                       "inputs": [{"name": "max_moves", "type": "int"}, {"name": "max_llm", "type": "int"},
+                                  {"name": "cooldown_days", "type": "int"}, {"name": "dry_run", "type": "bool"},
+                                  {"name": "post_card", "type": "bool"}], "output": "dict"},
     "recategorize_article": {"summary": "Move/rename a kb article (rewrites inbound links + index).",
                         "inputs": [{"name": "title", "type": "str"}, {"name": "new_title", "type": "str"}], "output": "dict"},
     "merge_articles": {"summary": "Fold kb articles into another (union sources, rewrite inbound links).",

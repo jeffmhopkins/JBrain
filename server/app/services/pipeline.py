@@ -495,7 +495,13 @@ def _p_title_note(ctx, id):
     Returns the new title, or None when it's already titled / not a bare leaf / no LLM.
     """
     from . import note_normalize
-    return {"id": int(id), "title": note_normalize.title_one(ctx.conn, int(id))}
+    title = note_normalize.title_one(ctx.conn, int(id))
+    if title is not None:
+        # Commit the rename now so its WAL write lock isn't held across a following analyze_note
+        # step's LLM call (a held lock deadlocks a concurrent attachment fold-back for the
+        # busy_timeout). Mirrors the refresh_note_analysis endpoint's commit-then-analyze order.
+        ctx.conn.commit()
+    return {"id": int(id), "title": title}
 
 
 def _p_seed_kb_watermark(ctx):

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
 from ..auth import CurrentUser, require_location_writer
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import geo
 from ..services import geotrail
 from ..services import people as people_svc
@@ -88,51 +88,55 @@ def add_location(body: LocationIn, writer=Depends(require_location_writer)):
         JSON ``{"stored": bool, "id": int}`` if stored, or
         ``{"stored": false, "reason": str}`` if deduplicated away.
     """
-    conn = get_conn()
     now = datetime.now(timezone.utc)
     rec_dt = _parse(body.recorded_at) or now
     rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     # A per-person location key forces the fix's source to that person.
     source = (writer["name"] if writer is not None else (body.source or "wear"))[:32]
 
-    # Dedup against THIS SOURCE's temporal predecessor (latest fix at or before this one
-    # from the same device/person) — not the global last fix. Otherwise, with several
-    # people tracked, co-located family drop each other's fixes and a stationary person
-    # near a moving one logs spurious "moved" points.
-    last = conn.execute(
-        "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
-        "ORDER BY recorded_at DESC LIMIT 1",
-        (source, rec_str),
-    ).fetchone()
-    if last is not None:
-        moved_m = geo.haversine_km(last["lat"], last["lon"], body.lat, body.lon) * 1000.0
-        last_dt = _parse(last["recorded_at"]) or now
-        elapsed_min = abs((rec_dt - last_dt).total_seconds()) / 60.0
-        # The rule: keep a point only when it's far enough OR long enough apart.
-        if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
-            return {"stored": False,
-                    "reason": f"within {MIN_METERS:g} m and {MIN_MINUTES:g} min of the last point"}
+    def _store():
+        """Dedup, insert the fix, refresh geofence state, and rewind the trip cursor atomically."""
+        c = get_conn()
+        # Dedup against THIS SOURCE's temporal predecessor (latest fix at or before this one
+        # from the same device/person) — not the global last fix. Otherwise, with several
+        # people tracked, co-located family drop each other's fixes and a stationary person
+        # near a moving one logs spurious "moved" points.
+        last = c.execute(
+            "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (source, rec_str),
+        ).fetchone()
+        if last is not None:
+            moved_m = geo.haversine_km(last["lat"], last["lon"], body.lat, body.lon) * 1000.0
+            last_dt = _parse(last["recorded_at"]) or now
+            elapsed_min = abs((rec_dt - last_dt).total_seconds()) / 60.0
+            # The rule: keep a point only when it's far enough OR long enough apart.
+            if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
+                return {"stored": False,
+                        "reason": f"within {MIN_METERS:g} m and {MIN_MINUTES:g} min of the last point"}
 
-    person = people_svc.resolve(conn, source)
-    pid = person["id"] if person else None
-    cur = conn.execute(
-        "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
-        "speed_mps, bearing_deg, altitude_m) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (body.lat, body.lon, body.accuracy_m, rec_str, source, pid,
-         body.speed_mps, body.bearing_deg, body.altitude_m),
-    )
-    # Refresh per-place geofence state (cheap, no actions) so the scheduler's
-    # trigger evaluator has fresh truth. Never let it break ingest.
-    try:
-        geotrail.update_location_state(conn, body.lat, body.lon, rec_str)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        trips_svc.rewind_cursor(conn, pid, rec_str)   # ensure detection revisits this time
-    except Exception:  # noqa: BLE001
-        pass
-    conn.commit()
-    return {"stored": True, "id": cur.lastrowid}
+        person = people_svc.resolve(c, source)
+        pid = person["id"] if person else None
+        cur = c.execute(
+            "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
+            "speed_mps, bearing_deg, altitude_m) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (body.lat, body.lon, body.accuracy_m, rec_str, source, pid,
+             body.speed_mps, body.bearing_deg, body.altitude_m),
+        )
+        # Refresh per-place geofence state (cheap, no actions) so the scheduler's
+        # trigger evaluator has fresh truth. Never let it break ingest.
+        try:
+            geotrail.update_location_state(c, body.lat, body.lon, rec_str)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            trips_svc.rewind_cursor(c, pid, rec_str)   # ensure detection revisits this time
+        except Exception:  # noqa: BLE001
+            pass
+        c.commit()
+        return {"stored": True, "id": cur.lastrowid}
+
+    return submit_write(_store).result()
 
 
 @router.post("/bulk")
@@ -152,63 +156,68 @@ def add_locations(body: LocationBatch, writer=Depends(require_location_writer)):
     Returns:
         JSON ``{"stored": int, "received": int}`` with counts.
     """
-    conn = get_conn()
     now = datetime.now(timezone.utc)
     pts = sorted(body.points or [], key=lambda p: _parse(p.recorded_at) or now)[:5000]
-    _pid_cache: dict[str, int | None] = {}
-    def _pid(src: str):
-        """Resolve and cache a source name to its person id."""
-        if src not in _pid_cache:
-            pr = people_svc.resolve(conn, src)
-            _pid_cache[src] = pr["id"] if pr else None
-        return _pid_cache[src]
-    # Dedup PER SOURCE: each device/person's stream is compared against its own last
-    # kept fix, seeded from that source's temporal predecessor in the DB. So one
-    # device's burst never dedups against another person's fixes.
-    last_by_src: dict[str, tuple] = {}    # source -> (lat, lon, datetime)
-    def _seed(src: str, rec_str: str):
-        """Seed a source's last-kept fix from its temporal predecessor in the DB."""
-        if src in last_by_src:
-            return
-        r = conn.execute(
-            "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
-            "ORDER BY recorded_at DESC LIMIT 1", (src, rec_str)).fetchone()
-        last_by_src[src] = (r["lat"], r["lon"], _parse(r["recorded_at"])) if r else None
-    stored = 0
-    dirty: dict[int | None, str] = {}    # person_id -> earliest stored recorded_at
-    for p in pts:
-        rec_dt = _parse(p.recorded_at) or now
-        rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        # A per-person location key forces every fix's source to that person.
-        source = (writer["name"] if writer is not None else (p.source or "phone"))[:32]
-        _seed(source, rec_str)
-        prev = last_by_src.get(source)
-        if prev is not None:
-            moved_m = geo.haversine_km(prev[0], prev[1], p.lat, p.lon) * 1000.0
-            elapsed_min = abs((rec_dt - (prev[2] or rec_dt)).total_seconds()) / 60.0
-            if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
-                continue
-        pid = _pid(source)
-        conn.execute(
-            "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
-            "speed_mps, bearing_deg, altitude_m) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (p.lat, p.lon, p.accuracy_m, rec_str, source, pid, p.speed_mps, p.bearing_deg, p.altitude_m),
-        )
-        try:
-            geotrail.update_location_state(conn, p.lat, p.lon, rec_str)
-        except Exception:  # noqa: BLE001
-            pass
-        if pid not in dirty or rec_str < dirty[pid]:
-            dirty[pid] = rec_str
-        last_by_src[source] = (p.lat, p.lon, rec_dt)
-        stored += 1
-    for pid, earliest in dirty.items():
-        try:
-            trips_svc.rewind_cursor(conn, pid, earliest)
-        except Exception:  # noqa: BLE001
-            pass
-    conn.commit()
-    return {"stored": stored, "received": len(body.points or [])}
+
+    def _store():
+        """Dedup the batch per source, insert kept fixes, refresh state, and rewind cursors atomically."""
+        c = get_conn()
+        _pid_cache: dict[str, int | None] = {}
+        def _pid(src: str):
+            """Resolve and cache a source name to its person id."""
+            if src not in _pid_cache:
+                pr = people_svc.resolve(c, src)
+                _pid_cache[src] = pr["id"] if pr else None
+            return _pid_cache[src]
+        # Dedup PER SOURCE: each device/person's stream is compared against its own last
+        # kept fix, seeded from that source's temporal predecessor in the DB. So one
+        # device's burst never dedups against another person's fixes.
+        last_by_src: dict[str, tuple] = {}    # source -> (lat, lon, datetime)
+        def _seed(src: str, rec_str: str):
+            """Seed a source's last-kept fix from its temporal predecessor in the DB."""
+            if src in last_by_src:
+                return
+            r = c.execute(
+                "SELECT lat, lon, recorded_at FROM locations WHERE source = ? AND recorded_at <= ? "
+                "ORDER BY recorded_at DESC LIMIT 1", (src, rec_str)).fetchone()
+            last_by_src[src] = (r["lat"], r["lon"], _parse(r["recorded_at"])) if r else None
+        stored = 0
+        dirty: dict[int | None, str] = {}    # person_id -> earliest stored recorded_at
+        for p in pts:
+            rec_dt = _parse(p.recorded_at) or now
+            rec_str = rec_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            # A per-person location key forces every fix's source to that person.
+            source = (writer["name"] if writer is not None else (p.source or "phone"))[:32]
+            _seed(source, rec_str)
+            prev = last_by_src.get(source)
+            if prev is not None:
+                moved_m = geo.haversine_km(prev[0], prev[1], p.lat, p.lon) * 1000.0
+                elapsed_min = abs((rec_dt - (prev[2] or rec_dt)).total_seconds()) / 60.0
+                if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
+                    continue
+            pid = _pid(source)
+            c.execute(
+                "INSERT INTO locations (lat, lon, accuracy_m, recorded_at, source, person_id, "
+                "speed_mps, bearing_deg, altitude_m) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (p.lat, p.lon, p.accuracy_m, rec_str, source, pid, p.speed_mps, p.bearing_deg, p.altitude_m),
+            )
+            try:
+                geotrail.update_location_state(c, p.lat, p.lon, rec_str)
+            except Exception:  # noqa: BLE001
+                pass
+            if pid not in dirty or rec_str < dirty[pid]:
+                dirty[pid] = rec_str
+            last_by_src[source] = (p.lat, p.lon, rec_dt)
+            stored += 1
+        for pid, earliest in dirty.items():
+            try:
+                trips_svc.rewind_cursor(c, pid, earliest)
+            except Exception:  # noqa: BLE001
+                pass
+        c.commit()
+        return {"stored": stored, "received": len(body.points or [])}
+
+    return submit_write(_store).result()
 
 
 def _norm(ts: str | None) -> str | None:

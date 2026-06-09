@@ -376,11 +376,13 @@ describe("RebuildPanel — suggest mode", () => {
     const s = calls.find((c) => c.kind === "suggest")!;
     expect(s.args[1]).toEqual([1, 2]);
     expect(s.args[2]).toBe("Add a note about hydration.");
-    // After the turn the loop returns to guiding (the "💬 Guide" footer action reappears).
-    await waitFor(() => expect(footBtn(/Guide/)).toBeTruthy());
+    // After the turn the loop returns to guiding (the segmented Draft/Guide toggle reappears;
+    // the footer offers Cancel + Accept, no longer a redundant Guide button).
+    const guideTabs = await screen.findAllByRole("button", { name: /💬 Guide/ });
+    expect(guideTabs).toHaveLength(1);   // only the segmented toggle, not a duplicate in the footer
 
     // A follow-up edit continues the SAME transcript via /guide (not another /suggest).
-    await user.click(footBtn(/Guide/));
+    await user.click(guideTabs[0]);
     const box2 = await screen.findByPlaceholderText(/Tell me what to change/i);
     await user.type(box2, "Make it shorter.");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -406,6 +408,31 @@ describe("RebuildPanel — suggest mode", () => {
     expect(box.value).toContain("[[notes/2026/al]]");
     // Nothing was sent/applied yet — the owner still drives the edit.
     expect(calls.some((c) => c.kind === "suggest")).toBe(false);
+  });
+
+  it("the Draft-tab footer offers Cancel (not a second Guide) which rejects and closes", async () => {
+    scripts.suggest = (onEvent) => onEvent({ type: "done", draft: "# Bread\n\nEdited body." });
+    const { user, onClose } = await gotoEditing();
+
+    // Make an edit so we land back on the Draft tab in the guiding phase.
+    const box = await screen.findByPlaceholderText(/Tell me what to change/i);
+    await user.type(box, "Add a note about hydration.");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByRole("button", { name: /^Accept$/i });
+
+    // The footer's redundant Guide button is gone; Cancel takes its place (the segmented
+    // toggle above is the only remaining Guide control).
+    expect(footBtn(/^Cancel$/)).toBeInTheDocument();
+    const footGuide = Array.from(document.querySelector(".modal-foot")!.querySelectorAll("button"))
+      .find((b) => /Guide/.test(b.textContent || ""));
+    expect(footGuide).toBeUndefined();
+
+    // Cancel aborts the stream, rejects the run, and closes — without accepting.
+    await user.click(footBtn(/^Cancel$/));
+    expect(abortSpy).toHaveBeenCalled();
+    await waitFor(() => expect(rejectCalls()).toHaveLength(1));
+    expect(onClose).toHaveBeenCalled();
+    expect(acceptCalls()).toHaveLength(0);
   });
 
   it("sources are optional — Start editing works with zero selected", async () => {

@@ -384,27 +384,54 @@ separate and additive — see *Encrypted chat* above.)
 
 ## Quick start (Linux VM)
 
-Prerequisites: **Docker Engine + Compose v2**, a **domain** whose A record points
-at the VM (set this up *before* installing so Caddy can issue the cert), ports
-**80/443** open, and **≥ 2 GB RAM** (the local embedding/whisper models load into
-memory).
+Prerequisites: **Docker Engine + Compose v2**, **≥ 2 GB RAM** (the local
+embedding/whisper models load into memory), and — for a **public** install — a
+**domain** whose A record points at the VM (set this up *before* installing so
+Caddy can issue the cert) with ports **80/443** open. Just trying it on your LAN?
+Pick **local mode** below; no domain or DNS required.
 
 ```bash
 git clone <your-fork-url> JBrain && cd JBrain
 ./install.sh
 ```
 
-The installer asks for your domain + ACME email, brain name, **LLM provider**
-(Anthropic Claude or xAI Grok) + model + API key, timezone, and whether to enable
-the auto-update sidecar. It generates a high-entropy **access key** (printed at the
-end — save it), writes `.env` + `Caddyfile`, and offers to build & start
-everything. When it's up:
+The installer first asks which **deployment mode** you want:
 
-1. Open `https://<your-domain>` and **paste your access key** to connect.
+- **Local network only** *(no domain needed)* — reach JBrain at this machine's
+  **LAN IP** over HTTPS, with Caddy issuing its own self-signed cert (browsers show
+  a one-time warning you click through; HTTPS is kept so the PWA/offline features
+  work). Great for trying it out, or running it purely on your home network. Give
+  the box a static IP / DHCP reservation so the address is stable. Switch to a
+  public domain anytime later with **`./setupdns.sh`** (below).
+- **Public domain** — automatic Let's Encrypt HTTPS for your domain (needs the DNS
+  A record + open 80/443 above).
+
+It then asks for your brain name, **LLM provider** (Anthropic Claude or xAI Grok) +
+model + API key, timezone, and whether to enable the auto-update sidecar. It
+generates a high-entropy **access key** (printed at the end — save it), writes
+`.env` + `Caddyfile`, and offers to build & start everything. When it's up:
+
+1. Open `https://<your-domain>` (or `https://<lan-ip>` in local mode) and **paste
+   your access key** to connect.
 2. Use the browser's **Install app** / **Add to Home Screen** to install the PWA.
 3. Start in the compose box. **Research** answers from your brain read-only; switch
    to **Full Brain** to have the architect propose notes — tap **Apply** on the
    **Staging area** to write them.
+
+### Going public later (`./setupdns.sh`)
+
+Started in local mode and now have a domain pointed at the VM? Run:
+
+```bash
+./setupdns.sh
+```
+
+It asks for your domain + Let's Encrypt email, does a quick DNS sanity check,
+re-renders the `Caddyfile` for that domain, updates `.env`, and reloads Caddy so it
+requests the certificate — **non-destructively** (your database, access key, and
+config are untouched). Make sure DNS points at the VM and 80/443 are open first,
+then watch it issue with `docker compose logs -f caddy`. Safe to re-run to change
+the domain later.
 
 Manual control:
 

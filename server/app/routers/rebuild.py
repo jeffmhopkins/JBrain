@@ -3,25 +3,17 @@ Accept (commit a new version) / Reject (discard) / Guide (steer a revision with 
 AI). KB pages only; owner-only. The run is held in-memory (services.rebuild_runs) — closing
 the panel / refresh cancels it, and the live note is never touched until Accept.
 """
-import asyncio
-import json
-import logging
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from .. import sse
 from ..auth import CurrentUser
 from ..db import get_conn
 from ..services import llm, rebuild_engine, rebuild_runs, search, wiki_build
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/kb/rebuild", tags=["rebuild"], dependencies=[CurrentUser])
-log = logging.getLogger("jbrain")
-
-# Mirror the chat SSE bridge: keepalive while the model is silent so proxies / the client's
-# stall watchdog don't drop a long "thinking" pause.
-_SSE_KEEPALIVE_SECONDS = 15.0
 
 
 class GuideIn(BaseModel):
@@ -68,11 +60,12 @@ class AcceptIn(BaseModel):
 
 
 def _sse(agen) -> StreamingResponse:
-    """Bridge an async event-dict generator to a keepalive SSE response.
+    """Bridge a rebuild async event-dict generator to a keepalive + watchdog SSE response.
 
-    Mirrors the pattern used in chat.py: a background task pumps events into a
-    queue while the stream loop drains it with a timeout, emitting SSE keepalive
-    comments during silent stretches so proxies do not drop the connection.
+    Delegates to the shared ``app.sse`` bridge so the rebuild streams get the same
+    no-progress watchdog as chat: a wedged turn (a ping-stalled model stream or an
+    uncancellable hung tool) surfaces an error frame instead of keepalive-ing forever and
+    leaving the panel stuck on "Gathering context…".
 
     Args:
         agen: Async generator yielding event dicts with at least a ``type`` key.
@@ -80,47 +73,11 @@ def _sse(agen) -> StreamingResponse:
     Returns:
         StreamingResponse with ``text/event-stream`` media type.
     """
-    async def event_stream():
-        """Yield the rebuild run's SSE events, interleaving keepalive comments."""
-        queue: asyncio.Queue = asyncio.Queue()
-        _DONE = object()
-
-        async def pump():
-            """Drain the rebuild async generator into the queue."""
-            try:
-                async for event in agen:
-                    await queue.put(("event", event))
-            except Exception:  # log detail server-side, never to the user
-                log.exception("rebuild stream failed")
-                await queue.put(("error", "Something went wrong during the rebuild. Please try again."))
-            finally:
-                await queue.put((_DONE, None))
-
-        task = asyncio.create_task(pump())
-        try:
-            while True:
-                try:
-                    kind, payload = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-                if kind is _DONE:
-                    break
-                if kind == "error":
-                    yield f"event: error\ndata: {json.dumps({'message': payload})}\n\n"
-                else:
-                    yield f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
-        finally:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 — best-effort cleanup
-                pass
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    return sse.stream(
+        agen,
+        fail_message="Something went wrong during the rebuild. Please try again.",
+        wedged_message="The rebuild stopped responding. Please try again.",
+        label="rebuild",
     )
 
 

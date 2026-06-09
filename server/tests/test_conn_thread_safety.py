@@ -11,14 +11,15 @@ These tests turn that invariant from honor-code into something enforced:
 1. ``test_connection_is_thread_affine`` — production connections are opened
    ``check_same_thread=True``, so a cross-thread use RAISES (loudly, at the offending call)
    instead of deadlocking. This fails if anyone flips the flag back.
-2. ``test_no_async_offload_passes_the_event_loop_connection`` — a static guard: no
-   ``asyncio.to_thread`` / ``run_in_executor`` call site in ``app/`` may take a bare
-   ``conn``/``tconn`` argument. Offloaded DB work must open its own connection inside the
-   worker closure (the ``_persist_user_turn`` pattern). This fails on the exact code shape that
-   caused the gather/research hangs.
+2. ``test_no_async_offload_shares_the_event_loop_connection`` — an AST guard over app/ + scripts/
+   that fails if any ``asyncio.to_thread`` / ``run_in_executor`` site lets a worker touch the
+   event-loop connection, in EITHER shape: a bare ``conn``/``tconn`` argument, OR a closure that
+   *captures* an outer ``conn``/``tconn`` (the shape that slipped past the original regex guard
+   and caused the attachments hang). Offloaded DB work must open its own connection inside the
+   worker via ``get_conn()`` (the ``_persist_user_turn`` pattern).
 """
+import ast
 import os
-import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -28,6 +29,8 @@ import pytest
 pytest.importorskip("sqlite_vec")
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+_CONN_NAMES = {"conn", "tconn"}
 
 
 def test_connection_is_thread_affine(tmp_path):
@@ -63,31 +66,159 @@ def test_connection_is_thread_affine(tmp_path):
         conn.close()
 
 
-# asyncio.to_thread(fn, conn, …) / loop.run_in_executor(ex, fn, conn, …) — a bare conn/tconn
-# anywhere in the call's argument list is the forbidden shape. DOTALL so a multi-line call is
-# caught too. `\bconn\b` does NOT match get_conn/_thread_conn (the '_' is a word char), so the
-# sanctioned "open get_conn() inside the worker closure" form passes cleanly.
-_OFFLOAD_CALL = re.compile(r"(?:asyncio\.to_thread|run_in_executor)\((.*?)\)", re.DOTALL)
-_BARE_CONN = re.compile(r"\b(?:conn|tconn)\b")
+def _bound_names(func_node: ast.AST) -> set[str]:
+    """Return names bound (assigned/param/with-as/for-target) anywhere inside a function/lambda.
+
+    A name bound locally is NOT a capture of an outer connection — e.g. ``conn = get_conn()``
+    inside the worker is the SANCTIONED pattern.
+
+    Args:
+        func_node: A FunctionDef/AsyncFunctionDef/Lambda AST node.
+
+    Returns:
+        Set of locally-bound identifier names.
+    """
+    bound: set[str] = set()
+    args = getattr(func_node, "args", None)
+    if args is not None:
+        for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            bound.add(a.arg)
+        if args.vararg:
+            bound.add(args.vararg.arg)
+        if args.kwarg:
+            bound.add(args.kwarg.arg)
+    for n in ast.walk(func_node):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    bound.add(t.id)
+        elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and isinstance(n.target, ast.Name):
+            bound.add(n.target.id)
+        elif isinstance(n, ast.For) and isinstance(n.target, ast.Name):
+            bound.add(n.target.id)
+        elif isinstance(n, (ast.With, ast.AsyncWith)):
+            for item in n.items:
+                if isinstance(item.optional_vars, ast.Name):
+                    bound.add(item.optional_vars.id)
+    return bound
 
 
-def test_no_async_offload_passes_the_event_loop_connection():
-    """No offload site may hand a worker the shared event-loop connection.
+def _captures_bare_conn(func_node: ast.AST) -> bool:
+    """True if the function/lambda LOADS a bare conn/tconn it never binds locally (a capture).
 
-    Offloaded DB work must open its OWN connection inside the worker closure (get_conn() is
-    thread-local) rather than reach across the await onto the loop's connection. This is the
-    code-shape that produced the gather "Looking through your notes…" and research
-    "stops responding" hangs.
+    Args:
+        func_node: A FunctionDef/AsyncFunctionDef/Lambda AST node.
+
+    Returns:
+        True if an outer ``conn``/``tconn`` is read inside without being bound locally.
+    """
+    bound = _bound_names(func_node)
+    for n in ast.walk(func_node):
+        if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                and n.id in _CONN_NAMES and n.id not in bound):
+            return True
+    return False
+
+
+def _offending_offloads(path: Path) -> list[str]:
+    """Return offload sites in one file that let a worker touch the event-loop connection.
+
+    Flags both shapes: a bare conn/tconn passed as an argument, and a worker closure that
+    captures an outer conn/tconn.
+
+    Args:
+        path: Python source file to scan.
+
+    Returns:
+        List of ``"<file>:<line>"`` strings for each offending offload call.
+    """
+    tree = ast.parse(path.read_text())
+    # Parent map + per-scope def index, so a worker referenced by name resolves to the def that
+    # is actually visible at the call site (innermost enclosing scope first, like Python) — never
+    # an unrelated same-named def elsewhere in the module (which would be a spurious flag).
+    parents: dict = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def enclosing_scope(n):
+        """Return the nearest enclosing FunctionDef/AsyncFunctionDef/Module of a node."""
+        p = parents.get(n)
+        while p is not None:
+            if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                return p
+            p = parents.get(p)
+        return None
+
+    defs_by_scope: dict[int, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs_by_scope.setdefault(id(enclosing_scope(node)), []).append(node)
+
+    def resolve_def(name: str, call: ast.AST):
+        """Resolve a worker name to its def, searching enclosing scopes innermost-out."""
+        scope = enclosing_scope(call)
+        while scope is not None:
+            for d in defs_by_scope.get(id(scope), []):
+                if d.name == name:
+                    return d
+            if isinstance(scope, ast.Module):
+                break
+            scope = enclosing_scope(scope)
+        return None
+
+    def is_bare_conn(n) -> bool:
+        """True if a node is a bare ``conn``/``tconn`` Name."""
+        return isinstance(n, ast.Name) and n.id in _CONN_NAMES
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        api = node.func.attr
+        if api == "to_thread":
+            worker, extra = (node.args[0] if node.args else None), node.args[1:]
+        elif api == "run_in_executor":
+            worker, extra = (node.args[1] if len(node.args) >= 2 else None), node.args[2:]
+        else:
+            continue
+        # Shape 1: a bare conn/tconn handed to the worker — as a positional OR keyword argument
+        # (asyncio.to_thread forwards **kwargs to the worker), or wrapped in functools.partial.
+        bare = any(is_bare_conn(a) for a in extra) or any(is_bare_conn(kw.value) for kw in node.keywords)
+        if isinstance(worker, ast.Call):   # functools.partial(fn, conn, ...)
+            bare = bare or any(is_bare_conn(a) for a in worker.args) \
+                or any(is_bare_conn(kw.value) for kw in worker.keywords)
+        # Shape 2: the worker is a lambda / local def that CAPTURES an outer conn/tconn.
+        captures = False
+        if isinstance(worker, ast.Lambda):
+            captures = _captures_bare_conn(worker)
+        elif isinstance(worker, ast.Name):
+            d = resolve_def(worker.id, node)
+            captures = bool(d) and _captures_bare_conn(d)
+        if bare or captures:
+            try:
+                rel = path.relative_to(APP_DIR.parent)
+            except ValueError:
+                rel = path
+            offenders.append(f"{rel}:{node.lineno}")
+    return offenders
+
+
+def test_no_async_offload_shares_the_event_loop_connection():
+    """No offload site may let a worker thread touch the shared event-loop connection.
+
+    Offloaded DB work must open its OWN connection inside the worker (get_conn() is
+    thread-local) rather than pass or capture the event-loop connection. Catches both the
+    bare-argument shape and the closure-capture shape that produced the gather/research/upload
+    hangs.
     """
     offenders: list[str] = []
-    for path in sorted(APP_DIR.rglob("*.py")):
-        text = path.read_text()
-        for m in _OFFLOAD_CALL.finditer(text):
-            if _BARE_CONN.search(m.group(1)):
-                line_no = text.count("\n", 0, m.start()) + 1
-                offenders.append(f"{path.relative_to(APP_DIR.parent)}:{line_no}")
+    roots = [APP_DIR] + ([SCRIPTS_DIR] if SCRIPTS_DIR.is_dir() else [])
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            offenders += _offending_offloads(path)
     assert not offenders, (
-        "these offload sites pass the shared event-loop connection into a worker thread — open a "
+        "these offload sites let a worker touch the shared event-loop connection — open a "
         "worker-local connection inside the closure instead (see _persist_user_turn):\n  "
         + "\n  ".join(offenders)
     )

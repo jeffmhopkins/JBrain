@@ -363,6 +363,46 @@ def test_gather_append_merges_without_dupes(conn, monkeypatch):
     assert sorted(titles) == ["notes/2026/01/a", "notes/2026/01/b"]   # no duplicate of a
 
 
+def test_gather_search_runs_on_a_worker_local_connection(conn, monkeypatch):
+    """REGRESSION GATE: the gather search offload must run on a WORKER thread with its OWN
+    connection — never the shared event-loop connection. Passing the captured event-loop `conn`
+    into the worker (the original bug) was a silent cross-thread share that wedged the connection
+    (and now raises under check_same_thread). Reverting the fix makes the spy capture the
+    event-loop connection and fails this test. The real asyncio.to_thread is used (NOT patched)
+    so the offload genuinely crosses a thread boundary.
+    """
+    import threading
+    from app.db import get_conn as real_get_conn
+    from app.services import rebuild_engine, search
+
+    _mk(conn, "kb/Things/Truck", "# Truck\n")
+    _mk(conn, "notes/2026/01/buy-truck", "Bought a Ford truck.", kind="entry")
+    main_thread = threading.get_ident()
+    loop_conn = real_get_conn()          # the event-loop / main-thread connection
+    seen: dict = {}
+
+    def spy_hybrid(c, q, limit, require_kb_ingest=False):
+        """Record the thread + whether we were handed the (forbidden) event-loop connection."""
+        seen["thread"] = threading.get_ident()
+        seen["is_loop_conn"] = (c is loop_conn)
+        return []
+
+    monkeypatch.setattr(search, "hybrid_notes", spy_hybrid)
+    prov = FakeProvider([
+        [_ev_search("c1", "ford truck")],
+        [_ev_propose("c2", sources=[{"title": "notes/2026/01/buy-truck", "reason": "x"}])],
+    ])
+    _install_provider(monkeypatch, prov)
+    run = _new_run()
+    _drain(rebuild_engine.run_gather(run))
+
+    assert seen, "the search offload never ran"
+    assert seen["thread"] != main_thread, "search must run on a worker thread, not the event loop"
+    assert seen["is_loop_conn"] is False, (
+        "search must use a worker-local connection — it was handed the shared event-loop conn"
+    )
+
+
 def test_entity_rebuild_skips_embeddings_when_flagged(conn, monkeypatch):
     """rebuild(sync_embeddings=False) rebuilds the tables but skips the embed refresh."""
     from app.services import entity_index

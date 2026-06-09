@@ -12,11 +12,11 @@ These tests turn that invariant from honor-code into something enforced:
    ``check_same_thread=True``, so a cross-thread use RAISES (loudly, at the offending call)
    instead of deadlocking. This fails if anyone flips the flag back.
 2. ``test_no_async_offload_shares_the_event_loop_connection`` — an AST guard over app/ + scripts/
-   that fails if any ``asyncio.to_thread`` / ``run_in_executor`` site lets a worker touch the
-   event-loop connection, in EITHER shape: a bare ``conn``/``tconn`` argument, OR a closure that
-   *captures* an outer ``conn``/``tconn`` (the shape that slipped past the original regex guard
-   and caused the attachments hang). Offloaded DB work must open its own connection inside the
-   worker via ``get_conn()`` (the ``_persist_user_turn`` pattern).
+   that fails if any ``asyncio.to_thread`` / ``run_in_executor`` / ``submit_write`` site lets a
+   worker touch the event-loop connection, in EITHER shape: a bare ``conn``/``tconn`` argument, OR
+   a closure that *captures* an outer ``conn``/``tconn`` (the shape that slipped past the original
+   regex guard and caused the attachments hang). Offloaded DB work must open its own connection
+   inside the worker via ``get_conn()`` (the ``_persist_user_turn`` pattern).
 """
 import ast
 import os
@@ -173,13 +173,23 @@ def _offending_offloads(path: Path) -> list[str]:
 
     offenders: list[str] = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        if not isinstance(node, ast.Call):
             continue
-        api = node.func.attr
+        if isinstance(node.func, ast.Attribute):
+            api = node.func.attr            # asyncio.to_thread / loop.run_in_executor / ...
+        elif isinstance(node.func, ast.Name):
+            api = node.func.id              # bare submit_write(...)
+        else:
+            continue
         if api == "to_thread":
             worker, extra = (node.args[0] if node.args else None), node.args[1:]
         elif api == "run_in_executor":
             worker, extra = (node.args[1] if len(node.args) >= 2 else None), node.args[2:]
+        elif api == "submit_write":
+            # submit_write(fn): fn is a zero-arg closure that must open its OWN (the writer's)
+            # connection via get_conn() inside, never capture the event-loop conn. There are no
+            # extra args through which a bare conn could be passed, so only the capture shape applies.
+            worker, extra = (node.args[0] if node.args else None), []
         else:
             continue
         # Shape 1: a bare conn/tconn handed to the worker — as a positional OR keyword argument

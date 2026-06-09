@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Mockup 2 — Relationship Atlas</title>
+<style>
+  /* ============================================================
+     DESIGN TOKENS — mirror the JBrain "chat view" dark aesthetic
+     ============================================================ */
+  :root{
+    --bg:#111315; --bg-elev:#161a1c; --bg-elev-2:#1c2123; --border:#2a2f31;
+    --text:#d8dcde; --text-dim:#828a8e; --accent:#7f9aa6; --accent-soft:rgba(127,154,166,0.14);
+    --m-entry:#8fb89c; --m-medical:#cf8d8d; --m-research:#c4ad6e; --m-financial:#b89cd6;
+    --danger:#c08585; --ok:#84a591; --radius:8px;
+    --sheet-shadow:0 12px 30px rgba(0,0,0,.45);
+  }
+
+  /* Per-entity-type accent colors (restrained, monochrome-leaning) */
+  /* person=entry green, org=research gold, place=accent, medication/condition/procedure=medical red,
+     thing/concept=financial purple, animal=ok, work=accent-dim */
+  .t-person   { --c:#8fb89c; }
+  .t-org      { --c:#c4ad6e; }
+  .t-place    { --c:#7f9aa6; }
+  .t-medication,.t-condition,.t-procedure { --c:#cf8d8d; }
+  .t-thing,.t-concept { --c:#b89cd6; }
+  .t-animal   { --c:#84a591; }
+  .t-work     { --c:#9aa6b2; }
+  .t-event    { --c:#c4ad6e; }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:#0a0b0c;
+    color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    font-size:16px; line-height:1.4;
+    min-height:100vh;
+    display:flex; flex-direction:column; align-items:center;
+    padding:24px 12px 60px;
+  }
+
+  /* -------- Page banner (outside the phone frame) -------- */
+  .page-banner{
+    width:100%; max-width:720px; margin:0 auto 22px; text-align:center;
+  }
+  .page-banner h1{
+    font-size:20px; font-weight:600; margin:0 0 4px; color:var(--text);
+  }
+  .page-banner p{
+    font-size:13px; color:var(--text-dim); margin:0;
+  }
+
+  /* ============================================================
+     PHONE FRAME — centered ~390px column with device chrome
+     ============================================================ */
+  .phone{
+    width:390px; max-width:100%;
+    height:780px;
+    background:var(--bg);
+    border:1px solid #000;
+    border-radius:34px;
+    box-shadow:0 0 0 8px #1a1c1e, 0 18px 50px rgba(0,0,0,.6);
+    overflow:hidden; position:relative;
+    display:flex; flex-direction:column;
+  }
+  /* status bar */
+  .statusbar{
+    height:34px; flex:0 0 34px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 20px; font-size:12px; color:var(--text-dim);
+    background:var(--bg);
+  }
+  .statusbar .dots{ display:flex; gap:4px; align-items:center; }
+  .statusbar .dot{ width:5px; height:5px; border-radius:50%; background:var(--text-dim); }
+
+  /* -------- App header -------- */
+  .appbar{
+    flex:0 0 auto; padding:6px 14px 10px; background:var(--bg);
+    border-bottom:1px solid var(--border);
+  }
+  .appbar-top{ display:flex; align-items:center; gap:10px; }
+  .appbar-title{ font-size:17px; font-weight:600; flex:1; }
+  .appbar-title small{ display:block; font-size:11px; font-weight:400; color:var(--text-dim); }
+  .iconbtn{
+    width:38px; height:38px; border-radius:var(--radius);
+    background:var(--bg-elev-2); border:1px solid var(--border);
+    color:var(--text); display:flex; align-items:center; justify-content:center;
+    font-size:16px; cursor:pointer; flex:0 0 auto;
+  }
+  .iconbtn:active{ background:var(--bg-elev); }
+  .iconbtn.on{ background:var(--accent-soft); border-color:var(--accent); color:var(--text); }
+
+  /* -------- Search + filter row -------- */
+  .controls{ padding:10px 14px 8px; background:var(--bg); }
+  .search-wrap{ position:relative; }
+  .search-wrap .mag{
+    position:absolute; left:11px; top:50%; transform:translateY(-50%);
+    color:var(--text-dim); font-size:15px; pointer-events:none;
+  }
+  input[type=text].search{
+    width:100%; height:44px; padding:0 12px 0 34px;
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+    color:var(--text); font-size:16px; outline:none;
+  }
+  input.search:focus{ border-color:var(--accent); }
+  /* search suggestions dropdown */
+  .jump-list{
+    position:absolute; left:0; right:0; top:48px; z-index:40;
+    background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--sheet-shadow); overflow:hidden; max-height:240px; overflow-y:auto;
+  }
+  .jump-list .ji{
+    display:flex; align-items:center; gap:9px; padding:10px 12px; cursor:pointer;
+    min-height:44px; border-bottom:1px solid var(--border);
+  }
+  .jump-list .ji:last-child{ border-bottom:none; }
+  .jump-list .ji:active{ background:var(--bg-elev); }
+  .jump-list .ji .nm{ flex:1; font-size:14px; }
+  .jump-list .ji .ct{ font-size:11px; color:var(--text-dim); }
+
+  /* type filter chips */
+  .chips{ display:flex; gap:7px; overflow-x:auto; padding:10px 0 2px; scrollbar-width:none; }
+  .chips::-webkit-scrollbar{ display:none; }
+  .chip{
+    flex:0 0 auto; height:32px; padding:0 12px; border-radius:16px;
+    background:var(--bg-elev); border:1px solid var(--border); color:var(--text-dim);
+    font-size:13px; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap;
+  }
+  .chip .swatch{ width:8px; height:8px; border-radius:50%; background:var(--c,var(--text-dim)); }
+  .chip.active{ background:var(--accent-soft); border-color:var(--accent); color:var(--text); }
+  .chip.all.active{ background:var(--accent-soft); border-color:var(--accent); }
+
+  /* -------- Stage (graph or list) -------- */
+  .stage{ position:relative; flex:1 1 auto; overflow:hidden; background:var(--bg); }
+
+  svg#graph{ width:100%; height:100%; display:block; touch-action:none; }
+  .edge{ stroke:var(--border); stroke-width:1; }
+  .edge.dup{ stroke:var(--m-medical); stroke-dasharray:4 3; stroke-width:1.4; opacity:.9; }
+  .edge.strong{ stroke:#3a4143; }
+  .edge.dim{ opacity:.18; }
+
+  .node{ cursor:pointer; }
+  .node circle.body{ stroke:var(--bg); stroke-width:2; transition:opacity .2s; }
+  .node.center circle.body{ stroke:var(--accent); stroke-width:2.5; }
+  .node text.lbl{
+    fill:var(--text); font-size:10px; text-anchor:middle; pointer-events:none;
+    paint-order:stroke; stroke:var(--bg); stroke-width:3px; stroke-linejoin:round;
+  }
+  .node.dim{ opacity:.16; }
+  .node.center text.lbl{ fill:var(--text); font-weight:600; }
+  /* flag badges on nodes */
+  .flag{ font-size:9px; }
+  .flag-dup circle{ fill:var(--m-medical); }
+  .flag-amb circle{ fill:var(--m-research); }
+  .flag text{ fill:#111315; font-size:9px; font-weight:700; text-anchor:middle; }
+
+  .zoomctl{
+    position:absolute; right:12px; bottom:12px; display:flex; flex-direction:column; gap:8px; z-index:10;
+  }
+  .zoomctl button{
+    width:44px; height:44px; border-radius:var(--radius);
+    background:var(--bg-elev-2); border:1px solid var(--border); color:var(--text);
+    font-size:20px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .zoomctl button:active{ background:var(--bg-elev); }
+
+  .stage-hint{
+    position:absolute; left:12px; top:10px; z-index:5;
+    font-size:11px; color:var(--text-dim); background:rgba(17,19,21,.7);
+    padding:4px 8px; border-radius:6px; pointer-events:none;
+  }
+
+  /* legend pill bottom-left */
+  .legend{
+    position:absolute; left:12px; bottom:12px; z-index:5;
+    background:rgba(22,26,28,.85); border:1px solid var(--border); border-radius:var(--radius);
+    padding:7px 9px; font-size:10px; color:var(--text-dim); max-width:150px;
+  }
+  .legend .row{ display:flex; align-items:center; gap:6px; margin:2px 0; }
+  .legend .dot{ width:8px; height:8px; border-radius:50%; }
+
+  /* -------- List fallback view -------- */
+  .listview{ display:none; position:absolute; inset:0; overflow-y:auto; background:var(--bg); padding:8px 12px 16px; }
+  .listview.show{ display:block; }
+  .lrow{
+    display:flex; align-items:center; gap:10px; padding:11px 4px; border-bottom:1px solid var(--border);
+    cursor:pointer; min-height:44px;
+  }
+  .lrow:active{ background:var(--bg-elev); }
+  .lrow .glyph{
+    width:32px; height:32px; border-radius:8px; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700;
+    background:var(--bg-elev-2); color:var(--c,var(--text)); border:1px solid var(--border);
+  }
+  .lrow .meta{ flex:1; min-width:0; }
+  .lrow .meta .nm{ font-size:14px; font-weight:500; display:flex; align-items:center; gap:6px; }
+  .lrow .meta .sub{ font-size:11px; color:var(--text-dim); }
+  .lrow .art{ font-size:11px; color:var(--accent); }
+  .pill{
+    font-size:9px; font-weight:600; padding:1px 6px; border-radius:10px; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .pill.dup{ background:rgba(207,141,141,.16); color:var(--m-medical); }
+  .pill.amb{ background:rgba(196,173,110,.16); color:var(--m-research); }
+
+  /* ============================================================
+     SUGGESTIONS BANNER (AI proposed merges + ambiguities)
+     ============================================================ */
+  .suggest-bar{
+    flex:0 0 auto; background:var(--bg-elev); border-top:1px solid var(--border);
+    padding:8px 12px; display:flex; align-items:center; gap:10px; cursor:pointer;
+  }
+  .suggest-bar .badge{
+    background:var(--m-research); color:#111315; font-weight:700; font-size:11px;
+    border-radius:10px; min-width:20px; height:20px; padding:0 6px; display:flex; align-items:center; justify-content:center;
+  }
+  .suggest-bar .txt{ flex:1; font-size:13px; }
+  .suggest-bar .txt small{ color:var(--text-dim); display:block; font-size:11px; }
+  .suggest-bar .chev{ color:var(--text-dim); }
+
+  /* -------- Bottom tab bar (decorative, 60px) -------- */
+  .tabbar{
+    flex:0 0 60px; height:60px; display:flex; border-top:1px solid var(--border); background:var(--bg);
+  }
+  .tabbar .tab{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    font-size:10px; color:var(--text-dim); cursor:pointer; }
+  .tabbar .tab.active{ color:var(--accent); }
+  .tabbar .tab .ic{ font-size:18px; }
+
+  /* ============================================================
+     BOTTOM SHEET (detail / merge confirm / decisions / ambiguity)
+     ============================================================ */
+  .scrim{
+    position:absolute; inset:0; background:rgba(0,0,0,.5); z-index:50; opacity:0; pointer-events:none;
+    transition:opacity .2s;
+  }
+  .scrim.show{ opacity:1; pointer-events:auto; }
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; z-index:60;
+    background:var(--bg-elev); border-top:1px solid var(--border);
+    border-radius:18px 18px 0 0; box-shadow:var(--sheet-shadow);
+    transform:translateY(100%); transition:transform .26s cubic-bezier(.3,.7,.3,1);
+    max-height:88%; display:flex; flex-direction:column;
+  }
+  .sheet.show{ transform:translateY(0); }
+  .sheet .grip{ width:38px; height:4px; border-radius:2px; background:var(--border); margin:8px auto 4px; flex:0 0 auto; }
+  .sheet-scroll{ overflow-y:auto; padding:4px 16px 22px; }
+
+  .sheet-head{ display:flex; align-items:flex-start; gap:11px; padding:6px 0 12px; }
+  .sheet-head .glyph{
+    width:42px; height:42px; border-radius:10px; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:700;
+    background:var(--bg-elev-2); color:var(--c,var(--text)); border:1px solid var(--border);
+  }
+  .sheet-head .hd{ flex:1; min-width:0; }
+  .sheet-head .hd .nm{ font-size:18px; font-weight:600; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .sheet-head .hd .sub{ font-size:12px; color:var(--text-dim); margin-top:2px; }
+  .type-tag{ font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; background:var(--bg-elev-2);
+    border:1px solid var(--border); color:var(--c,var(--text-dim)); text-transform:capitalize; }
+
+  /* updating shimmer */
+  .updating{ display:none; align-items:center; gap:7px; font-size:12px; color:var(--accent); padding:6px 0; }
+  .updating.show{ display:flex; }
+  .spinner{ width:13px; height:13px; border:2px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  .sec{ margin-top:16px; }
+  .sec h4{ font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim);
+    margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+
+  /* relationship rows */
+  .rel{ display:flex; align-items:center; gap:9px; padding:9px 0; border-bottom:1px solid var(--border); cursor:pointer; min-height:44px; }
+  .rel:active{ background:var(--bg-elev-2); }
+  .rel .gd{ width:10px; height:10px; border-radius:50%; background:var(--c,var(--text-dim)); flex:0 0 auto; }
+  .rel .rn{ flex:1; font-size:14px; }
+  .rel .rn small{ display:block; color:var(--text-dim); font-size:11px; }
+  .rel .w{ font-size:11px; color:var(--text-dim); background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:10px; padding:2px 8px; }
+
+  /* mentions */
+  .mention{ display:flex; align-items:center; gap:9px; padding:9px 0; border-bottom:1px solid var(--border); cursor:pointer; min-height:44px; }
+  .mention:active{ background:var(--bg-elev-2); }
+  .mention .mt{ flex:1; font-size:13px; }
+  .mention .md{ font-size:11px; color:var(--text-dim); }
+  .crosslink{ font-size:10px; color:var(--m-medical); border:1px solid rgba(207,141,141,.4); border-radius:9px; padding:1px 6px; }
+  .crosslink.cal{ color:var(--accent); border-color:rgba(127,154,166,.4); }
+
+  /* alias chips */
+  .aliases{ display:flex; flex-wrap:wrap; gap:7px; }
+  .alias{
+    font-size:12px; padding:5px 9px; border-radius:14px; background:var(--bg-elev-2);
+    border:1px solid var(--border); display:flex; align-items:center; gap:6px;
+  }
+  .alias.ai{ color:var(--text-dim); border-style:dashed; }
+  .alias .x{ cursor:pointer; color:var(--text-dim); font-weight:700; }
+  .alias .x:active{ color:var(--danger); }
+  .alias-add{ display:flex; gap:7px; margin-top:9px; }
+  .alias-add input{
+    flex:1; height:42px; padding:0 11px; background:var(--bg-elev); border:1px solid var(--border);
+    border-radius:var(--radius); color:var(--text); font-size:16px; outline:none;
+  }
+  .alias-add input:focus{ border-color:var(--accent); }
+
+  /* suggested merge card inside sheet */
+  .merge-card{
+    background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius);
+    padding:11px; margin-bottom:9px;
+  }
+  .merge-card .top{ display:flex; align-items:center; gap:8px; font-size:13px; }
+  .merge-card .conf{ font-size:11px; color:var(--m-research); margin-left:auto; font-weight:600; }
+  .merge-card .acts{ display:flex; gap:8px; margin-top:10px; }
+
+  /* buttons */
+  .btn{
+    height:44px; padding:0 14px; border-radius:var(--radius); font-size:14px; cursor:pointer;
+    background:var(--bg-elev-2); border:1px solid var(--border); color:var(--text);
+    display:inline-flex; align-items:center; justify-content:center; gap:7px; font-family:inherit;
+  }
+  .btn:active{ filter:brightness(1.15); }
+  .btn.primary{ background:var(--accent-soft); border-color:var(--accent); font-weight:600; }
+  .btn.ghost{ background:transparent; border-color:transparent; color:var(--text-dim); }
+  .btn.danger{ color:var(--danger); border-color:rgba(192,133,133,.4); }
+  .btn.sm{ height:38px; font-size:13px; padding:0 11px; }
+  .btn.block{ width:100%; }
+  .btn-row{ display:flex; gap:9px; margin-top:14px; }
+
+  /* decisions ledger */
+  .led{ display:flex; gap:10px; padding:11px 0; border-bottom:1px solid var(--border); }
+  .led .ig{ width:28px; height:28px; border-radius:7px; flex:0 0 auto; display:flex; align-items:center; justify-content:center;
+    font-size:13px; background:var(--bg-elev-2); border:1px solid var(--border); }
+  .led.merge .ig{ color:var(--m-entry); }
+  .led.split .ig{ color:var(--m-research); }
+  .led.alias .ig{ color:var(--accent); }
+  .led .lc{ flex:1; }
+  .led .lc .a{ font-size:13px; }
+  .led .lc .t{ font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .empty{ text-align:center; color:var(--text-dim); font-size:13px; padding:30px 10px; }
+
+  /* small select used for merge/split target */
+  select.tgt{
+    width:100%; height:44px; padding:0 11px; background:var(--bg-elev); border:1px solid var(--border);
+    border-radius:var(--radius); color:var(--text); font-size:16px; outline:none; appearance:none;
+  }
+  select.tgt:focus{ border-color:var(--accent); }
+
+  .note-banner{ font-size:12px; color:var(--text-dim); background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:var(--radius); padding:9px 11px; margin-top:10px; }
+
+  .divider{ height:1px; background:var(--border); margin:14px 0; }
+
+  /* toast */
+  .toast{
+    position:absolute; left:50%; bottom:74px; transform:translateX(-50%) translateY(20px);
+    background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius);
+    padding:9px 14px; font-size:13px; z-index:80; box-shadow:var(--sheet-shadow);
+    opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; max-width:80%; text-align:center;
+  }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; animation:none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== Page banner (outside phone) ===== -->
+<div class="page-banner">
+  <h1>Mockup 2 — Relationship Atlas</h1>
+  <p>Entity curation as exploration: navigate the co-mention graph, then merge / split / alias inline.</p>
+</div>
+
+<!-- ===== PHONE FRAME ===== -->
+<div class="phone" id="phone">
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <span>9:41</span>
+    <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span> JBrain</span>
+    <span>100%</span>
+  </div>
+
+  <!-- app header -->
+  <div class="appbar">
+    <div class="appbar-top">
+      <div class="appbar-title">Entities <small>Relationship Atlas</small></div>
+      <button class="iconbtn" id="btnLedger" title="Decisions history">&#9776;</button>
+      <button class="iconbtn" id="btnView" title="Toggle list view">&#9783;</button>
+    </div>
+  </div>
+
+  <!-- search + filter controls -->
+  <div class="controls">
+    <div class="search-wrap">
+      <span class="mag">&#128269;</span>
+      <input type="text" class="search" id="search" placeholder="Search or jump to an entity…" autocomplete="off" />
+      <div class="jump-list" id="jumpList" style="display:none"></div>
+    </div>
+    <div class="chips" id="chips"><!-- type filter chips injected --></div>
+  </div>
+
+  <!-- STAGE: graph + list fallback -->
+  <div class="stage" id="stage">
+    <div class="stage-hint" id="hint">Tap a node to focus &middot; drag to pan</div>
+    <svg id="graph" viewBox="0 0 390 460" preserveAspectRatio="xMidYMid meet"></svg>
+
+    <!-- legend -->
+    <div class="legend">
+      <div class="row"><span class="dot" style="background:#8fb89c"></span>person / animal</div>
+      <div class="row"><span class="dot" style="background:#c4ad6e"></span>org / event</div>
+      <div class="row"><span class="dot" style="background:#cf8d8d"></span>medical</div>
+      <div class="row"><span class="dot" style="background:#b89cd6"></span>thing / concept</div>
+      <div class="row"><span class="dot" style="background:#7f9aa6"></span>place / work</div>
+    </div>
+
+    <!-- zoom / focus controls -->
+    <div class="zoomctl">
+      <button id="zin">+</button>
+      <button id="zout">&minus;</button>
+      <button id="zfit" title="Fit / re-center" style="font-size:15px">&#9678;</button>
+    </div>
+
+    <!-- list fallback -->
+    <div class="listview" id="listview"></div>
+  </div>
+
+  <!-- AI suggestions banner -->
+  <div class="suggest-bar" id="suggestBar">
+    <span class="badge" id="suggestCount">5</span>
+    <span class="txt">Suggestions to review
+      <small id="suggestSub">3 likely duplicates &middot; 2 ambiguous terms</small>
+    </span>
+    <span class="chev">&rsaquo;</span>
+  </div>
+
+  <!-- bottom tab bar (decorative) -->
+  <div class="tabbar">
+    <div class="tab"><span class="ic">&#128172;</span>Chat</div>
+    <div class="tab"><span class="ic">&#128221;</span>Notes</div>
+    <div class="tab active"><span class="ic">&#9901;</span>Atlas</div>
+    <div class="tab"><span class="ic">&#128197;</span>Calendar</div>
+    <div class="tab"><span class="ic">&#9881;</span>Settings</div>
+  </div>
+
+  <!-- scrim + bottom sheet -->
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet" id="sheet">
+    <div class="grip"></div>
+    <div class="sheet-scroll" id="sheetBody"></div>
+  </div>
+
+  <!-- toast -->
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+/* ============================================================
+   MOCK DATASET
+   Entities are the canonical index rows. Each has aliases (user +
+   AI-detected), mention notes, optional medical/calendar crosslinks,
+   and flags (dup suggestion / ambiguity).
+   ============================================================ */
+const TYPES = {
+  person:'person', org:'org', place:'place', medication:'medication',
+  procedure:'procedure', condition:'condition', concept:'concept',
+  thing:'thing', animal:'animal', work:'work', event:'event'
+};
+
+// glyph letter per type (shown in node/list/sheet)
+const GLYPH = { person:'P', org:'O', place:'L', medication:'Rx', procedure:'Pr',
+  condition:'C', concept:'~', thing:'#', animal:'A', work:'F', event:'E' };
+
+let ENT = {
+  jeffH:   { id:'jeffH', name:'Jeff Hopkins', type:'person', notes:142, article:true, owner:true,
+             aiAliases:['Jeff','JH','me','the owner'], userAliases:[],
+             mentions:[ ['Weekly review — sprint 7','2026-05-30'], ['Dinner w/ Summer','2026-05-22'], ['Doctor follow-up notes','2026-04-18'] ] },
+  jeff:    { id:'jeff', name:'Jeff', type:'person', notes:38, article:false,
+             aiAliases:[], userAliases:[], dupOf:'jeffH', conf:0.92,
+             mentions:[ ['Quick standup','2026-05-12'], ['Note to self','2026-03-02'] ] },
+  jeffrey: { id:'jeffrey', name:'Jeffrey Hopkins', type:'person', notes:5, article:false,
+             aiAliases:[], userAliases:[], dupOf:'jeffH', conf:0.88,
+             mentions:[ ['Insurance form draft','2026-02-09'] ] },
+  summer:  { id:'summer', name:'Summer Hopkins', type:'person', notes:67, article:true,
+             aiAliases:['Sum'], userAliases:[],
+             mentions:[ ['Dinner w/ Summer','2026-05-22'], ['Trip planning SD','2026-04-30'] ] },
+  summerJ: { id:'summerJ', name:'Summer J. Hopkins', type:'person', notes:4, article:false,
+             aiAliases:[], userAliases:[], dupOf:'summer', conf:0.95,
+             mentions:[ ['Old contact card','2025-11-01'] ] },
+  mercy:   { id:'mercy', name:'Mercy Hospital', type:'org', notes:18, article:true,
+             aiAliases:['Mercy'], userAliases:[], calEvents:6,
+             mentions:[ ['Infusion appointment','2026-05-15'], ['Hematology consult','2026-04-18'] ] },
+  acme:    { id:'acme', name:'Acme Corp', type:'org', notes:23, article:false,
+             aiAliases:['Acme'], userAliases:[],
+             mentions:[ ['Q2 contract review','2026-05-08'], ['Onsite visit','2026-03-19'] ] },
+  sd:      { id:'sd', name:'San Diego', type:'place', notes:45, article:true,
+             aiAliases:['SD'], userAliases:[],
+             mentions:[ ['Trip planning SD','2026-04-30'], ['Conference recap','2026-02-14'] ] },
+  pred:    { id:'pred', name:'Prednisone', type:'medication', notes:31, article:true,
+             aiAliases:[], userAliases:[], medRecord:true,
+             mentions:[ ['Taper schedule','2026-05-20'], ['Side effects log','2026-05-02'] ] },
+  plasma:  { id:'plasma', name:'Plasmapheresis', type:'procedure', notes:12, article:false,
+             aiAliases:['PLEX'], userAliases:[], medRecord:true,
+             mentions:[ ['Treatment day 3','2026-04-20'] ] },
+  ttpCond: { id:'ttpCond', name:'Thrombotic Thrombocytopenic Purpura', type:'condition', notes:19, article:true,
+             aiAliases:['TTP'], userAliases:[], medRecord:true,
+             mentions:[ ['Diagnosis notes','2026-04-15'], ['Hematology consult','2026-04-18'] ] },
+  ttpConc: { id:'ttpConc', name:'TTP', type:'concept', notes:7, article:false,
+             aiAliases:['Tactics, Techniques & Procedures'], userAliases:[],
+             ambiguous:{ other:['Thrombotic Thrombocytopenic Purpura (condition)','Tactics, Techniques & Procedures (concept)'] },
+             mentions:[ ['Security workshop','2026-03-28'] ] },
+  python:  { id:'python', name:'Python', type:'thing', notes:28, article:true,
+             aiAliases:[], userAliases:[],
+             ambiguous:{ other:['Python (programming language)','Python (snake)'] },
+             mentions:[ ['Refactor scripts','2026-05-25'], ['Zoo visit photos','2026-01-11'] ] },
+  rex:     { id:'rex', name:'Rex', type:'animal', notes:9, article:false,
+             aiAliases:[], userAliases:[],
+             mentions:[ ['Vet appointment','2026-05-04'], ['Park walk','2026-04-27'] ] },
+  inception:{ id:'inception', name:'Inception', type:'work', notes:6, article:true,
+             aiAliases:[], userAliases:[],
+             mentions:[ ['Movie night','2026-03-15'] ] },
+  // ---- filler roster ----
+  gizmo:   { id:'gizmo', name:'Gizmo (cat)', type:'animal', notes:8, article:false, aiAliases:[], userAliases:[], mentions:[['Vet appointment','2026-05-04']] },
+  portland:{ id:'portland', name:'Portland', type:'place', notes:14, article:false, aiAliases:[], userAliases:[], mentions:[['Relocation thoughts','2026-02-21']] },
+  warfarin:{ id:'warfarin', name:'Warfarin', type:'medication', notes:11, article:false, aiAliases:[], userAliases:[], medRecord:true, mentions:[['INR check','2026-05-10']] },
+  marcus:  { id:'marcus', name:'Dr. Marcus Lee', type:'person', notes:16, article:true, aiAliases:['Dr. Lee'], userAliases:[], mentions:[['Hematology consult','2026-04-18']] },
+  globex:  { id:'globex', name:'Globex', type:'org', notes:9, article:false, aiAliases:[], userAliases:[], mentions:[['Vendor call','2026-03-30']] },
+  retreat: { id:'retreat', name:'Team Retreat 2026', type:'event', notes:7, article:false, aiAliases:[], userAliases:[], calEvents:1, mentions:[['Retreat agenda','2026-05-18']] },
+};
+
+/* ---- co-mention edges (a, b, weight = shared-note count) ----
+   plus dup edges (likely-the-same connectors) flagged separately. */
+let EDGES = [
+  ['jeffH','summer',54], ['jeffH','acme',20], ['jeffH','sd',17], ['jeffH','rex',9],
+  ['jeffH','mercy',8], ['jeffH','marcus',6], ['jeffH','retreat',5],
+  ['summer','sd',22], ['summer','rex',7], ['summer','gizmo',5],
+  ['mercy','pred',14], ['mercy','ttpCond',12], ['mercy','marcus',9], ['mercy','plasma',6],
+  ['pred','ttpCond',16], ['plasma','ttpCond',10], ['pred','warfarin',4],
+  ['acme','globex',6], ['acme','sd',5],
+  ['python','sd',3], ['inception','jeffH',4], ['portland','sd',6],
+  // dup connectors (suggested merges) — rendered as dashed "merge?" edges
+  ['jeff','jeffH',0,'dup'], ['jeffrey','jeffH',0,'dup'],
+  ['summerJ','summer',0,'dup'],
+];
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let state = {
+  centerId:'jeffH',     // focused entity
+  filter:'all',         // active type filter
+  query:'',
+  listMode:false,
+  zoom:1, panX:0, panY:0,
+  ledger:[],            // decisions history (session)
+  sheetMode:null,       // 'detail' | 'suggest' | 'ledger' | 'ambiguous'
+};
+
+const $ = s => document.querySelector(s);
+const svg = $('#graph');
+const SVGNS = 'http://www.w3.org/2000/svg';
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function entList(){ return Object.values(ENT); }
+function active(id){ return ENT[id]; }
+
+/* node radius from note_count (sqrt scale, clamped for phone legibility) */
+function radius(n){ return Math.max(11, Math.min(30, 9 + Math.sqrt(n)*1.7)); }
+
+/* ============================================================
+   TYPE FILTER CHIPS
+   ============================================================ */
+const CHIP_TYPES = ['all','person','org','place','medication','condition','thing','animal','work'];
+function renderChips(){
+  const c = $('#chips'); c.innerHTML='';
+  CHIP_TYPES.forEach(t=>{
+    const el = document.createElement('div');
+    el.className = 'chip t-'+t + (state.filter===t?' active':'') + (t==='all'?' all':'');
+    el.innerHTML = (t==='all'?'':'<span class="swatch"></span>') + (t==='all'?'All':t[0].toUpperCase()+t.slice(1));
+    el.onclick = ()=>{ state.filter=t; renderChips(); renderGraph(); renderList(); };
+    c.appendChild(el);
+  });
+}
+
+/* whether an entity passes the current type filter + query */
+function passesFilter(e){
+  if(state.filter!=='all' && e.type!==state.filter) return false;
+  return true;
+}
+
+/* ============================================================
+   GRAPH LAYOUT
+   Deterministic radial layout around the centered node: its direct
+   neighbors form a ring; that keeps it legible on a phone (no hairball).
+   We cap to centered node + its strongest N neighbors, "expand on demand"
+   by tapping a neighbor (which re-centers).
+   ============================================================ */
+const W=390, H=460, CX=W/2, CY=H/2-10;
+const MAX_NEIGHBORS = 9;
+
+function neighborsOf(id){
+  const out=[];
+  EDGES.forEach(([a,b,w,kind])=>{
+    if(a===id) out.push({id:b,w,kind});
+    else if(b===id) out.push({id:a,w,kind});
+  });
+  // de-dup keep max weight, dups kept as flag
+  const map={};
+  out.forEach(o=>{
+    if(!map[o.id]) map[o.id]=o;
+    else { if(o.w>map[o.id].w) map[o.id].w=o.w; if(o.kind) map[o.id].kind=o.kind; }
+  });
+  return Object.values(map).sort((a,b)=> (b.w)-(a.w));
+}
+
+function computeLayout(){
+  const cid = state.centerId;
+  const center = ENT[cid];
+  let neigh = neighborsOf(cid).filter(n=> ENT[n.id]);
+  // honor type filter (but always keep dup-suggestion neighbors so user can merge)
+  neigh = neigh.filter(n=> passesFilter(ENT[n.id]) || n.kind==='dup');
+  neigh = neigh.slice(0, MAX_NEIGHBORS);
+
+  const pos = {};
+  pos[cid] = { x:CX, y:CY, r:radius(center.notes), e:center, center:true };
+
+  // Ring radius is pulled in so the widest neighbour node + its label stays inside
+  // the 390-unit viewBox at 390px (no horizontal clipping / overflow).
+  const ringX = 128, ringY = 150;
+  neigh.forEach((n,i)=>{
+    const ang = (-90 + i*(360/Math.max(neigh.length,1))) * Math.PI/180;
+    pos[n.id] = {
+      x: CX + Math.cos(ang)*ringX,
+      y: CY + Math.sin(ang)*ringY*0.78,
+      r: radius(ENT[n.id].notes),
+      e: ENT[n.id], w:n.w, kind:n.kind
+    };
+  });
+  return { pos, neigh, center };
+}
+
+function el(tag, attrs){ const n=document.createElementNS(SVGNS,tag); for(const k in attrs) n.setAttribute(k,attrs[k]); return n; }
+
+function renderGraph(){
+  if(state.listMode) return;
+  svg.innerHTML='';
+  // Scale ABOUT the graph centre (CX,CY), not the SVG origin, so zooming keeps
+  // the focused node in view. (`transform-origin` is unreliable on SVG <g>.)
+  const z = state.zoom;
+  const tx = state.panX + CX - CX*z;
+  const ty = state.panY + CY - CY*z;
+  const g = el('g',{ transform:`translate(${tx},${ty}) scale(${z})` });
+  svg.appendChild(g);
+
+  const { pos } = computeLayout();
+  const ids = Object.keys(pos);
+
+  // edges first
+  EDGES.forEach(([a,b,w,kind])=>{
+    if(!pos[a] || !pos[b]) return;
+    const cls = kind==='dup' ? 'edge dup' : (w>=20?'edge strong':'edge');
+    const line = el('line',{ x1:pos[a].x,y1:pos[a].y,x2:pos[b].x,y2:pos[b].y, class:cls });
+    g.appendChild(line);
+    // weight label on stronger edges
+    if(kind!=='dup' && w>=10){
+      const tx=(pos[a].x+pos[b].x)/2, ty=(pos[a].y+pos[b].y)/2;
+      const t = el('text',{ x:tx, y:ty, class:'flag' }); t.textContent=w;
+      t.setAttribute('fill','#5a6164'); t.setAttribute('font-size','9'); t.setAttribute('text-anchor','middle');
+      g.appendChild(t);
+    }
+  });
+
+  // nodes
+  ids.forEach(id=>{
+    const p = pos[id], e = p.e;
+    const node = el('g',{ class:'node t-'+e.type + (p.center?' center':''), 'data-id':id });
+    const circle = el('circle',{ cx:p.x, cy:p.y, r:p.r, class:'body' });
+    circle.setAttribute('fill', typeColor(e.type));
+    circle.setAttribute('fill-opacity', '0.92');
+    node.appendChild(circle);
+
+    // glyph in node
+    const gl = el('text',{ x:p.x, y:p.y+4, 'text-anchor':'middle', 'font-size':Math.min(13,p.r*0.7), fill:'#111315', 'font-weight':'700' });
+    gl.textContent = GLYPH[e.type]; node.appendChild(gl);
+
+    // label below — clamp x into a safe band so a centred label never overflows
+    // the 0–390 viewBox at the left/right edges of the ring.
+    const lx = Math.max(40, Math.min(W-40, p.x));
+    const lbl = el('text',{ x:lx, y:p.y+p.r+12, class:'lbl' });
+    lbl.textContent = e.name.length>15 ? e.name.slice(0,14)+'…' : e.name;
+    node.appendChild(lbl);
+
+    // flag badges: dup suggestion / ambiguity
+    if(e.dupOf || p.kind==='dup'){
+      const fb = el('g',{ class:'flag flag-dup' });
+      fb.appendChild(el('circle',{ cx:p.x+p.r*0.72, cy:p.y-p.r*0.72, r:7 }));
+      const ft=el('text',{ x:p.x+p.r*0.72, y:p.y-p.r*0.72+3 }); ft.textContent='?'; fb.appendChild(ft);
+      node.appendChild(fb);
+    }
+    if(e.ambiguous){
+      const fb = el('g',{ class:'flag flag-amb' });
+      fb.appendChild(el('circle',{ cx:p.x+p.r*0.72, cy:p.y-p.r*0.72, r:7 }));
+      const ft=el('text',{ x:p.x+p.r*0.72, y:p.y-p.r*0.72+3 }); ft.textContent='!'; fb.appendChild(ft);
+      node.appendChild(fb);
+    }
+
+    node.addEventListener('click', (ev)=>{ ev.stopPropagation(); if(justDragged) return; onNodeTap(id); });
+    g.appendChild(node);
+  });
+}
+
+function typeColor(t){
+  const map = { person:'#8fb89c', org:'#c4ad6e', place:'#7f9aa6', medication:'#cf8d8d',
+    procedure:'#cf8d8d', condition:'#cf8d8d', concept:'#b89cd6', thing:'#b89cd6',
+    animal:'#84a591', work:'#9aa6b2', event:'#c4ad6e' };
+  return map[t]||'#828a8e';
+}
+
+/* tapping a node: if it's the center already -> open detail sheet;
+   otherwise re-center the graph on it (exploration), then open detail. */
+let lastTap = null;
+function onNodeTap(id){
+  if(id===state.centerId){
+    openDetail(id);
+  } else {
+    state.centerId = id;
+    state.panX=0; state.panY=0;
+    renderGraph();
+    setHint('Centered on '+ENT[id].name+' — tap again for details');
+    // open detail right away so curation is one tap from the graph
+    openDetail(id);
+  }
+}
+
+function setHint(t){ $('#hint').textContent = t; }
+
+/* ============================================================
+   LIST FALLBACK VIEW
+   ============================================================ */
+function renderList(){
+  const lv = $('#listview'); lv.innerHTML='';
+  let rows = entList().filter(passesFilter);
+  if(state.query) rows = rows.filter(e=> matchQuery(e, state.query));
+  rows.sort((a,b)=> b.notes-a.notes);
+  if(!rows.length){ lv.innerHTML='<div class="empty">No entities match.</div>'; return; }
+  rows.forEach(e=>{
+    const row=document.createElement('div'); row.className='lrow t-'+e.type;
+    row.innerHTML = `
+      <div class="glyph">${GLYPH[e.type]}</div>
+      <div class="meta">
+        <div class="nm">${e.name}
+          ${e.dupOf?'<span class="pill dup">dup?</span>':''}
+          ${e.ambiguous?'<span class="pill amb">ambiguous</span>':''}
+        </div>
+        <div class="sub">${e.type} &middot; ${e.notes} notes${e.article?' &middot; <span class="art">KB article</span>':''}</div>
+      </div>`;
+    row.onclick=()=>{ state.centerId=e.id; openDetail(e.id); };
+    lv.appendChild(row);
+  });
+}
+
+function matchQuery(e,q){
+  q=q.toLowerCase();
+  if(e.name.toLowerCase().includes(q)) return true;
+  return [...(e.aiAliases||[]),...(e.userAliases||[])].some(a=> a.toLowerCase().includes(q));
+}
+
+/* ============================================================
+   SEARCH / JUMP-TO
+   ============================================================ */
+$('#search').addEventListener('input', e=>{
+  state.query = e.target.value.trim();
+  const jl = $('#jumpList');
+  if(!state.query){ jl.style.display='none'; renderList(); return; }
+  const matches = entList().filter(x=> matchQuery(x, state.query)).slice(0,7);
+  if(!matches.length){ jl.style.display='none'; }
+  else {
+    jl.innerHTML = matches.map(m=>`
+      <div class="ji t-${m.type}" data-id="${m.id}">
+        <span class="rel-gd" style="width:9px;height:9px;border-radius:50%;background:${typeColor(m.type)}"></span>
+        <span class="nm">${m.name}</span>
+        <span class="ct">${m.type} &middot; ${m.notes}</span>
+      </div>`).join('');
+    jl.style.display='block';
+    jl.querySelectorAll('.ji').forEach(ji=> ji.onclick=()=>{
+      const id=ji.dataset.id; jumpTo(id);
+    });
+  }
+  renderList();
+});
+$('#search').addEventListener('blur', ()=> setTimeout(()=> $('#jumpList').style.display='none', 150));
+
+function jumpTo(id){
+  $('#search').value=''; state.query=''; $('#jumpList').style.display='none';
+  state.centerId=id; state.panX=0; state.panY=0;
+  if(state.listMode){ toggleList(false); }
+  renderGraph();
+  openDetail(id);
+}
+
+/* ============================================================
+   ZOOM / PAN
+   ============================================================ */
+$('#zin').onclick = ()=>{ state.zoom=Math.min(2.2,state.zoom+0.25); renderGraph(); };
+$('#zout').onclick= ()=>{ state.zoom=Math.max(0.6,state.zoom-0.25); renderGraph(); };
+$('#zfit').onclick= ()=>{ state.zoom=1; state.panX=0; state.panY=0; renderGraph(); };
+
+// drag-to-pan with one thumb. `justDragged` suppresses the node click that would
+// otherwise fire at the end of a pan gesture (would re-centre unexpectedly).
+let justDragged = false;
+(function(){
+  let dragging=false, sx=0, sy=0, ox=0, oy=0, moved=false;
+  // SVG renders at 390 CSS px wide but a 390-unit viewBox, so screen px ≈ user units.
+  function scaleFactor(){ const r=svg.getBoundingClientRect(); return r.width? (W/r.width) : 1; }
+  function down(x,y){ dragging=true; moved=false; justDragged=false; sx=x; sy=y; ox=state.panX; oy=state.panY; }
+  function move(x,y){ if(!dragging) return; const f=scaleFactor(); const dx=(x-sx)*f, dy=(y-sy)*f;
+    if(Math.abs(x-sx)+Math.abs(y-sy)>5) moved=true;
+    state.panX=ox+dx; state.panY=oy+dy; renderGraph(); }
+  function up(){ if(!dragging) return; dragging=false; justDragged=moved; if(moved) setTimeout(()=>{ justDragged=false; }, 0); }
+  svg.addEventListener('pointerdown', e=> down(e.clientX,e.clientY));
+  window.addEventListener('pointermove', e=> move(e.clientX,e.clientY));
+  window.addEventListener('pointerup', up);
+})();
+
+/* ============================================================
+   VIEW TOGGLE (graph <-> list)
+   ============================================================ */
+function toggleList(force){
+  state.listMode = (force!==undefined)? force : !state.listMode;
+  $('#listview').classList.toggle('show', state.listMode);
+  $('#btnView').classList.toggle('on', state.listMode);
+  $('#hint').style.display = state.listMode?'none':'block';
+  document.querySelector('.zoomctl').style.display = state.listMode?'none':'flex';
+  document.querySelector('.legend').style.display = state.listMode?'none':'block';
+  if(state.listMode) renderList(); else renderGraph();
+}
+$('#btnView').onclick = ()=> toggleList();
+
+/* ============================================================
+   BOTTOM SHEET — open/close + builders
+   ============================================================ */
+function openSheet(){ $('#scrim').classList.add('show'); $('#sheet').classList.add('show'); }
+function closeSheet(){ $('#scrim').classList.remove('show'); $('#sheet').classList.remove('show'); state.sheetMode=null; }
+$('#scrim').onclick = closeSheet;
+
+/* ---------- DETAIL SHEET (mentions, aliases, relationships, curation) ---------- */
+function openDetail(id){
+  state.sheetMode='detail';
+  const e = ENT[id];
+  const body = $('#sheetBody');
+  const neigh = neighborsOf(id).filter(n=> ENT[n.id]);
+  const userAl = e.userAliases||[], aiAl = e.aiAliases||[];
+
+  // suggested merges targeting this entity (e.g. Jeff -> Jeff Hopkins)
+  const incomingDups = entList().filter(x=> x.dupOf===id);
+  // is this entity itself a flagged dup of another?
+  const isDupOf = e.dupOf ? ENT[e.dupOf] : null;
+
+  body.innerHTML = `
+    <div class="sheet-head t-${e.type}">
+      <div class="glyph">${GLYPH[e.type]}</div>
+      <div class="hd">
+        <div class="nm">${e.name}
+          ${e.owner?'<span class="type-tag" style="color:var(--accent);border-color:var(--accent)">owner</span>':''}
+          <span class="type-tag">${e.type}</span>
+        </div>
+        <div class="sub">${e.notes} notes &middot; ${e.article?'KB article ✓':'no article'}${e.medRecord?' &middot; medical record':''}${e.calEvents?' &middot; '+e.calEvents+' calendar events':''}</div>
+      </div>
+    </div>
+
+    <div class="updating" id="updating"><span class="spinner" style="animation:spin .8s linear infinite"></span> Re-indexing in background…</div>
+
+    ${isDupOf?`<div class="note-banner" style="border-color:rgba(207,141,141,.4)">
+      AI thinks this may be the same as <b>${isDupOf.name}</b> (${(e.conf*100).toFixed(0)}% confidence).
+      <div class="btn-row" style="margin-top:9px">
+        <button class="btn primary sm" onclick="doMerge('${e.id}','${isDupOf.id}')">Merge into ${isDupOf.name.split(' ')[0]}</button>
+        <button class="btn sm" onclick="doSplit('${e.id}','${isDupOf.id}')">Not the same</button>
+      </div></div>`:''}
+
+    ${e.ambiguous?`<div class="note-banner" style="border-color:rgba(196,173,110,.4)">
+      <b>Ambiguous term.</b> "${e.name}" maps to multiple things:
+      <div style="margin:7px 0 2px">${e.ambiguous.other.map(o=>'• '+o).join('<br>')}</div>
+      <button class="btn sm" style="margin-top:8px" onclick="openAmbiguous('${e.id}')">Disambiguate…</button>
+    </div>`:''}
+
+    <!-- RELATIONSHIPS (graph centerpiece, surfaced in-sheet too) -->
+    <div class="sec">
+      <h4>Relationships <span style="text-transform:none;font-weight:400">${neigh.length}</span></h4>
+      ${neigh.length? neigh.slice(0,6).map(n=>{
+        const o=ENT[n.id];
+        return `<div class="rel t-${o.type}" onclick="jumpTo('${o.id}')">
+          <span class="gd"></span>
+          <span class="rn">${o.name}<small>${o.type}${n.kind==='dup'?' &middot; likely duplicate':''}</small></span>
+          <span class="w">${n.kind==='dup'?'merge?':n.w+' shared'}</span>
+        </div>`; }).join('') : '<div class="empty">No co-mentions yet.</div>'}
+    </div>
+
+    <!-- ALIASES -->
+    <div class="sec">
+      <h4>Aliases</h4>
+      <div class="aliases" id="aliasWrap">
+        ${userAl.map(a=>`<span class="alias">${a}<span class="x" onclick="removeAlias('${e.id}','${esc(a)}')">×</span></span>`).join('')}
+        ${aiAl.map(a=>`<span class="alias ai" title="AI-detected (read-only)">${a}</span>`).join('')}
+        ${(!userAl.length && !aiAl.length)?'<span style="color:var(--text-dim);font-size:13px">None yet</span>':''}
+      </div>
+      <div class="alias-add">
+        <input type="text" id="aliasInput" placeholder="Add an alias…" />
+        <button class="btn primary sm" onclick="addAlias('${e.id}')">Add</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px">Dashed = AI-detected (read-only). Solid = yours.</div>
+    </div>
+
+    <!-- INCOMING SUGGESTED MERGES (this is the canonical target) -->
+    ${incomingDups.length?`<div class="sec">
+      <h4>Suggested duplicates to fold in</h4>
+      ${incomingDups.map(d=>`<div class="merge-card">
+        <div class="top"><span class="gd" style="width:10px;height:10px;border-radius:50%;background:${typeColor(d.type)}"></span>
+          <b>${d.name}</b> <span style="color:var(--text-dim)">&middot; ${d.notes} notes</span>
+          <span class="conf">${(d.conf*100).toFixed(0)}%</span></div>
+        <div class="acts">
+          <button class="btn primary sm" onclick="doMerge('${d.id}','${e.id}')">Fold in</button>
+          <button class="btn sm" onclick="doSplit('${d.id}','${e.id}')">Reject</button>
+        </div>
+      </div>`).join('')}
+    </div>`:''}
+
+    <!-- MENTIONS -->
+    <div class="sec">
+      <h4>Mentions <span style="text-transform:none;font-weight:400">${e.notes} notes</span></h4>
+      ${(e.mentions||[]).map(m=>`<div class="mention" onclick="toast('Opening note: ${esc(m[0])}')">
+        <span class="mt">${m[0]}</span>
+        <span class="md">${fmtDate(m[1])}</span>
+      </div>`).join('')}
+      ${e.medRecord?'<div class="mention"><span class="mt"><span class="crosslink">+ medical record</span> linked condition/medication file</span></div>':''}
+      ${e.calEvents?`<div class="mention"><span class="mt"><span class="crosslink cal">${e.calEvents} calendar events</span> linked</span></div>`:''}
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- CURATION: merge / split -->
+    <div class="sec" style="margin-top:0">
+      <h4>Curation</h4>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Fold a duplicate in, or mark two entities as separate. Same-type only.</div>
+      <label style="font-size:12px;color:var(--text-dim)">Merge another ${e.type} into this one</label>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        ${sameTypeSelect(e)}
+        <button class="btn primary sm" onclick="mergeFromSelect('${e.id}')">Merge</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn sm danger" style="flex:1" onclick="splitFromSelect('${e.id}')">Mark selected as separate</button>
+      </div>
+    </div>
+  `;
+  openSheet();
+}
+
+/* build a same-type <select> of merge targets */
+function sameTypeSelect(e){
+  const opts = entList().filter(x=> x.type===e.type && x.id!==e.id)
+    .map(x=>`<option value="${x.id}">${x.name} (${x.notes})</option>`).join('');
+  return `<select class="tgt" id="mergeTgt" style="flex:1">${opts||'<option>— none —</option>'}</select>`;
+}
+function mergeFromSelect(id){ const t=$('#mergeTgt'); if(t&&t.value) doMerge(t.value, id); }
+function splitFromSelect(id){ const t=$('#mergeTgt'); if(t&&t.value) doSplit(t.value, id); }
+
+/* ============================================================
+   CURATION ACTIONS (real state mutation + optimistic re-index)
+   ============================================================ */
+// MERGE: srcId folds INTO canonicalId. canonical stays; src becomes alias.
+function doMerge(srcId, canonicalId){
+  const src=ENT[srcId], canon=ENT[canonicalId];
+  if(!src||!canon) return;
+  // optimistic: show updating, apply state, log decision
+  canon.notes += src.notes;
+  canon.userAliases = canon.userAliases||[];
+  if(!canon.userAliases.includes(src.name)) canon.userAliases.push(src.name);
+  // carry mentions over
+  canon.mentions = [...(canon.mentions||[]), ...(src.mentions||[])].slice(0,8);
+  // re-point edges from src to canon
+  EDGES = EDGES.map(([a,b,w,k])=>[ a===srcId?canonicalId:a, b===srcId?canonicalId:b, w, k ])
+               .filter(([a,b,w,k])=> !(k==='dup' && (a===srcId||b===srcId)) ) // drop the resolved dup connector
+               .filter(([a,b])=> a!==b); // drop self loops
+  delete ENT[srcId];
+  if(state.centerId===srcId) state.centerId=canonicalId;
+  logDecision('merge', `Merged “${src.name}” into “${canon.name}”`);
+  settleAndRefresh(canonicalId, `Merged into ${canon.name}`);
+}
+
+// SPLIT: declare src & target are NOT the same -> remove dup flag/edge, block auto-merge
+function doSplit(srcId, otherId){
+  const src=ENT[srcId], other=ENT[otherId];
+  if(!src) return;
+  if(src.dupOf===otherId){ delete src.dupOf; delete src.conf; }
+  EDGES = EDGES.filter(([a,b,w,k])=> !(k==='dup' && ((a===srcId&&b===otherId)||(a===otherId&&b===srcId))));
+  logDecision('split', `Marked “${src.name}” as separate from “${other?other.name:'target'}”`);
+  settleAndRefresh(state.centerId, `${src.name} marked separate`);
+}
+
+// ALIASES
+function addAlias(id){
+  const inp=$('#aliasInput'); const v=inp.value.trim(); if(!v) return;
+  ENT[id].userAliases = ENT[id].userAliases||[];
+  if(ENT[id].userAliases.includes(v) || (ENT[id].aiAliases||[]).includes(v)){ toast('Alias already exists'); return; }
+  ENT[id].userAliases.push(v);
+  logDecision('alias', `Added alias “${v}” to “${ENT[id].name}”`);
+  settleAndRefresh(id, `Alias “${v}” added`);
+}
+function removeAlias(id, a){
+  ENT[id].userAliases = (ENT[id].userAliases||[]).filter(x=> x!==a);
+  logDecision('alias', `Removed alias “${a}” from “${ENT[id].name}”`);
+  settleAndRefresh(id, `Alias removed`);
+}
+
+/* optimistic settle: flash the "updating…" row, then re-render after a tick */
+function settleAndRefresh(centerId, msg){
+  // re-render sheet immediately (optimistic), then show updating shimmer briefly
+  if(state.sheetMode==='detail') openDetail(centerId);
+  else if(state.sheetMode==='suggest') openSuggestions();
+  else if(state.sheetMode==='ambiguous') {} // handled inline
+  const up = $('#updating'); if(up){ up.classList.add('show'); }
+  renderGraph(); renderList(); updateSuggestBar();
+  if(!reduced){
+    setTimeout(()=>{ const u=$('#updating'); if(u) u.classList.remove('show'); toast(msg); }, 1100);
+  } else {
+    const u=$('#updating'); if(u) u.classList.remove('show'); toast(msg);
+  }
+}
+
+/* ============================================================
+   DECISIONS LEDGER
+   ============================================================ */
+function logDecision(kind, text){
+  state.ledger.unshift({ kind, text, at:new Date() });
+}
+function openLedger(){
+  state.sheetMode='ledger';
+  const body=$('#sheetBody');
+  body.innerHTML = `
+    <div class="sheet-head"><div class="glyph" style="color:var(--accent)">&#9776;</div>
+      <div class="hd"><div class="nm">Decisions history</div>
+      <div class="sub">Append-only audit ledger — survives re-index</div></div></div>
+    <div class="sec" style="margin-top:6px">
+      ${state.ledger.length? state.ledger.map(d=>`
+        <div class="led ${d.kind}">
+          <div class="ig">${d.kind==='merge'?'&#8600;':d.kind==='split'?'&#8599;':'@'}</div>
+          <div class="lc"><div class="a">${d.text}</div><div class="t">${d.kind} &middot; ${fmtTime(d.at)}</div></div>
+        </div>`).join('')
+      : '<div class="empty">No decisions yet this session.<br>Merge, split, or add an alias to see them logged here.</div>'}
+    </div>`;
+  openSheet();
+}
+$('#btnLedger').onclick = openLedger;
+
+/* ============================================================
+   SUGGESTIONS SHEET (AI proposed merges + ambiguities)
+   ============================================================ */
+function pendingDups(){ return entList().filter(e=> e.dupOf && ENT[e.dupOf]); }
+function pendingAmbig(){ return entList().filter(e=> e.ambiguous); }
+
+function updateSuggestBar(){
+  const d=pendingDups().length, a=pendingAmbig().length;
+  $('#suggestCount').textContent = d+a;
+  $('#suggestSub').textContent = `${d} likely duplicate${d!==1?'s':''} · ${a} ambiguous term${a!==1?'s':''}`;
+  $('#suggestBar').style.display = (d+a)?'flex':'none';
+}
+
+function openSuggestions(){
+  state.sheetMode='suggest';
+  const body=$('#sheetBody');
+  const dups=pendingDups(), ambs=pendingAmbig();
+  body.innerHTML = `
+    <div class="sheet-head"><div class="glyph" style="color:var(--m-research)">&#9670;</div>
+      <div class="hd"><div class="nm">Review suggestions</div>
+      <div class="sub">Nothing is auto-merged. You decide.</div></div></div>
+    <div class="updating" id="updating"><span class="spinner" style="animation:spin .8s linear infinite"></span> Re-indexing…</div>
+
+    <div class="sec">
+      <h4>Likely duplicates ${dups.length}</h4>
+      ${dups.length? dups.map(d=>{
+        const c=ENT[d.dupOf];
+        return `<div class="merge-card">
+          <div class="top"><b>${d.name}</b> → <b>${c.name}</b><span class="conf">${(d.conf*100).toFixed(0)}%</span></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px">${d.notes} notes → folds into ${c.notes}-note canonical</div>
+          <div class="acts">
+            <button class="btn primary sm" onclick="doMerge('${d.id}','${c.id}')">Confirm merge</button>
+            <button class="btn sm" onclick="doSplit('${d.id}','${c.id}')">Reject</button>
+            <button class="btn ghost sm" onclick="jumpTo('${c.id}')">View</button>
+          </div>
+        </div>`; }).join('') : '<div class="empty" style="padding:16px">All clear.</div>'}
+    </div>
+
+    <div class="sec">
+      <h4>Ambiguous terms ${ambs.length}</h4>
+      ${ambs.length? ambs.map(a=>`<div class="merge-card">
+        <div class="top"><b>${a.name}</b> <span class="pill amb" style="margin-left:auto">${a.ambiguous.other.length} senses</span></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:5px">${a.ambiguous.other.map(o=>'• '+o).join('<br>')}</div>
+        <div class="acts"><button class="btn primary sm" onclick="openAmbiguous('${a.id}')">Disambiguate</button></div>
+      </div>`).join('') : '<div class="empty" style="padding:16px">All clear.</div>'}
+    </div>`;
+  openSheet();
+}
+$('#suggestBar').onclick = openSuggestions;
+
+/* ---------- AMBIGUITY RESOLUTION ---------- */
+function openAmbiguous(id){
+  state.sheetMode='ambiguous';
+  const e=ENT[id]; const body=$('#sheetBody');
+  body.innerHTML = `
+    <div class="sheet-head"><div class="glyph" style="color:var(--m-research)">!</div>
+      <div class="hd"><div class="nm">Disambiguate “${e.name}”</div>
+      <div class="sub">This term refers to more than one distinct thing. Keep them separate.</div></div></div>
+    <div class="updating" id="updating"><span class="spinner" style="animation:spin .8s linear infinite"></span> Re-indexing…</div>
+    <div class="sec">
+      <h4>Distinct senses</h4>
+      ${e.ambiguous.other.map((o,i)=>`<div class="merge-card">
+        <div class="top"><b>${o}</b></div>
+        <div class="acts">
+          <button class="btn sm" onclick="assignSense('${e.id}',${i})">This is the right sense for current mentions</button>
+        </div>
+      </div>`).join('')}
+      <div class="note-banner">Resolving splits “${e.name}” into separate canonical entities and blocks future auto-merge between these senses.</div>
+      <div class="btn-row">
+        <button class="btn primary block" onclick="resolveAmbiguous('${e.id}')">Mark senses as separate</button>
+      </div>
+    </div>`;
+  openSheet();
+}
+function assignSense(id, i){
+  toast('Sense assigned to “'+ENT[id].ambiguous.other[i].split(' (')[0]+'”');
+}
+function resolveAmbiguous(id){
+  const e=ENT[id];
+  logDecision('split', `Disambiguated “${e.name}” into ${e.ambiguous.other.length} separate senses`);
+  delete e.ambiguous; // resolved -> no longer flagged
+  settleAndRefresh(id, `“${e.name}” disambiguated`);
+  setTimeout(()=>{ if(state.sheetMode!=='detail') openSuggestions(); }, reduced?0:1150);
+}
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+function esc(s){ return String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+function fmtDate(iso){ const d=new Date(iso); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+function fmtTime(d){ return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+let toastT;
+function toast(msg){
+  const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastT); toastT=setTimeout(()=> t.classList.remove('show'), 1900);
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+renderChips();
+renderGraph();
+renderList();
+updateSuggestBar();
+setHint('Tap a node to focus · drag to pan');
+</script>
+</body>
+</html>

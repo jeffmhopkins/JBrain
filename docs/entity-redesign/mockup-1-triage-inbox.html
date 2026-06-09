@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup 1 — Triage Inbox · JBrain Entities</title>
+<style>
+  /* ============================================================
+     DESIGN TOKENS — mirrored from JBrain "chat view" aesthetic
+     ============================================================ */
+  :root{
+    --bg:#111315; --bg-elev:#161a1c; --bg-elev-2:#1c2123; --border:#2a2f31;
+    --text:#d8dcde; --text-dim:#828a8e; --accent:#7f9aa6; --accent-soft:rgba(127,154,166,0.14);
+    --m-entry:#8fb89c; --m-medical:#cf8d8d; --m-research:#c4ad6e; --m-financial:#b89cd6;
+    --danger:#c08585; --ok:#84a591; --radius:8px;
+    --sheet-shadow:0 12px 30px rgba(0,0,0,.45);
+  }
+
+  /* ---- page chrome (outside the phone) ---- */
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    background:#0a0b0c; color:var(--text); font-size:16px; line-height:1.4;
+    display:flex; flex-direction:column; align-items:center; min-height:100vh;
+    padding:24px 12px 48px;
+  }
+  .page-banner{max-width:560px; text-align:center; margin-bottom:20px;}
+  .page-banner h1{font-size:18px; margin:0 0 6px; font-weight:600; letter-spacing:.2px;}
+  .page-banner p{font-size:13px; color:var(--text-dim); margin:0;}
+
+  /* ---- phone frame ---- */
+  .phone{
+    width:390px; max-width:100%; height:820px; max-height:90vh;
+    background:var(--bg); border:1px solid var(--border); border-radius:28px;
+    box-shadow:0 0 0 8px #16191b, 0 18px 50px rgba(0,0,0,.6);
+    position:relative; overflow:hidden; display:flex; flex-direction:column;
+  }
+  .notch{position:absolute; top:0; left:50%; transform:translateX(-50%);
+    width:130px; height:24px; background:#16191b; border-radius:0 0 14px 14px; z-index:60;}
+  .statusbar{height:34px; display:flex; align-items:flex-end; justify-content:space-between;
+    padding:0 22px 4px; font-size:12px; color:var(--text-dim); flex-shrink:0;}
+
+  /* ---- app header ---- */
+  .app-header{padding:8px 16px 10px; border-bottom:1px solid var(--border); flex-shrink:0;}
+  .app-title-row{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .app-title{font-size:17px; font-weight:600;}
+  .reindex-pill{font-size:11px; color:var(--text-dim); display:flex; align-items:center; gap:6px;
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:999px; padding:4px 10px;
+    opacity:0; transition:opacity .25s; pointer-events:none;}
+  .reindex-pill.show{opacity:1;}
+  .reindex-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+    animation:pulse 1s infinite ease-in-out;}
+  @keyframes pulse{0%,100%{opacity:.35;}50%{opacity:1;}}
+
+  /* ---- tabs ---- */
+  .tabs{display:flex; gap:4px; margin-top:10px;}
+  .tab{flex:1; text-align:center; font-size:13px; font-weight:500; color:var(--text-dim);
+    background:transparent; border:1px solid transparent; border-radius:var(--radius);
+    padding:8px 4px; cursor:pointer; min-height:40px; display:flex; align-items:center;
+    justify-content:center; gap:6px; transition:background .15s,color .15s;}
+  .tab:hover{color:var(--text);}
+  .tab.active{color:var(--text); background:var(--accent-soft); border-color:var(--accent); font-weight:600;}
+  .tab .badge{background:var(--accent); color:#0b0d0e; font-size:11px; font-weight:700;
+    border-radius:999px; padding:1px 6px; min-width:18px;}
+  .tab.active .badge{}
+
+  /* ---- scroll body ---- */
+  .screen{flex:1; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch;
+    padding-bottom:76px;}
+  .view{display:none; padding:14px 14px 0;}
+  .view.active{display:block;}
+
+  .section-label{font-size:12px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--text-dim); margin:18px 2px 8px; font-weight:600;}
+  .section-label:first-child{margin-top:4px;}
+
+  /* ============================================================
+     INBOX — triage cards
+     ============================================================ */
+  .card{background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+    padding:14px; margin-bottom:10px; position:relative; transition:opacity .3s, transform .3s;}
+  .card.removing{opacity:0; transform:translateX(40px) scale(.97);}
+  .card-kicker{display:flex; align-items:center; gap:7px; font-size:11px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.5px; color:var(--text-dim); margin-bottom:9px;}
+  .kicker-icon{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;
+    justify-content:center;font-size:11px; background:var(--bg-elev-2); border:1px solid var(--border);}
+
+  /* merge suggestion layout */
+  .merge-pair{display:flex; align-items:center; gap:10px; margin-bottom:10px;}
+  .ent-chip{flex:1; min-width:0; background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:var(--radius); padding:9px 10px; cursor:pointer;}
+  .ent-chip:active{background:var(--accent-soft);}
+  .ent-chip .ename{font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis;}
+  .ent-chip .emeta{font-size:11px; color:var(--text-dim); margin-top:2px;}
+  .merge-arrow{font-size:16px; color:var(--accent); flex-shrink:0;}
+  .conf{display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-dim);}
+  .conf-bar{width:46px; height:5px; background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:3px; overflow:hidden;}
+  .conf-bar > i{display:block; height:100%; background:var(--accent);}
+
+  .card-actions{display:flex; gap:8px; margin-top:12px;}
+  .btn{flex:1; font-family:inherit; font-size:14px; min-height:44px; border-radius:var(--radius);
+    cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;
+    border:1px solid var(--border); background:var(--bg-elev-2); color:var(--text);
+    padding:0 12px; transition:background .15s, border-color .15s;}
+  .btn:hover{background:var(--bg-elev-2); border-color:var(--text-dim);}
+  .btn:active{transform:translateY(1px);}
+  .btn.primary{background:var(--accent-soft); border-color:var(--accent); font-weight:600;}
+  .btn.ghost{background:transparent; border-color:transparent; color:var(--text-dim);}
+  .btn.ghost:hover{background:var(--bg-elev-2); color:var(--text);}
+  .btn.danger{color:var(--danger); border-color:transparent; background:transparent;}
+  .btn.danger:hover{background:rgba(192,133,133,.1);}
+  .btn.small{flex:0 0 auto; min-height:36px; font-size:13px; padding:0 12px;}
+  .btn.tiny{min-height:32px; font-size:12px; padding:0 10px;}
+
+  /* ambiguous / disambiguation card */
+  .ambig-opts{display:flex; flex-direction:column; gap:8px; margin-top:6px;}
+  .ambig-opt{display:flex; align-items:center; gap:10px; background:var(--bg-elev-2);
+    border:1px solid var(--border); border-radius:var(--radius); padding:10px; cursor:pointer;
+    min-height:44px; transition:border-color .15s, background .15s;}
+  .ambig-opt:hover{border-color:var(--accent);}
+  .ambig-opt.sel{border-color:var(--accent); background:var(--accent-soft);}
+  .ambig-opt .radio{width:18px;height:18px;border-radius:50%;border:2px solid var(--text-dim);
+    flex-shrink:0; position:relative;}
+  .ambig-opt.sel .radio{border-color:var(--accent);}
+  .ambig-opt.sel .radio::after{content:"";position:absolute;inset:3px;border-radius:50%;
+    background:var(--accent);}
+  .ambig-opt .otext{flex:1; min-width:0;}
+  .ambig-opt .otext b{font-size:14px; font-weight:600; display:block;}
+  .ambig-opt .otext span{font-size:11px; color:var(--text-dim);}
+
+  /* type tags */
+  .ttag{display:inline-block; font-size:10px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.4px; padding:2px 7px; border-radius:999px; border:1px solid var(--border);
+    color:var(--text-dim); background:var(--bg-elev);}
+  .ttag.medical{color:var(--m-medical); border-color:rgba(207,141,141,.4);}
+  .ttag.med-condition,.ttag.med-medication,.ttag.med-procedure{color:var(--m-medical); border-color:rgba(207,141,141,.4);}
+  .ttag.person{color:var(--m-entry); border-color:rgba(143,184,156,.4);}
+  .ttag.org{color:var(--m-financial); border-color:rgba(184,156,214,.4);}
+  .ttag.work,.ttag.concept{color:var(--m-research); border-color:rgba(196,173,110,.4);}
+
+  /* inbox zero */
+  .inbox-zero{text-align:center; padding:60px 24px;}
+  .inbox-zero .big{font-size:40px; margin-bottom:14px;}
+  .inbox-zero h3{font-size:17px; margin:0 0 6px; font-weight:600;}
+  .inbox-zero p{font-size:13px; color:var(--text-dim); margin:0 0 18px;}
+
+  /* ============================================================
+     ROSTER — browse + search
+     ============================================================ */
+  .search-wrap{position:sticky; top:0; background:var(--bg); padding:4px 0 10px; z-index:5;}
+  .search{width:100%; font-family:inherit; font-size:16px; color:var(--text);
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 14px; min-height:44px;}
+  .search:focus{outline:none; border-color:var(--accent);}
+  .filter-row{display:flex; gap:6px; overflow-x:auto; padding:10px 0 2px; margin-bottom:4px;}
+  .filter-row::-webkit-scrollbar{display:none;}
+  .fchip{flex:0 0 auto; font-size:13px; color:var(--text-dim); background:var(--bg-elev);
+    border:1px solid var(--border); border-radius:999px; padding:6px 13px; cursor:pointer;
+    min-height:36px; display:flex; align-items:center; white-space:nowrap;}
+  .fchip.active{color:var(--text); background:var(--accent-soft); border-color:var(--accent); font-weight:600;}
+
+  .roster-row{display:flex; align-items:center; gap:12px; padding:12px 6px;
+    border-bottom:1px solid var(--border); cursor:pointer; min-height:56px;}
+  .roster-row:active{background:var(--bg-elev);}
+  .roster-main{flex:1; min-width:0;}
+  .roster-name{font-size:15px; font-weight:600; display:flex; align-items:center; gap:7px;}
+  .roster-name .owner-star{color:var(--m-research); font-size:12px;}
+  .roster-sub{font-size:12px; color:var(--text-dim); margin-top:3px; display:flex; gap:10px; align-items:center;}
+  .roster-sub .kb{color:var(--accent);}
+  .chevron{color:var(--text-dim); font-size:18px; flex-shrink:0;}
+  .roster-empty{text-align:center; padding:40px; color:var(--text-dim); font-size:14px;}
+
+  /* ============================================================
+     DECISIONS LEDGER
+     ============================================================ */
+  .ledger-item{display:flex; gap:11px; padding:11px 4px; border-bottom:1px solid var(--border);}
+  .ledger-dot{width:9px;height:9px;border-radius:50%;margin-top:5px;flex-shrink:0;background:var(--accent);}
+  .ledger-dot.merge{background:var(--m-entry);}
+  .ledger-dot.split{background:var(--m-financial);}
+  .ledger-dot.alias{background:var(--m-research);}
+  .ledger-dot.disambig{background:var(--accent);}
+  .ledger-body{flex:1; min-width:0;}
+  .ledger-text{font-size:13px;}
+  .ledger-text b{font-weight:600;}
+  .ledger-meta{font-size:11px; color:var(--text-dim); margin-top:3px;}
+  .ledger-empty{text-align:center; padding:40px; color:var(--text-dim); font-size:14px;}
+
+  /* ============================================================
+     BOTTOM TAB BAR (app shell, mocked)
+     ============================================================ */
+  .tabbar{position:absolute; bottom:0; left:0; right:0; height:60px; background:var(--bg-elev);
+    border-top:1px solid var(--border); display:flex; z-index:40;}
+  .tabbar .tb{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:3px; color:var(--text-dim); font-size:10px; cursor:pointer;}
+  .tabbar .tb.active{color:var(--text);}
+  .tabbar .tb .ic{font-size:18px;}
+
+  /* ============================================================
+     BOTTOM SHEET (entity detail + confirm pickers)
+     ============================================================ */
+  .scrim{position:absolute; inset:0; background:rgba(0,0,0,.5); opacity:0; pointer-events:none;
+    transition:opacity .25s; z-index:50;}
+  .scrim.show{opacity:1; pointer-events:auto;}
+  .sheet{position:absolute; left:0; right:0; bottom:0; z-index:55;
+    background:var(--bg-elev); border:1px solid var(--border); border-bottom:none;
+    border-radius:18px 18px 0 0; box-shadow:var(--sheet-shadow);
+    transform:translateY(100%); transition:transform .28s cubic-bezier(.2,.8,.2,1);
+    max-height:88%; display:flex; flex-direction:column;}
+  .sheet.show{transform:translateY(0);}
+  .sheet-grip{width:38px;height:4px;border-radius:2px;background:var(--border);
+    margin:9px auto 4px; flex-shrink:0;}
+  .sheet-scroll{overflow-y:auto; padding:6px 16px 24px;}
+
+  .detail-head{display:flex; align-items:flex-start; gap:10px; padding:6px 0 14px;}
+  .detail-name{font-size:20px; font-weight:600; line-height:1.2;}
+  .detail-sub{font-size:12px; color:var(--text-dim); margin-top:5px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  .detail-close{margin-left:auto; background:var(--bg-elev-2); border:1px solid var(--border);
+    color:var(--text-dim); width:32px;height:32px;border-radius:8px; cursor:pointer; font-size:16px;
+    flex-shrink:0; display:flex; align-items:center; justify-content:center;}
+
+  .d-section{margin-top:16px;}
+  .d-section > h4{font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-dim);
+    margin:0 0 9px; font-weight:600;}
+  .mention{display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--border);
+    cursor:pointer;}
+  .mention .mtitle{flex:1; font-size:14px;}
+  .mention .mdate{font-size:11px; color:var(--text-dim);}
+  .alias-list{display:flex; flex-wrap:wrap; gap:7px;}
+  .alias-pill{display:inline-flex; align-items:center; gap:6px; background:var(--bg-elev-2);
+    border:1px solid var(--border); border-radius:999px; padding:5px 6px 5px 11px; font-size:13px;}
+  .alias-pill.ai{color:var(--text-dim); font-style:italic;}
+  .alias-pill .x{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;
+    width:30px;height:30px;border-radius:50%; display:flex;align-items:center;justify-content:center;
+    margin:-4px -2px;}
+  .alias-pill .x:hover{color:var(--danger); background:rgba(192,133,133,.12);}
+  .alias-add{display:flex; gap:8px; margin-top:10px;}
+  .alias-add input{flex:1; font-family:inherit; font-size:16px; color:var(--text);
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+    padding:9px 12px; min-height:42px;}
+  .alias-add input:focus{outline:none; border-color:var(--accent);}
+
+  .rel-row{display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--border); cursor:pointer;}
+  .rel-row .rname{flex:1; font-size:14px;}
+  .rel-row .rcount{font-size:11px; color:var(--text-dim);}
+  .xlink{display:flex; align-items:center; gap:9px; background:var(--bg-elev-2);
+    border:1px solid var(--border); border-radius:var(--radius); padding:11px 12px; margin-top:8px;
+    font-size:13px; cursor:pointer;}
+  .xlink .xic{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+    background:var(--bg-elev); border:1px solid var(--border); font-size:13px;}
+  .xlink.medical{border-color:rgba(207,141,141,.35);}
+  .xlink.medical .xic{color:var(--m-medical);}
+
+  .d-actions{display:flex; gap:8px; margin-top:18px;}
+
+  /* picker list inside sheet (merge/disambig target) */
+  .picker-item{display:flex; align-items:center; gap:10px; padding:12px 10px; border:1px solid var(--border);
+    border-radius:var(--radius); margin-bottom:8px; cursor:pointer; min-height:52px;}
+  .picker-item:hover{border-color:var(--accent);}
+  .picker-item .pname{flex:1; font-size:14px; font-weight:600;}
+  .picker-item .pmeta{font-size:11px; color:var(--text-dim);}
+  .sheet-title{font-size:16px; font-weight:600; padding:2px 0 4px;}
+  .sheet-desc{font-size:13px; color:var(--text-dim); margin-bottom:14px;}
+
+  /* toast */
+  .toast{position:absolute; left:14px; right:14px; bottom:72px; z-index:70;
+    background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 14px; font-size:13px; box-shadow:var(--sheet-shadow);
+    display:flex; align-items:center; gap:10px; transform:translateY(140%); opacity:0;
+    transition:transform .3s, opacity .3s;}
+  .toast.show{transform:translateY(0); opacity:1;}
+  .toast .tdot{width:8px;height:8px;border-radius:50%;background:var(--ok); flex-shrink:0;}
+  .toast .undo{margin-left:auto; color:var(--accent); font-weight:600; cursor:pointer;
+    padding:8px 10px; min-height:32px; display:flex; align-items:center; border-radius:6px;
+    flex-shrink:0; margin-right:-4px;}
+  .toast .undo:hover{background:var(--accent-soft);}
+
+  .muted{color:var(--text-dim);}
+  .progress-note{font-size:12px; color:var(--text-dim); padding:6px 2px; display:flex; align-items:center; gap:7px;}
+
+  @media (prefers-reduced-motion: reduce){
+    *{animation:none !important; transition:none !important;}
+  }
+</style>
+</head>
+<body>
+
+  <!-- ===== page banner (outside phone) ===== -->
+  <div class="page-banner">
+    <h1>Mockup 1 — Triage Inbox</h1>
+    <p>Curation-forward entity manager: an actionable queue of merge / disambiguation / fold suggestions up top, a full searchable roster behind a tab.</p>
+  </div>
+
+  <!-- ===== phone frame ===== -->
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="statusbar"><span>9:41</span><span>JBrain · Entities</span></div>
+
+    <!-- app header + primary tabs -->
+    <div class="app-header">
+      <div class="app-title-row">
+        <div class="app-title">Entities</div>
+        <div class="reindex-pill" id="reindexPill"><span class="dot"></span> updating index…</div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="inbox" onclick="switchTab('inbox')">
+          Triage <span class="badge" id="inboxBadge">6</span>
+        </button>
+        <button class="tab" data-tab="roster" onclick="switchTab('roster')">Browse</button>
+        <button class="tab" data-tab="ledger" onclick="switchTab('ledger')">History</button>
+      </div>
+    </div>
+
+    <!-- scrollable screen body -->
+    <div class="screen">
+      <!-- ===================== INBOX VIEW ===================== -->
+      <div class="view active" id="view-inbox">
+        <div id="inboxList"></div>
+      </div>
+
+      <!-- ===================== ROSTER VIEW ===================== -->
+      <div class="view" id="view-roster">
+        <div class="search-wrap">
+          <input class="search" id="search" type="text" placeholder="Search entities…"
+            oninput="renderRoster()" />
+          <div class="filter-row" id="filterRow"></div>
+        </div>
+        <div id="rosterList"></div>
+      </div>
+
+      <!-- ===================== LEDGER VIEW ===================== -->
+      <div class="view" id="view-ledger">
+        <div class="section-label">Decisions history</div>
+        <div id="ledgerList"></div>
+      </div>
+    </div>
+
+    <!-- mocked app bottom tab bar -->
+    <div class="tabbar">
+      <div class="tb"><span class="ic">💬</span><span>Chat</span></div>
+      <div class="tb"><span class="ic">📝</span><span>Notes</span></div>
+      <div class="tb active"><span class="ic">◈</span><span>Entities</span></div>
+      <div class="tb"><span class="ic">🗓</span><span>Calendar</span></div>
+      <div class="tb"><span class="ic">⚙</span><span>Settings</span></div>
+    </div>
+
+    <!-- bottom sheet + scrim (entity detail / pickers) -->
+    <div class="scrim" id="scrim" onclick="closeSheet()"></div>
+    <div class="sheet" id="sheet">
+      <div class="sheet-grip"></div>
+      <div class="sheet-scroll" id="sheetScroll"></div>
+    </div>
+
+    <!-- toast -->
+    <div class="toast" id="toast"><span class="tdot"></span><span id="toastMsg"></span></div>
+  </div>
+
+<script>
+/* ============================================================================
+   MOCK DATA
+   Entities keyed by id. note_count, hasArticle, aliases (user + ai), mentions,
+   co-mentions, medical/calendar cross-links, and type.
+   ============================================================================ */
+const DB = {
+  entities: {
+    jeffHopkins:{id:'jeffHopkins',name:'Jeff Hopkins',type:'person',notes:142,article:true,owner:true,
+      aliasesUser:['Jeff Marshall H.'],aliasesAI:['Jeff','JH','me','the owner'],
+      mentions:[['Standup notes — Q2 planning','2026-06-04'],['Therapy journal','2026-05-28'],['Dinner with Summer','2026-05-19']],
+      coment:[['summerHopkins',54],['rex',21],['acme',12]], calendar:0},
+    jeff:{id:'jeff',name:'Jeff',type:'person',notes:38,article:false,
+      mentions:[['Gym log','2026-06-01'],['Quick idea dump','2026-05-30']],coment:[['rex',8]]},
+    jeffrey:{id:'jeffrey',name:'Jeffrey Hopkins',type:'person',notes:5,article:false,
+      mentions:[['Insurance paperwork','2026-04-12']],coment:[]},
+    summerHopkins:{id:'summerHopkins',name:'Summer Hopkins',type:'person',notes:67,article:true,
+      aliasesUser:[],aliasesAI:['Summer'],
+      mentions:[['Dinner with Summer','2026-05-19'],['Anniversary plans','2026-05-02']],
+      coment:[['jeffHopkins',54],['rex',14]], calendar:3},
+    summerJ:{id:'summerJ',name:'Summer J. Hopkins',type:'person',notes:4,article:false,
+      mentions:[['School form','2026-03-21']],coment:[]},
+    mercy:{id:'mercy',name:'Mercy Hospital',type:'org',notes:18,article:true,
+      aliasesUser:[],aliasesAI:['Mercy Med Center'],
+      mentions:[['Hematology appt','2026-05-22'],['Discharge summary','2026-04-30']],
+      coment:[['prednisone',9],['plasmapheresis',6]], calendar:6},
+    acme:{id:'acme',name:'Acme Corp',type:'org',notes:23,article:false,
+      mentions:[['Contract review','2026-05-15'],['Invoice #4471','2026-05-09']],coment:[['jeffHopkins',12]]},
+    sandiego:{id:'sandiego',name:'San Diego',type:'place',notes:45,article:true,
+      mentions:[['Trip recap','2026-04-18'],['Conference notes','2026-03-30']],coment:[['summerHopkins',9]]},
+    prednisone:{id:'prednisone',name:'Prednisone',type:'med-medication',notes:31,article:true,medical:'current medication',
+      aliasesUser:[],aliasesAI:[],
+      mentions:[['Med schedule','2026-06-05'],['Side-effects log','2026-05-26']],coment:[['mercy',9],['ttpCondition',14]]},
+    plasmapheresis:{id:'plasmapheresis',name:'Plasmapheresis',type:'med-procedure',notes:12,article:false,medical:'procedure record',
+      mentions:[['Treatment plan','2026-05-20']],coment:[['mercy',6],['ttpCondition',7]]},
+    ttpCondition:{id:'ttpCondition',name:'Thrombotic Thrombocytopenic Purpura',type:'med-condition',notes:19,article:true,medical:'active condition',
+      aliasesUser:['TTP'],aliasesAI:[],
+      mentions:[['Diagnosis notes','2026-04-28'],['Hematology appt','2026-05-22']],coment:[['prednisone',14],['plasmapheresis',7]]},
+    ttpConcept:{id:'ttpConcept',name:'TTP (Tactics, Techniques & Procedures)',type:'concept',notes:7,article:false,
+      mentions:[['Security reading','2026-05-11']],coment:[]},
+    python:{id:'python',name:'Python',type:'thing',notes:28,article:true,
+      mentions:[['Side project log','2026-06-02'],['Refactor ideas','2026-05-24']],coment:[]},
+    rex:{id:'rex',name:'Rex',type:'animal',notes:9,article:false,
+      mentions:[['Vet visit','2026-05-17'],['Walk log','2026-05-10']],coment:[['jeffHopkins',21],['summerHopkins',14]]},
+    inception:{id:'inception',name:'Inception',type:'work',notes:6,article:true,
+      mentions:[['Movie night','2026-04-09']],coment:[]},
+    /* ---- filler roster entities ---- */
+    pacific:{id:'pacific',name:'Pacific Beach',type:'place',notes:11,article:false,mentions:[['Trip recap','2026-04-18']],coment:[['sandiego',7]]},
+    aspirin:{id:'aspirin',name:'Aspirin',type:'med-medication',notes:8,article:false,medical:'as-needed',mentions:[['Med schedule','2026-06-05']],coment:[]},
+    nginx:{id:'nginx',name:'Nginx',type:'thing',notes:14,article:false,mentions:[['Server setup','2026-05-03']],coment:[]},
+    mom:{id:'mom',name:'Linda Hopkins',type:'person',notes:22,article:false,aliasesAI:['Mom'],mentions:[['Phone call','2026-05-31']],coment:[['jeffHopkins',13]]},
+    google:{id:'google',name:'Google',type:'org',notes:17,article:true,mentions:[['Job search','2026-05-08']],coment:[]},
+    creatine:{id:'creatine',name:'Creatine',type:'thing',notes:6,article:false,mentions:[['Gym log','2026-06-01']],coment:[]},
+    dune:{id:'dune',name:'Dune',type:'work',notes:4,article:false,mentions:[['Reading list','2026-04-02']],coment:[]},
+    diabetes:{id:'diabetes',name:'Type 2 Diabetes',type:'med-condition',notes:5,article:false,medical:'monitored',mentions:[['Lab results','2026-05-13']],coment:[]},
+  },
+  /* triage queue items */
+  inbox:[
+    {id:'m1',kind:'merge',from:'jeff',to:'jeffHopkins',conf:0.92},
+    {id:'m2',kind:'merge',from:'summerJ',to:'summerHopkins',conf:0.95},
+    {id:'m3',kind:'merge',from:'jeffrey',to:'jeffHopkins',conf:0.88},
+    {id:'a1',kind:'ambiguous',term:'TTP',options:[
+      {entId:'ttpCondition',label:'Thrombotic Thrombocytopenic Purpura',note:'medical condition · 19 notes'},
+      {entId:'ttpConcept',label:'Tactics, Techniques & Procedures',note:'concept · 7 notes'}]},
+    {id:'a2',kind:'ambiguous',term:'Python',options:[
+      {entId:'python',label:'Python (programming language)',note:'thing · 28 notes'},
+      {entId:'_pythonSnake',label:'Python (the snake)',note:'animal · new entity'}]},
+    {id:'s1',kind:'selfref',terms:['me','I','the owner'],to:'jeffHopkins'},
+  ],
+  ledger:[],   // populated by user actions this session
+};
+
+const TYPE_LABEL = {
+  person:'Person', org:'Org', place:'Place', animal:'Animal', thing:'Thing',
+  work:'Work', concept:'Concept', 'med-condition':'Condition',
+  'med-medication':'Medication', 'med-procedure':'Procedure',
+};
+const FILTERS = ['All','Person','Org','Place','Medical','Thing','Work','Concept','Animal'];
+let activeFilter = 'All';
+
+/* ============================================================================
+   UTILITIES
+   ============================================================================ */
+function ent(id){ return DB.entities[id]; }
+function ttagClass(t){ return t.startsWith('med-') ? 'medical' : t; }
+function typeLabel(t){ return TYPE_LABEL[t] || t; }
+
+function toast(msg, undoFn){
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+
+  // optional inline Undo for destructive actions (merge/fold/split)
+  let undo = t.querySelector('.undo');
+  if(undo) undo.remove();
+  if(undoFn){
+    undo = document.createElement('span');
+    undo.className = 'undo';
+    undo.textContent = 'Undo';
+    undo.setAttribute('role','button');
+    undo.onclick = ()=>{ clearTimeout(t._timer); t.classList.remove('show'); undoFn(); };
+    t.appendChild(undo);
+  }
+
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=> t.classList.remove('show'), undoFn ? 4500 : 2600);
+}
+
+/* optimistic re-index pulse, then settle */
+function reindex(){
+  const p = document.getElementById('reindexPill');
+  p.classList.add('show');
+  clearTimeout(p._timer);
+  p._timer = setTimeout(()=> p.classList.remove('show'), 1500);
+}
+
+/* Case-insensitive membership across name + every alias set. */
+function aliasExists(e, val){
+  const v = (val||'').toLowerCase();
+  return [e.name, ...(e.aliasesUser||[]), ...(e.aliasesAI||[])]
+    .some(a=>a.toLowerCase()===v);
+}
+
+function logDecision(kind, text){
+  const entry = {kind, text, time:'just now'};
+  DB.ledger.unshift(entry);
+  renderLedger();
+  return entry;
+}
+
+/* Remove a ledger entry (used when an action is undone). */
+function undoDecision(entry){
+  DB.ledger = DB.ledger.filter(d=>d!==entry);
+  renderLedger();
+}
+
+/* ============================================================================
+   TAB SWITCHING
+   ============================================================================ */
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+name).classList.add('active');
+  document.querySelector('.screen').scrollTop = 0;
+}
+
+/* ============================================================================
+   INBOX RENDERING
+   ============================================================================ */
+function renderInbox(){
+  const list = document.getElementById('inboxList');
+  document.getElementById('inboxBadge').textContent = DB.inbox.length;
+
+  if(DB.inbox.length === 0){
+    list.innerHTML = `
+      <div class="inbox-zero">
+        <div class="big">✦</div>
+        <h3>Inbox zero</h3>
+        <p>No identity issues to review. The index is clean — new suggestions will land here as your notes grow.</p>
+        <button class="btn primary" style="max-width:200px;margin:0 auto;" onclick="switchTab('roster')">Browse all entities</button>
+      </div>`;
+    return;
+  }
+
+  // group counts for section labels
+  const merges = DB.inbox.filter(i=>i.kind==='merge');
+  const ambigs = DB.inbox.filter(i=>i.kind==='ambiguous');
+  const selfs  = DB.inbox.filter(i=>i.kind==='selfref');
+
+  let html = '';
+  if(merges.length){
+    html += `<div class="section-label">Suggested merges · ${merges.length}</div>`;
+    merges.forEach(i=> html += mergeCard(i));
+  }
+  if(ambigs.length){
+    html += `<div class="section-label">Ambiguous terms · ${ambigs.length}</div>`;
+    ambigs.forEach(i=> html += ambigCard(i));
+  }
+  if(selfs.length){
+    html += `<div class="section-label">Self-reference · ${selfs.length}</div>`;
+    selfs.forEach(i=> html += selfrefCard(i));
+  }
+  list.innerHTML = html;
+}
+
+function mergeCard(item){
+  const from = ent(item.from), to = ent(item.to);
+  const pct = Math.round(item.conf*100);
+  return `
+  <div class="card" id="card-${item.id}">
+    <div class="card-kicker"><span class="kicker-icon">⤳</span> AI-suggested merge
+      <span class="conf" style="margin-left:auto;">
+        <span class="conf-bar"><i style="width:${pct}%"></i></span> ${item.conf.toFixed(2)}
+      </span>
+    </div>
+    <div class="merge-pair">
+      <div class="ent-chip" onclick="openDetail('${from.id}')">
+        <div class="ename">${from.name}</div>
+        <div class="emeta">${from.notes} notes · ${from.article?'has article':'no article'}</div>
+      </div>
+      <div class="merge-arrow">→</div>
+      <div class="ent-chip" onclick="openDetail('${to.id}')">
+        <div class="ename">${to.name}</div>
+        <div class="emeta">${to.notes} notes · canonical</div>
+      </div>
+    </div>
+    <div class="muted" style="font-size:12px;">Fold <b>${from.name}</b> into <b>${to.name}</b> as a variant.</div>
+    <div class="card-actions">
+      <button class="btn primary" onclick="confirmMerge('${item.id}')">Confirm merge</button>
+      <button class="btn ghost small" onclick="openDetail('${from.id}')">Inspect</button>
+      <button class="btn danger small" onclick="dismiss('${item.id}','Suggestion dismissed')">Dismiss</button>
+    </div>
+  </div>`;
+}
+
+function ambigCard(item){
+  const selIdx = ambigSelections[item.id];   // persist selection across re-renders
+  const opts = item.options.map((o,idx)=>`
+    <div class="ambig-opt${idx===selIdx?' sel':''}" data-opt="${idx}" onclick="selectAmbig('${item.id}',${idx})">
+      <div class="radio"></div>
+      <div class="otext"><b>${o.label}</b><span>${o.note}</span></div>
+    </div>`).join('');
+  return `
+  <div class="card" id="card-${item.id}">
+    <div class="card-kicker"><span class="kicker-icon">⚠</span> Ambiguous term</div>
+    <div style="font-size:14px;margin-bottom:4px;">“<b>${item.term}</b>” maps to ${item.options.length} distinct entities. Which did you mean (or keep both)?</div>
+    <div class="ambig-opts">${opts}</div>
+    <div class="card-actions">
+      <button class="btn primary" id="ambigConfirm-${item.id}" disabled onclick="confirmAmbig('${item.id}')">Assign term</button>
+      <button class="btn ghost small" onclick="dismiss('${item.id}','Kept as separate meanings')">Keep both</button>
+    </div>
+  </div>`;
+}
+
+function selfrefCard(item){
+  const to = ent(item.to);
+  const terms = item.terms.map(t=>`<span class="alias-pill ai" style="font-style:normal;">${t}</span>`).join('');
+  return `
+  <div class="card" id="card-${item.id}">
+    <div class="card-kicker"><span class="kicker-icon">◈</span> Self-reference fold</div>
+    <div style="font-size:14px;margin-bottom:10px;">Fold first-person references into the owner entity <b>${to.name}</b>?</div>
+    <div class="alias-list" style="margin-bottom:4px;">${terms}</div>
+    <div class="card-actions">
+      <button class="btn primary" onclick="confirmSelfref('${item.id}')">Fold into ${to.name.split(' ')[0]}</button>
+      <button class="btn danger small" onclick="dismiss('${item.id}','Self-reference left unfolded')">Not me</button>
+    </div>
+  </div>`;
+}
+
+/* ---- inbox card actions ---- */
+let ambigSelections = {};   // itemId -> selected option index
+
+function selectAmbig(itemId, idx){
+  ambigSelections[itemId] = idx;
+  const card = document.getElementById('card-'+itemId);
+  card.querySelectorAll('.ambig-opt').forEach(el=>
+    el.classList.toggle('sel', +el.dataset.opt === idx));
+  document.getElementById('ambigConfirm-'+itemId).disabled = false;
+}
+
+function removeCard(itemId, after){
+  const card = document.getElementById('card-'+itemId);
+  if(card){ card.classList.add('removing'); }
+  DB.inbox = DB.inbox.filter(i=>i.id !== itemId);
+  setTimeout(()=>{ renderInbox(); if(after) after(); }, 300);
+}
+
+function dismiss(itemId, msg){
+  removeCard(itemId);
+  toast(msg);
+}
+
+/* Confirm an AI merge: fold `from` into `to`, update counts/aliases, log, reindex */
+function confirmMerge(itemId){
+  const item = DB.inbox.find(i=>i.id===itemId);
+  const idx = DB.inbox.indexOf(item);
+  const from = ent(item.from), to = ent(item.to);
+  const fromSnapshot = Object.assign({}, from);   // preserve for undo
+  // optimistic state mutation
+  to.notes += from.notes;
+  // folded name becomes a detected variant (skip if already a known alias)
+  const addedAlias = !aliasExists(to, from.name);
+  if(addedAlias) to.aliasesAI = (to.aliasesAI||[]).concat(from.name);
+  from.foldedInto = to.id;
+  delete DB.entities[from.id];
+  removeCard(itemId);
+  reindex();
+  const ledgerEntry = logDecision('merge', `Merged <b>${from.name}</b> into <b>${to.name}</b> (AI suggestion, ${item.conf.toFixed(2)})`);
+  renderRoster();
+  toast(`Folded “${from.name}” into ${to.name}`, ()=>{
+    // restore: bring back the entity, revert counts/aliases/ledger, re-queue the suggestion
+    DB.entities[fromSnapshot.id] = fromSnapshot;
+    delete fromSnapshot.foldedInto;
+    to.notes -= fromSnapshot.notes;
+    if(addedAlias) to.aliasesAI = (to.aliasesAI||[]).filter(a=>a!==fromSnapshot.name);
+    DB.inbox.splice(Math.min(idx, DB.inbox.length), 0, item);
+    undoDecision(ledgerEntry);
+    reindex();
+    renderInbox(); renderRoster();
+    toast(`Restored “${fromSnapshot.name}”`);
+  });
+}
+
+function confirmAmbig(itemId){
+  const item = DB.inbox.find(i=>i.id===itemId);
+  const chosen = item.options[ambigSelections[itemId]];
+  removeCard(itemId);
+  reindex();
+  logDecision('disambig', `Disambiguated “<b>${item.term}</b>” → <b>${chosen.label}</b>`);
+  toast(`“${item.term}” assigned`);
+}
+
+function confirmSelfref(itemId){
+  const item = DB.inbox.find(i=>i.id===itemId);
+  const to = ent(item.to);
+  const added = item.terms.filter(t=>!aliasExists(to, t));
+  to.aliasesAI = (to.aliasesAI||[]).concat(added);
+  removeCard(itemId);
+  reindex();
+  logDecision('alias', `Folded self-references (${item.terms.join(', ')}) into <b>${to.name}</b>`);
+  toast(`Self-references folded into ${to.name}`);
+}
+
+/* ============================================================================
+   ROSTER RENDERING (browse + search + filter)
+   ============================================================================ */
+function renderFilters(){
+  document.getElementById('filterRow').innerHTML = FILTERS.map(f=>
+    `<div class="fchip ${f===activeFilter?'active':''}" onclick="setFilter('${f}')">${f}</div>`).join('');
+}
+function setFilter(f){ activeFilter = f; renderFilters(); renderRoster(); }
+
+function matchesFilter(e){
+  if(activeFilter==='All') return true;
+  if(activeFilter==='Medical') return e.type.startsWith('med-');
+  return typeLabel(e.type) === activeFilter;
+}
+
+function renderRoster(){
+  const q = (document.getElementById('search').value||'').toLowerCase();
+  const rows = Object.values(DB.entities)
+    .filter(e=>!e.foldedInto)
+    .filter(matchesFilter)
+    .filter(e=>{
+      if(!q) return true;
+      const hay = [e.name, ...(e.aliasesUser||[]), ...(e.aliasesAI||[])].join(' ').toLowerCase();
+      return hay.includes(q);
+    })
+    .sort((a,b)=> b.notes - a.notes);
+
+  const el = document.getElementById('rosterList');
+  if(rows.length===0){ el.innerHTML = `<div class="roster-empty">No entities match.</div>`; return; }
+
+  el.innerHTML = rows.map(e=>`
+    <div class="roster-row" onclick="openDetail('${e.id}')">
+      <div class="roster-main">
+        <div class="roster-name">
+          ${e.name}${e.owner?' <span class="owner-star">★ you</span>':''}
+        </div>
+        <div class="roster-sub">
+          <span class="ttag ${ttagClass(e.type)}">${typeLabel(e.type)}</span>
+          <span>${e.notes} notes</span>
+          ${e.article?'<span class="kb">◆ article</span>':''}
+          ${e.medical?'<span style="color:var(--m-medical)">＋ medical</span>':''}
+        </div>
+      </div>
+      <div class="chevron">›</div>
+    </div>`).join('');
+}
+
+/* ============================================================================
+   LEDGER RENDERING
+   ============================================================================ */
+function renderLedger(){
+  const el = document.getElementById('ledgerList');
+  if(DB.ledger.length===0){
+    el.innerHTML = `<div class="ledger-empty">No decisions yet this session.<br>Confirm a merge or edit an alias to start the audit trail.</div>`;
+    return;
+  }
+  el.innerHTML = DB.ledger.map(d=>`
+    <div class="ledger-item">
+      <div class="ledger-dot ${d.kind}"></div>
+      <div class="ledger-body">
+        <div class="ledger-text">${d.text}</div>
+        <div class="ledger-meta">${d.kind} · ${d.time}</div>
+      </div>
+    </div>`).join('');
+}
+
+/* ============================================================================
+   BOTTOM SHEET — entity detail
+   ============================================================================ */
+let currentDetail = null;
+
+function openSheet(html){
+  document.getElementById('sheetScroll').innerHTML = html;
+  document.getElementById('sheetScroll').scrollTop = 0;
+  document.getElementById('scrim').classList.add('show');
+  document.getElementById('sheet').classList.add('show');
+}
+function closeSheet(){
+  document.getElementById('scrim').classList.remove('show');
+  document.getElementById('sheet').classList.remove('show');
+}
+
+function openDetail(id){
+  const e = ent(id);
+  if(!e) return;
+  currentDetail = id;
+
+  // index-based handlers avoid fragile quote-escaping of user strings in attributes
+  const mentions = (e.mentions||[]).map((m,mi)=>`
+    <div class="mention" onclick="openMention('${id}',${mi})">
+      <span class="mtitle">${m[0]}</span><span class="mdate">${m[1]}</span>
+    </div>`).join('') || '<div class="muted" style="font-size:13px;">No mentions.</div>';
+
+  const userAliases = (e.aliasesUser||[]).map((a,ai)=>`
+    <span class="alias-pill">${a}<button class="x" aria-label="Remove alias ${a}" onclick="removeAlias('${id}',${ai})">×</button></span>`).join('');
+  const aiAliases = (e.aliasesAI||[]).map(a=>`<span class="alias-pill ai">${a}</span>`).join('');
+
+  const rels = (e.coment||[]).map(([rid,n])=>{
+    const r = ent(rid); if(!r) return '';
+    return `<div class="rel-row" onclick="openDetail('${rid}')">
+      <span class="ttag ${ttagClass(r.type)}">${typeLabel(r.type)}</span>
+      <span class="rname">${r.name}</span><span class="rcount">${n} shared notes</span></div>`;
+  }).join('') || '<div class="muted" style="font-size:13px;">No co-mentions yet.</div>';
+
+  // cross-links (medical / calendar)
+  let xlinks = '';
+  if(e.medical){
+    xlinks += `<div class="xlink medical" onclick="toast('Would open medical record')">
+      <div class="xic">＋</div><div>Linked medical record · <b>${e.medical}</b></div></div>`;
+  }
+  if(e.calendar){
+    xlinks += `<div class="xlink" onclick="toast('Would open calendar')">
+      <div class="xic">🗓</div><div>Appears in <b>${e.calendar}</b> calendar event${e.calendar>1?'s':''}</div></div>`;
+  }
+
+  openSheet(`
+    <div class="detail-head">
+      <div>
+        <div class="detail-name">${e.name}${e.owner?' <span class="owner-star" style="font-size:14px">★</span>':''}</div>
+        <div class="detail-sub">
+          <span class="ttag ${ttagClass(e.type)}">${typeLabel(e.type)}</span>
+          <span>${e.notes} notes</span>
+          ${e.article?'<span class="kb" style="color:var(--accent)">◆ KB article</span>':'<span class="muted">no article</span>'}
+          ${e.owner?'<span style="color:var(--m-research)">owner</span>':''}
+        </div>
+      </div>
+      <button class="detail-close" onclick="closeSheet()">×</button>
+    </div>
+
+    ${xlinks}
+
+    <div class="d-section">
+      <h4>Aliases</h4>
+      <div class="alias-list">${userAliases || ''}${aiAliases || ''}
+        ${(!userAliases && !aiAliases)?'<span class="muted" style="font-size:13px;">No aliases.</span>':''}
+      </div>
+      ${aiAliases?'<div class="muted" style="font-size:11px;margin-top:6px;">Italic = AI-detected (read-only). Others are yours.</div>':''}
+      <div class="alias-add">
+        <input id="aliasInput" type="text" placeholder="Add an alias…" />
+        <button class="btn primary small" onclick="addAlias('${id}')">Add</button>
+      </div>
+    </div>
+
+    <div class="d-section">
+      <h4>Mentions · ${(e.mentions||[]).length} shown of ${e.notes}</h4>
+      ${mentions}
+    </div>
+
+    <div class="d-section">
+      <h4>Related entities</h4>
+      ${rels}
+    </div>
+
+    <div class="d-actions">
+      <button class="btn primary" onclick="openMergePicker('${id}')">⤳ Merge in a duplicate</button>
+    </div>
+    <div class="d-actions" style="margin-top:8px;">
+      <button class="btn" onclick="openSplitPicker('${id}')">⊟ Mark as separate</button>
+      <button class="btn ghost" onclick="toast('Would view full decision log for this entity')">Entity history</button>
+    </div>
+  `);
+}
+
+/* ---- alias edits (optimistic + reindex + ledger) ---- */
+function addAlias(id){
+  const e = ent(id);
+  const input = document.getElementById('aliasInput');
+  const val = (input.value||'').trim();
+  if(!val) return;
+  // guard against duplicates (case-insensitive) across the name + all alias sets
+  if(aliasExists(e, val)){
+    toast(`“${val}” is already an alias`);
+    return;
+  }
+  e.aliasesUser = (e.aliasesUser||[]).concat(val);
+  reindex();
+  logDecision('alias', `Added alias “<b>${val}</b>” to <b>${e.name}</b>`);
+  toast(`Alias “${val}” added`);
+  openDetail(id);   // re-render sheet
+  renderRoster();
+}
+function removeAlias(id, idx){
+  const e = ent(id);
+  const alias = (e.aliasesUser||[])[idx];
+  if(alias === undefined) return;
+  e.aliasesUser = e.aliasesUser.filter((_,i)=>i!==idx);
+  reindex();
+  logDecision('alias', `Removed alias “<b>${alias}</b>” from <b>${e.name}</b>`);
+  toast(`Alias “${alias}” removed`);
+  openDetail(id);
+  renderRoster();
+}
+
+/* Open the note behind a mention (cross-navigation stub). */
+function openMention(id, idx){
+  const m = (ent(id)?.mentions||[])[idx];
+  if(m) toast(`Would open note: ${m[0]}`);
+}
+
+/* ---- MERGE picker: fold another same-type entity into this one ---- */
+function openMergePicker(id){
+  const target = ent(id);
+  const candidates = Object.values(DB.entities)
+    .filter(e=>e.id!==id && !e.foldedInto && e.type===target.type)
+    .sort((a,b)=>b.notes-a.notes);
+  const list = candidates.map(c=>`
+    <div class="picker-item" onclick="doMerge('${c.id}','${id}')">
+      <span class="ttag ${ttagClass(c.type)}">${typeLabel(c.type)}</span>
+      <span class="pname">${c.name}</span><span class="pmeta">${c.notes} notes</span>
+    </div>`).join('') || '<div class="muted" style="font-size:13px;">No other entities of this type to merge.</div>';
+  openSheet(`
+    <div class="sheet-title">Merge a duplicate into ${target.name}</div>
+    <div class="sheet-desc">Pick another <b>${typeLabel(target.type)}</b>. It folds in as a variant; <b>${target.name}</b> stays canonical.</div>
+    ${list}
+    <div class="d-actions" style="margin-top:12px;">
+      <button class="btn ghost" onclick="openDetail('${id}')">Back</button>
+    </div>`);
+}
+function doMerge(fromId, toId){
+  const from = ent(fromId), to = ent(toId);
+  const fromSnapshot = Object.assign({}, from);
+  to.notes += from.notes;
+  const addedAlias = !aliasExists(to, from.name);
+  if(addedAlias) to.aliasesAI = (to.aliasesAI||[]).concat(from.name);
+  from.foldedInto = to.id;
+  delete DB.entities[fromId];
+  reindex();
+  const ledgerEntry = logDecision('merge', `Merged <b>${from.name}</b> into <b>${to.name}</b> (manual)`);
+  renderRoster();
+  openDetail(toId);
+  toast(`Folded “${from.name}” into ${to.name}`, ()=>{
+    DB.entities[fromSnapshot.id] = fromSnapshot;
+    delete fromSnapshot.foldedInto;
+    to.notes -= fromSnapshot.notes;
+    if(addedAlias) to.aliasesAI = (to.aliasesAI||[]).filter(a=>a!==fromSnapshot.name);
+    undoDecision(ledgerEntry);
+    reindex();
+    renderRoster();
+    openDetail(toId);
+    toast(`Restored “${fromSnapshot.name}”`);
+  });
+}
+
+/* ---- SPLIT picker: declare two entities are NOT the same (blocks auto-merge) ---- */
+function openSplitPicker(id){
+  const subj = ent(id);
+  const candidates = Object.values(DB.entities)
+    .filter(e=>e.id!==id && !e.foldedInto && e.type===subj.type)
+    .sort((a,b)=>b.notes-a.notes);
+  const list = candidates.map(c=>`
+    <div class="picker-item" onclick="doSplit('${id}','${c.id}')">
+      <span class="ttag ${ttagClass(c.type)}">${typeLabel(c.type)}</span>
+      <span class="pname">${c.name}</span><span class="pmeta">${c.notes} notes</span>
+    </div>`).join('') || '<div class="muted" style="font-size:13px;">No same-type entities to separate from.</div>';
+  openSheet(`
+    <div class="sheet-title">Mark separate from ${subj.name}</div>
+    <div class="sheet-desc">Pick an entity that is <b>not</b> the same real-world thing. This blocks accidental auto-merge in future re-indexes.</div>
+    ${list}
+    <div class="d-actions" style="margin-top:12px;">
+      <button class="btn ghost" onclick="openDetail('${id}')">Back</button>
+    </div>`);
+}
+function doSplit(aId, bId){
+  const a = ent(aId), b = ent(bId);
+  reindex();
+  logDecision('split', `Marked <b>${a.name}</b> and <b>${b.name}</b> as separate (no-merge)`);
+  toast(`Will keep ${a.name} & ${b.name} separate`);
+  openDetail(aId);
+}
+
+/* ============================================================================
+   INIT
+   ============================================================================ */
+renderInbox();
+renderFilters();
+renderRoster();
+renderLedger();
+</script>
+</body>
+</html>

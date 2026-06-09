@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup 3 — Dossier Workbench</title>
+<style>
+/* ============================================================
+   DESIGN TOKENS (mirror the JBrain chat view exactly)
+   ============================================================ */
+:root{
+  --bg:#111315; --bg-elev:#161a1c; --bg-elev-2:#1c2123; --border:#2a2f31;
+  --text:#d8dcde; --text-dim:#828a8e; --accent:#7f9aa6; --accent-soft:rgba(127,154,166,0.14);
+  --m-entry:#8fb89c; --m-medical:#cf8d8d; --m-research:#c4ad6e; --m-financial:#b89cd6;
+  --danger:#c08585; --ok:#84a591; --radius:8px;
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  background:#0a0c0d; color:var(--text); font-size:16px; line-height:1.45;
+  padding:24px 12px 60px;
+}
+
+/* ---- Page-level banner (outside the phone frame) ---- */
+.page-head{max-width:520px; margin:0 auto 20px; text-align:center;}
+.page-head h1{font-size:18px; margin:0 0 4px; font-weight:600;}
+.page-head p{font-size:13px; color:var(--text-dim); margin:0;}
+
+/* ============================================================
+   PHONE FRAME (device chrome)
+   ============================================================ */
+.device{
+  width:390px; max-width:100%; margin:0 auto;
+  background:var(--bg); border:1px solid var(--border);
+  border-radius:28px; overflow:hidden; position:relative;
+  height:780px; display:flex; flex-direction:column;
+  box-shadow:0 12px 30px rgba(0,0,0,.45);
+}
+.device-notch{
+  position:absolute; top:0; left:50%; transform:translateX(-50%);
+  width:130px; height:22px; background:#000; border-radius:0 0 14px 14px; z-index:60;
+}
+.statusbar{
+  height:30px; flex:0 0 30px; display:flex; align-items:center; justify-content:space-between;
+  padding:0 18px; font-size:12px; color:var(--text-dim); font-weight:600;
+}
+
+/* Scrollable app body */
+.app{flex:1; overflow-y:auto; position:relative; -webkit-overflow-scrolling:touch;}
+.app::-webkit-scrollbar{width:0;}
+
+/* ============================================================
+   BOTTOM TAB BAR (the real app has one; shown for fidelity)
+   ============================================================ */
+.tabbar{
+  flex:0 0 60px; height:60px; display:flex; border-top:1px solid var(--border);
+  background:var(--bg-elev);
+}
+.tabbar button{
+  flex:1; background:none; border:none; color:var(--text-dim);
+  font-size:11px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:3px; cursor:pointer; font-family:inherit;
+}
+.tabbar button .ic{font-size:18px; line-height:1;}
+.tabbar button.active{color:var(--accent);}
+
+/* ============================================================
+   SHARED PRIMITIVES
+   ============================================================ */
+.btn{
+  font-family:inherit; font-size:15px; min-height:44px; padding:0 14px;
+  background:var(--bg-elev-2); border:1px solid var(--border); color:var(--text);
+  border-radius:var(--radius); cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+  justify-content:center;
+}
+.btn:active{filter:brightness(1.15);}
+.btn.primary{background:var(--accent-soft); border-color:var(--accent); font-weight:600; color:var(--text);}
+.btn.ghost{background:transparent; border-color:transparent;}
+.btn.danger{color:var(--danger); border-color:transparent; background:transparent;}
+.btn.sm{min-height:36px; font-size:13px; padding:0 10px;}
+.btn.block{width:100%;}
+
+input.fld, select.fld{
+  font-family:inherit; font-size:16px; /* >=16 to avoid iOS zoom */
+  background:var(--bg-elev); border:1px solid var(--border); color:var(--text);
+  border-radius:var(--radius); padding:11px 12px; width:100%; min-height:44px;
+}
+input.fld:focus, select.fld:focus{outline:none; border-color:var(--accent);}
+::placeholder{color:var(--text-dim);}
+
+.chip{
+  display:inline-flex; align-items:center; gap:5px; font-size:12px;
+  padding:4px 9px; border-radius:99px; border:1px solid var(--border);
+  background:var(--bg-elev-2); color:var(--text-dim); white-space:nowrap;
+}
+.chip.removable{padding-right:5px;}
+.chip .x{
+  cursor:pointer; width:18px; height:18px; border-radius:50%; display:inline-flex;
+  align-items:center; justify-content:center; color:var(--text-dim); font-size:14px;
+}
+.chip .x:active{background:var(--border); color:var(--text);}
+
+.label-sm{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.04em; font-weight:600;}
+
+/* Type glyph swatch */
+.glyph{
+  width:30px; height:30px; flex:0 0 30px; border-radius:7px; display:flex;
+  align-items:center; justify-content:center; font-size:15px;
+  background:var(--bg-elev-2); border:1px solid var(--border);
+}
+
+/* per-type tinting (restrained, monochrome-leaning) */
+.t-medical{color:var(--m-medical);} .t-medical.glyph{border-color:rgba(207,141,141,.4);}
+.t-research{color:var(--m-research);}
+.t-financial{color:var(--m-financial);}
+.t-person{color:var(--m-entry);} .t-person.glyph{border-color:rgba(143,184,156,.35);}
+
+/* ============================================================
+   ROSTER (list of entities)
+   ============================================================ */
+.screen{padding:14px 14px 24px; display:none;}
+.screen.active{display:block;}
+
+.scr-title{font-size:20px; font-weight:600; margin:2px 0 12px;}
+
+.searchbar{position:relative; margin-bottom:10px;}
+.searchbar input{padding-left:36px;}
+.searchbar .si{position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--text-dim); font-size:15px;}
+
+.filterrow{display:flex; gap:8px; margin-bottom:12px; overflow-x:auto; padding-bottom:2px;}
+.filterrow::-webkit-scrollbar{height:0;}
+.pill{
+  font-family:inherit; font-size:13px; white-space:nowrap; min-height:36px; padding:0 12px;
+  border-radius:99px; border:1px solid var(--border); background:var(--bg-elev);
+  color:var(--text-dim); cursor:pointer; display:inline-flex; align-items:center; gap:5px;
+}
+.pill.on{background:var(--accent-soft); border-color:var(--accent); color:var(--text); font-weight:600;}
+.pill .badge{background:var(--m-medical); color:#111; border-radius:99px; font-size:11px; font-weight:700; padding:0 6px; min-width:18px; text-align:center;}
+
+.sortrow{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+.sortrow .cnt{font-size:12px; color:var(--text-dim);}
+.sortsel{
+  background:var(--bg-elev); border:1px solid var(--border); color:var(--text);
+  font-family:inherit; font-size:13px; border-radius:99px; padding:7px 10px; min-height:36px;
+}
+
+/* Needs-attention banner card in roster */
+.attn-banner{
+  background:rgba(196,173,110,.08);
+  border:1px solid rgba(196,173,110,.4); border-radius:var(--radius);
+  padding:12px; margin-bottom:14px;
+}
+.attn-banner .ttl{font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+.attn-banner .ttl .dot{width:8px; height:8px; border-radius:50%; background:var(--m-research);}
+.attn-banner .sub{font-size:13px; color:var(--text-dim); margin-bottom:10px;}
+
+/* Entity row */
+.elist{display:flex; flex-direction:column; gap:6px;}
+.erow{
+  display:flex; align-items:center; gap:11px; padding:10px; min-height:56px;
+  background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+  cursor:pointer; text-align:left; width:100%; font-family:inherit; color:var(--text);
+}
+.erow:active{background:var(--bg-elev-2);}
+.erow .meta{flex:1; min-width:0;}
+.erow .nm{font-size:15px; font-weight:500; display:flex; align-items:center; gap:6px;}
+.erow .nm .star{color:var(--m-research); font-size:12px;}
+.erow .sub2{font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:8px; margin-top:2px;}
+.erow .cnt{font-size:13px; color:var(--text-dim); font-variant-numeric:tabular-nums;}
+.erow .attn-dot{width:7px; height:7px; border-radius:50%; background:var(--m-research); flex:0 0 7px;}
+.kb-tag{font-size:11px; color:var(--accent); border:1px solid var(--border); border-radius:4px; padding:0 4px;}
+
+.empty{text-align:center; color:var(--text-dim); padding:40px 20px; font-size:14px;}
+
+/* ============================================================
+   DOSSIER (entity detail)
+   ============================================================ */
+.dossier-head{display:flex; align-items:center; gap:6px; margin-bottom:8px;}
+.backbtn{
+  background:none; border:none; color:var(--accent); font-family:inherit; font-size:15px;
+  cursor:pointer; padding:8px 6px 8px 0; display:flex; align-items:center; gap:4px; min-height:44px;
+}
+
+.dprofile{display:flex; gap:12px; align-items:flex-start; margin-bottom:14px;}
+.dprofile .glyph{width:46px; height:46px; flex:0 0 46px; font-size:22px; border-radius:10px;}
+.dname-wrap{flex:1; min-width:0;}
+.dname{font-size:21px; font-weight:600; display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.dname .edit{
+  background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px;
+  padding:4px; min-height:32px;
+}
+.dtype{font-size:13px; color:var(--text-dim); margin-top:3px;}
+.dstats{display:flex; gap:14px; margin-top:8px; font-size:13px; color:var(--text-dim); flex-wrap:wrap;}
+.dstats b{color:var(--text); font-weight:600;}
+
+.rename-input{font-size:18px; font-weight:600; background:var(--bg-elev); border:1px solid var(--accent); color:var(--text); border-radius:var(--radius); padding:6px 8px; width:100%;}
+
+/* the "updating..." async indicator */
+.updating{
+  display:none; align-items:center; gap:7px; font-size:12px; color:var(--m-research);
+  background:rgba(196,173,110,.08); border:1px solid rgba(196,173,110,.3);
+  border-radius:99px; padding:5px 11px; margin-bottom:12px;
+}
+.updating.show{display:inline-flex;}
+.spinner{
+  width:11px; height:11px; border:2px solid rgba(196,173,110,.3); border-top-color:var(--m-research);
+  border-radius:50%; animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* dossier section card */
+.sect{
+  background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius);
+  padding:13px; margin-bottom:12px;
+}
+.sect h3{font-size:13px; margin:0 0 10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; justify-content:space-between;}
+.sect h3 .cta{font-size:13px; color:var(--accent); text-transform:none; letter-spacing:0; cursor:pointer; font-weight:500;}
+
+.alias-grp{margin-bottom:12px;}
+.alias-grp:last-child{margin-bottom:0;}
+.alias-grp .gl{font-size:12px; color:var(--text-dim); margin-bottom:7px;}
+.alias-wrap{display:flex; flex-wrap:wrap; gap:7px;}
+.add-alias-row{display:flex; gap:8px; margin-top:9px;}
+.add-alias-row input{flex:1;}
+
+/* mentions */
+.mention{
+  display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid var(--border);
+  cursor:pointer; min-height:44px;
+}
+.mention:last-child{border-bottom:none;}
+.mention:active{background:var(--bg-elev-2);}
+.mention .mt{flex:1; font-size:14px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.mention .md{font-size:12px; color:var(--text-dim); white-space:nowrap;}
+.mention .arr{color:var(--text-dim);}
+
+/* co-mentions */
+.comention{
+  display:flex; align-items:center; gap:9px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer; min-height:44px;
+}
+.comention:last-child{border-bottom:none;}
+.comention .cm-nm{flex:1; font-size:14px;}
+.comention .cm-shared{font-size:12px; color:var(--text-dim);}
+
+/* medical cross-link callout */
+.medlink{
+  background:rgba(207,141,141,.08); border:1px solid rgba(207,141,141,.3);
+  border-radius:var(--radius); padding:11px; margin-bottom:12px; display:flex; gap:10px; align-items:center;
+}
+.medlink .ml-ic{font-size:18px; color:var(--m-medical);}
+.medlink .ml-txt{flex:1; font-size:13px;}
+.medlink .ml-txt b{color:var(--m-medical);}
+
+/* AI suggestion banner on dossier */
+.suggest-banner{
+  background:var(--accent-soft);
+  border:1px solid var(--accent); border-radius:var(--radius); padding:12px; margin-bottom:12px;
+}
+.suggest-banner .sb-top{display:flex; align-items:center; gap:8px; font-size:14px; font-weight:600; margin-bottom:5px;}
+.suggest-banner .sb-conf{
+  margin-left:auto; font-size:12px; font-weight:700; color:var(--accent);
+  background:var(--accent-soft); border-radius:99px; padding:2px 8px;
+}
+.suggest-banner .sb-sub{font-size:13px; color:var(--text-dim); margin-bottom:10px;}
+.suggest-banner .sb-acts{display:flex; gap:8px;}
+
+/* timeline (decisions history) */
+.timeline{position:relative; padding-left:18px;}
+.timeline::before{content:""; position:absolute; left:5px; top:4px; bottom:4px; width:2px; background:var(--border);}
+.tl-item{position:relative; padding:0 0 14px;}
+.tl-item:last-child{padding-bottom:0;}
+.tl-item::before{
+  content:""; position:absolute; left:-16px; top:4px; width:8px; height:8px; border-radius:50%;
+  background:var(--bg-elev); border:2px solid var(--accent);
+}
+.tl-item.merge::before{border-color:var(--m-entry);}
+.tl-item.split::before{border-color:var(--danger);}
+.tl-item.alias::before{border-color:var(--m-research);}
+.tl-act{font-size:14px;}
+.tl-meta{font-size:12px; color:var(--text-dim); margin-top:2px;}
+
+.danger-row{display:flex; gap:8px; margin-top:4px;}
+
+/* ============================================================
+   BOTTOM SHEET (modals / pickers / confirm)
+   ============================================================ */
+.sheet-scrim{
+  position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:80;
+  display:none; align-items:flex-end;
+}
+.sheet-scrim.show{display:flex;}
+.sheet{
+  background:var(--bg-elev); border:1px solid var(--border); border-bottom:none;
+  border-radius:18px 18px 0 0; width:100%; max-height:88%; overflow-y:auto;
+  box-shadow:0 12px 30px rgba(0,0,0,.45); padding:8px 16px 22px;
+  animation:sheetUp .22s ease;
+}
+@keyframes sheetUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
+.sheet-grab{width:38px; height:4px; border-radius:99px; background:var(--border); margin:6px auto 12px;}
+.sheet h2{font-size:18px; margin:0 0 4px;}
+.sheet .sh-sub{font-size:13px; color:var(--text-dim); margin:0 0 14px;}
+
+.picker-item{
+  display:flex; align-items:center; gap:11px; padding:11px 8px; border-radius:var(--radius);
+  cursor:pointer; min-height:52px; border:1px solid transparent;
+}
+.picker-item:active{background:var(--bg-elev-2);}
+.picker-item .meta{flex:1;}
+.picker-item .nm{font-size:15px;}
+.picker-item .sub{font-size:12px; color:var(--text-dim);}
+
+.sheet-acts{display:flex; gap:10px; margin-top:18px;}
+.sheet-acts .btn{flex:1;}
+
+/* ============================================================
+   MERGE-COMPARE WORKBENCH (the showpiece)
+   ============================================================ */
+.workbench .wb-head{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
+.wb-intro{font-size:13px; color:var(--text-dim); margin-bottom:14px;}
+
+/* canonical-choice segmented control */
+.canon-pick{
+  background:var(--bg-elev); border:1px solid var(--border); border-radius:99px;
+  padding:4px; display:flex; gap:4px; margin-bottom:6px;
+}
+.canon-pick button{
+  flex:1; font-family:inherit; font-size:12.5px; min-height:40px; border:none; cursor:pointer;
+  border-radius:99px; background:transparent; color:var(--text-dim); font-weight:600;
+  padding:0 6px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.canon-pick button.sel{background:var(--accent-soft); color:var(--text); border:1px solid var(--accent);}
+.canon-note{font-size:12px; color:var(--text-dim); text-align:center; margin-bottom:14px;}
+.canon-note b{color:var(--ok);}
+
+/* two side-by-side columns (fit on phone: 2 narrow cols) */
+.compare{display:flex; gap:9px; margin-bottom:8px;}
+.ccol{
+  flex:1 1 0; min-width:0; background:var(--bg-elev); border:1px solid var(--border);
+  border-radius:var(--radius); padding:13px 10px 11px; position:relative;
+}
+.ccol.is-canon{border-color:var(--ok); background:var(--bg-elev-2);}
+.ccol.is-fold{opacity:.92;}
+.col-tag{
+  position:absolute; top:-9px; left:50%; transform:translateX(-50%); font-size:10px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.05em; padding:2px 9px; border-radius:99px; white-space:nowrap;
+}
+.ccol.is-canon .col-tag{background:var(--ok); color:#0e1410;}
+.ccol.is-fold .col-tag{background:var(--bg-elev-2); color:var(--text-dim); border:1px solid var(--border);}
+.ccol .c-glyph{width:34px; height:34px; border-radius:8px; font-size:17px; margin:6px auto 7px; }
+.ccol .c-nm{font-size:14px; font-weight:600; text-align:center; line-height:1.25; min-height:34px; display:flex; align-items:center; justify-content:center; overflow-wrap:anywhere;}
+.ccol .c-type{font-size:11px; color:var(--text-dim); text-align:center; margin-bottom:9px;}
+
+.cfield{border-top:1px solid var(--border); padding:8px 0 2px;}
+.cfield .cf-l{font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;}
+.cfield .cf-v{font-size:13px;}
+.cfield .cf-v.big{font-size:19px; font-weight:600; font-variant-numeric:tabular-nums;}
+.cfield .alias-mini{display:flex; flex-wrap:wrap; gap:4px;}
+.alias-mini .chip{font-size:11px; padding:2px 7px;}
+.samples{list-style:none; padding:0; margin:0;}
+.samples li{font-size:11.5px; color:var(--text-dim); padding:3px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3;}
+
+.merge-arrow{text-align:center; font-size:13px; color:var(--ok); margin:6px 0 10px; font-weight:600;}
+
+/* sticky confirm bar in workbench */
+.wb-confirm{
+  position:sticky; bottom:0; background:var(--bg); padding:12px 0 4px;
+  margin-top:6px; border-top:1px solid var(--border);
+}
+.wb-confirm .summary{font-size:12.5px; color:var(--text-dim); text-align:center; margin-bottom:9px; line-height:1.4;}
+.wb-confirm .summary b{color:var(--text);}
+
+.toast{
+  position:absolute; left:14px; right:14px; bottom:14px; z-index:90;
+  background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius);
+  padding:12px 14px; font-size:13.5px; box-shadow:0 12px 30px rgba(0,0,0,.45);
+  display:flex; align-items:center; gap:9px; transform:translateY(140%); transition:transform .25s ease;
+}
+.toast.show{transform:translateY(0);}
+.toast .ok-dot{color:var(--ok); font-size:16px;}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation:none !important; transition:none !important;}
+}
+</style>
+</head>
+<body>
+
+<!-- Page banner (outside the phone) -->
+<div class="page-head">
+  <h1>Mockup 3 — Dossier Workbench</h1>
+  <p>A searchable roster, a deep single-entity dossier, and a side-by-side merge-compare workbench.</p>
+</div>
+
+<!-- ===================== PHONE FRAME ===================== -->
+<div class="device">
+  <div class="device-notch"></div>
+  <div class="statusbar"><span>9:41</span><span>JBrain &nbsp; ●●●● &nbsp;100%</span></div>
+
+  <div class="app" id="app">
+    <!-- ROSTER SCREEN -->
+    <section class="screen active" id="screen-roster">
+      <div class="scr-title">Entities</div>
+
+      <div class="searchbar">
+        <span class="si">⌕</span>
+        <input class="fld" id="search" type="text" placeholder="Search entities by name…" />
+      </div>
+
+      <div class="filterrow" id="filterrow"><!-- type pills injected --></div>
+
+      <!-- Needs-attention summary (links into roster filter) -->
+      <div class="attn-banner" id="attnBanner">
+        <div class="ttl"><span class="dot"></span> Needs attention</div>
+        <div class="sub" id="attnSub">3 AI merge suggestions · 2 ambiguous terms</div>
+        <button class="btn sm primary" onclick="setNeedsAttention(true)">Review these</button>
+      </div>
+
+      <div class="sortrow">
+        <span class="cnt" id="rosterCount"></span>
+        <select class="sortsel" id="sort" onchange="renderRoster()">
+          <option value="mentions">Most mentioned</option>
+          <option value="updated">Recently updated</option>
+          <option value="az">A–Z</option>
+          <option value="attention">Needs attention</option>
+        </select>
+      </div>
+
+      <div class="elist" id="roster"><!-- rows injected --></div>
+    </section>
+
+    <!-- DOSSIER SCREEN -->
+    <section class="screen" id="screen-dossier"><!-- injected --></section>
+
+    <!-- WORKBENCH SCREEN -->
+    <section class="screen workbench" id="screen-workbench"><!-- injected --></section>
+  </div>
+
+  <!-- Bottom sheet host -->
+  <div class="sheet-scrim" id="scrim" onclick="if(event.target===this)closeSheet()">
+    <div class="sheet" id="sheet"></div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"><span class="ok-dot">✓</span><span id="toastMsg"></span></div>
+
+  <!-- Tab bar -->
+  <div class="tabbar">
+    <button><span class="ic">☰</span>Notes</button>
+    <button><span class="ic">✦</span>Chat</button>
+    <button class="active"><span class="ic">◈</span>Entities</button>
+    <button><span class="ic">⚙</span>Settings</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   MOCK DATA
+   Each entity: id, name, type, noteCount, hasArticle,
+   aiAliases (read-only), userAliases (editable), mentions,
+   coMentions [{id, shared}], updatedAt, medical{...},
+   calendarEvents, attention flag derived from suggestions/ambiguous.
+   ============================================================ */
+const TYPE = {
+  person:   {glyph:'◐', label:'Person'},
+  animal:   {glyph:'❧', label:'Animal'},
+  org:      {glyph:'▤', label:'Org'},
+  place:    {glyph:'⌖', label:'Place'},
+  thing:    {glyph:'◇', label:'Thing'},
+  work:     {glyph:'❒', label:'Work'},
+  condition:{glyph:'✚', label:'Condition'},
+  medication:{glyph:'℞', label:'Medication'},
+  procedure:{glyph:'⚕', label:'Procedure'},
+  event:    {glyph:'◷', label:'Event'},
+  concept:  {glyph:'❖', label:'Concept'},
+};
+// types that get medical tint
+const MED_TYPES = ['condition','medication','procedure'];
+
+function m(title, date){return {title, date};}
+
+let entities = [
+  { id:'jeff_hopkins', name:'Jeff Hopkins', type:'person', noteCount:142, hasArticle:true,
+    owner:true, updatedAt:'2026-06-08',
+    aiAliases:['Jeff','JH','me','the owner'], userAliases:['Dad'],
+    mentions:[m('Standup notes — Q2 planning','2026-06-07'), m('Cabin trip checklist','2026-06-02'),
+              m('Annual physical follow-up','2026-05-28'), m('Birthday dinner ideas','2026-05-19')],
+    coMentions:[{id:'summer_hopkins', shared:54},{id:'rex', shared:21},{id:'mercy_hospital', shared:9}] },
+
+  { id:'jeff', name:'Jeff', type:'person', noteCount:38, hasArticle:false, updatedAt:'2026-06-05',
+    aiAliases:[], userAliases:[],
+    mentions:[m('Coffee with Jeff','2026-06-04'), m('Jeff said re: roof','2026-05-30')],
+    coMentions:[{id:'summer_hopkins', shared:12}] },
+
+  { id:'jeffrey_hopkins', name:'Jeffrey Hopkins', type:'person', noteCount:5, hasArticle:false, updatedAt:'2026-05-20',
+    aiAliases:[], userAliases:[],
+    mentions:[m('Insurance form — Jeffrey Hopkins','2026-05-18')], coMentions:[] },
+
+  { id:'summer_hopkins', name:'Summer Hopkins', type:'person', noteCount:67, hasArticle:true, updatedAt:'2026-06-06',
+    aiAliases:['Summer'], userAliases:['Sum'],
+    mentions:[m('Cabin trip checklist','2026-06-02'), m('Summer\'s recital','2026-05-25'), m('Grocery run','2026-05-21')],
+    coMentions:[{id:'jeff_hopkins', shared:54},{id:'rex', shared:14}] },
+
+  { id:'summer_j', name:'Summer J. Hopkins', type:'person', noteCount:4, hasArticle:false, updatedAt:'2026-05-10',
+    aiAliases:[], userAliases:[],
+    mentions:[m('School enrollment form','2026-05-09')], coMentions:[] },
+
+  { id:'mercy_hospital', name:'Mercy Hospital', type:'org', noteCount:18, hasArticle:true, updatedAt:'2026-06-03',
+    aiAliases:['Mercy'], userAliases:[],
+    mentions:[m('Hematology appt prep','2026-06-01'), m('Billing question','2026-05-22')],
+    coMentions:[{id:'jeff_hopkins', shared:9},{id:'plasmapheresis', shared:7}],
+    calendarEvents:6 },
+
+  { id:'acme', name:'Acme Corp', type:'org', noteCount:23, hasArticle:false, updatedAt:'2026-05-31',
+    aiAliases:['Acme'], userAliases:[],
+    mentions:[m('Vendor contract review','2026-05-29'), m('Acme invoice mismatch','2026-05-15')],
+    coMentions:[] },
+
+  { id:'san_diego', name:'San Diego', type:'place', noteCount:45, hasArticle:true, updatedAt:'2026-06-04',
+    aiAliases:['SD'], userAliases:[],
+    mentions:[m('Trip itinerary','2026-06-03'), m('Conference logistics','2026-05-12')],
+    coMentions:[{id:'jeff_hopkins', shared:11}] },
+
+  { id:'prednisone', name:'Prednisone', type:'medication', noteCount:31, hasArticle:true, updatedAt:'2026-06-07',
+    aiAliases:['steroid'], userAliases:[],
+    mentions:[m('Med taper schedule','2026-06-06'), m('Side effects log','2026-05-27')],
+    coMentions:[{id:'ttp_condition', shared:13}],
+    medical:{kind:'medication', status:'Current medication', detail:'40mg daily, tapering'} },
+
+  { id:'plasmapheresis', name:'Plasmapheresis', type:'procedure', noteCount:12, hasArticle:false, updatedAt:'2026-06-01',
+    aiAliases:['plasma exchange','PLEX'], userAliases:[],
+    mentions:[m('Procedure consent notes','2026-05-31'), m('Recovery journal','2026-05-24')],
+    coMentions:[{id:'ttp_condition', shared:9},{id:'mercy_hospital', shared:7}],
+    medical:{kind:'procedure', status:'Linked procedure', detail:'5 sessions, completed May'} },
+
+  { id:'ttp_condition', name:'Thrombotic Thrombocytopenic Purpura', type:'condition', noteCount:19, hasArticle:true, updatedAt:'2026-06-05',
+    aiAliases:['TTP'], userAliases:[],
+    mentions:[m('Diagnosis summary','2026-05-26'), m('Hematology appt prep','2026-06-01')],
+    coMentions:[{id:'prednisone', shared:13},{id:'plasmapheresis', shared:9}],
+    medical:{kind:'condition', status:'Active condition', detail:'Diagnosed Apr 2026'} },
+
+  { id:'ttp_concept', name:'TTP', type:'concept', noteCount:7, hasArticle:false, updatedAt:'2026-05-18',
+    aiAliases:[], userAliases:[],
+    mentions:[m('Security playbook draft','2026-05-17'), m('Threat model review','2026-05-08')],
+    coMentions:[] },
+
+  { id:'python_thing', name:'Python', type:'thing', noteCount:28, hasArticle:true, updatedAt:'2026-06-02',
+    aiAliases:['py'], userAliases:[],
+    mentions:[m('Refactor scripts','2026-06-01'), m('Learning resources','2026-05-14')],
+    coMentions:[] },
+
+  { id:'rex', name:'Rex', type:'animal', noteCount:9, hasArticle:false, updatedAt:'2026-05-30',
+    aiAliases:[], userAliases:['the pup'],
+    mentions:[m('Vet visit','2026-05-29'), m('Dog park notes','2026-05-20')],
+    coMentions:[{id:'jeff_hopkins', shared:21},{id:'summer_hopkins', shared:14}] },
+
+  { id:'inception', name:'Inception', type:'work', noteCount:6, hasArticle:true, updatedAt:'2026-05-11',
+    aiAliases:[], userAliases:[],
+    mentions:[m('Movie night list','2026-05-10')], coMentions:[] },
+
+  /* filler so browse feels real */
+  { id:'maple_st', name:'Maple Street House', type:'place', noteCount:14, hasArticle:false, updatedAt:'2026-05-23', aiAliases:[], userAliases:[], mentions:[m('Renovation budget','2026-05-22')], coMentions:[] },
+  { id:'nova', name:'Nova Foundation', type:'org', noteCount:8, hasArticle:false, updatedAt:'2026-05-19', aiAliases:[], userAliases:[], mentions:[m('Grant deadline','2026-05-18')], coMentions:[] },
+  { id:'migraine', name:'Migraine', type:'condition', noteCount:11, hasArticle:false, updatedAt:'2026-05-16', aiAliases:[], userAliases:[], mentions:[m('Headache diary','2026-05-15')], coMentions:[], medical:{kind:'condition', status:'Active condition', detail:'Episodic'} },
+  { id:'ibuprofen', name:'Ibuprofen', type:'medication', noteCount:6, hasArticle:false, updatedAt:'2026-05-13', aiAliases:[], userAliases:[], mentions:[m('OTC meds list','2026-05-12')], coMentions:[], medical:{kind:'medication', status:'As-needed', detail:'200mg'} },
+  { id:'graph_db', name:'Knowledge Graph', type:'concept', noteCount:16, hasArticle:true, updatedAt:'2026-05-27', aiAliases:[], userAliases:[], mentions:[m('Architecture notes','2026-05-26')], coMentions:[] },
+  { id:'wedding', name:'Anniversary Trip', type:'event', noteCount:10, hasArticle:false, updatedAt:'2026-05-09', aiAliases:[], userAliases:[], mentions:[m('Planning doc','2026-05-08')], coMentions:[{id:'san_diego', shared:5}] },
+  { id:'whale', name:'Moby Dick', type:'work', noteCount:4, hasArticle:false, updatedAt:'2026-05-05', aiAliases:[], userAliases:[], mentions:[m('Reading list','2026-05-04')], coMentions:[] },
+];
+
+/* AI-suggested merges (never auto-applied) */
+let suggestions = [
+  { id:'s1', from:'jeff', into:'jeff_hopkins', confidence:0.92 },
+  { id:'s2', from:'jeffrey_hopkins', into:'jeff_hopkins', confidence:0.88 },
+  { id:'s3', from:'summer_j', into:'summer_hopkins', confidence:0.95 },
+];
+
+/* Ambiguous terms: a surface term that maps to 2+ entities */
+let ambiguous = [
+  { id:'a1', term:'TTP', candidates:['ttp_condition','ttp_concept'],
+    note:'Maps to a medical condition and a security concept.' },
+  { id:'a2', term:'Python', candidates:['python_thing','rex'],
+    note:'Could be the programming language or an animal.' },
+];
+
+/* Per-entity decisions ledger (append-only). Seed a couple. */
+let decisions = [
+  { entity:'jeff_hopkins', kind:'alias', text:'Added alias "Dad"', meta:'You · May 20', ts:5 },
+  { entity:'jeff_hopkins', kind:'merge', text:'Folded in self-references "me" / "the owner"', meta:'System · May 12', ts:3 },
+  { entity:'ttp_condition', kind:'alias', text:'Confirmed AI alias "TTP"', meta:'You · May 26', ts:4 },
+];
+let decisionSeq = 100;
+
+/* ============================================================
+   UI STATE
+   ============================================================ */
+let state = {
+  search:'', typeFilter:'all', sort:'mentions', needsAttention:false,
+  currentEntity:null,
+  // workbench: {canonId, foldId, fromSuggestion}
+  wb:null,
+};
+
+const $ = id => document.getElementById(id);
+function byId(id){return entities.find(e=>e.id===id);}
+function isMed(e){return MED_TYPES.includes(e.type);}
+function entHasAttention(id){
+  return suggestions.some(s=>s.from===id||s.into===id) || ambiguous.some(a=>a.candidates.includes(id));
+}
+
+/* ============================================================
+   ROSTER
+   ============================================================ */
+const FILTER_TYPES = ['all','person','org','place','medical','thing','other'];
+function typeBucket(t){
+  if(['condition','medication','procedure'].includes(t)) return 'medical';
+  if(['person','org','place','thing'].includes(t)) return t;
+  return 'other';
+}
+
+function renderFilters(){
+  const row = $('filterrow');
+  const labels = {all:'All', person:'People', org:'Orgs', place:'Places', medical:'Medical', thing:'Things', other:'More'};
+  row.innerHTML = FILTER_TYPES.map(t=>
+    `<button class="pill ${state.typeFilter===t&&!state.needsAttention?'on':''}" onclick="setFilter('${t}')">${labels[t]}</button>`
+  ).join('') +
+  `<button class="pill ${state.needsAttention?'on':''}" onclick="setNeedsAttention(${!state.needsAttention})">⚑ Attention <span class="badge">${suggestions.length+ambiguous.length}</span></button>`;
+}
+function setFilter(t){ state.typeFilter=t; state.needsAttention=false; renderFilters(); renderRoster(); }
+function setNeedsAttention(on){ state.needsAttention=on; if(on){showScreen('roster');} renderFilters(); renderRoster(); }
+
+function rosterData(){
+  let list = entities.slice();
+  // search
+  if(state.search.trim()){
+    const q = state.search.toLowerCase();
+    list = list.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      e.aiAliases.some(a=>a.toLowerCase().includes(q)) ||
+      e.userAliases.some(a=>a.toLowerCase().includes(q))
+    );
+  }
+  // needs-attention overrides type filter
+  if(state.needsAttention){
+    list = list.filter(e=>entHasAttention(e.id));
+  } else if(state.typeFilter!=='all'){
+    list = list.filter(e=>typeBucket(e.type)===state.typeFilter);
+  }
+  // sort
+  const s = state.sort;
+  list.sort((a,b)=>{
+    if(s==='mentions') return b.noteCount-a.noteCount;
+    if(s==='az') return a.name.localeCompare(b.name);
+    if(s==='updated') return b.updatedAt.localeCompare(a.updatedAt);
+    if(s==='attention') return (entHasAttention(b.id)?1:0)-(entHasAttention(a.id)?1:0) || b.noteCount-a.noteCount;
+    return 0;
+  });
+  return list;
+}
+
+function renderRoster(){
+  state.sort = $('sort').value;
+  const list = rosterData();
+  $('rosterCount').textContent = `${list.length} ${list.length===1?'entity':'entities'}`;
+  // attention banner only relevant when not already in attention mode
+  $('attnBanner').style.display = state.needsAttention ? 'none' : 'block';
+  $('attnSub').textContent = `${suggestions.length} AI merge suggestion${suggestions.length!==1?'s':''} · ${ambiguous.length} ambiguous term${ambiguous.length!==1?'s':''}`;
+
+  const r = $('roster');
+  if(!list.length){
+    r.innerHTML = `<div class="empty">No entities match.<br>Try a different search or filter.</div>`;
+    return;
+  }
+  r.innerHTML = list.map(e=>{
+    const ti = TYPE[e.type];
+    const medCls = isMed(e)?'t-medical':(e.type==='person'?'t-person':'');
+    const attn = entHasAttention(e.id);
+    return `<button class="erow" onclick="openDossier('${e.id}')">
+      <span class="glyph ${medCls}">${ti.glyph}</span>
+      <span class="meta">
+        <span class="nm">${esc(e.name)} ${e.owner?'<span class="star" title="You">★</span>':''}</span>
+        <span class="sub2">
+          <span>${ti.label}</span>
+          ${e.hasArticle?'<span class="kb-tag">KB</span>':''}
+        </span>
+      </span>
+      ${attn?'<span class="attn-dot" title="Needs attention"></span>':''}
+      <span class="cnt">${e.noteCount}</span>
+    </button>`;
+  }).join('');
+}
+
+/* ============================================================
+   SCREEN ROUTING
+   ============================================================ */
+function showScreen(name){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  $('screen-'+name).classList.add('active');
+  $('app').scrollTop = 0;
+}
+
+/* ============================================================
+   DOSSIER
+   ============================================================ */
+function openDossier(id){
+  state.currentEntity = id;
+  renderDossier();
+  showScreen('dossier');
+}
+
+function relatedSuggestions(id){ return suggestions.filter(s=>s.into===id || s.from===id); }
+function relatedAmbiguous(id){ return ambiguous.filter(a=>a.candidates.includes(id)); }
+
+function renderDossier(){
+  const e = byId(state.currentEntity);
+  if(!e) return;
+  const ti = TYPE[e.type];
+  const medCls = isMed(e)?'t-medical':(e.type==='person'?'t-person':'');
+
+  // AI suggestion banners (this entity is the merge target)
+  const sugg = suggestions.filter(s=>s.into===e.id);
+  let suggHtml = sugg.map(s=>{
+    const from = byId(s.from);
+    return `<div class="suggest-banner">
+      <div class="sb-top">✦ Possible duplicate <span class="sb-conf">${Math.round(s.confidence*100)}% match</span></div>
+      <div class="sb-sub"><b>${esc(from.name)}</b> (${from.noteCount} notes) may be the same as this entity.</div>
+      <div class="sb-acts">
+        <button class="btn sm primary" onclick="openWorkbench('${s.into}','${s.from}',true)">Review in compare</button>
+        <button class="btn sm" onclick="dismissSuggestion('${s.id}')">Not a match</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Ambiguous-term banner
+  const amb = relatedAmbiguous(e.id);
+  let ambHtml = amb.map(a=>{
+    const others = a.candidates.filter(c=>c!==e.id).map(c=>byId(c).name).join(', ');
+    return `<div class="suggest-banner" style="border-color:var(--m-research)">
+      <div class="sb-top" style="color:var(--m-research)">⚑ Ambiguous term: "${esc(a.term)}"</div>
+      <div class="sb-sub">${esc(a.note)} Also maps to: <b>${esc(others)}</b>.</div>
+      <div class="sb-acts">
+        <button class="btn sm primary" onclick="openDisambiguate('${a.id}')">Disambiguate</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Medical cross-link
+  let medHtml = '';
+  if(e.medical){
+    medHtml = `<div class="medlink">
+      <span class="ml-ic">⚕</span>
+      <span class="ml-txt"><b>${esc(e.medical.status)}</b> · ${esc(e.medical.detail)} — <span style="color:var(--accent)">view in medical records ›</span></span>
+    </div>`;
+  }
+  if(e.calendarEvents){
+    medHtml += `<div class="medlink" style="background:rgba(127,154,166,.07); border-color:rgba(127,154,166,.3)">
+      <span class="ml-ic" style="color:var(--accent)">◷</span>
+      <span class="ml-txt">Appears in <b style="color:var(--accent)">${e.calendarEvents} calendar events</b> — <span style="color:var(--accent)">view ›</span></span>
+    </div>`;
+  }
+
+  // aliases
+  const aiAl = e.aiAliases.length
+    ? e.aiAliases.map(a=>`<span class="chip">${esc(a)}</span>`).join('')
+    : `<span style="font-size:13px;color:var(--text-dim)">None detected.</span>`;
+  const userAl = e.userAliases.length
+    ? e.userAliases.map(a=>`<span class="chip removable">${esc(a)}<span class="x" onclick="removeAlias('${e.id}','${esc(a)}')">×</span></span>`).join('')
+    : `<span style="font-size:13px;color:var(--text-dim)">None yet.</span>`;
+
+  // mentions
+  const mentions = e.mentions.map(mn=>`
+    <div class="mention" onclick="toast('Opening note: ${esc(mn.title)}')">
+      <span class="mt">${esc(mn.title)}</span>
+      <span class="md">${fmtDate(mn.date)}</span>
+      <span class="arr">›</span>
+    </div>`).join('');
+
+  // co-mentions
+  const co = e.coMentions.length ? e.coMentions.map(c=>{
+    const ce = byId(c.id); if(!ce) return '';
+    return `<div class="comention" onclick="openDossier('${ce.id}')">
+      <span class="glyph ${isMed(ce)?'t-medical':''}" style="width:26px;height:26px;flex:0 0 26px;font-size:13px;">${TYPE[ce.type].glyph}</span>
+      <span class="cm-nm">${esc(ce.name)}</span>
+      <span class="cm-shared">${c.shared} shared</span>
+      <span class="arr" style="color:var(--text-dim)">›</span>
+    </div>`;
+  }).join('') : `<div style="font-size:13px;color:var(--text-dim)">No frequent co-mentions yet.</div>`;
+
+  // decisions timeline for this entity
+  const tl = decisions.filter(d=>d.entity===e.id).sort((a,b)=>b.ts-a.ts);
+  const tlHtml = tl.length ? tl.map(d=>`
+    <div class="tl-item ${d.kind}">
+      <div class="tl-act">${d.text}</div>
+      <div class="tl-meta">${esc(d.meta)}</div>
+    </div>`).join('') : `<div style="font-size:13px;color:var(--text-dim)">No decisions recorded yet.</div>`;
+
+  $('screen-dossier').innerHTML = `
+    <div class="dossier-head">
+      <button class="backbtn" onclick="showScreen('roster')">‹ Roster</button>
+    </div>
+
+    <div class="updating" id="dUpdating"><span class="spinner"></span> Re-indexing in background…</div>
+
+    <div class="dprofile">
+      <span class="glyph ${medCls}">${ti.glyph}</span>
+      <div class="dname-wrap">
+        <div class="dname" id="dNameWrap">
+          <span id="dName">${esc(e.name)}</span>
+          ${e.owner?'<span class="star" style="color:var(--m-research);font-size:14px">★ You</span>':''}
+          <button class="edit" title="Rename" onclick="startRename()">✎</button>
+        </div>
+        <div class="dtype">${ti.label}${e.medical?' · medical':''}</div>
+        <div class="dstats">
+          <span><b>${e.noteCount}</b> mentions</span>
+          ${e.hasArticle?'<span><b style="color:var(--accent)">KB</b> article linked</span>':'<span>No KB article</span>'}
+          <span>Updated ${fmtDate(e.updatedAt)}</span>
+        </div>
+      </div>
+    </div>
+
+    ${suggHtml}
+    ${ambHtml}
+    ${medHtml}
+
+    <!-- primary identity actions -->
+    <div style="display:flex; gap:8px; margin-bottom:14px;">
+      <button class="btn block" onclick="openMergePicker('${e.id}')">⇲ Merge in…</button>
+      <button class="btn block" onclick="openSplitPicker('${e.id}')">⊣ Mark separate</button>
+    </div>
+
+    <!-- ALIASES -->
+    <div class="sect">
+      <h3>Aliases</h3>
+      <div class="alias-grp">
+        <div class="gl">AI-detected (read-only)</div>
+        <div class="alias-wrap">${aiAl}</div>
+      </div>
+      <div class="alias-grp">
+        <div class="gl">Your aliases</div>
+        <div class="alias-wrap" id="userAliasWrap">${userAl}</div>
+        <div class="add-alias-row">
+          <input class="fld" id="newAlias" placeholder="Add a nickname / variant…" onkeydown="if(event.key==='Enter')addAlias('${e.id}')" />
+          <button class="btn" onclick="addAlias('${e.id}')">Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MENTIONS -->
+    <div class="sect">
+      <h3>Mentions <span style="color:var(--text-dim);font-weight:400">${e.mentions.length} shown</span></h3>
+      ${mentions}
+    </div>
+
+    <!-- CO-MENTIONS -->
+    <div class="sect">
+      <h3>Often mentioned with</h3>
+      ${co}
+    </div>
+
+    <!-- DECISIONS TIMELINE -->
+    <div class="sect">
+      <h3>Decisions history</h3>
+      <div class="timeline">${tlHtml}</div>
+    </div>
+
+    <div style="height:8px"></div>
+  `;
+}
+
+/* ---- inline rename ---- */
+function startRename(){
+  const e = byId(state.currentEntity);
+  const wrap = $('dNameWrap');
+  wrap.innerHTML = `
+    <input class="rename-input" id="renameInput" value="${esc(e.name)}" />
+    <div style="display:flex;gap:8px;margin-top:8px;width:100%">
+      <button class="btn sm primary" onclick="commitRename()">Save</button>
+      <button class="btn sm" onclick="renderDossier()">Cancel</button>
+    </div>`;
+  const inp = $('renameInput'); inp.focus(); inp.select();
+  inp.addEventListener('keydown', ev=>{ if(ev.key==='Enter') commitRename(); if(ev.key==='Escape') renderDossier(); });
+}
+function commitRename(){
+  const e = byId(state.currentEntity);
+  const v = $('renameInput').value.trim();
+  if(v && v!==e.name){
+    logDecision(e.id,'alias',`Renamed canonical to "${v}"`);
+    e.name = v; e.updatedAt = today();
+    asyncReindex();
+  }
+  renderDossier();
+  renderRoster();
+}
+
+/* ---- aliases ---- */
+function addAlias(id){
+  const e = byId(id);
+  const inp = $('newAlias');
+  const v = inp.value.trim();
+  if(!v) return;
+  if(!e.userAliases.includes(v) && !e.aiAliases.includes(v)){
+    e.userAliases.push(v); e.updatedAt = today();
+    logDecision(id,'alias',`Added alias "${v}"`);
+    asyncReindex();
+  }
+  renderDossier();
+}
+function removeAlias(id, alias){
+  const e = byId(id);
+  e.userAliases = e.userAliases.filter(a=>a!==alias);
+  e.updatedAt = today();
+  logDecision(id,'alias',`Removed alias "${alias}"`);
+  asyncReindex();
+  renderDossier();
+}
+
+/* ============================================================
+   MERGE / SPLIT PICKERS (bottom sheets)
+   ============================================================ */
+function openMergePicker(id){
+  const e = byId(id);
+  // only same-type candidates (and not self)
+  const cands = entities.filter(c=>c.type===e.type && c.id!==id);
+  const items = cands.length ? cands.map(c=>`
+    <div class="picker-item" onclick="openWorkbench('${id}','${c.id}',false)">
+      <span class="glyph ${isMed(c)?'t-medical':''}">${TYPE[c.type].glyph}</span>
+      <span class="meta"><div class="nm">${esc(c.name)}</div><div class="sub">${c.noteCount} mentions${c.hasArticle?' · KB':''}</div></span>
+      <span style="color:var(--text-dim)">compare ›</span>
+    </div>`).join('') : `<div class="empty">No other <b>${TYPE[e.type].label}</b> entities to merge.</div>`;
+  openSheet(`
+    <h2>Fold a duplicate into “${esc(e.name)}”</h2>
+    <p class="sh-sub">Pick another ${TYPE[e.type].label.toLowerCase()}. You'll compare them side-by-side before confirming. Only same-type entities are shown.</p>
+    ${items}
+  `);
+}
+
+function openSplitPicker(id){
+  const e = byId(id);
+  // candidates: same-type others (could be confused as same thing)
+  const cands = entities.filter(c=>c.type===e.type && c.id!==id);
+  const items = cands.length ? cands.map(c=>`
+    <div class="picker-item" onclick="confirmSplit('${id}','${c.id}')">
+      <span class="glyph ${isMed(c)?'t-medical':''}">${TYPE[c.type].glyph}</span>
+      <span class="meta"><div class="nm">${esc(c.name)}</div><div class="sub">${c.noteCount} mentions</div></span>
+      <span style="color:var(--text-dim)">mark ›</span>
+    </div>`).join('') : `<div class="empty">No comparable entities.</div>`;
+  openSheet(`
+    <h2>Mark as separate</h2>
+    <p class="sh-sub">Declare that “${esc(e.name)}” is <b>not the same thing</b> as another entity. This blocks accidental auto-merge in future rebuilds.</p>
+    ${items}
+  `);
+}
+function confirmSplit(id, otherId){
+  const e = byId(id), o = byId(otherId);
+  logDecision(id,'split',`Marked separate from "${o.name}" (blocks auto-merge)`);
+  e.updatedAt = today();
+  asyncReindex();
+  closeSheet();
+  toast(`“${e.name}” and “${o.name}” marked as separate`);
+  if($('screen-dossier').classList.contains('active')) renderDossier();
+}
+
+/* ============================================================
+   DISAMBIGUATION (resolve an ambiguous term)
+   ============================================================ */
+function openDisambiguate(ambId){
+  const a = ambiguous.find(x=>x.id===ambId);
+  const cands = a.candidates.map(c=>byId(c));
+  const items = cands.map(c=>`
+    <div class="picker-item" onclick="resolveAmbiguous('${ambId}','${c.id}')">
+      <span class="glyph ${isMed(c)?'t-medical':''}">${TYPE[c.type].glyph}</span>
+      <span class="meta"><div class="nm">${esc(c.name)}</div><div class="sub">${TYPE[c.type].label} · ${c.noteCount} mentions</div></span>
+      <span style="color:var(--accent)">assign ›</span>
+    </div>`).join('');
+  openSheet(`
+    <h2>Disambiguate “${esc(a.term)}”</h2>
+    <p class="sh-sub">${esc(a.note)} Which entity should this term resolve to by default?</p>
+    ${items}
+    <div class="sheet-acts"><button class="btn block" onclick="resolveAmbiguous('${ambId}',null)">Keep both (ask each time)</button></div>
+  `);
+}
+function resolveAmbiguous(ambId, chosenId){
+  const a = ambiguous.find(x=>x.id===ambId);
+  ambiguous = ambiguous.filter(x=>x.id!==ambId);
+  if(chosenId){
+    const c = byId(chosenId);
+    logDecision(chosenId,'alias',`Resolved ambiguous term "${a.term}" → this entity`);
+    c.updatedAt = today();
+    asyncReindex();
+    toast(`“${a.term}” now resolves to ${c.name}`);
+  } else {
+    toast(`“${a.term}” left ambiguous (will prompt per note)`);
+  }
+  closeSheet();
+  renderFilters(); renderRoster();
+  if($('screen-dossier').classList.contains('active')) renderDossier();
+}
+
+/* ============================================================
+   MERGE-COMPARE WORKBENCH  (the showpiece)
+   ============================================================ */
+function openWorkbench(canonId, foldId, fromSuggestion){
+  closeSheet();
+  // aId/bId are the stable left/right identities for the segmented control;
+  // canonId/foldId track the current canonical choice (default: canonId).
+  state.wb = { aId:canonId, bId:foldId, canonId, foldId, fromSuggestion: !!fromSuggestion };
+  renderWorkbench();
+  showScreen('workbench');
+}
+
+// Choose which side is canonical. The two segmented buttons map to fixed
+// entities (a/b); selecting one makes it canonical and the other the fold.
+// This is the single, authoritative canonical control.
+function setCanonical(which){
+  const w = state.wb;
+  if(which==='a'){ w.canonId = w.aId; w.foldId = w.bId; }
+  else           { w.canonId = w.bId; w.foldId = w.aId; }
+  renderWorkbench();
+}
+
+function colHtml(e, role){
+  // role: 'canon' | 'fold'
+  const isCanon = role==='canon';
+  const ti = TYPE[e.type];
+  const allAlias = [...e.aiAliases, ...e.userAliases];
+  const aliasMini = allAlias.length
+    ? allAlias.slice(0,4).map(a=>`<span class="chip">${esc(a)}</span>`).join('') + (allAlias.length>4?`<span class="chip">+${allAlias.length-4}</span>`:'')
+    : `<span style="font-size:12px;color:var(--text-dim)">none</span>`;
+  const samples = e.mentions.slice(0,3).map(mn=>`<li>• ${esc(mn.title)}</li>`).join('') || `<li style="color:var(--text-dim)">no mentions</li>`;
+  return `<div class="ccol ${isCanon?'is-canon':'is-fold'}">
+    <span class="col-tag">${isCanon?'★ Canonical (kept)':'Folds in'}</span>
+    <div class="glyph c-glyph ${isMed(e)?'t-medical':''}">${ti.glyph}</div>
+    <div class="c-nm">${esc(e.name)}</div>
+    <div class="c-type">${ti.label}${e.hasArticle?' · KB':''}</div>
+
+    <div class="cfield"><div class="cf-l">Mentions</div><div class="cf-v big">${e.noteCount}</div></div>
+    <div class="cfield"><div class="cf-l">Aliases</div><div class="cf-v alias-mini">${aliasMini}</div></div>
+    <div class="cfield"><div class="cf-l">Sample notes</div><div class="cf-v"><ul class="samples">${samples}</ul></div></div>
+  </div>`;
+}
+
+function renderWorkbench(){
+  const w = state.wb;
+  const canon = byId(w.canonId), fold = byId(w.foldId);
+  // a/b are the stable left/right entities; aIsCanon drives the segmented control
+  const a = byId(w.aId), b = byId(w.bId);
+  const aIsCanon = w.canonId===w.aId;
+  const sug = w.fromSuggestion
+    ? suggestions.find(s=>(s.into===w.aId&&s.from===w.bId)||(s.into===w.bId&&s.from===w.aId))
+    : null;
+  const combined = canon.noteCount + fold.noteCount;
+
+  $('screen-workbench').innerHTML = `
+    <div class="wb-head">
+      <button class="backbtn" onclick="exitWorkbench()">‹ Cancel</button>
+    </div>
+    <div class="scr-title" style="margin-bottom:4px">Compare &amp; merge</div>
+    <div class="wb-intro">
+      ${sug ? `✦ AI suggested this merge at <b style="color:var(--accent)">${Math.round(sug.confidence*100)}%</b> confidence. ` : ''}
+      Review both, choose which stays canonical, then confirm. The other folds in as an alias.
+    </div>
+
+    <!-- choose canonical (segmented; one authoritative control, one-thumb) -->
+    <div class="canon-pick" role="group" aria-label="Choose which entity to keep as canonical">
+      <button class="${aIsCanon?'sel':''}" aria-pressed="${aIsCanon}" onclick="setCanonical('a')">${esc(trunc(a.name))}</button>
+      <button class="${!aIsCanon?'sel':''}" aria-pressed="${!aIsCanon}" onclick="setCanonical('b')">${esc(trunc(b.name))}</button>
+    </div>
+    <div class="canon-note">Keep <b>${esc(canon.name)}</b> as canonical. Tap a name above to choose which entity stays.</div>
+
+    <!-- side-by-side compare: two narrow columns that fit 390px.
+         Columns hold their left/right position; the canonical badge moves. -->
+    <div class="compare">
+      ${colHtml(a, aIsCanon?'canon':'fold')}
+      ${colHtml(b, aIsCanon?'fold':'canon')}
+    </div>
+    <div class="merge-arrow">“${esc(fold.name)}” → folds into → “${esc(canon.name)}”</div>
+
+    <!-- sticky confirm -->
+    <div class="wb-confirm">
+      <div class="summary">
+        After merge: <b>${esc(canon.name)}</b> keeps the canonical record with
+        <b>${combined}</b> combined mentions; <b>${esc(fold.name)}</b> becomes an alias. Logged to history.
+      </div>
+      <div style="display:flex;gap:9px">
+        <button class="btn" style="flex:0 0 auto" onclick="exitWorkbench()">Cancel</button>
+        <button class="btn primary block" onclick="confirmMerge()">Confirm merge</button>
+      </div>
+    </div>
+    <div style="height:6px"></div>
+  `;
+}
+
+function confirmMerge(){
+  const w = state.wb;
+  const canon = byId(w.canonId), fold = byId(w.foldId);
+
+  // mutate state: fold into canon
+  canon.noteCount += fold.noteCount;
+  canon.userAliases = Array.from(new Set([...canon.userAliases, fold.name, ...fold.userAliases]));
+  canon.aiAliases = Array.from(new Set([...canon.aiAliases, ...fold.aiAliases]));
+  // merge mentions + co-mentions (dedupe co by id)
+  canon.mentions = [...canon.mentions, ...fold.mentions].slice(0,8);
+  const coMap = {};
+  [...canon.coMentions, ...fold.coMentions].forEach(c=>{ if(c.id!==canon.id) coMap[c.id]=(coMap[c.id]||0)+c.shared; });
+  canon.coMentions = Object.entries(coMap).map(([id,shared])=>({id,shared})).sort((a,b)=>b.shared-a.shared).slice(0,5);
+  if(fold.hasArticle) canon.hasArticle = true;
+  canon.updatedAt = today();
+
+  logDecision(canon.id,'merge',`Folded in “${fold.name}” (${fold.noteCount} mentions) as a variant`);
+
+  // remove the folded entity + any suggestion referencing it
+  entities = entities.filter(e=>e.id!==fold.id);
+  suggestions = suggestions.filter(s=>s.from!==fold.id && s.into!==fold.id);
+
+  state.wb = null;
+  state.currentEntity = canon.id;
+
+  // optimistic: jump to dossier, show async "updating" then settle
+  renderDossier();
+  renderFilters();
+  showScreen('dossier');
+  asyncReindex();
+  toast(`Merged into “${canon.name}” · re-indexing…`);
+  renderRoster();
+}
+
+function exitWorkbench(){
+  state.wb = null;
+  if(state.currentEntity){ renderDossier(); showScreen('dossier'); }
+  else showScreen('roster');
+}
+
+/* ============================================================
+   AI SUGGESTION DISMISS
+   ============================================================ */
+function dismissSuggestion(sid){
+  const s = suggestions.find(x=>x.id===sid);
+  if(!s) return;
+  const from = byId(s.from), into = byId(s.into);
+  suggestions = suggestions.filter(x=>x.id!==sid);
+  // dismissing a suggestion = a "split"/not-a-match decision
+  logDecision(into.id,'split',`Rejected AI merge suggestion: “${from.name}” is not a match`);
+  into.updatedAt = today();
+  renderDossier();
+  renderFilters(); renderRoster();
+  toast(`Marked “${from.name}” as separate`);
+}
+
+/* ============================================================
+   ASYNC RE-INDEX (optimistic → settle)
+   ============================================================ */
+let reindexTimer = null;
+function asyncReindex(){
+  const el = $('dUpdating');
+  if(el){ el.classList.add('show'); }
+  clearTimeout(reindexTimer);
+  reindexTimer = setTimeout(()=>{
+    const e2 = $('dUpdating'); if(e2) e2.classList.remove('show');
+  }, 1600);
+}
+
+/* ============================================================
+   DECISIONS LEDGER
+   ============================================================ */
+function logDecision(entityId, kind, text){
+  decisions.push({ entity:entityId, kind, text, meta:`You · ${fmtDate(today())}`, ts:decisionSeq++ });
+}
+
+/* ============================================================
+   BOTTOM SHEET
+   ============================================================ */
+function openSheet(html){
+  $('sheet').innerHTML = `<div class="sheet-grab"></div>${html}`;
+  $('scrim').classList.add('show');
+}
+function closeSheet(){ $('scrim').classList.remove('show'); }
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+let toastTimer=null;
+function toast(msg){
+  $('toastMsg').textContent = msg;
+  $('toast').classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>$('toast').classList.remove('show'), 2600);
+}
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function trunc(s){return s.length>16?s.slice(0,15)+'…':s;}
+function today(){return '2026-06-09';}
+function fmtDate(d){
+  const [y,mo,da]=d.split('-').map(Number);
+  const mons=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${mons[mo-1]} ${da}`;
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+$('search').addEventListener('input', e=>{ state.search=e.target.value; renderRoster(); });
+renderFilters();
+renderRoster();
+</script>
+</body>
+</html>

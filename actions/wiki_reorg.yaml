@@ -1,0 +1,27 @@
+# Declarative action: AUTONOMOUS SURGICAL TAXONOMY REORG.
+#
+# Folds un-foldered kb/Reference/<Name> pages into an EXISTING subcategory and rewrites their
+# inbound links — the article body is NEVER regenerated (unlike the destructive full rebuild).
+# Placement is deterministic-first (embedding similarity to a subcategory's members + a
+# corroboration bonus for a linked neighbour); the LLM is only a confidence-gated tie-break
+# over a shortlist of existing subcategories, and a page that can't be placed confidently is
+# left alone and surfaced for manual filing. Bounded by max_moves per run, with a cooldown and
+# a permanent inverse-move refusal so the layout converges rather than churning night to night.
+# Orphans are reported (they need inbound links, an owner-gated op), never moved.
+#
+# This also runs nightly as step 4 of wiki_maintain; run it here for an on-demand reorg.
+#
+# config keys:
+#   max_moves — max Reference pages to fold per run (default 5; re-run to drain more)
+#   review    — post the summary review card (default true)
+type: wiki_reorg
+category: Knowledge base
+config:
+  - { key: max_moves, label: Max moves per run, type: number, default: 5 }
+  - { key: review, label: Post a review card, type: review, default: true }
+steps:
+  - id: reorg
+    do: reorg_taxonomy
+    with:
+      max_moves: "{{ config.max_moves | default(5) }}"
+      post_card: "{{ config.review != false }}"

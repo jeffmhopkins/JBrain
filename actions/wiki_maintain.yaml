@@ -63,5 +63,10 @@ steps:
   - do: review_open_talk
     when: "{{ config.review != false }}"
 
-  # 4. Read-only taxonomy-health check — cards a "Reorganize recommended" only when overdue.
-  - do: taxonomy_health
+  # 4. Autonomous surgical taxonomy reorg: fold un-foldered Reference pages into EXISTING
+  #    subcategories (deterministic-first placement; LLM only as a confidence-gated tie-break).
+  #    Moves only — the article body is never regenerated; inbound links are rewritten. Capped
+  #    per run with a cooldown + permanent inverse-move refusal, so it converges instead of
+  #    churning. Orphans are surfaced on the summary card, never auto-moved.
+  - do: reorg_taxonomy
+    with: { max_moves: 5 }

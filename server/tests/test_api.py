@@ -6586,7 +6586,7 @@ def test_guided_intake_full_flow(client, monkeypatch):
     token, link_id = share_svc.create_guided_link(conn, nid, label="med hx", ttl_days=14)
     guided_svc.create_spec(conn, link_id, goal="medical history", intro="Hi from your son",
                            sub_prompt="Gather conditions, medications, allergies.")
-    conn.commit()
+    conn.commit()   # commit the link+spec setup before the HTTP flow uses the single writer
 
     from fastapi.testclient import TestClient
     from app.main import app
@@ -6633,6 +6633,7 @@ def test_guided_spend_cap_is_atomic(client, monkeypatch):
     conn = get_conn()
     nid = notes_svc.upsert_note(conn, "notes/Capped", "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p")
     conn.execute("UPDATE guided_specs SET max_total_replies=2, status='active' WHERE share_link_id=?", (link_id,))
     conn.commit()
@@ -6658,6 +6659,7 @@ def test_guided_single_use_and_bind(client, monkeypatch):
     conn = get_conn()
     nid = notes_svc.upsert_note(conn, "notes/Once", "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p",
                            bind=True, single_use=True)
     conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id=?", (link_id,))
@@ -6694,6 +6696,7 @@ def _guided_link(conn, title="notes/Safeguard", goal="history"):
     from app.services import notes as notes_svc
     nid = notes_svc.upsert_note(conn, title, "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal=goal, intro="hi", sub_prompt="ask things")
     conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id=?", (link_id,))
     conn.commit()

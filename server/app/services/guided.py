@@ -18,7 +18,7 @@ import json
 import re
 import secrets
 
-from ..db import get_meta
+from ..db import get_conn, get_meta, submit_write
 from . import llm
 from . import prompts
 from . import reviews as reviews_svc
@@ -190,6 +190,11 @@ def create_spec(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str, d
     Returns:
         The new guided_specs.id.
     """
+    # A conn-based helper (does NOT commit): it's composed with create_guided_link into one atomic
+    # link+spec transaction the CALLER owns (architect._tool_create_guided_share). It must NOT route
+    # through submit_write — the caller already holds an open write on `conn`, so a separate writer
+    # connection here would deadlock on that lock (and split the link/spec across two connections).
+    # The caller is responsible for serialising the whole link+spec write through the single writer.
     cur = conn.execute(
         "INSERT INTO guided_specs (share_link_id, goal, intro, sub_prompt, dest_title, status, "
         "bind, single_use, max_turns, max_total_replies) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
@@ -208,8 +213,13 @@ def set_options(conn, link_id: int, *, bind: bool, single_use: bool) -> None:
         bind: Lock the link to the first browser that uses it.
         single_use: Prevent a second session after the first submission.
     """
-    conn.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
-                 (1 if bind else 0, 1 if single_use else 0, link_id))
+    def _unit() -> None:
+        c = get_conn()
+        c.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
+                  (1 if bind else 0, 1 if single_use else 0, link_id))
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -> None:
@@ -222,8 +232,13 @@ def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -
         intro: Updated recipient intro text.
         sub_prompt: Updated task instructions for the interview AI.
     """
-    conn.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
-                 ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
+    def _unit() -> None:
+        c = get_conn()
+        c.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
+                  ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 def reset_bind(conn, link_id: int) -> None:
@@ -235,8 +250,13 @@ def reset_bind(conn, link_id: int) -> None:
         conn: Database connection.
         link_id: The share_links.id whose in-progress sessions to abandon.
     """
-    conn.execute("UPDATE guided_sessions SET status='abandoned' "
-                 "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
+    def _unit() -> None:
+        c = get_conn()
+        c.execute("UPDATE guided_sessions SET status='abandoned' "
+                  "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 def get_spec(conn, link_id: int):
@@ -259,7 +279,12 @@ def activate_spec(conn, link_id: int) -> None:
         conn: Database connection.
         link_id: The share_links.id whose spec to activate.
     """
-    conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id = ?", (link_id,))
+    def _unit() -> None:
+        c = get_conn()
+        c.execute("UPDATE guided_specs SET status='active' WHERE share_link_id = ?", (link_id,))
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 # --- recipient sessions -----------------------------------------------------
@@ -286,23 +311,29 @@ def start_session(conn, link, spec, name: str | None, client_ip: str | None,
         HTTPException: 403 if the link is bound to a different device.
     """
     from fastapi import HTTPException
-    if spec["single_use"] and conn.execute(
-        "SELECT 1 FROM guided_sessions WHERE share_link_id=? AND status='submitted' LIMIT 1",
-        (link["id"],)).fetchone():
-        raise HTTPException(status_code=409, detail="This link has already been completed.")
-    if spec["bind"]:
-        other = conn.execute(
-            "SELECT secret FROM guided_sessions WHERE share_link_id=? "
-            "AND status IN ('active','drafting','submitted') LIMIT 1", (link["id"],)).fetchone()
-        if other and other["secret"] != my_secret:
-            raise HTTPException(status_code=403,
-                                detail="This link is locked to the device that started it.")
-    secret = secrets.token_urlsafe(24)
-    cur = conn.execute(
-        "INSERT INTO guided_sessions (share_link_id, secret, name, client_ip) VALUES (?, ?, ?, ?)",
-        (link["id"], secret, (name or "").strip()[:80] or None, client_ip),
-    )
-    return cur.lastrowid, secret
+
+    def _unit() -> tuple[int, str]:
+        c = get_conn()
+        if spec["single_use"] and c.execute(
+            "SELECT 1 FROM guided_sessions WHERE share_link_id=? AND status='submitted' LIMIT 1",
+            (link["id"],)).fetchone():
+            raise HTTPException(status_code=409, detail="This link has already been completed.")
+        if spec["bind"]:
+            other = c.execute(
+                "SELECT secret FROM guided_sessions WHERE share_link_id=? "
+                "AND status IN ('active','drafting','submitted') LIMIT 1", (link["id"],)).fetchone()
+            if other and other["secret"] != my_secret:
+                raise HTTPException(status_code=403,
+                                    detail="This link is locked to the device that started it.")
+        secret = secrets.token_urlsafe(24)
+        cur = c.execute(
+            "INSERT INTO guided_sessions (share_link_id, secret, name, client_ip) VALUES (?, ?, ?, ?)",
+            (link["id"], secret, (name or "").strip()[:80] or None, client_ip),
+        )
+        c.commit()
+        return cur.lastrowid, secret
+
+    return submit_write(_unit).result()
 
 
 def find_session(conn, link_id: int, secret: str | None):
@@ -425,18 +456,24 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
         transcript.append({"role": "user", "content": user_message})
 
     over_turns = session["turn_count"] >= spec["max_turns"]
-    # Atomic per-link spend cap: only a successful decrement-from-budget proceeds.
-    budget_ok = conn.execute(
-        "UPDATE guided_specs SET reply_count = reply_count + 1 "
-        "WHERE id = ? AND reply_count < max_total_replies",
-        (spec["id"],),
-    ).rowcount == 1
-    # Release the write lock the billing UPDATE opened BEFORE any LLM call — never hold it
-    # across the (up to 120s) model round-trip, or other writers wedge within busy_timeout (60s).
-    if budget_ok:
-        conn.commit()
-    else:
-        conn.rollback()  # the no-op UPDATE still opened an (empty) write txn
+    # Atomic per-link spend cap: only a successful decrement-from-budget proceeds. Runs as its
+    # OWN write unit and commits BEFORE any LLM call — the writer is never held across the (up to
+    # 120s) model round-trip, which would wedge other writers within busy_timeout (60s). The unit
+    # commits on a successful decrement and rolls back the no-op UPDATE's empty txn otherwise.
+    def _budget_unit() -> bool:
+        c = get_conn()
+        ok = c.execute(
+            "UPDATE guided_specs SET reply_count = reply_count + 1 "
+            "WHERE id = ? AND reply_count < max_total_replies",
+            (spec["id"],),
+        ).rowcount == 1
+        if ok:
+            c.commit()
+        else:
+            c.rollback()
+        return ok
+
+    budget_ok = submit_write(_budget_unit).result()
 
     if over_turns or not budget_ok:
         # Wrap up gracefully and draft from whatever we have.
@@ -452,10 +489,12 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
     if not msgs:   # opening turn — prompt the model to greet and ask its first question
         msgs = [{"role": "user", "content": _fence("(The conversation is starting. Greet me and ask your first question.)", nonce)}]
 
+    # The LLM round-trip runs OUTSIDE every write unit — the budget unit above already committed
+    # and released the writer, and the reply-persist unit below has not yet begun. No open
+    # transaction exists on this request connection here, so a failure needs no rollback.
     try:
         raw = llm.complete(msgs, system=system, max_tokens=_REPLY_MAX_TOKENS)
     except Exception:
-        conn.rollback()  # clear any open txn so this pooled connection can't wedge later writers
         return {"phase": "error", "message": "Something went wrong — please try again in a moment."}
 
     # Abuse / distress evaluation runs BEFORE <<DONE>> (an abusive turn must not
@@ -472,11 +511,17 @@ def _run_turn(conn, link, spec, session, *, user_message: str | None) -> dict:
     done = _DONE in raw
     reply = _sanitize_reply(raw)
     transcript.append({"role": "assistant", "content": reply})
-    conn.execute(
-        "UPDATE guided_sessions SET transcript_json = ?, turn_count = turn_count + 1 WHERE id = ?",
-        (json.dumps(transcript), session["id"]),
-    )
-    conn.commit()
+    # Persist the whole in-memory transcript (user turn + this reply) as its own write unit,
+    # AFTER the LLM call. Writes json.dumps(transcript) from the in-memory list — no re-read.
+    def _persist_unit() -> None:
+        c = get_conn()
+        c.execute(
+            "UPDATE guided_sessions SET transcript_json = ?, turn_count = turn_count + 1 WHERE id = ?",
+            (json.dumps(transcript), session["id"]),
+        )
+        c.commit()
+
+    submit_write(_persist_unit).result()
 
     if done:
         return _begin_review(conn, link, spec, session, transcript, reply)
@@ -532,9 +577,14 @@ def _handle_mild(conn, link, spec, session, transcript, reason):
         return _terminate_abuse(conn, link, spec, session, transcript, reason or "misconduct", strikes=s)
     msg = (_REDIRECT_MSG if s == 1 else _WARN_MSG).format(owner=_owner_label())
     transcript.append({"role": "assistant", "content": msg})
-    conn.execute("UPDATE guided_sessions SET transcript_json=?, turn_count=turn_count+1, strike_count=? WHERE id=?",
-                 (json.dumps(transcript), s, session["id"]))
-    conn.commit()
+
+    def _unit() -> None:
+        c = get_conn()
+        c.execute("UPDATE guided_sessions SET transcript_json=?, turn_count=turn_count+1, strike_count=? WHERE id=?",
+                  (json.dumps(transcript), s, session["id"]))
+        c.commit()
+
+    submit_write(_unit).result()
     return {"phase": "asking", "message": msg,
             "progress": {"turn": session["turn_count"] + 1, "max": spec["max_turns"]}}
 
@@ -559,22 +609,27 @@ def _terminate_abuse(conn, link, spec, session, transcript, reason, strikes=None
     """
     from . import share as share_svc        # link management only — no brain access
     transcript.append({"role": "assistant", "content": _ENDED_MSG})
-    conn.execute(
-        "UPDATE guided_sessions SET status='abandoned', end_reason=?, transcript_json=?, "
-        "turn_count=turn_count+1, strike_count=?, completed_at=datetime('now') WHERE id=?",
-        (f"abuse:{reason}", json.dumps(transcript),
-         strikes if strikes is not None else (session["strike_count"] or 0), session["id"]))
-    share_svc.revoke_link(conn, link["id"])
     who = session["name"] or "Someone"
-    rid = reviews_svc.create_review_item(
-        conn, None,
-        title="A guided intake was ended for abuse",
-        message=(f"The “{spec['goal'] or 'guided'}” intake with {who} was ended automatically "
-                 f"({_reason_label(reason)}) and the link was locked. Review the conversation in Shares — "
-                 f"re-open the link if it was a mistake."),
-        link_slug="__shares__")
-    conn.execute("UPDATE guided_sessions SET review_item_id=? WHERE id=?", (rid, session["id"]))
-    conn.commit()
+
+    def _unit() -> None:
+        c = get_conn()
+        c.execute(
+            "UPDATE guided_sessions SET status='abandoned', end_reason=?, transcript_json=?, "
+            "turn_count=turn_count+1, strike_count=?, completed_at=datetime('now') WHERE id=?",
+            (f"abuse:{reason}", json.dumps(transcript),
+             strikes if strikes is not None else (session["strike_count"] or 0), session["id"]))
+        share_svc.revoke_link(c, link["id"])
+        rid = reviews_svc.create_review_item(
+            c, None,
+            title="A guided intake was ended for abuse",
+            message=(f"The “{spec['goal'] or 'guided'}” intake with {who} was ended automatically "
+                     f"({_reason_label(reason)}) and the link was locked. Review the conversation in Shares — "
+                     f"re-open the link if it was a mistake."),
+            link_slug="__shares__")
+        c.execute("UPDATE guided_sessions SET review_item_id=? WHERE id=?", (rid, session["id"]))
+        c.commit()
+
+    submit_write(_unit).result()
     _notify("A guided intake was ended automatically")
     return {"phase": "ended", "message": _ENDED_MSG}
 
@@ -597,19 +652,24 @@ def _close_distress(conn, link, spec, session, transcript):
     """
     msg = _DISTRESS_MSG.format(owner=_owner_label())
     transcript.append({"role": "assistant", "content": msg})
-    conn.execute(
-        "UPDATE guided_sessions SET status='abandoned', end_reason='distress', transcript_json=?, "
-        "turn_count=turn_count+1, completed_at=datetime('now') WHERE id=?",
-        (json.dumps(transcript), session["id"]))
     who = session["name"] or "Someone"
-    rid = reviews_svc.create_review_item(
-        conn, None,
-        title="A guided intake may need your attention",
-        message=(f"{who} may have shared something difficult in the “{spec['goal'] or 'guided'}” intake, "
-                 f"so it was closed gently — please consider reaching out. Review it in Shares."),
-        link_slug="__shares__")
-    conn.execute("UPDATE guided_sessions SET review_item_id=? WHERE id=?", (rid, session["id"]))
-    conn.commit()
+
+    def _unit() -> None:
+        c = get_conn()
+        c.execute(
+            "UPDATE guided_sessions SET status='abandoned', end_reason='distress', transcript_json=?, "
+            "turn_count=turn_count+1, completed_at=datetime('now') WHERE id=?",
+            (json.dumps(transcript), session["id"]))
+        rid = reviews_svc.create_review_item(
+            c, None,
+            title="A guided intake may need your attention",
+            message=(f"{who} may have shared something difficult in the “{spec['goal'] or 'guided'}” intake, "
+                     f"so it was closed gently — please consider reaching out. Review it in Shares."),
+            link_slug="__shares__")
+        c.execute("UPDATE guided_sessions SET review_item_id=? WHERE id=?", (rid, session["id"]))
+        c.commit()
+
+    submit_write(_unit).result()
     _notify("A guided intake may need your attention")
     return {"phase": "ended", "message": msg}
 
@@ -655,12 +715,18 @@ def _begin_review(conn, link, spec, session, transcript, lead_message: str) -> d
     Returns:
         Turn result dict with phase='review', message, and document fields.
     """
+    # _synthesize makes the LLM call — it MUST stay OUTSIDE the write unit below.
     doc = _synthesize(spec, session, transcript)
-    conn.execute(
-        "UPDATE guided_sessions SET status='drafting', document_md = ?, transcript_json = ? WHERE id = ?",
-        (doc, json.dumps(transcript), session["id"]),
-    )
-    conn.commit()
+
+    def _unit() -> None:
+        c = get_conn()
+        c.execute(
+            "UPDATE guided_sessions SET status='drafting', document_md = ?, transcript_json = ? WHERE id = ?",
+            (doc, json.dumps(transcript), session["id"]),
+        )
+        c.commit()
+
+    submit_write(_unit).result()
     return {"phase": "review", "message": lead_message, "document": doc}
 
 
@@ -707,17 +773,22 @@ def submit(conn, link, spec, session) -> dict:
     if session["status"] == "submitted":
         return {"ok": True, "already": True}
     who = session["name"] or "Someone"
-    rid = reviews_svc.create_review_item(
-        conn, None,
-        title=f"{who} completed the “{spec['goal'] or 'guided'}” intake",
-        message=f"{who} finished a guided AI intake — review and approve the document in Shares.",
-        link_slug="__shares__",
-    )
-    conn.execute(
-        "UPDATE guided_sessions SET status='submitted', review_item_id=?, completed_at=datetime('now') WHERE id=?",
-        (rid, session["id"]),
-    )
-    conn.commit()
+
+    def _unit() -> None:
+        c = get_conn()
+        rid = reviews_svc.create_review_item(
+            c, None,
+            title=f"{who} completed the “{spec['goal'] or 'guided'}” intake",
+            message=f"{who} finished a guided AI intake — review and approve the document in Shares.",
+            link_slug="__shares__",
+        )
+        c.execute(
+            "UPDATE guided_sessions SET status='submitted', review_item_id=?, completed_at=datetime('now') WHERE id=?",
+            (rid, session["id"]),
+        )
+        c.commit()
+
+    submit_write(_unit).result()
     try:
         from . import push
         push.notify_review_created("JBrain", "A guided intake is ready to review")

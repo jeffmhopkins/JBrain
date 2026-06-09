@@ -120,6 +120,18 @@ def submit_write(fn: Callable[[], _T]) -> "Future[_T]":
         except BaseException as exc:  # noqa: BLE001 — mirror the pool: propagate via the Future
             fut.set_exception(exc)
         return fut
+    # A caller that ALREADY holds an open write transaction on its own connection would deadlock
+    # the single writer: the writer blocks on the SQLite write lock this thread holds, while this
+    # thread blocks in .result() waiting for the writer (a 60s busy_timeout hang, then "database is
+    # locked"). Fail fast with a clear error instead. Reads don't open a transaction in the default
+    # isolation mode, so this fires only on an uncommitted WRITE — always a bug under the single-writer
+    # model: commit/rollback the prior write first, or fold it into this unit (one writer connection).
+    caller_conn = getattr(_local, "conn", None)
+    if caller_conn is not None and caller_conn.in_transaction:
+        raise sqlite3.ProgrammingError(
+            "submit_write() called while the calling thread holds an open write transaction on its "
+            "own connection — this would deadlock the single writer. Commit or roll back the prior "
+            "write first, or fold it into this submit_write unit.")
     return persist_executor().submit(_run)
 
 

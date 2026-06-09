@@ -159,6 +159,26 @@ def test_unit_that_raises_mid_transaction_does_not_leak_to_the_next_unit(fresh_d
     assert leaked == 0, "the failed unit's partial write was not rolled back"
 
 
+def test_submit_write_from_a_thread_holding_a_write_lock_fails_fast(fresh_db):
+    """Calling submit_write while the caller holds an open write txn raises, not deadlocks.
+
+    The caller's connection holds the single SQLite write lock; the writer would block on it up to
+    busy_timeout while the caller blocks in .result() waiting for the writer — a 60s self-deadlock.
+    The guard turns that into an immediate, localized ProgrammingError.
+    """
+    import sqlite3
+    db = fresh_db
+    conn = db.get_conn()
+    conn.execute("INSERT INTO _w(who) VALUES ('holding the lock')")   # open write txn, NOT committed
+    try:
+        with pytest.raises(sqlite3.ProgrammingError, match="open write transaction"):
+            db.submit_write(lambda: None)
+    finally:
+        conn.rollback()
+    # After rollback, the same call works (no held lock).
+    assert db.submit_write(lambda: db.get_conn().execute("SELECT 1") and None).result(timeout=30) is None
+
+
 def test_nested_write_runs_inline_without_deadlock(fresh_db):
     """A write unit that itself calls submit_write must NOT deadlock the single worker.
 

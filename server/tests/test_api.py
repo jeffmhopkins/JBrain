@@ -2065,6 +2065,50 @@ def test_title_capture_root_notes(client, monkeypatch):
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent
 
 
+def test_reanalyze_commits_title_before_analyze(client, monkeypatch):
+    """The reanalyze endpoint commits a title-rename BEFORE running analyze, so the rename's WAL
+    write lock isn't held across the analyze LLM call — which otherwise deadlocks a concurrent
+    attachment fold-back worker for the 60s busy_timeout and hangs the request. Proven by a
+    SEPARATE connection already seeing the renamed note by the time analyze is invoked."""
+    import json
+    import sqlite3
+    from app.db import get_conn
+    from app.config import get_settings
+    from app.services import llm, note_analysis as na
+    from app.services import notes as ns
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    # The analysis prompt carries "NOTE BODY:"; the title prompt only "NOTE:".
+    monkeypatch.setattr(llm, "complete", lambda messages, **k:
+                        json.dumps({"gist": "g", "facts": [], "entities": [], "domain": "Unsure", "dates": []})
+                        if "NOTE BODY:" in messages[0]["content"] else "Echo Results")
+
+    conn = get_conn()
+    nid = ns.upsert_note(conn, "notes/medical/Cardiology/01", "echo normal EF")
+    conn.commit()
+    slug = conn.execute("SELECT slug FROM notes WHERE id = ?", (nid,)).fetchone()["slug"]
+
+    seen = {}
+    real_analyze = na.analyze
+
+    def spy_analyze(c, note_id, **k):
+        # A separate connection must ALREADY see the committed rename here; if the endpoint were
+        # still holding the rename's write lock, this read would show the pre-rename title.
+        other = sqlite3.connect(get_settings().db_path)
+        try:
+            seen["title"] = other.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()[0]
+        finally:
+            other.close()
+        return real_analyze(c, note_id, **k)
+
+    monkeypatch.setattr(na, "analyze", spy_analyze)
+
+    r = client.post(f"/api/notes/{slug}/analysis").json()
+    assert seen["title"] == "notes/medical/Cardiology/01 - Echo Results"   # committed before analyze ran
+    assert r["title"] == "notes/medical/Cardiology/01 - Echo Results"      # endpoint reports the rename
+
+
 def test_owner_self_reference_folds_into_named_owner(client):
     """Once the owner has a real name, self-references ('the owner', 'me', 'I') merge into
     that named person entity — so the index never forks an 'Owner' from e.g. 'Jeff', and

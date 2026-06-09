@@ -3760,9 +3760,10 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 if ev.usage:
                     total_tokens += ev.usage.get("input_tokens", 0) + ev.usage.get("output_tokens", 0)
                 else:
-                    # Provider reported no usage (e.g. xAI, or a partial/error turn).
-                    # Count a conservative floor so the cumulative-cost backstop still
-                    # fires — otherwise the loop would be bounded only by max_iterations.
+                    # Provider reported no usage (a partial/error turn, or a stream that
+                    # never sent its trailing usage chunk). Count a conservative floor so the
+                    # cumulative-cost backstop still fires — otherwise the loop would be
+                    # bounded only by max_iterations.
                     total_tokens += max(1, max_tokens // 4)
 
         if not calls:

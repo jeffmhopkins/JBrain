@@ -40,11 +40,14 @@ import java.util.TimeZone
 /**
  * Foreground service that streams location to JBrain in the background — it keeps
  * running when the app is closed (a PWA can't). SMART POLLING: it asks Activity
- * Recognition for "still ⇄ moving" transitions and only runs continuous GPS while
- * you're MOVING; when STILL it shuts the GPS off and just sends a low-frequency
- * heartbeat, waking the moment you move again. (No activity permission → it falls
- * back to always-on continuous fixes.) Each fix is buffered offline and flushed to
- * /api/locations/bulk; the SERVER applies the keep-rule, so we just forward.
+ * Recognition for "still ⇄ moving" transitions and runs continuous HIGH-ACCURACY
+ * GPS while you're MOVING; when STILL it drops to a low-power SAFETY-NET poll (a
+ * real fix every STILL_POLL_MS) rather than going dark — so a missed "moving"
+ * transition can't blank out the trail, while a genuinely parked phone still only
+ * stores ~1 point/hour (the server dedups the rest). (No activity permission → it
+ * falls back to always-on continuous fixes.) Each fix is buffered offline and
+ * flushed to /api/locations/bulk; the SERVER applies the keep-rule, so we just
+ * forward.
  */
 class LocationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -115,9 +118,10 @@ class LocationService : Service() {
 
     private fun startUpdates() {
         if (updatesActive) return
-        val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 10 * 1000L)
-            .setMinUpdateIntervalMillis(5 * 1000L)        // as fast as every 5 s while moving…
-            .setMinUpdateDistanceMeters(20f)              // …once we've moved ~20 m (finer trail)
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5 * 1000L)
+            .setMinUpdateIntervalMillis(3 * 1000L)        // as fast as every 3 s while moving…
+            .setMinUpdateDistanceMeters(5f)               // …once we've moved ~5 m (finer than the
+                                                          // server's ~10 m floor, so detail survives)
             .build()
         try {
             fused.requestLocationUpdates(req, callback, Looper.getMainLooper())
@@ -133,12 +137,15 @@ class LocationService : Service() {
         updatesActive = false
     }
 
-    /** While still, ping ~every 20 min so "last seen" stays fresh without polling GPS. */
+    /** Safety net while "still": grab a real fix every STILL_POLL_MS. If Activity
+     *  Recognition misses the "started moving" transition (common), these fixes still
+     *  capture the trail; the server's keep-rule drops them as duplicates while you're
+     *  genuinely parked, so it's cheap when stationary but never goes blind. */
     private fun startHeartbeat() {
         heartbeat?.cancel()
         heartbeat = scope.launch {
             while (isActive && !moving) {
-                delay(20 * 60 * 1000L)
+                delay(STILL_POLL_MS)
                 if (!moving) grabSingleFix()
             }
         }
@@ -150,7 +157,7 @@ class LocationService : Service() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) return
         try {
-            fused.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                 .addOnSuccessListener { loc -> loc?.let { record(it) } }
         } catch (e: SecurityException) { /* permission revoked; ignore */ }
     }
@@ -256,5 +263,6 @@ class LocationService : Service() {
         private const val NOTIF_ID = 42
         private const val BATCH_POINTS = 25           // flush once the buffer reaches this…
         private const val UPLOAD_INTERVAL_MS = 60_000L  // …or at least this often
+        private const val STILL_POLL_MS = 90_000L     // safety-net fix cadence while "still"
     }
 }

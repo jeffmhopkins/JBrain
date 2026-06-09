@@ -264,9 +264,10 @@ def note_analysis(slug: str):
 def refresh_note_analysis(slug: str):
     """Force-recompute a note's AI analysis sidecar, bypassing the content-hash cache.
 
-    Also runs the title-normalization pass (a bare dated note may be renamed) and
-    re-aggregates the entity index when the analysis changes. Returns the fresh
-    analysis plus the note's (possibly renamed) slug and title.
+    Also runs the title-normalization pass (a bare numbered leaf — a dated note or a
+    medical/financial capture — may be given a generated title) and re-aggregates the
+    entity index when the analysis changes. Returns the fresh analysis plus the note's
+    (possibly renamed) slug and title.
 
     Args:
         slug: URL slug of the note to reanalyze.

@@ -2031,6 +2031,40 @@ def test_note_normalize_redate_and_title(client, monkeypatch):
     assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent (already titled)
 
 
+def test_title_capture_root_notes(client, monkeypatch):
+    """A bare medical/financial capture leaf (notes/<root>/<dest>/NN) gets a generated title
+    — both via the per-note title_one (the reanalyze path) and the title_batch sweep — while
+    an already-titled capture is left alone (idempotent)."""
+    from app.db import get_conn
+    from app.services import note_normalize, llm
+    from app.services import notes as ns
+    conn = get_conn()
+
+    med = ns.upsert_note(conn, "notes/medical/Cardiology/01", "echo shows normal EF")
+    fin = ns.upsert_note(conn, "notes/financial/Receipts/02", "lunch receipt $12")
+    nested = ns.upsert_note(conn, "notes/medical/Labs/Bloodwork/01", "CBC within range")
+    titled = ns.upsert_note(conn, "notes/medical/Cardiology/03 - Existing Title", "already named")
+    conn.commit()
+
+    monkeypatch.setattr(llm, "has_credentials", lambda: True)
+    monkeypatch.setattr(llm, "model_for", lambda *a: "m")
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "Echo Results")
+
+    # Per-note path (what the reanalyze button runs before analysis): titles the medical leaf,
+    # is a no-op on the already-titled one.
+    assert note_normalize.title_one(conn, med) == "notes/medical/Cardiology/01 - Echo Results"
+    assert note_normalize.title_one(conn, titled) is None
+    conn.commit()
+
+    # Batch sweep picks up the remaining bare capture leaves (single- and nested-dest).
+    res = note_normalize.title_batch(conn, limit=10)
+    assert res["count"] == 2                                         # fin + nested (med already done)
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (fin,)).fetchone()["title"] == "notes/financial/Receipts/02 - Echo Results"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (nested,)).fetchone()["title"] == "notes/medical/Labs/Bloodwork/01 - Echo Results"
+    assert conn.execute("SELECT title FROM notes WHERE id=?", (titled,)).fetchone()["title"] == "notes/medical/Cardiology/03 - Existing Title"
+    assert note_normalize.title_batch(conn, limit=10)["count"] == 0  # idempotent
+
+
 def test_owner_self_reference_folds_into_named_owner(client):
     """Once the owner has a real name, self-references ('the owner', 'me', 'I') merge into
     that named person entity — so the index never forks an 'Owner' from e.g. 'Jeff', and

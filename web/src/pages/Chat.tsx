@@ -429,7 +429,20 @@ export default function Chat() {
   async function newConversation(): Promise<number> {
     loadGenRef.current++;   // invalidate any in-flight loadMessages so it can't repaint the cleared thread
     setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
-    return createConversation();
+    // Forget the OLD thread immediately. createConversation() can't adopt the new id until
+    // its POST resolves, and until then convIdRef still points at the just-cleared thread —
+    // so a send fired right behind /clear would have ensureConversation() hand back the old
+    // id, append the turn to the cleared thread, and the post-stream re-sync would repaint
+    // the cleared messages right back onto the screen ("the cleared content comes back").
+    // Null the ref/state + drop the cached key so a racing send (and the restore effect)
+    // can't latch onto the old thread, then dedupe the creation through convPromiseRef so
+    // that racing send awaits the NEW id via ensureConversation() instead.
+    convIdRef.current = null; setConvId(null);
+    localStorage.removeItem(CHAT_CONV_KEY);
+    if (!convPromiseRef.current) {
+      convPromiseRef.current = createConversation().finally(() => { convPromiseRef.current = null; });
+    }
+    return convPromiseRef.current;
   }
 
   // Resolve a conversation id for a chat turn, awaiting any creation already in flight

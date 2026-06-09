@@ -359,6 +359,57 @@ describe("Chat — /clear reset", () => {
     await waitFor(() => expect(screen.queryByText(/old reply/i)).not.toBeInTheDocument());
     expect(streamCalls).toHaveLength(0);
   });
+
+  it("routes a question sent right behind /clear to the NEW thread, not the cleared one", async () => {
+    // Regression: in Research mode, /clear would clear the screen but a question fired
+    // before the new-conversation POST resolved adopted the OLD conversation id (a stale
+    // convIdRef), so the turn landed in the just-cleared thread and the post-stream re-sync
+    // repainted the cleared messages back ("a portion or all of the cleared content comes
+    // back"). The fix forgets the old id immediately and makes the racing send await the new
+    // one. We hold the create POST open across BOTH sends to force the race deterministically.
+    localStorage.setItem("jbrain_conv_chat", "99");
+    let releaseConv!: () => void;
+    const convGate = new Promise<void>((res) => { releaseConv = res; });
+    server.use(
+      http.get("*/api/chat/conversations/99/messages", () =>
+        HttpResponse.json([{ id: 1, role: "assistant", content: "old reply", step_count: 0 }]),
+      ),
+      // The new conversation's POST stays in-flight until we release it — keeping the race
+      // window (old id still cached, new id not yet known) open while the question is sent.
+      http.post("*/api/chat/conversations", async () => {
+        posted.push({ url: "/api/chat/conversations", method: "POST", body: null });
+        await convGate;
+        return HttpResponse.json({ id: 77 });
+      }),
+      http.delete("*/api/chat/conversations/:id/steps", () => HttpResponse.json({ ok: true })),
+    );
+    streamImpl = async (_a, onEvent) => onEvent({ type: "token", text: "Fresh answer." });
+
+    const { user } = renderWithProviders(<Chat />);
+    // Research mode shares the chat thread (read-only); seed restores the old reply.
+    await user.click(screen.getByRole("button", { name: /Research/i }));
+    await screen.findByText(/old reply/i, {}, { timeout: 4000 });
+
+    const composer = screen.getByPlaceholderText(/ask your brain/i);
+    await user.type(composer, "/clear");
+    await user.click(screen.getByRole("button", { name: /^Send$/i }));
+    // New-conversation POST is now in-flight (gated); the cleared thread is off-screen.
+    await waitFor(() => expect(screen.queryByText(/old reply/i)).not.toBeInTheDocument());
+
+    // Fire the question while the create is still pending — the heart of the race.
+    await user.type(composer, "what did I write today");
+    await user.click(screen.getByRole("button", { name: /^Send$/i }));
+
+    // Let the new conversation finish creating; the queued send should now target it.
+    releaseConv();
+
+    await waitFor(() => expect(streamCalls).toHaveLength(1));
+    // The turn went to the NEW thread (77), never the cleared one (99).
+    expect(streamCalls[0].conversationId).toBe(77);
+    // And the cleared reply never resurfaces via the post-stream re-sync.
+    await screen.findByText(/Fresh answer\./i, {}, { timeout: 4000 });
+    expect(screen.queryByText(/old reply/i)).not.toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------- //

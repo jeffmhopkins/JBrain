@@ -475,6 +475,13 @@ class AnthropicProvider:
 
 # --- xAI (Grok) adapter — OpenAI-compatible (api.x.ai/v1) -------------------
 
+# With stream_options={"include_usage": True} the token totals arrive in a TRAILING chunk
+# the server sends AFTER the finish_reason chunk. We keep reading for this long past the
+# finish to capture it for the meter, but no longer — some xAI responses never send the
+# trailing/[DONE] chunk, and an unbounded wait would hang the agent on "Responding…".
+_XAI_USAGE_DRAIN_SECONDS = 2.0
+
+
 class XAIProvider:
     """LLMProvider adapter for the xAI Grok API (OpenAI-compatible, api.x.ai/v1)."""
 
@@ -644,9 +651,10 @@ class XAIProvider:
         """Stream one assistant turn via the xAI (Grok) API, yielding StreamEvent instances.
 
         xAI/Grok has no extended-thinking concept — the thinking flag is accepted and
-        ignored (no ThinkingDelta events will be yielded on this provider). Stops as soon
-        as a finish_reason is seen rather than waiting for trailing usage/[DONE] chunks,
-        which some xAI responses don't close promptly.
+        ignored (no ThinkingDelta events will be yielded on this provider). Stops yielding
+        content at the finish_reason, then briefly drains (bounded by _XAI_USAGE_DRAIN_SECONDS)
+        for the trailing include_usage chunk so the token meter records the turn — without
+        hanging on a response that never sends a trailing/[DONE] chunk.
 
         Args:
             messages: Conversation history; mutated to append the assistant turn.
@@ -672,10 +680,29 @@ class XAIProvider:
             model=model or self.default_model(), max_tokens=max_tokens,
             messages=self._wire(messages, system), tools=wire_tools, stream=True,
             stream_options={"include_usage": True})
+        # Manual iteration (not `async for`) so the post-finish drain can bound its wait with
+        # wait_for. The usage totals (include_usage) come in a TRAILING chunk the server sends
+        # AFTER the finish_reason chunk; the old break-on-finish dropped it, so every xAI/local
+        # streaming turn recorded ZERO tokens and ZERO calls in the meter. We keep reading until
+        # that usage chunk lands, but only briefly — a response that never sends a trailing/[DONE]
+        # chunk must not hang the agent (the original "Responding…" wedge this code guards against).
+        aiter = stream.__aiter__()
         try:
-            async for chunk in stream:
+            while True:
+                if finish is not None and usage is not None:
+                    break                      # have both the finish reason and the usage totals
+                try:
+                    if finish is not None:
+                        # Turn's content is done; only the trailing usage chunk is still expected.
+                        chunk = await asyncio.wait_for(aiter.__anext__(), _XAI_USAGE_DRAIN_SECONDS)
+                    else:
+                        chunk = await aiter.__anext__()
+                except (StopAsyncIteration, asyncio.TimeoutError):
+                    break
                 if getattr(chunk, "usage", None):
                     usage = chunk.usage
+                if finish is not None:
+                    continue                   # post-finish: ignore any late content, just drain for usage
                 if not getattr(chunk, "choices", None):
                     continue
                 choice = chunk.choices[0]
@@ -691,12 +718,10 @@ class XAIProvider:
                         slot["name"] = tc.function.name
                     if tc.function and tc.function.arguments:
                         slot["args"] += tc.function.arguments
-                # The turn is COMPLETE once we see a finish_reason — stop here rather than
-                # waiting on a trailing usage/[DONE] chunk, which some xAI responses don't
-                # close promptly (it left the agent stream hanging on "Responding…").
+                # The turn's CONTENT is complete once we see a finish_reason. Don't break yet:
+                # loop once more (bounded above) to pick up the trailing usage chunk for the meter.
                 if getattr(choice, "finish_reason", None):
                     finish = choice.finish_reason
-                    break
         finally:
             try:
                 await stream.close()

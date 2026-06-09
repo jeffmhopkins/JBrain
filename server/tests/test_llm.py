@@ -1167,6 +1167,64 @@ def test_xai_stream_turn_usage_and_fallback_call_id(patch_settings, monkeypatch,
     assert ends[0].stop_reason == "stop"
 
 
+def test_xai_stream_turn_records_trailing_usage_chunk(patch_settings, monkeypatch, _no_usage_sink):
+    # REAL include_usage ordering: the token totals arrive in a chunk the server sends
+    # AFTER the finish_reason chunk. Breaking on finish_reason (the old behaviour) dropped
+    # it, so xAI/local streaming turns recorded zero tokens and zero calls. The post-finish
+    # drain must pick it up and report it both on TurnEnd and to the meter.
+    patch_settings(xai_api_key="xai", llm_model="grok-4.3")
+    chunks = [
+        _oa_chunk(content="Hi"),
+        _oa_chunk(finish_reason="stop"),                              # finish first, no usage yet
+        SimpleNamespace(choices=None, usage=_oa_usage(p=33, c=9)),    # trailing usage-only chunk
+    ]
+    stream = _FakeOAStream(chunks)
+
+    async def _create(**kwargs):
+        return stream
+
+    client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=_create)))
+    p = XAIProvider()
+    monkeypatch.setattr(p, "_client", lambda async_=False: client)
+
+    import asyncio
+    out = asyncio.run(_drain(p.stream_turn(
+        [{"role": "user", "content": "q"}], system=None, tools=[], model=None,
+        max_tokens=64, thinking=False)))
+    ends = [e for e in out if isinstance(e, llm.TurnEnd)]
+    assert ends[0].usage == {"input_tokens": 33, "output_tokens": 9}   # trailing chunk captured
+    assert ends[0].stop_reason == "stop"
+    # ...and it reached the meter (was previously lost entirely).
+    assert _no_usage_sink[-1]["model"] == "grok-4.3"
+    assert _no_usage_sink[-1]["input_tokens"] == 33
+    assert _no_usage_sink[-1]["output_tokens"] == 9
+    assert _no_usage_sink[-1]["context"] == "agent"
+
+
+def test_xai_stream_turn_no_trailing_usage_does_not_hang(patch_settings, monkeypatch, _no_usage_sink):
+    # A response that ends without ever sending a trailing usage/[DONE] chunk must not hang
+    # the agent: the bounded post-finish drain falls through (StopAsyncIteration) and the turn
+    # ends with usage None (the architect floors the cost backstop for this case).
+    patch_settings(xai_api_key="xai", llm_model="grok-4.3")
+    stream = _FakeOAStream([_oa_chunk(content="hi"), _oa_chunk(finish_reason="stop")])
+
+    async def _create(**kwargs):
+        return stream
+
+    client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=_create)))
+    p = XAIProvider()
+    monkeypatch.setattr(p, "_client", lambda async_=False: client)
+    import asyncio
+    out = asyncio.run(_drain(p.stream_turn(
+        [{"role": "user", "content": "q"}], system=None, tools=[], model=None,
+        max_tokens=64, thinking=False)))
+    ends = [e for e in out if isinstance(e, llm.TurnEnd)]
+    assert ends[0].usage is None and ends[0].stop_reason == "stop"
+    assert stream.closed is True
+
+
 def test_xai_stream_turn_close_errors_swallowed(patch_settings, monkeypatch, _no_usage_sink):
     patch_settings(xai_api_key="xai", llm_model="grok-4.3")
 

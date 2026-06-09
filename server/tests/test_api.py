@@ -4528,18 +4528,20 @@ def test_attachment_download_roundtrip_is_byte_exact(client):
 
 
 def test_location_trail_dedup_rule(client):
-    """The server keeps a point only if >=100 m moved OR >=60 min elapsed since the
-    last one — duplicate/over-eager sends are dropped, real moves/intervals kept."""
+    """The server keeps a point only if >=10 m moved OR >=60 min elapsed since the
+    last one — GPS-jitter duplicates are dropped, but genuine ~10 m+ movement is kept
+    for detailed plots (the fine floor; a coarser floor would discard the trail's
+    detail)."""
     def post(lat, lon, ts):
         return client.post("/api/locations", json={"lat": lat, "lon": lon, "recorded_at": ts}).json()
 
-    assert post(40.0000, -74.0000, "2026-06-02T10:00:00Z")["stored"] is True   # first point
-    # ~30 m away, 1 min later → within both thresholds → dropped.
-    assert post(40.0002, -74.0000, "2026-06-02T10:01:00Z")["stored"] is False
-    # ~220 m away (>100 m), same minute → kept (distance rule).
-    assert post(40.0020, -74.0000, "2026-06-02T10:01:30Z")["stored"] is True
+    assert post(40.00000, -74.0000, "2026-06-02T10:00:00Z")["stored"] is True   # first point
+    # ~5.5 m away, 30 s later → within both thresholds (GPS jitter) → dropped.
+    assert post(40.00005, -74.0000, "2026-06-02T10:00:30Z")["stored"] is False
+    # ~22 m away (>=10 m), same minute → kept (distance rule; a 30 m floor would drop this).
+    assert post(40.00020, -74.0000, "2026-06-02T10:01:00Z")["stored"] is True
     # Same spot, 61 min later (>=60 min) → kept (time rule).
-    assert post(40.0020, -74.0000, "2026-06-02T11:03:00Z")["stored"] is True
+    assert post(40.00020, -74.0000, "2026-06-02T11:02:00Z")["stored"] is True
 
     pts = client.get("/api/locations").json()
     assert len(pts) == 3 and pts[0]["recorded_at"] <= pts[-1]["recorded_at"]   # chronological (ASC)
@@ -4553,9 +4555,9 @@ def test_location_bulk_ingest_dedups_in_order(client):
     chronological order — out-of-order points are sorted, near-duplicates dropped,
     and the per-device 'source' label is preserved (so family phones stay distinct)."""
     pts = [
-        {"lat": 40.0020, "lon": -74.0, "recorded_at": "2026-06-02T10:02:00Z", "source": "Mom"},   # 3rd chrono, far → kept
-        {"lat": 40.0000, "lon": -74.0, "recorded_at": "2026-06-02T10:00:00Z", "source": "Mom"},   # 1st → kept
-        {"lat": 40.0002, "lon": -74.0, "recorded_at": "2026-06-02T10:01:00Z", "source": "Mom"},   # 2nd, ~30 m/1 min → dropped
+        {"lat": 40.00020, "lon": -74.0, "recorded_at": "2026-06-02T10:02:00Z", "source": "Mom"},  # 3rd chrono, ~22 m → kept
+        {"lat": 40.00000, "lon": -74.0, "recorded_at": "2026-06-02T10:00:00Z", "source": "Mom"},  # 1st → kept
+        {"lat": 40.00005, "lon": -74.0, "recorded_at": "2026-06-02T10:01:00Z", "source": "Mom"},  # 2nd, ~5.5 m/1 min → dropped
     ]
     r = client.post("/api/locations/bulk", json={"points": pts}).json()
     assert r["received"] == 3 and r["stored"] == 2

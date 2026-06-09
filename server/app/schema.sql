@@ -587,7 +587,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 -- Device location trail (opt-in background tracking from a native client). The
--- server enforces the "store a point only if >=100 m moved OR >=60 min elapsed"
+-- server enforces the "store a point only if >=10 m moved OR >=60 min elapsed"
 -- rule authoritatively, so clients/retries/offline-flushes can't create dupes.
 CREATE TABLE IF NOT EXISTS locations (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

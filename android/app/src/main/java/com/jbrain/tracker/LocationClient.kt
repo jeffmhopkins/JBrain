@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Posts a batch of fixes to JBrain's /api/locations/bulk. The SERVER decides which to
- * keep (≥100 m moved OR ≥60 min elapsed, applied in order), so this just forwards the
+ * keep (≥10 m moved OR ≥60 min elapsed, applied in order), so this just forwards the
  * buffer — duplicates are dropped server-side. URL + key come from Settings (editable
  * on-device, defaulting to BuildConfig).
  */

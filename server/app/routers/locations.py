@@ -1,10 +1,12 @@
 """Device location trail — opt-in background tracking ingest.
 
-A native client (the Wear OS app) posts fixes; the server is the authoritative
-keeper of the "store a point only if >=100 m moved OR >=60 min elapsed since the
-last one" rule, so duplicate sends (retries, offline-queue flushes, an over-eager
-client) never bloat the trail. Bearer-authed and owner-only — a location history
-is sensitive, so it lives behind the same access key as everything else.
+A native client (the phone/Wear OS app) posts fixes; the server is the
+authoritative keeper of the "store a point only if >=10 m moved OR >=60 min
+elapsed since the last one" rule, so duplicate sends (retries, offline-queue
+flushes, an over-eager client) never bloat the trail — while keeping genuine
+movement at a fine ~10 m granularity for detailed plots. Bearer-authed and
+owner-only — a location history is sensitive, so it lives behind the same
+access key as everything else.
 """
 from datetime import datetime, timezone
 
@@ -22,7 +24,7 @@ from ..services import trips as trips_svc
 # location key (require_location_writer); the READ endpoint stays full-key only.
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
-MIN_METERS = 30.0      # store if moved at least this far (≈ GPS-jitter floor; finer trail)…
+MIN_METERS = 10.0      # store if moved at least this far (≈ GPS-jitter floor; fine trail)…
 MIN_MINUTES = 60.0     # …OR at least this long since the last stored point
 
 
@@ -108,7 +110,8 @@ def add_location(body: LocationIn, writer=Depends(require_location_writer)):
         elapsed_min = abs((rec_dt - last_dt).total_seconds()) / 60.0
         # The rule: keep a point only when it's far enough OR long enough apart.
         if moved_m < MIN_METERS and elapsed_min < MIN_MINUTES:
-            return {"stored": False, "reason": "within 100 m and 60 min of the last point"}
+            return {"stored": False,
+                    "reason": f"within {MIN_METERS:g} m and {MIN_MINUTES:g} min of the last point"}
 
     person = people_svc.resolve(conn, source)
     pid = person["id"] if person else None

@@ -93,6 +93,18 @@ def submit_write(fn: Callable[[], _T]) -> "Future[_T]":
         t0 = time.monotonic()
         try:
             return fn()
+        except BaseException:
+            # A unit that raises mid-transaction must not leak an open transaction onto the SHARED
+            # writer connection — the next unit would inherit it (a stale snapshot, or its commit
+            # silently flushing this unit's partial writes). Roll back before propagating. Units are
+            # still expected to commit themselves on success; this only cleans up the failure path.
+            wc = getattr(_local, "conn", None)
+            if wc is not None and wc.in_transaction:
+                try:
+                    wc.rollback()
+                except Exception:  # noqa: BLE001 — best-effort; the original exception is re-raised
+                    pass
+            raise
         finally:
             dt = time.monotonic() - t0
             if dt > _WRITE_SLOW_WARN_S:

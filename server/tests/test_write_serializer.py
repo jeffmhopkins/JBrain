@@ -129,6 +129,36 @@ def test_result_and_exception_flow_through_the_future(fresh_db):
         db.submit_write(_w_boom).result(timeout=30)
 
 
+def test_unit_that_raises_mid_transaction_does_not_leak_to_the_next_unit(fresh_db):
+    """A unit raising after a write rolls back, so the next unit starts on a clean connection.
+
+    Without the rollback safety net, the failed unit's open transaction would survive on the
+    shared single-writer connection and the NEXT unit would inherit it — committing the failed
+    unit's partial write and/or reading a stale snapshot.
+    """
+    db = fresh_db
+
+    def _w_raise_after_write():
+        conn = db.get_conn()
+        conn.execute("INSERT INTO _w(who) VALUES ('leaked')")   # opens a transaction, never committed
+        raise RuntimeError("fail after a partial write")
+
+    with pytest.raises(RuntimeError, match="fail after a partial write"):
+        db.submit_write(_w_raise_after_write).result(timeout=30)
+
+    # The partial write was rolled back, and the writer connection carries no open transaction
+    # into the next unit.
+    def _probe():
+        conn = db.get_conn()
+        in_txn_before = conn.in_transaction
+        n = conn.execute("SELECT COUNT(*) FROM _w WHERE who='leaked'").fetchone()[0]
+        return in_txn_before, n
+
+    in_txn_before, leaked = db.submit_write(_probe).result(timeout=30)
+    assert in_txn_before is False, "next unit inherited an open transaction from the failed unit"
+    assert leaked == 0, "the failed unit's partial write was not rolled back"
+
+
 def test_nested_write_runs_inline_without_deadlock(fresh_db):
     """A write unit that itself calls submit_write must NOT deadlock the single worker.
 

@@ -7960,3 +7960,173 @@ def test_steps_attach_to_their_own_reply(client, monkeypatch):
     assert len(asst) == 2 and all(m["step_count"] == 1 for m in asst)
     assert len(client.get(f"/api/chat/messages/{asst[0]['id']}/steps").json()) == 1
     assert len(client.get(f"/api/chat/messages/{asst[1]['id']}/steps").json()) == 1
+
+
+# --- "Unresponsive AI chat behind a green status dot" red-team gauntlet -----------------
+# The SSE bridge emits a ': keepalive' every few seconds of silence so proxies / the client's
+# byte-level stall watchdog don't drop a legitimately long turn. But that same keepalive masks a
+# *wedged* turn — a ping-stalled model stream (the SDK's per-read timeout is reset by upstream
+# pings) or an uncancellable hung tool (asyncio.to_thread can't be interrupted) yields no events,
+# so the bridge would keepalive forever while /api/system/status still reports llm "ready" → a
+# silent chat under a green dot. These tests pin the no-progress watchdog and the error-frame
+# contract the web client actually acts on (it switches on the JSON `type`, not the SSE event name).
+
+def _new_conversation(client) -> int:
+    """Create a conversation over the real API and return its id."""
+    return client.post("/api/chat/conversations").json()["id"]
+
+
+def _stream_message(client, cid: int, *, deadline_s: float = 5.0, max_frames: int = 400):
+    """POST a message and collect the SSE `data:` payloads until the stream ends.
+
+    Bounded by a frame count and a wall-clock deadline so an *un*fixed (keepalive-forever)
+    bridge fails fast instead of hanging the suite. Keepalive comment lines carry no
+    `data:` field and are dropped here exactly as the web client drops them.
+
+    Returns:
+        List of parsed JSON event dicts seen on the wire.
+    """
+    import json as _json
+    import time as _time
+    events: list[dict] = []
+    started = _time.monotonic()
+    with client.stream("POST", f"/api/chat/conversations/{cid}/message",
+                       json={"text": "hello", "mode": "assisted"}) as r:
+        assert r.status_code == 200
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                try:
+                    events.append(_json.loads(line[6:]))
+                except ValueError:
+                    pass
+            if len(events) >= max_frames or _time.monotonic() - started > deadline_s:
+                break
+    return events
+
+
+def test_chat_stream_wedged_turn_surfaces_error_not_endless_keepalive(client, monkeypatch):
+    # A turn that makes NO progress (architect.run yields nothing, then awaits forever) must not
+    # keepalive indefinitely: the no-progress watchdog aborts it with a client-actionable error.
+    import asyncio
+    from app.routers import chat
+    from app.services import architect
+    cid = _new_conversation(client)
+
+    async def _wedged_run(*a, **k):
+        await asyncio.sleep(30)        # never yields; would keepalive forever pre-fix
+        yield {"type": "done"}         # pragma: no cover — unreachable
+
+    monkeypatch.setattr(architect, "run", _wedged_run)
+    monkeypatch.setattr(chat, "_SSE_KEEPALIVE_SECONDS", 0.02)
+    monkeypatch.setattr(chat, "_max_silence_seconds", lambda: 0.1)
+
+    events = _stream_message(client, cid, deadline_s=4.0)
+    errs = [e for e in events if e.get("type") == "error"]
+    assert errs, f"expected a wedged-turn error frame, saw {events!r}"
+    assert "stopped responding" in errs[0]["message"].lower()
+
+
+def test_chat_stream_slow_but_progressing_turn_is_not_aborted(client, monkeypatch):
+    # Guard against a false positive: a turn that streams steadily — each gap shorter than the
+    # silence budget, but a total runtime well past it — must finish normally. The watchdog
+    # measures *no-progress* gaps, not total duration, so the keepalive's purpose is preserved.
+    import asyncio
+    from app.routers import chat
+    from app.services import architect
+    cid = _new_conversation(client)
+
+    async def _steady_run(*a, **k):
+        for i in range(5):
+            await asyncio.sleep(0.04)          # < the 0.1 budget → progress keeps resetting
+            yield {"type": "token", "text": f"t{i} "}
+        yield {"type": "done"}                  # total ~0.2s, well past the 0.1 budget
+
+    monkeypatch.setattr(architect, "run", _steady_run)
+    monkeypatch.setattr(chat, "_SSE_KEEPALIVE_SECONDS", 0.02)
+    monkeypatch.setattr(chat, "_max_silence_seconds", lambda: 0.1)
+
+    events = _stream_message(client, cid, deadline_s=4.0)
+    assert [e for e in events if e.get("type") == "token"], events
+    assert any(e.get("type") == "done" for e in events), events
+    assert not any(e.get("type") == "error" for e in events), events
+
+
+def test_chat_stream_pump_error_frame_is_client_actionable(client, monkeypatch):
+    # When architect.run raises, the bridge emits an error frame. The web client switches on the
+    # JSON `type` (not the SSE event name), so the payload MUST carry type:"error" — otherwise the
+    # error is silently dropped: empty bubble, and the llm-fail health signal never fires (green dot).
+    from app.services import architect
+    cid = _new_conversation(client)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("kaboom")
+        yield {"type": "done"}                   # pragma: no cover — makes this an async generator
+
+    monkeypatch.setattr(architect, "run", _boom)
+    events = _stream_message(client, cid, deadline_s=4.0)
+    errs = [e for e in events if e.get("type") == "error"]
+    assert errs, f"architect crash must reach the client as a typed error, saw {events!r}"
+    assert errs[0].get("message")
+
+
+def test_max_silence_scales_with_llm_timeout_and_floors(monkeypatch):
+    from app.routers import chat
+
+    class _S:
+        def __init__(self, t): self.llm_timeout_seconds = t
+
+    monkeypatch.setattr(chat, "get_settings", lambda: _S(10))
+    assert chat._max_silence_seconds() == 180.0          # floor dominates a fast cloud timeout
+    monkeypatch.setattr(chat, "get_settings", lambda: _S(120))
+    assert chat._max_silence_seconds() == 240.0          # 2× a slow/local timeout scales up
+
+    def _boom():
+        raise RuntimeError("settings not ready")
+    monkeypatch.setattr(chat, "get_settings", _boom)
+    assert chat._max_silence_seconds() == 180.0          # bad/missing settings → safe floor
+
+
+def test_sse_error_helper_stamps_type_for_the_client():
+    import json as _json
+    from app.routers import chat
+    frame = chat._sse_error("nope")
+    assert frame.startswith("event: error\n") and frame.endswith("\n\n")
+    data = next(l[6:] for l in frame.split("\n") if l.startswith("data: "))
+    obj = _json.loads(data)
+    assert obj["type"] == "error" and obj["message"] == "nope"
+
+
+def test_architect_persist_uses_worker_thread_connection_not_the_loop_conn(client, monkeypatch):
+    # C2 regression: the architect offloads its DB writes to a pool thread but must use THAT
+    # thread's own connection (get_conn is thread-local) — never the event-loop connection it
+    # captured. All async handlers share one loop connection, so reaching across the await onto it
+    # from a pool thread lets two concurrent turns drive one sqlite3.Connection at once →
+    # "recursive use of cursors" / wedged transaction → a failed or hung turn. The discriminator:
+    # post-fix the persists call get_conn() from a worker thread; pre-fix they never did.
+    import asyncio
+    import threading
+    from app.db import get_conn as real_get_conn
+    from app.services import architect, llm
+    conn = real_get_conn(); cid = _new_conv(conn); conn.commit()
+
+    loop_ident = threading.get_ident()
+    worker_idents: set[int] = set()
+
+    def _spy():
+        ident = threading.get_ident()
+        if ident != loop_ident:
+            worker_idents.add(ident)
+        return real_get_conn()
+
+    monkeypatch.setattr(architect, "get_conn", _spy)
+    monkeypatch.setattr(llm, "get_provider", lambda *a, **k: _NoToolProvider())
+
+    async def go():
+        async for _ in architect.run(cid, "hello", None, "assisted"):
+            pass
+
+    asyncio.run(go())
+    assert worker_idents, "offloaded persists must call get_conn() on their own worker thread"
+    # And the turn still persisted correctly on that worker-thread connection.
+    asst = [m for m in client.get(f"/api/chat/conversations/{cid}/messages").json() if m["role"] == "assistant"]
+    assert len(asst) == 1

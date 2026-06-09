@@ -443,8 +443,8 @@ def _pre_turn_guard(conn, spec, session) -> dict | None:
         conn.commit()
         return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
     # Commit the reply billing NOW — never hold the SQLite write lock open across the
-    # (up to 120s) LLM call that follows. busy_timeout is only 5s, so a held lock would
-    # make every other writer fail within seconds and wedge the single-worker server.
+    # (up to 120s) LLM call that follows. busy_timeout is 60s, so a held lock would
+    # make every other writer wait that long and wedge the single-worker server.
     conn.commit()
     return None
 

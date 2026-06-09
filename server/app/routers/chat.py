@@ -2,12 +2,14 @@
 import asyncio
 import json
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
+from ..config import get_settings
 from ..db import get_conn
 from ..services import architect
 
@@ -17,6 +19,54 @@ router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[CurrentUser]
 # (or the model "thinking" before the first token) would otherwise leave the stream
 # quiet long enough for a proxy — or the client's stall watchdog — to give up.
 _SSE_KEEPALIVE_SECONDS = 15.0
+
+# Hard ceiling on how long a turn may make NO progress — no real architect event,
+# only keepalives — before we give up and surface an error. The keepalive above
+# keeps the socket warm during legitimately long work, but it also masks a wedged
+# turn: a ping-stalled model stream (the SDK's per-read timeout is reset by upstream
+# pings) or an uncancellable hung tool (asyncio.to_thread can't be interrupted) emits
+# no events, so the bridge would keepalive forever — an "unresponsive chat" sitting
+# behind a still-green status dot, with the client's byte-level stall watchdog reset
+# on every keepalive. This watchdog converts that silent hang into a visible error
+# (which also drives the client's llm-fail health signal). The floor sits comfortably
+# above one LLM request timeout so a genuinely slow single tool/model call is never
+# cut off; it scales with LLM_TIMEOUT_SECONDS so slow local-inference boxes get more
+# headroom.
+_SSE_SILENCE_FLOOR_SECONDS = 180.0
+
+
+def _max_silence_seconds() -> float:
+    """Return the no-progress watchdog budget for a chat turn, in seconds.
+
+    Derived from the configured LLM request timeout (a turn may legitimately sit
+    silent for one slow model/tool call) with a fixed floor, so the watchdog only
+    ever fires on a genuinely wedged turn — never on slow-but-progressing work.
+
+    Returns:
+        Maximum seconds of no-progress silence tolerated before aborting the turn.
+    """
+    try:
+        return max(2.0 * float(get_settings().llm_timeout_seconds), _SSE_SILENCE_FLOOR_SECONDS)
+    except Exception:  # noqa: BLE001 — settings not ready / bad value → safe floor
+        return _SSE_SILENCE_FLOOR_SECONDS
+
+
+def _sse_error(message: str) -> str:
+    """Render an SSE error frame the client will actually act on.
+
+    The web client switches on the JSON ``type`` field of each ``data:`` line and
+    ignores the SSE ``event:`` name (see web/src/api.ts). A frame whose payload
+    omits ``type`` is silently dropped — no error bubble, and the ``llm-fail``
+    health signal that downgrades the status dot never fires. Always stamp
+    ``type: "error"`` so a failed turn is both shown and reflected in the dot.
+
+    Args:
+        message: Human-facing error text for the chat bubble.
+
+    Returns:
+        A complete ``event: error`` SSE frame ending in a blank line.
+    """
+    return f"event: error\ndata: {json.dumps({'type': 'error', 'message': message})}\n\n"
 
 
 class MessageIn(BaseModel):
@@ -234,17 +284,29 @@ def send_message(conversation_id: int, body: MessageIn):
                 await queue.put((_DONE, None))
 
         task = asyncio.create_task(pump())
+        last_progress = time.monotonic()
+        max_silence = _max_silence_seconds()
         try:
             while True:
                 try:
                     kind, payload = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SECONDS)
                 except asyncio.TimeoutError:
+                    # One keepalive interval with no event. Hold the socket warm — unless
+                    # the turn has made no progress for the whole silence budget, which means
+                    # it's wedged (ping-stalled model stream or an uncancellable hung tool).
+                    # Surface an error instead of keepalive-ing forever behind a green dot.
+                    if time.monotonic() - last_progress >= max_silence:
+                        logging.getLogger("jbrain").error(
+                            "chat stream wedged: no progress for %.0fs; aborting turn", max_silence)
+                        yield _sse_error("The assistant stopped responding. Please try again.")
+                        break
                     yield ": keepalive\n\n"
                     continue
+                last_progress = time.monotonic()   # a real event — the turn is making progress
                 if kind is _DONE:
                     break
                 if kind == "error":
-                    yield f"event: error\ndata: {json.dumps({'message': payload})}\n\n"
+                    yield _sse_error(payload)
                 else:
                     yield f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
         finally:

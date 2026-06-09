@@ -45,6 +45,7 @@ def _settings(**over):
         llm_local_prefixes="",
         llm_local_fallback=True,
         llm_timeout_seconds=120.0,
+        llm_max_retries=1,
     )
     base.update(over)
     ns = SimpleNamespace(**base)
@@ -831,8 +832,20 @@ def test_anthropic_client_factories_cache(patch_settings, monkeypatch):
     assert c1.kind == "sync" and a1.kind == "async"
     assert c1.api_key == "sk-ant"
     assert c1.timeout == llm._LLM_TIMEOUT
+    # Cap SDK auto-retries: the default (2) silently triples the per-attempt timeout into a
+    # multi-minute "hang" on a slow/overloaded provider. Both sync and async clients carry it.
+    assert c1.max_retries == 1 and a1.max_retries == 1
     # sync built once, async once
     assert [b[0] for b in built] == ["sync", "async"]
+
+
+def test_max_retries_reads_config_and_falls_back(patch_settings, monkeypatch):
+    patch_settings(llm_max_retries=0)
+    assert llm._max_retries() == 0                      # explicit override flows through
+    patch_settings(llm_max_retries=3)
+    assert llm._max_retries() == 3
+    monkeypatch.setattr(llm, "get_settings", lambda: (_ for _ in ()).throw(RuntimeError("no settings")))
+    assert llm._max_retries() == llm._LLM_MAX_RETRIES   # bad/missing settings → safe default
 
 
 def test_xai_client_factory_passes_base_url(patch_settings, monkeypatch):
@@ -943,6 +956,34 @@ def test_anthropic_stream_turn_text_thinking_and_tool(patch_settings, monkeypatc
     assert captured["model"] == "claude-sonnet-4-6"
     assert messages[-1] == {"role": "assistant", "content": final.content}
     assert _no_usage_sink[-1]["context"] == "agent"
+
+
+def test_stream_turn_records_usage_off_the_event_loop(patch_settings, monkeypatch):
+    # The usage write opens a connection and commits (a WAL writer) that can block up to
+    # busy_timeout. stream_turn is iterated ON the event loop, so doing it inline froze the whole
+    # loop. It must be offloaded — assert the record runs on a DIFFERENT thread than the loop.
+    import asyncio
+    import threading
+    patch_settings(llm_api_key="sk")
+    rec_thread: dict = {}
+    import app.services.usage as usage
+    monkeypatch.setattr(usage, "record", lambda model, **kw: rec_thread.update(ident=threading.get_ident()))
+
+    final = _anthropic_msg(text="hi", stop_reason="end_turn", usage=_anthropic_usage(5, 2))
+    client = SimpleNamespace(messages=SimpleNamespace(
+        stream=lambda **kw: _FakeAnthropicStream([_delta_event("text_delta", text="hi")], final)))
+    p = AnthropicProvider()
+    monkeypatch.setattr(p, "_async_client", lambda: client)
+
+    loop_ident: dict = {}
+
+    async def go():
+        loop_ident["ident"] = threading.get_ident()
+        await _drain(p.stream_turn([{"role": "user", "content": "q"}], system=None, tools=[],
+                                   model=None, max_tokens=64))
+
+    asyncio.run(go())
+    assert rec_thread and rec_thread["ident"] != loop_ident["ident"]   # offloaded, not on the loop
 
 
 def test_anthropic_stream_turn_no_thinking_no_usage(patch_settings, monkeypatch):

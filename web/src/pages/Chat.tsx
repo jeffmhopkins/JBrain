@@ -678,9 +678,15 @@ export default function Chat() {
       // identical), so the reload is a visual no-op rather than a jarring jump.
       if (!errored && !reduceMotion.current) {
         streamActiveRef.current = false;
+        // Hard cap the cosmetic drain. It relies on the typewriter effect to advance shownRef;
+        // if that effect ever stops advancing (buffer non-empty), this would spin forever and the
+        // `finally` below — which re-enables the composer — would never run. Bail after a bounded
+        // wait: the authoritative server copy is swapped in next anyway, so an early resolve just
+        // makes the reveal finish instantly rather than wedging the UI.
+        const drainDeadline = Date.now() + 4000;
         await new Promise<void>((resolve) => {
           const finishRef = () => {
-            if (shownRef.current >= bufRef.current.length) { resolve(); return; }
+            if (shownRef.current >= bufRef.current.length || Date.now() > drainDeadline) { resolve(); return; }
             setTick((t) => t + 1);
             window.setTimeout(finishRef, 24);
           };

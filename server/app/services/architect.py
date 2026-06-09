@@ -3691,16 +3691,21 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
 
     def _persist_user_turn():
         """Write the user message to the DB; offloaded to avoid blocking the event loop."""
-        conn.execute(
+        # Use THIS worker thread's own connection (get_conn() is thread-local) — never the
+        # event-loop `conn` captured above. That loop connection is shared by every concurrent
+        # async turn, so reaching across the await onto it from a pool thread lets two turns
+        # drive one sqlite3.Connection at once → "recursive use of cursors" / wedged transaction.
+        tconn = get_conn()
+        tconn.execute(
             "INSERT INTO messages (conversation_id, role, content, lat, lon, location_label) "
             "VALUES (?, 'user', ?, ?, ?, ?)",
             (conversation_id, user_text, loc.get("lat"), loc.get("lon"), loc.get("location_label")),
         )
-        conn.commit()
+        tconn.commit()
     # Offload the DB write off the single event loop. A background image/audio worker may briefly
-    # hold the WAL write lock; a synchronous commit here would block the loop (busy_timeout up to 5s
-    # under contention) and freeze EVERY other request/stream. Same serialized-conn rationale as the
-    # _run_tool dispatch below: we await before resuming, so this thread is the only one touching conn.
+    # hold the WAL write lock; a synchronous commit here would block the loop (busy_timeout, up to
+    # 60s under contention) and freeze EVERY other request/stream. The closure uses its own
+    # thread-local connection, so two concurrent turns offloading writes never share one connection.
     await asyncio.to_thread(_persist_user_turn)
 
     system = _system_prompt(settings.brain_name, mode, conn)
@@ -3851,9 +3856,12 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             Returns:
                 The new messages.id for the persisted reply row.
             """
-            # The reply INSERT, the tool-step inserts, and the commit are ONE offloaded unit so the
-            # write lock is never held across an await (which would re-introduce the loop-freeze).
-            cur = conn.execute(
+            # Own thread-local connection (see _persist_user_turn) — never the shared loop `conn`,
+            # so concurrent turns can't race one sqlite3.Connection. The reply INSERT, the tool-step
+            # inserts, and the commit are ONE offloaded unit so the write lock is never held across
+            # an await (which would re-introduce the loop-freeze).
+            tconn = get_conn()
+            cur = tconn.execute(
                 "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
                 (conversation_id, final_text),
             )
@@ -3862,7 +3870,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             # this bubble later can show exactly how it was answered — which notes were read, what
             # SQL ran, what was staged/applied. Wiped per-conversation on /clear.
             for i, st in enumerate(steps):
-                conn.execute(
+                tconn.execute(
                     "INSERT INTO message_steps (conversation_id, message_id, step_index, tool_name, "
                     "args_json, result_text, is_error, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (conversation_id, mid, i, st["tool"],
@@ -3870,7 +3878,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                      1 if st["is_error"] else 0,
                      json.dumps(st["event"], default=str) if st["event"] is not None else None),
                 )
-            conn.commit()
+            tconn.commit()
             return mid
         # Offload off the event loop (see _persist_user_turn above) — the lock-contention freeze
         # otherwise surfaces exactly here, when the model finishes and the reply commits.

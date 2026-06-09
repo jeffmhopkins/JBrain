@@ -1,7 +1,7 @@
 """LLM token metering — a per-call ledger for in-app cost awareness.
 
-Rows are written on a DEDICATED connection (WAL serialises writers, busy_timeout
-waits) so recording never touches — or commits — the caller's transaction. Token
+Rows are written through the single-writer serialization layer (``submit_write``)
+so recording never touches — or commits — the caller's transaction. Token
 counts are EXACT; the dollar figure is an ESTIMATE from a static price table and
 will NOT match the Anthropic console (prompt-cache/batch pricing, rounding, or any
 usage on a shared key are not reflected). Boundaries are the owner's local day/month
@@ -83,17 +83,22 @@ def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
     if not model or not (input_tokens or output_tokens or cache_read or cache_write):
         return
     try:
-        from ..db import _connect
-        conn = _connect()
-        try:
+        from ..db import get_conn, submit_write
+        i, o, cr, cw = int(input_tokens), int(output_tokens), int(cache_read), int(cache_write)
+
+        def _write() -> None:
+            """Insert one usage row on the dedicated writer connection."""
+            conn = get_conn()
             conn.execute(
                 "INSERT INTO llm_usage (model, input_tokens, output_tokens, "
                 "cache_read_tokens, cache_write_tokens, context) VALUES (?, ?, ?, ?, ?, ?)",
-                (model, int(input_tokens), int(output_tokens), int(cache_read), int(cache_write), context),
+                (model, i, o, cr, cw, context),
             )
             conn.commit()
-        finally:
-            conn.close()
+
+        # Fire-and-forget: discard the Future so metering never blocks generation. Ordering
+        # is still preserved by the single-writer queue. Slow work (none here) stays out.
+        submit_write(_write)
     except Exception:  # noqa: BLE001
         pass
 

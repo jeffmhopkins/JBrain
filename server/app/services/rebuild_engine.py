@@ -202,8 +202,17 @@ async def run_gather(run, hint: str | None = None, append: bool = False) -> Asyn
                     yield {"type": "tool_use", "tool": "search_notes", "query": qy}
                     # Offload the hybrid search — it runs fastembed ONNX inference (CPU-bound)
                     # which would otherwise block the single event loop for the whole rebuild.
-                    rows = await asyncio.to_thread(
-                        search.hybrid_notes, conn, qy, _GATHER_SEARCH_LIMIT, require_kb_ingest=True)
+                    # The worker opens its OWN thread-local connection (get_conn() inside the
+                    # closure) — NEVER the event-loop `conn` captured above, which a concurrent
+                    # stream may be driving at the same time. Reaching across the await onto that
+                    # shared sqlite3.Connection from a pool thread wedges it — the gather
+                    # "Looking through your notes…" hang. search is read-only, so a separate WAL
+                    # reader is fully consistent.
+                    def _search(_q=qy):
+                        """Run the hybrid search on a worker-local connection (never the loop's)."""
+                        return search.hybrid_notes(get_conn(), _q, _GATHER_SEARCH_LIMIT,
+                                                   require_kb_ingest=True)
+                    rows = await asyncio.to_thread(_search)
                     hits = [h for h in rows if not h["title"].lower().startswith("kb/")]
                     meta = _notes_meta(conn, [h["id"] for h in hits])
                     for m in meta:

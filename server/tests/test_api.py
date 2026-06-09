@@ -8010,7 +8010,7 @@ def test_chat_stream_wedged_turn_surfaces_error_not_endless_keepalive(client, mo
     # A turn that makes NO progress (architect.run yields nothing, then awaits forever) must not
     # keepalive indefinitely: the no-progress watchdog aborts it with a client-actionable error.
     import asyncio
-    from app.routers import chat
+    from app import sse
     from app.services import architect
     cid = _new_conversation(client)
 
@@ -8019,8 +8019,8 @@ def test_chat_stream_wedged_turn_surfaces_error_not_endless_keepalive(client, mo
         yield {"type": "done"}         # pragma: no cover — unreachable
 
     monkeypatch.setattr(architect, "run", _wedged_run)
-    monkeypatch.setattr(chat, "_SSE_KEEPALIVE_SECONDS", 0.02)
-    monkeypatch.setattr(chat, "_max_silence_seconds", lambda: 0.1)
+    monkeypatch.setattr(sse, "KEEPALIVE_SECONDS", 0.02)
+    monkeypatch.setattr(sse, "_max_silence_seconds", lambda: 0.1)
 
     events = _stream_message(client, cid, deadline_s=4.0)
     errs = [e for e in events if e.get("type") == "error"]
@@ -8033,7 +8033,7 @@ def test_chat_stream_slow_but_progressing_turn_is_not_aborted(client, monkeypatc
     # silence budget, but a total runtime well past it — must finish normally. The watchdog
     # measures *no-progress* gaps, not total duration, so the keepalive's purpose is preserved.
     import asyncio
-    from app.routers import chat
+    from app import sse
     from app.services import architect
     cid = _new_conversation(client)
 
@@ -8044,8 +8044,8 @@ def test_chat_stream_slow_but_progressing_turn_is_not_aborted(client, monkeypatc
         yield {"type": "done"}                  # total ~0.2s, well past the 0.1 budget
 
     monkeypatch.setattr(architect, "run", _steady_run)
-    monkeypatch.setattr(chat, "_SSE_KEEPALIVE_SECONDS", 0.02)
-    monkeypatch.setattr(chat, "_max_silence_seconds", lambda: 0.1)
+    monkeypatch.setattr(sse, "KEEPALIVE_SECONDS", 0.02)
+    monkeypatch.setattr(sse, "_max_silence_seconds", lambda: 0.1)
 
     events = _stream_message(client, cid, deadline_s=4.0)
     assert [e for e in events if e.get("type") == "token"], events
@@ -8072,26 +8072,26 @@ def test_chat_stream_pump_error_frame_is_client_actionable(client, monkeypatch):
 
 
 def test_max_silence_scales_with_llm_timeout_and_floors(monkeypatch):
-    from app.routers import chat
+    from app import sse
 
     class _S:
         def __init__(self, t): self.llm_timeout_seconds = t
 
-    monkeypatch.setattr(chat, "get_settings", lambda: _S(10))
-    assert chat._max_silence_seconds() == 180.0          # floor dominates a fast cloud timeout
-    monkeypatch.setattr(chat, "get_settings", lambda: _S(120))
-    assert chat._max_silence_seconds() == 240.0          # 2× a slow/local timeout scales up
+    monkeypatch.setattr(sse, "get_settings", lambda: _S(10))
+    assert sse._max_silence_seconds() == 180.0          # floor dominates a fast cloud timeout
+    monkeypatch.setattr(sse, "get_settings", lambda: _S(120))
+    assert sse._max_silence_seconds() == 240.0          # 2× a slow/local timeout scales up
 
     def _boom():
         raise RuntimeError("settings not ready")
-    monkeypatch.setattr(chat, "get_settings", _boom)
-    assert chat._max_silence_seconds() == 180.0          # bad/missing settings → safe floor
+    monkeypatch.setattr(sse, "get_settings", _boom)
+    assert sse._max_silence_seconds() == 180.0          # bad/missing settings → safe floor
 
 
 def test_sse_error_helper_stamps_type_for_the_client():
     import json as _json
-    from app.routers import chat
-    frame = chat._sse_error("nope")
+    from app import sse
+    frame = sse.sse_error("nope")
     assert frame.startswith("event: error\n") and frame.endswith("\n\n")
     data = next(l[6:] for l in frame.split("\n") if l.startswith("data: "))
     obj = _json.loads(data)

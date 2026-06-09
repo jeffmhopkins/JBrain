@@ -74,8 +74,12 @@ async def upload(slug: str, file: UploadFile = File(...), analyze: bool = Form(T
         """Store the upload and run text-extraction + embedding off the event loop."""
         # Off the event loop: add_attachment text-extracts + embeds (multi-second), and the
         # document path below runs a full note-analysis LLM call — doing either inline on the
-        # single event loop would block every other request. The connection is the event-loop
-        # thread's; we await this offload before resuming, so it's the only thread touching conn.
+        # single event loop would block every other request. Use this worker's OWN thread-local
+        # connection (get_conn()) — NEVER the event-loop `conn` from the request above, which a
+        # concurrent request shares; driving one sqlite3.Connection from two threads wedges it
+        # (and now raises under check_same_thread). note_id/filename/mime/raw are plain values,
+        # safe to capture; this connection's writes commit here and are visible everywhere (WAL).
+        conn = get_conn()
         result = att_svc.add_attachment(conn, note_id, filename, mime, raw)
         conn.commit()
 

@@ -12,7 +12,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn, get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta, submit_write
 from ..services import notes as notes_svc
 
 router = APIRouter(prefix="/api/financial", tags=["financial"], dependencies=[CurrentUser])
@@ -80,7 +80,12 @@ def set_destinations(body: DestsIn):
             out.append(d)
         if len(out) >= 50:
             break
-    conn = get_conn()
-    set_meta(conn, _META_KEY, json.dumps(out))
-    conn.commit()
+
+    def _write():
+        """Persist the sanitized destination list to meta on the writer connection."""
+        c = get_conn()
+        set_meta(c, _META_KEY, json.dumps(out))
+        c.commit()
+
+    submit_write(_write).result()
     return {"names": out}

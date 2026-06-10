@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn, get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta, submit_write
 from ..services import lab_ingest
 from ..services import lab_series
 from ..services import notes as notes_svc
@@ -80,9 +80,14 @@ def set_destinations(body: DestsIn):
             out.append(d)
         if len(out) >= 50:
             break
-    conn = get_conn()
-    set_meta(conn, _META_KEY, json.dumps(out))
-    conn.commit()
+
+    def _write():
+        """Persist the sanitized destination list to meta on the writer connection."""
+        c = get_conn()
+        set_meta(c, _META_KEY, json.dumps(out))
+        c.commit()
+
+    submit_write(_write).result()
     return {"names": out}
 
 
@@ -130,9 +135,14 @@ def set_owner(body: OwnerIn):
     dob = lab_parse.normalize_dob(dob_raw) or ""
     if dob_raw and not dob:
         raise HTTPException(status_code=422, detail="DOB must be a real date (YYYY-MM-DD or MM/DD/YYYY).")
-    conn = get_conn()
-    set_meta(conn, "medical_owner", json.dumps({"name": body.name.strip(), "dob": dob}))
-    conn.commit()
+
+    def _write():
+        """Persist the normalized owner identity to meta on the writer connection."""
+        c = get_conn()
+        set_meta(c, "medical_owner", json.dumps({"name": body.name.strip(), "dob": dob}))
+        c.commit()
+
+    submit_write(_write).result()
     return {"name": body.name.strip(), "dob": dob}
 
 
@@ -262,10 +272,9 @@ def reanalyze_labs(attachment_id: int):
         HTTPException: 404 if the attachment does not exist.
     """
     _att_or_404(get_conn(), attachment_id)
-    conn = get_conn()
-    out = lab_ingest.stage_attachment(conn, attachment_id)
-    conn.commit()
-    return out
+    # stage_attachment self-commits its writes through the single-writer layer (its slow
+    # OCR/vision work runs outside that unit); no commit on the request connection is needed.
+    return lab_ingest.stage_attachment(get_conn(), attachment_id)
 
 
 @router.get("/labs/pending")

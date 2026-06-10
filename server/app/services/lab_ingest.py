@@ -18,6 +18,7 @@ import logging
 import re
 
 from . import lab_parse
+from ..db import get_conn, submit_write
 from .lab_parse import is_faithful as _is_faithful   # hoisted to lab_parse (shared by lab_vision)
 
 log = logging.getLogger("jbrain")
@@ -162,12 +163,22 @@ def stage_attachment(conn, attachment_id: int) -> dict:
         (attachment_id,)).fetchone()
     if not att or att["content_blob"] is None or not (_is_pdf(att) or _is_image(att)):
         return none_result
+    att_id = att["id"]
+    # SLOW WORK (OCR/vision) stays OUTSIDE the writer: _extract runs the deterministic parser or
+    # the OCR-gated vision path BEFORE any write unit is submitted.
     try:
         parsed = _extract(att)
     except Exception as exc:  # noqa: BLE001 — a parse failure must never 500 an upload
         log.info("lab_ingest: parse failed for attachment %s (%s)", attachment_id, exc)
-        conn.execute("UPDATE attachments SET lab_status='error', lab_extracted_at=datetime('now') WHERE id=?",
-                     (att["id"],))
+
+        def _write_error():
+            """Flag the attachment as a failed lab parse on the writer connection."""
+            c = get_conn()
+            c.execute("UPDATE attachments SET lab_status='error', lab_extracted_at=datetime('now') WHERE id=?",
+                      (att_id,))
+            c.commit()
+
+        submit_write(_write_error).result()
         return {"status": "error", "doc_type": "error", "n": 0, "analytes": 0, "skipped": 0}
     if parsed is None or parsed["doc_type"] == "unknown":
         return none_result
@@ -176,8 +187,16 @@ def stage_attachment(conn, attachment_id: int) -> dict:
     if parsed["doc_type"] == "image_unparsed":
         payload = {"doc_type": "image_unparsed", "results": [], "skipped": len(parsed.get("skips", [])),
                    "skips": parsed.get("skips", []), "analytes": [], "low_confidence": 0}
-        conn.execute("UPDATE attachments SET lab_status='image_unparsed', lab_json=?, "
-                     "lab_extracted_at=datetime('now') WHERE id=?", (json.dumps(payload), att["id"]))
+        payload_json = json.dumps(payload)
+
+        def _write_unparsed():
+            """Persist the image_unparsed staging payload on the writer connection."""
+            c = get_conn()
+            c.execute("UPDATE attachments SET lab_status='image_unparsed', lab_json=?, "
+                      "lab_extracted_at=datetime('now') WHERE id=?", (payload_json, att_id))
+            c.commit()
+
+        submit_write(_write_unparsed).result()
         return {"status": "image_unparsed", "doc_type": "image_unparsed", "n": 0, "analytes": 0,
                 "skipped": payload["skipped"]}
 
@@ -208,11 +227,20 @@ def stage_attachment(conn, attachment_id: int) -> dict:
                "low_confidence": sum(1 for r in results if r.get("confidence") == "low"),
                "identity": identity,                   # P1: show whose results these are at review
                "identity_state": _identity_state(conn, identity)}
-    # Re-staging invalidates any prior approval for this attachment.
-    conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att["id"],))
-    conn.execute("UPDATE attachments SET lab_status='extracted', lab_json=?, "
-                 "lab_extracted_at=datetime('now') WHERE id=?", (json.dumps(payload), att["id"]))
-    return {"status": "extracted", "doc_type": parsed["doc_type"], "n": len(results),
+    payload_json = json.dumps(payload)
+    doc_type = parsed["doc_type"]
+
+    def _write_extracted():
+        """Replace any prior approval and persist the staged extraction, on the writer connection."""
+        c = get_conn()
+        # Re-staging invalidates any prior approval for this attachment.
+        c.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att_id,))
+        c.execute("UPDATE attachments SET lab_status='extracted', lab_json=?, "
+                  "lab_extracted_at=datetime('now') WHERE id=?", (payload_json, att_id))
+        c.commit()
+
+    submit_write(_write_extracted).result()
+    return {"status": "extracted", "doc_type": doc_type, "n": len(results),
             "analytes": len(payload["analytes"]), "skipped": len(skips)}
 
 
@@ -257,34 +285,39 @@ def approve_attachment(conn, attachment_id: int) -> dict:
     rather than raising an error.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write runs on the writer connection).
         attachment_id: ID of the attachment to approve.
 
     Returns:
         Dict with keys: approved (rows inserted), duplicates (rows skipped).
     """
-    att = conn.execute(
-        "SELECT id, note_id, sha256, lab_status, lab_json FROM attachments WHERE id = ?",
-        (attachment_id,)).fetchone()
-    if not att or att["lab_status"] not in ("extracted", "approved") or not att["lab_json"]:
-        return {"approved": 0}
-    payload = json.loads(att["lab_json"]) or {}
-    results = payload.get("results", [])
-    source = payload.get("doc_type")                   # P3: how these rows were extracted
-    conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att["id"],))
-    inserted = 0
-    for r in results:
-        # INSERT OR IGNORE: a duplicate identity_key means this exact result is ALREADY in the
-        # trends (e.g. re-importing the same export, or a byte-identical file) — skip it rather
-        # than 500 on the unique index. Approve stays idempotent.
-        cur = conn.execute(_INSERT, (
-            att["note_id"], att["id"], None, r["test_name"], r["analyte_key"], r["value_text"],
-            r["value_num"], r["unit"], r["ref_low"], r["ref_high"], r["ref_text"],
-            r["collected_at"], r.get("collected_time"), _identity_key(r, att["sha256"]), source))
-        inserted += cur.rowcount
-    conn.execute("UPDATE attachments SET lab_status='approved' WHERE id=?", (att["id"],))
-    conn.commit()
-    return {"approved": inserted, "duplicates": len(results) - inserted}
+    def _write():
+        """Apply the staged rows to lab_results and mark approved, on the writer connection."""
+        c = get_conn()
+        att = c.execute(
+            "SELECT id, note_id, sha256, lab_status, lab_json FROM attachments WHERE id = ?",
+            (attachment_id,)).fetchone()
+        if not att or att["lab_status"] not in ("extracted", "approved") or not att["lab_json"]:
+            return {"approved": 0}
+        payload = json.loads(att["lab_json"]) or {}
+        results = payload.get("results", [])
+        source = payload.get("doc_type")                   # P3: how these rows were extracted
+        c.execute("DELETE FROM lab_results WHERE attachment_id = ?", (att["id"],))
+        inserted = 0
+        for r in results:
+            # INSERT OR IGNORE: a duplicate identity_key means this exact result is ALREADY in the
+            # trends (e.g. re-importing the same export, or a byte-identical file) — skip it rather
+            # than 500 on the unique index. Approve stays idempotent.
+            cur = c.execute(_INSERT, (
+                att["note_id"], att["id"], None, r["test_name"], r["analyte_key"], r["value_text"],
+                r["value_num"], r["unit"], r["ref_low"], r["ref_high"], r["ref_text"],
+                r["collected_at"], r.get("collected_time"), _identity_key(r, att["sha256"]), source))
+            inserted += cur.rowcount
+        c.execute("UPDATE attachments SET lab_status='approved' WHERE id=?", (att["id"],))
+        c.commit()
+        return {"approved": inserted, "duplicates": len(results) - inserted}
+
+    return submit_write(_write).result()
 
 
 def revoke_attachment(conn, attachment_id: int) -> dict:
@@ -294,17 +327,22 @@ def revoke_attachment(conn, attachment_id: int) -> dict:
     to 'extracted'.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write runs on the writer connection).
         attachment_id: ID of the attachment to revoke.
 
     Returns:
         Dict with key: removed (row count deleted from lab_results).
     """
-    removed = conn.execute("DELETE FROM lab_results WHERE attachment_id = ?", (attachment_id,)).rowcount
-    conn.execute("UPDATE attachments SET lab_status='extracted' WHERE id=? AND lab_status='approved'",
-                 (attachment_id,))
-    conn.commit()
-    return {"removed": removed}
+    def _write():
+        """Delete the attachment's approved rows and revert status, on the writer connection."""
+        c = get_conn()
+        removed = c.execute("DELETE FROM lab_results WHERE attachment_id = ?", (attachment_id,)).rowcount
+        c.execute("UPDATE attachments SET lab_status='extracted' WHERE id=? AND lab_status='approved'",
+                  (attachment_id,))
+        c.commit()
+        return {"removed": removed}
+
+    return submit_write(_write).result()
 
 
 def stage_note(conn, note_id: int, *, post_review: bool = True) -> dict:
@@ -325,19 +363,26 @@ def stage_note(conn, note_id: int, *, post_review: bool = True) -> dict:
     atts = conn.execute("SELECT id FROM attachments WHERE note_id = ?", (note_id,)).fetchall()
     total = {"doc_type": "unknown", "staged": 0, "analytes": 0, "skipped": 0}
     for a in atts:
+        # Each stage_attachment runs its OCR/vision OUTSIDE the writer and self-commits its
+        # staging writes through the single-writer layer, so no commit is needed here.
         s = stage_attachment(conn, a["id"])
         total["staged"] += s["n"]
         total["skipped"] += s["skipped"]
         if s["status"] == "extracted":
             total["doc_type"] = s["doc_type"]
             total["analytes"] = max(total["analytes"], s["analytes"])
-    conn.commit()
     if total["staged"] and post_review:
         note = conn.execute("SELECT title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
         leaf = (note["title"] or "").split("/")[-1] if note else "note"
-        reviews_svc.create_review_item(
-            conn, None, title=f"{total['staged']} lab results to review",
-            message=f"Extracted {total['analytes']} analytes from {leaf} — open it to preview and approve.",
-            link_slug=note["slug"] if note else None)
-        conn.commit()
+        link_slug = note["slug"] if note else None
+        title = f"{total['staged']} lab results to review"
+        message = f"Extracted {total['analytes']} analytes from {leaf} — open it to preview and approve."
+
+        def _write_review():
+            """Post the lab-review card on the writer connection."""
+            c = get_conn()
+            reviews_svc.create_review_item(c, None, title=title, message=message, link_slug=link_slug)
+            c.commit()
+
+        submit_write(_write_review).result()
     return total

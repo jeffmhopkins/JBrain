@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import prompts
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"], dependencies=[CurrentUser])
@@ -36,9 +36,13 @@ def set_prompt(key: str, body: PromptIn):
     Returns:
         Dict with key 'ok' set to True.
     """
-    conn = get_conn()
-    prompts.set_override(conn, key, body.value)
-    conn.commit()
+    def _write():
+        """Upsert the prompt override on the writer connection."""
+        c = get_conn()
+        prompts.set_override(c, key, body.value)
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}
 
 
@@ -52,7 +56,11 @@ def reset_prompt(key: str):
     Returns:
         Dict with key 'ok' set to True.
     """
-    conn = get_conn()
-    prompts.clear_override(conn, key)
-    conn.commit()
+    def _write():
+        """Clear the prompt override on the writer connection."""
+        c = get_conn()
+        prompts.clear_override(c, key)
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}

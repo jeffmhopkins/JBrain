@@ -437,7 +437,12 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
                           a.get("mime") or "application/octet-stream", raw))
 
     def _unit() -> int:
-        """Create the saved-chat note + its attachments + channel pointer on the writer.
+        """Create the saved-chat note + channel pointer on the writer, atomically.
+
+        The note, its Research-only flag, and the channel's saved_note_id pointer commit in ONE
+        transaction, so a retry short-circuits via ``already_saved`` and never creates a duplicate
+        note. Attachments are NOT written here — a nested self-committing add_attachment would
+        flush this note mid-unit and break that atomicity (see below).
 
         Returns:
             The new/owning notes.id for the saved transcript.
@@ -449,19 +454,20 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
         # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
         # evergreen KB articles. The owner can opt a chat back into the KB per-note.
         c.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (nid,))
-        # add_attachment self-serialises via submit_write; called from inside this writer-thread
-        # unit it runs INLINE (the re-entrant path), so the attachment rows land on this same
-        # connection within this transaction rather than tripping the deadlock guard. One bad
-        # file is swallowed so it never loses the transcript (parity with the prior loop).
-        for name, mime, raw in files:
-            try:
-                att_svc.add_attachment(c, nid, name, mime, raw)
-            except Exception:                        # noqa: BLE001 — one bad file never loses the transcript
-                continue
         c.execute("UPDATE chat_channels SET saved_note_id = ? WHERE share_link_id = ?", (nid, link_id))
         c.commit()
         return nid
     note_id = submit_write(_unit).result()
+    # Attachments are added AFTER the note + pointer are durable, best-effort: add_attachment
+    # self-commits in its OWN writer unit, and one bad file never loses the saved transcript. They
+    # are intentionally outside the note's unit — nesting a self-committing add_attachment would
+    # flush the note mid-transaction, so a failure between the two could orphan saved_note_id and
+    # (with create_only) duplicate the note on retry.
+    for name, mime, raw in files:
+        try:
+            att_svc.add_attachment(get_conn(), note_id, name, mime, raw)
+        except Exception:                            # noqa: BLE001 — one bad file never loses the transcript
+            continue
     row = conn.execute("SELECT slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return {"note_slug": row["slug"], "already_saved": False}
 

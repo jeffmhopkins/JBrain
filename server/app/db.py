@@ -29,6 +29,24 @@ _T = TypeVar("_T")
 _persist_executor: ThreadPoolExecutor | None = None
 _persist_executor_lock = threading.Lock()
 
+# Callbacks run (on the writer thread) at the START of every submit_write unit to reset SHARED
+# writer-thread-local state. A service that stashes per-call state in a thread-local registers here
+# so a straggler can't leak onto the single persistent writer thread and misfire on the next unit.
+_writer_reset_hooks: list[Callable[[], None]] = []
+
+
+def on_writer_reset(fn: Callable[[], None]) -> Callable[[], None]:
+    """Register a callback to reset writer-thread-local state before each submit_write unit.
+
+    Args:
+        fn: Zero-argument callback invoked on the writer thread before every unit runs.
+
+    Returns:
+        The registered callback (so this can be used as a decorator).
+    """
+    _writer_reset_hooks.append(fn)
+    return fn
+
 # A write unit slower than this almost certainly holds the writer across a non-DB call
 # (LLM/network/sleep) — the exact hazard this layer exists to prevent (the long-held-lock freeze).
 # We don't block it (the caller may need the result) but log loudly so the offending path is found
@@ -90,6 +108,15 @@ def submit_write(fn: Callable[[], _T]) -> "Future[_T]":
         A Future resolving to fn's return value (or re-raising fn's exception).
     """
     def _run() -> _T:
+        # Reset SHARED writer-thread-local state before the unit runs. A service may stash per-call
+        # state in a thread-local (e.g. notes' deferred entry_created list); the writer is ONE
+        # persistent thread, so a straggler from a prior unit that recorded-but-didn't-drain (or
+        # raised before its drain) would misfire on THIS unit. The hooks wipe any such leak.
+        for _hook in _writer_reset_hooks:
+            try:
+                _hook()
+            except Exception:  # noqa: BLE001 — a reset hook must never break the write
+                pass
         t0 = time.monotonic()
         try:
             return fn()

@@ -204,3 +204,29 @@ def test_nested_write_runs_inline_without_deadlock(fresh_db):
     assert db.submit_write(_outer).result(timeout=30) == "inner-done"
     rows = {r["who"] for r in db.get_conn().execute("SELECT who FROM _w")}
     assert {"outer", "inner"} <= rows
+
+
+def test_writer_reset_hook_clears_stale_state_before_each_unit(fresh_db):
+    """A reset hook runs before every unit, wiping writer-thread-local state a prior unit left.
+
+    Mirrors the notes deferred-entry-event leak: a unit that stashes per-call state on the SHARED
+    writer thread and then RAISES would leave a straggler for the next unit to misfire on. The
+    on_writer_reset hook clears it before each unit so no straggler survives.
+    """
+    db = fresh_db
+    leaked: dict = {}            # stands in for a service's writer-thread-local state
+    hook = leaked.clear
+    db._writer_reset_hooks.append(hook)
+    try:
+        def _stash_then_fail():
+            leaked["ghost"] = 1   # recorded on the writer thread
+            raise RuntimeError("boom after stashing, before draining")
+
+        with pytest.raises(RuntimeError, match="boom after stashing"):
+            db.submit_write(_stash_then_fail).result(timeout=30)
+
+        # The next unit must NOT see the straggler — the reset hook ran before it.
+        observed = db.submit_write(lambda: dict(leaked)).result(timeout=30)
+        assert observed == {}, "stale writer-thread state leaked into the next unit"
+    finally:
+        db._writer_reset_hooks.remove(hook)   # leave the registry (incl. notes' real hook) intact

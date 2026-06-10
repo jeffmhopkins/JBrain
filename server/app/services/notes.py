@@ -11,6 +11,7 @@ import re
 import sqlite3
 import threading
 
+from ..db import on_writer_reset
 from . import embeddings, wikilinks
 
 log = logging.getLogger("jbrain")
@@ -24,6 +25,19 @@ MAX_VERSIONS_PER_NOTE = 50
 # (not a module global) because sync request handlers run on a shared threadpool,
 # each with its own DB connection — a global flag would leak across requests.
 _state = threading.local()
+
+
+@on_writer_reset
+def _reset_pending_entry_events() -> None:
+    """Clear this thread's deferred entry_created list before each submit_write unit runs.
+
+    The writer is one shared persistent thread; a unit that recorded a pending event (via
+    ``upsert_note(fire_events=False)``) but raised before draining it — or a future route that
+    forgets to drain — would otherwise leave the event to misfire on the NEXT unit's note (a ghost
+    enrichment on a rolled-back id). Registered with the writer layer so the reset is automatic and
+    every unit starts with a clean pending list; the recording route still drains its own on success.
+    """
+    _state.pending = []
 
 
 def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:

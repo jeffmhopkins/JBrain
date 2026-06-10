@@ -411,8 +411,8 @@ def test_labshare_ai_scopes_charts_blocks_injection_and_audits(client, monkeypat
     add("hiv_ab", "HIV Ab", "2026-01-01", "0.1", 0.1, "index", 0.0, 1.0)         # sensitive, NOT shared
     token, link_id = labshare.create(conn, analytes=["creatinine"])
     labshare.activate(conn, link_id)
-    sid, secret = labshare.start_session(conn, link_id)
-    conn.commit()
+    conn.commit()  # commit owner-side setup before start_session runs on the writer thread
+    sid, secret, _bind = labshare.start_session(conn, link_id)
     link = conn.execute("SELECT * FROM share_links WHERE id=?", (link_id,)).fetchone()
     spec = labshare.get_spec(conn, link_id)
 

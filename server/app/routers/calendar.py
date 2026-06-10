@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn, get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta, submit_write
 from ..services import calendar as cal
 from ..services import clock
 from ..services import notes as notes_svc
@@ -259,28 +259,39 @@ def quick_add(body: QuickAddIn):
         raise HTTPException(status_code=422, detail="title is required")
     starts_at, all_day = _compose_starts(body.date, body.time)
     when = starts_at.replace("T", " ")
-    conn = get_conn()
-    note_title = notes_svc.next_dated_title(conn, clock.today_local())
     detail = _sanitize_title(body.detail) if body.detail else None
     line = f"{title} — {when}" + (f"\n\n{detail}" if detail else "")
-    try:
-        note_id = notes_svc.upsert_note(conn, note_title, line, source="user", fire_events=False)
-        cal.upsert_events(conn, note_id, [{
+
+    def _write() -> tuple[dict, list]:
+        """Create the dated note + project its calendar event atomically on the writer connection.
+
+        upsert_note (fire_events=False) re-embeds the dated note INSIDE the unit (local + fast —
+        the accepted tradeoff). next_dated_title and the response read fold in to reflect the write.
+        The deferred entry_created events are DRAINED here (on the writer thread, where upsert_note
+        recorded them) and returned, so they fire post-commit on the request thread — and never leak
+        onto the shared writer thread for a later unit to fire.
+        """
+        c = get_conn()
+        note_title = notes_svc.next_dated_title(c, clock.today_local())
+        note_id = notes_svc.upsert_note(c, note_title, line, source="user", fire_events=False)
+        cal.upsert_events(c, note_id, [{
             "title": title, "kind": body.kind, "starts_at": starts_at,
             "all_day": bool(all_day), "detail": detail,
         }], source="manual")
         if body.reminders:
             ik = cal.identity_key(note_id, title, body.kind, 0)
-            cal.set_reminders(conn, ik, body.reminders)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    ev = conn.execute(
-        "SELECT id, title, kind, starts_at, all_day, status FROM calendar_events "
-        "WHERE note_id=? ORDER BY id DESC LIMIT 1", (note_id,),
-    ).fetchone()
-    return {"note_id": note_id, "note_title": note_title, "event": dict(ev) if ev else None}
+            cal.set_reminders(c, ik, body.reminders)
+        c.commit()
+        ev = c.execute(
+            "SELECT id, title, kind, starts_at, all_day, status FROM calendar_events "
+            "WHERE note_id=? ORDER BY id DESC LIMIT 1", (note_id,),
+        ).fetchone()
+        return ({"note_id": note_id, "note_title": note_title, "event": dict(ev) if ev else None},
+                notes_svc.drain_pending_entry_events())
+
+    out, pending = submit_write(_write).result()
+    notes_svc.fire_entry_events(get_conn(), pending)   # post-commit: enrich the new dated note
+    return out
 
 
 _REVIEW_WATERMARK = "calendar.review:seen"
@@ -345,15 +356,14 @@ def set_event_reminders(event_id: int, body: RemindersIn):
     Raises:
         HTTPException: 404 if the event does not exist.
     """
-    conn = get_conn()
-    ik = _event_ik(conn, event_id)
-    try:
-        out = cal.set_reminders(conn, ik, body.reminders)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Resolve the event's identity key and replace its reminders on the writer connection."""
+        c = get_conn()
+        out = cal.set_reminders(c, _event_ik(c, event_id), body.reminders)
+        c.commit()
+        return out
+
+    return submit_write(_write).result()
 
 
 @router.get("/recently-added")
@@ -377,10 +387,14 @@ def mark_reviewed():
     Returns:
         JSON ``{"ok": true}``.
     """
-    conn = get_conn()
-    now = conn.execute("SELECT datetime('now')").fetchone()[0]
-    set_meta(conn, _REVIEW_WATERMARK, now)
-    conn.commit()
+    def _write():
+        """Advance the review watermark to now on the writer connection."""
+        c = get_conn()
+        now = c.execute("SELECT datetime('now')").fetchone()[0]
+        set_meta(c, _REVIEW_WATERMARK, now)
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}
 
 
@@ -400,15 +414,14 @@ def dismiss_event_route(event_id: int):
     Raises:
         HTTPException: 404 if the event does not exist.
     """
-    conn = get_conn()
-    ik = _event_ik(conn, event_id)
-    try:
-        out = cal.dismiss_event(conn, ik)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Resolve the event's identity key and dismiss it on the writer connection."""
+        c = get_conn()
+        out = cal.dismiss_event(c, _event_ik(c, event_id))
+        c.commit()
+        return out
+
+    return submit_write(_write).result()
 
 
 class UndismissIn(BaseModel):
@@ -427,11 +440,11 @@ def undismiss_event_route(body: UndismissIn):
     Returns:
         Restored event dict from the service layer.
     """
-    conn = get_conn()
-    try:
-        out = cal.undismiss_event(conn, body.identity_key)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return out
+    def _write():
+        """Restore the dismissed event on the writer connection."""
+        c = get_conn()
+        out = cal.undismiss_event(c, body.identity_key)
+        c.commit()
+        return out
+
+    return submit_write(_write).result()

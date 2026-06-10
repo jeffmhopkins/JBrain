@@ -802,13 +802,14 @@ def labs_start(token: str, body: LabsStartIn, request: Request, response: Respon
         import json as _json
         out["transcript"] = _json.loads(existing["transcript_json"] or "[]")
         return out
-    if link["bind"] and st == "unclaimed":                 # claim it to this browser
-        secret = share_svc.mint_token()
-        conn.execute("UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=?",
-                     (secret, link["id"]))
-        _bind_cookie(response, token, link["id"], secret)
-    sid, sess_secret = labshare_svc.start_session(conn, link["id"], name=body.name, client_ip=_client_ip(request))
-    share_svc.touch(conn, link["id"]); conn.commit()
+    # The bind-claim, session INSERT, and link touch all run inside start_session's single
+    # write unit (on the writer connection) — the route holds no write across them, so the
+    # submit_write deadlock guard never trips. Cookies are set from the returned secrets.
+    claim_bind = bool(link["bind"] and st == "unclaimed")  # claim it to this browser
+    sid, sess_secret, bind_secret = labshare_svc.start_session(
+        conn, link["id"], name=body.name, client_ip=_client_ip(request), claim_bind=claim_bind)
+    if bind_secret is not None:
+        _bind_cookie(response, token, link["id"], bind_secret)
     _labs_cookie(response, token, link["id"], sess_secret)
     out["transcript"] = []
     return out

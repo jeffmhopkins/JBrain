@@ -27,6 +27,33 @@ def conn():
     chat_relay.reset()
 
 
+@pytest.fixture(autouse=True)
+def writer_on(conn, monkeypatch):
+    """Route the chat-share single-writer seam at this isolated in-memory ``conn``.
+
+    The converted write functions (create/finalize/append/store_file/close) now persist
+    through ``submit_write`` on the dedicated writer connection (``db.get_conn()`` on the
+    writer thread). These tests inject their own ``:memory:`` connection with no app
+    bootstrap, so the real writer would open an unrelated file DB. Patch the module seams
+    to run the write unit inline against the test ``conn`` instead, preserving the test's
+    isolation while exercising the refactored code path.
+    """
+    from concurrent.futures import Future
+
+    def _inline(fn):
+        """Run the write unit inline, mirroring submit_write's Future contract."""
+        f: Future = Future()
+        try:
+            f.set_result(fn())
+        except BaseException as exc:  # noqa: BLE001 — mirror submit_write's contract
+            f.set_exception(exc)
+        return f
+
+    monkeypatch.setattr(cs, "get_conn", lambda: conn)
+    monkeypatch.setattr(cs, "submit_write", _inline)
+    return conn
+
+
 def _mk(conn, *, persist=True, otp=False):
     token, link_id = cs.create_channel(
         conn, owner_wrap="OWNER_SEALED", guest_wrap="GUEST_SEALED",

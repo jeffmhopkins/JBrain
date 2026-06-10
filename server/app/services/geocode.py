@@ -20,6 +20,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..config import get_settings
+from ..db import get_conn, submit_write
 
 _UA = "JBrain/0.1 (+https://github.com/jeffmhopkins/JBrain; self-hosted personal brain)"
 _TIMEOUT = 8.0
@@ -114,19 +115,30 @@ def _cache_get(conn, kind: str, key: str):
 def _cache_put(conn, kind: str, key: str, payload) -> None:
     """Upsert a geocoder result into the cache and commit.
 
+    The write is serialised through the single-writer connection; the network
+    fetch happens in ``reverse``/``forward`` BEFORE this call, so no slow work
+    runs inside the write unit.
+
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write runs on the writer connection).
         kind: Cache namespace ('reverse' or 'forward').
         key: Cache key string.
         payload: JSON-serialisable result to store (use {} for a negative cache entry).
     """
-    conn.execute(
-        "INSERT INTO geocode_cache (kind, key, payload_json, fetched_at) "
-        "VALUES (?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
-        "payload_json=excluded.payload_json, fetched_at=excluded.fetched_at",
-        (kind, key, json.dumps(payload), _now()),
-    )
-    conn.commit()
+    payload_json, fetched_at = json.dumps(payload), _now()
+
+    def _put():
+        """Upsert the cache row and commit on the writer connection."""
+        c = get_conn()
+        c.execute(
+            "INSERT INTO geocode_cache (kind, key, payload_json, fetched_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
+            "payload_json=excluded.payload_json, fetched_at=excluded.fetched_at",
+            (kind, key, payload_json, fetched_at),
+        )
+        c.commit()
+
+    submit_write(_put).result()
 
 
 def reverse(conn, lat: float, lon: float) -> dict | None:

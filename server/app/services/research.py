@@ -16,6 +16,7 @@ import json
 import re
 import secrets
 
+from ..db import get_conn, submit_write
 from . import llm
 from . import research_scope as scope
 
@@ -351,22 +352,29 @@ def start_session(conn, link, spec, name: str | None, client_ip: str | None,
         HTTPException: 403 if the link is bound to a different device.
     """
     from fastapi import HTTPException
-    if spec["single_use"] and conn.execute(
-        "SELECT 1 FROM research_sessions WHERE share_link_id=? AND turn_count>0 LIMIT 1",
-        (link["id"],)).fetchone():
-        raise HTTPException(status_code=409, detail="This link has already been used.")
-    if spec["bind"]:
-        other = conn.execute(
-            "SELECT secret FROM research_sessions WHERE share_link_id=? AND status='active' LIMIT 1",
-            (link["id"],)).fetchone()
-        if other and other["secret"] != my_secret:
-            raise HTTPException(status_code=403, detail="This link is locked to the device that started it.")
-    secret = secrets.token_urlsafe(24)
-    cur = conn.execute(
-        "INSERT INTO research_sessions (share_link_id, secret, name, client_ip) VALUES (?, ?, ?, ?)",
-        (link["id"], secret, (name or "").strip()[:80] or None, client_ip),
-    )
-    return cur.lastrowid, secret
+
+    def _unit() -> tuple[int, str]:
+        c = get_conn()
+        if spec["single_use"] and c.execute(
+            "SELECT 1 FROM research_sessions WHERE share_link_id=? AND turn_count>0 LIMIT 1",
+            (link["id"],)).fetchone():
+            raise HTTPException(status_code=409, detail="This link has already been used.")
+        if spec["bind"]:
+            other = c.execute(
+                "SELECT secret FROM research_sessions WHERE share_link_id=? AND status='active' LIMIT 1",
+                (link["id"],)).fetchone()
+            if other and other["secret"] != my_secret:
+                raise HTTPException(status_code=403,
+                                    detail="This link is locked to the device that started it.")
+        secret = secrets.token_urlsafe(24)
+        cur = c.execute(
+            "INSERT INTO research_sessions (share_link_id, secret, name, client_ip) VALUES (?, ?, ?, ?)",
+            (link["id"], secret, (name or "").strip()[:80] or None, client_ip),
+        )
+        c.commit()
+        return cur.lastrowid, secret
+
+    return submit_write(_unit).result()
 
 
 def find_session(conn, link_id: int, secret: str | None):
@@ -433,20 +441,26 @@ def _pre_turn_guard(conn, spec, session) -> dict | None:
     Returns:
         An early-exit response dict if a cap is hit, or None to proceed with the turn.
     """
-    if session["turn_count"] >= spec["max_turns"]:
-        return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
-    if conn.execute("UPDATE research_specs SET reply_count=reply_count+1 "
-                    "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
-        conn.rollback()  # release the (empty) write txn the no-op UPDATE opened
-        return {"phase": "ended", "message": "This link has reached its usage limit."}
-    if not _global_budget_ok(conn):
-        conn.commit()
-        return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
-    # Commit the reply billing NOW — never hold the SQLite write lock open across the
-    # (up to 120s) LLM call that follows. busy_timeout is 60s, so a held lock would
-    # make every other writer wait that long and wedge the single-worker server.
-    conn.commit()
-    return None
+    # Runs as its OWN write unit on the dedicated writer connection and commits BEFORE any LLM
+    # call — the writer is never held across the (up to 120s) model round-trip, which would make
+    # every other writer wait out busy_timeout (60s) and wedge the single-worker server. The
+    # per-link decrement, the meta-backstop write (_global_budget_ok, run on the same writer conn),
+    # and the conditional commit/rollback all live inside the unit so they share one connection.
+    def _budget_unit() -> dict | None:
+        c = get_conn()
+        if session["turn_count"] >= spec["max_turns"]:
+            return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!"}
+        if c.execute("UPDATE research_specs SET reply_count=reply_count+1 "
+                     "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
+            c.rollback()  # release the (empty) write txn the no-op UPDATE opened
+            return {"phase": "ended", "message": "This link has reached its usage limit."}
+        if not _global_budget_ok(c):
+            c.commit()
+            return {"phase": "answer", "message": "The assistant is busy right now — please try again later."}
+        c.commit()
+        return None
+
+    return submit_write(_budget_unit).result()
 
 
 def answer(conn, link, spec, session, question: str) -> dict:
@@ -515,10 +529,12 @@ def answer(conn, link, spec, session, question: str) -> dict:
             for t in transcript]
     msgs.append({"role": "user", "content": f"<question {nonce}>\n{q}\n</question {nonce}>"})
 
+    # The LLM round-trip runs OUTSIDE every write unit — the budget unit (_pre_turn_guard) above
+    # already committed and released the writer, and the record unit below has not yet begun. No
+    # open transaction exists on this request connection here, so a failure needs no rollback.
     try:
         raw = llm.complete(msgs, system=system, max_tokens=_ANSWER_MAX_TOKENS)
     except Exception:
-        conn.rollback()  # clear any open txn so this pooled connection can't wedge later writers
         return {"phase": "answer", "message": "Something went wrong — please try again in a moment."}
     reply = _sanitize(raw) or _NO_CONTEXT
     _record(conn, session, transcript, q, reply, [h["id"] for h in hits])
@@ -538,12 +554,18 @@ def _record(conn, session, transcript, question, reply, retrieved_ids) -> None:
     """
     transcript = transcript + [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
     prev = set(json.loads(session["retrieved_ids_json"] or "[]"))
-    conn.execute(
-        "UPDATE research_sessions SET transcript_json=?, retrieved_ids_json=?, "
-        "turn_count=turn_count+1, last_at=datetime('now') WHERE id=?",
-        (json.dumps(transcript), json.dumps(sorted(prev | set(retrieved_ids))), session["id"]),
-    )
-    conn.commit()
+    # Persist the in-memory transcript + audit ids as its OWN write unit, AFTER the LLM call.
+    # Writes json.dumps(transcript) built in memory — no re-read of the session row needed.
+    def _unit() -> None:
+        c = get_conn()
+        c.execute(
+            "UPDATE research_sessions SET transcript_json=?, retrieved_ids_json=?, "
+            "turn_count=turn_count+1, last_at=datetime('now') WHERE id=?",
+            (json.dumps(transcript), json.dumps(sorted(prev | set(retrieved_ids))), session["id"]),
+        )
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 # --- candidate nudge (owner) ------------------------------------------------

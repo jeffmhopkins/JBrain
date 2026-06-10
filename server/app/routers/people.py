@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn, ensure_default_person
+from ..db import get_conn, ensure_default_person, submit_write
 from ..services import trips as trips_svc
 from ..services import people as people_svc
 
@@ -124,21 +124,28 @@ def set_owner(body: OwnerIn):
         HTTPException: 409 if a location key is active (revoke first) or
             another person with that name already exists.
     """
-    conn = get_conn()
-    ensure_default_person(conn)
-    o = people_svc.owner(conn)
     name = body.name.strip()[:40]
     if not name:
         raise HTTPException(status_code=422, detail="Owner name required")
-    if o["location_key"]:
-        raise HTTPException(status_code=409, detail="Revoke this person's location key before renaming.")
-    if name.lower() != o["name"].lower() and conn.execute(
-            "SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, o["id"])).fetchone():
-        raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
-    conn.execute("UPDATE people SET name = ? WHERE id = ?", (name, o["id"]))
-    if body.aliases is not None:
-        conn.execute("UPDATE people SET aliases = ? WHERE id = ?", (body.aliases.strip(), o["id"]))
-    conn.commit()
+
+    def _write() -> dict:
+        """Validate and apply the owner rename on the writer connection, returning the new state."""
+        c = get_conn()
+        ensure_default_person(c)
+        o = people_svc.owner(c)
+        if o["location_key"]:
+            raise HTTPException(status_code=409, detail="Revoke this person's location key before renaming.")
+        if name.lower() != o["name"].lower() and c.execute(
+                "SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, o["id"])).fetchone():
+            raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
+        c.execute("UPDATE people SET name = ? WHERE id = ?", (name, o["id"]))
+        if body.aliases is not None:
+            c.execute("UPDATE people SET aliases = ? WHERE id = ?", (body.aliases.strip(), o["id"]))
+        c.commit()
+        return _owner_state(c)
+
+    state = submit_write(_write).result()
+    conn = get_conn()
     # Connect the owner to their kb/People page and register their name/nicknames as durable
     # alias decisions so prose using a nickname links to the canonical page (next rebuild
     # materializes them). Best-effort — never block the rename.
@@ -148,7 +155,7 @@ def set_owner(body: OwnerIn):
     except Exception:  # noqa: BLE001
         pass
     _reattribute(conn)
-    return _owner_state(conn)
+    return state
 
 
 class PersonIn(BaseModel):
@@ -179,22 +186,28 @@ def add_person(body: PersonIn):
     name = body.name.strip()[:40]
     if not name:
         raise HTTPException(status_code=422, detail="Name required")
-    conn = get_conn()
-    if conn.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
-        raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
-    try:
-        cur = conn.execute(
-            "INSERT INTO people (name, color, aliases, note_slug, is_default) VALUES (?, ?, ?, ?, 0)",
-            (name, body.color.strip()[:9], body.aliases.strip(), body.note_slug),
-        )
-        if body.is_default:
-            _make_default(conn, cur.lastrowid)
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="That person already exists.")
-    _reattribute(conn)
-    return {"id": cur.lastrowid, "name": name}
+
+    def _write() -> int:
+        """Insert the new person atomically (uniqueness check + insert) on the writer connection."""
+        c = get_conn()
+        if c.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+            raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
+        try:
+            cur = c.execute(
+                "INSERT INTO people (name, color, aliases, note_slug, is_default) VALUES (?, ?, ?, ?, 0)",
+                (name, body.color.strip()[:9], body.aliases.strip(), body.note_slug),
+            )
+            if body.is_default:
+                _make_default(c, cur.lastrowid)
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="That person already exists.")
+        return cur.lastrowid
+
+    new_id = submit_write(_write).result()
+    _reattribute(get_conn())
+    return {"id": new_id, "name": name}
 
 
 class PersonPatch(BaseModel):
@@ -224,39 +237,43 @@ def update_person(person_id: int, body: PersonPatch):
         HTTPException: 409 if a location key is active and name/aliases would
             change, or another person with the new name already exists.
     """
-    conn = get_conn()
-    p = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
-    if p is None:
-        raise HTTPException(status_code=404, detail="No such person")
-    # Name + aliases are baked into the live setup code and drive fix attribution.
-    # Locked while a key is active so already-distributed codes can't desync — revoke first.
-    if p["location_key"]:
-        if body.name is not None and body.name.strip()[:40] != p["name"]:
-            raise HTTPException(status_code=409, detail="Revoke the location key before renaming this person.")
-        if body.aliases is not None and body.aliases.strip() != (p["aliases"] or ""):
-            raise HTTPException(status_code=409, detail="Revoke the location key before changing ingestion sources.")
-    name = body.name.strip()[:40] if body.name is not None else None
-    if body.name is not None and not name:
-        raise HTTPException(status_code=422, detail="Name required")
-    if name and name.lower() != p["name"].lower() and \
-            conn.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, person_id)).fetchone():
-        raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
-    try:
-        if name:
-            conn.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
-        if body.color is not None:
-            conn.execute("UPDATE people SET color = ? WHERE id = ?", (body.color.strip()[:9], person_id))
-        if body.aliases is not None:
-            conn.execute("UPDATE people SET aliases = ? WHERE id = ?", (body.aliases.strip(), person_id))
-        if body.note_slug is not None:
-            conn.execute("UPDATE people SET note_slug = ? WHERE id = ?", (body.note_slug or None, person_id))
-        if body.is_default:
-            _make_default(conn, person_id)
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="That name is taken.")
-    _reattribute(conn)
+    def _write() -> None:
+        """Validate and apply the partial person update atomically on the writer connection."""
+        c = get_conn()
+        p = c.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
+        if p is None:
+            raise HTTPException(status_code=404, detail="No such person")
+        # Name + aliases are baked into the live setup code and drive fix attribution.
+        # Locked while a key is active so already-distributed codes can't desync — revoke first.
+        if p["location_key"]:
+            if body.name is not None and body.name.strip()[:40] != p["name"]:
+                raise HTTPException(status_code=409, detail="Revoke the location key before renaming this person.")
+            if body.aliases is not None and body.aliases.strip() != (p["aliases"] or ""):
+                raise HTTPException(status_code=409, detail="Revoke the location key before changing ingestion sources.")
+        name = body.name.strip()[:40] if body.name is not None else None
+        if body.name is not None and not name:
+            raise HTTPException(status_code=422, detail="Name required")
+        if name and name.lower() != p["name"].lower() and \
+                c.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND id <> ?", (name, person_id)).fetchone():
+            raise HTTPException(status_code=409, detail=f"A person named “{name}” already exists.")
+        try:
+            if name:
+                c.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
+            if body.color is not None:
+                c.execute("UPDATE people SET color = ? WHERE id = ?", (body.color.strip()[:9], person_id))
+            if body.aliases is not None:
+                c.execute("UPDATE people SET aliases = ? WHERE id = ?", (body.aliases.strip(), person_id))
+            if body.note_slug is not None:
+                c.execute("UPDATE people SET note_slug = ? WHERE id = ?", (body.note_slug or None, person_id))
+            if body.is_default:
+                _make_default(c, person_id)
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="That name is taken.")
+
+    submit_write(_write).result()
+    _reattribute(get_conn())
     return {"ok": True}
 
 
@@ -274,15 +291,19 @@ def delete_person(person_id: int):
         HTTPException: 404 if person does not exist.
         HTTPException: 409 if attempting to delete the default person.
     """
-    conn = get_conn()
-    p = conn.execute("SELECT is_default FROM people WHERE id = ?", (person_id,)).fetchone()
-    if p is None:
-        raise HTTPException(status_code=404, detail="No such person")
-    if p["is_default"]:
-        raise HTTPException(status_code=409, detail="Can't delete the default person — set another as default first.")
-    conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
-    conn.commit()
-    _reattribute(conn)
+    def _write() -> None:
+        """Validate and delete the (non-default) person atomically on the writer connection."""
+        c = get_conn()
+        p = c.execute("SELECT is_default FROM people WHERE id = ?", (person_id,)).fetchone()
+        if p is None:
+            raise HTTPException(status_code=404, detail="No such person")
+        if p["is_default"]:
+            raise HTTPException(status_code=409, detail="Can't delete the default person — set another as default first.")
+        c.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        c.commit()
+
+    submit_write(_write).result()
+    _reattribute(get_conn())
     return {"ok": True}
 
 
@@ -308,28 +329,33 @@ def person_from_note(body: TagNoteIn):
         HTTPException: 404 if the note does not exist.
         HTTPException: 409 if the person record cannot be created or linked.
     """
-    conn = get_conn()
-    note = conn.execute(
-        "SELECT id, title, slug FROM notes WHERE slug = ? AND deleted_at IS NULL", (body.slug,)
-    ).fetchone()
-    if note is None:
-        raise HTTPException(status_code=404, detail="No such note")
-    # Person name = the note's leaf title (kb/People/Family/Mom → "Mom").
-    name = note["title"].split("/")[-1].strip()[:40] or note["title"]
-    existing = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
-    try:
-        if existing:
-            conn.execute("UPDATE people SET note_slug = ? WHERE id = ?", (note["slug"], existing["id"]))
-            pid = existing["id"]
-        else:
-            pid = conn.execute(
-                "INSERT INTO people (name, note_slug) VALUES (?, ?)", (name, note["slug"])
-            ).lastrowid
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="Couldn't tag this note as a person.")
-    _reattribute(conn)
+    def _write() -> tuple[int, str]:
+        """Resolve the note, then create or relink the person atomically on the writer connection."""
+        c = get_conn()
+        note = c.execute(
+            "SELECT id, title, slug FROM notes WHERE slug = ? AND deleted_at IS NULL", (body.slug,)
+        ).fetchone()
+        if note is None:
+            raise HTTPException(status_code=404, detail="No such note")
+        # Person name = the note's leaf title (kb/People/Family/Mom → "Mom").
+        name = note["title"].split("/")[-1].strip()[:40] or note["title"]
+        existing = c.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+        try:
+            if existing:
+                c.execute("UPDATE people SET note_slug = ? WHERE id = ?", (note["slug"], existing["id"]))
+                pid = existing["id"]
+            else:
+                pid = c.execute(
+                    "INSERT INTO people (name, note_slug) VALUES (?, ?)", (name, note["slug"])
+                ).lastrowid
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="Couldn't tag this note as a person.")
+        return pid, name
+
+    pid, name = submit_write(_write).result()
+    _reattribute(get_conn())
     return {"id": pid, "name": name}
 
 
@@ -350,12 +376,17 @@ def generate_location_key(person_id: int):
     Raises:
         HTTPException: 404 if the person does not exist.
     """
-    conn = get_conn()
-    if conn.execute("SELECT 1 FROM people WHERE id = ?", (person_id,)).fetchone() is None:
-        raise HTTPException(status_code=404, detail="No such person")
     key = "jbloc_" + secrets.token_urlsafe(24)
-    conn.execute("UPDATE people SET location_key = ? WHERE id = ?", (key, person_id))
-    conn.commit()
+
+    def _write() -> None:
+        """Verify the person exists, then store the new location key on the writer connection."""
+        c = get_conn()
+        if c.execute("SELECT 1 FROM people WHERE id = ?", (person_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="No such person")
+        c.execute("UPDATE people SET location_key = ? WHERE id = ?", (key, person_id))
+        c.commit()
+
+    submit_write(_write).result()
     return {"location_key": key}
 
 
@@ -369,9 +400,13 @@ def revoke_location_key(person_id: int):
     Returns:
         JSON ``{"ok": true}``.
     """
-    conn = get_conn()
-    conn.execute("UPDATE people SET location_key = NULL WHERE id = ?", (person_id,))
-    conn.commit()
+    def _write() -> None:
+        """Clear the person's location key on the writer connection."""
+        c = get_conn()
+        c.execute("UPDATE people SET location_key = NULL WHERE id = ?", (person_id,))
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta, timezone
 
+from ..db import get_conn, submit_write
 from . import geo
 from . import geotrail
 from . import people as people_svc
@@ -446,11 +447,20 @@ def run_detection(conn, max_people: int | None = None) -> int:
     for i, row in enumerate(people):
         if max_people is not None and i >= max_people:
             break
-        try:
-            total += detect_for_person(conn, row["id"])
-            conn.commit()
-        except Exception:  # noqa: BLE001 — one person's bad data must not wedge the rest
-            conn.rollback()
+        pid = row["id"]
+
+        def _detect(pid=pid):
+            """Run one person's detection pass and commit on the writer connection."""
+            c = get_conn()
+            try:
+                n = detect_for_person(c, pid)
+                c.commit()
+                return n
+            except Exception:  # noqa: BLE001 — one person's bad data must not wedge the rest
+                c.rollback()
+                return 0
+
+        total += submit_write(_detect).result()
     return total
 
 
@@ -503,13 +513,19 @@ def reattribute(conn) -> None:
     Cheap: iterates over distinct sources only.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write runs on the writer connection).
     """
-    for r in conn.execute("SELECT DISTINCT source FROM locations").fetchall():
-        s = r["source"]
-        p = people_svc.resolve(conn, s or "")
-        pid = p["id"] if p else None
-        conn.execute("UPDATE locations SET person_id = ? WHERE source IS ?", (pid, s))
-        conn.execute("UPDATE trips SET person_id = ? WHERE source IS ?", (pid, s))
-    # Force a fresh segmentation everywhere (people moves can re-split trails).
-    conn.execute("UPDATE trip_cursor SET watermark = backfilled_to, updated_at = ?", (_now_str(),))
+    def _reattr():
+        """Re-resolve attribution and rewind cursors atomically on the writer connection."""
+        c = get_conn()
+        for r in c.execute("SELECT DISTINCT source FROM locations").fetchall():
+            s = r["source"]
+            p = people_svc.resolve(c, s or "")
+            pid = p["id"] if p else None
+            c.execute("UPDATE locations SET person_id = ? WHERE source IS ?", (pid, s))
+            c.execute("UPDATE trips SET person_id = ? WHERE source IS ?", (pid, s))
+        # Force a fresh segmentation everywhere (people moves can re-split trails).
+        c.execute("UPDATE trip_cursor SET watermark = backfilled_to, updated_at = ?", (_now_str(),))
+        c.commit()
+
+    submit_write(_reattr).result()

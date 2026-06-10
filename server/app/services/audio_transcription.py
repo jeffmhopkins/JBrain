@@ -21,7 +21,7 @@ import os
 import threading
 import time
 
-from ..db import get_conn, get_meta
+from ..db import get_conn, get_meta, submit_write
 from . import llm
 
 # Container/codec extensions we route to the transcriber even when the browser
@@ -356,31 +356,44 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
     shared stale-pending watchdog has a precise "analysis started at" clock for
     transcription rows as well.
 
+    The ``conn`` argument is kept for signature compatibility but is NOT used to
+    write: the UPDATE + commit are routed through submit_write so they land on the
+    single dedicated writer connection (callers run on background daemon threads
+    whose own connection is read-only). The fresh ``c = get_conn()`` inside the unit
+    is the writer's connection.
+
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write goes through the single writer).
         att_id: Attachment row ID to update.
         status: New status string ('pending', 'done', or 'error').
         detail: Optional human-readable detail or error message.
     """
-    conn.execute(
-        "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
-        "ELSE analyzed_at END WHERE id = ?",
-        (status, detail, status, att_id),
-    )
+    def _unit() -> None:
+        """Run the status UPDATE + commit on the single writer connection."""
+        c = get_conn()
+        c.execute(
+            "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
+            "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+            "ELSE analyzed_at END WHERE id = ?",
+            (status, detail, status, att_id),
+        )
+        c.commit()
+    submit_write(_unit).result()
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:
-    """Set an attachment's analysis status to 'error' and commit, ignoring failures.
+    """Set an attachment's analysis status to 'error', ignoring failures.
+
+    The write (and its commit) is routed through the single writer by _set_status,
+    so ``conn`` is unused here — the daemon's own connection stays read-only.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write goes through the single writer).
         att_id: Attachment row ID to mark as errored.
         detail: Error description to store (truncated to 500 characters).
     """
     try:
         _set_status(conn, att_id, "error", detail[:500])
-        conn.commit()
     except Exception:
         pass
 
@@ -449,44 +462,59 @@ def transcribe(att_id: int) -> None:
         except Exception:  # noqa: BLE001 — embed is best-effort; the transcript + FTS still land below
             chunks, vectors = [], []
 
-        # Take the write lock now so the re-read + writes are one atomic unit (audio previously
-        # used an implicit txn). The slow embed already ran above, outside the lock.
-        conn.execute("BEGIN IMMEDIATE")
-        att = conn.execute(
-            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
-        ).fetchone()
-        # Abandon if the row is gone or already TERMINAL ('error' from a watchdog reap, or 'done'
-        # from another worker) — never resurrect a terminal status. Atomic against the watchdog
-        # (which only flips rows WHERE status='pending'), so exactly one terminal status survives.
-        if not att or att["analysis_status"] in ("error", "done"):
-            conn.rollback()
-            return
-        # Transcript (+ any visual summary) IS the searchable content: store it as content_text,
-        # the FTS body, and chunk embeddings, plus the human-readable sidecar (body).
-        conn.execute(
-            "UPDATE attachments SET analysis_md = ?, content_text = ? WHERE id = ?",
-            (body, searchable, att_id),
-        )
-        att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], searchable)
-        embeddings.write_attachment_embeddings(conn, att_id, att["note_id"], chunks, vectors)
-        _set_status(conn, att_id, "done")
-        conn.commit()
+        # Store the transcript (+ any visual summary) + flip status, atomically. Only FAST row
+        # writes happen inside the unit now — the slow transcription/frame-extraction/embed all ran
+        # above, outside it. The re-read + UPDATE + FTS + embeddings + status flip are ONE
+        # submit_write unit on the single writer connection: this daemon thread's OWN connection
+        # stays read-only, so every write here is serialised through the writer (no held lock across
+        # the transcription/vision/embed calls above, no deadlock-guard trip).
+        def _persist_transcript() -> int | None:
+            """Persist the transcript + searchable index + 'done' status on the writer.
+
+            Returns:
+                The owning note_id (or None) when the transcript landed; None when the
+                row was gone or already terminal (no write happened).
+            """
+            c = get_conn()
+            att = c.execute(
+                "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
+            ).fetchone()
+            # Abandon if the row is gone or already TERMINAL ('error' from a watchdog reap, or 'done'
+            # from another worker) — never resurrect a terminal status. Re-reading on the single
+            # writer connection (serialised against the watchdog, which only flips rows WHERE
+            # status='pending') keeps this atomic, so exactly one terminal status survives.
+            if not att or att["analysis_status"] in ("error", "done"):
+                return None
+            # Transcript (+ any visual summary) IS the searchable content: store it as content_text,
+            # the FTS body, and chunk embeddings, plus the human-readable sidecar (body).
+            c.execute(
+                "UPDATE attachments SET analysis_md = ?, content_text = ? WHERE id = ?",
+                (body, searchable, att_id),
+            )
+            att_svc._sync_attachment_fts(c, att_id, att["note_id"], att["filename"], searchable)
+            embeddings.write_attachment_embeddings(c, att_id, att["note_id"], chunks, vectors)
+            c.execute(
+                "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
+                "analyzed_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
+                ("done", None, att_id),
+            )
+            c.commit()
+            return att["note_id"]
+        note_id_done = submit_write(_persist_transcript).result()
         # The transcript changes the note's analyzable content — refresh its AI analysis so the
         # gist/facts/entities reflect what was said. DEFER to the per-note coalescing worker
         # (parity with the image-vision path) so a mixed image+audio note collapses to ~one run
         # that includes both the summaries and the transcript. Gated + hash-guarded inside
         # request_fold; best-effort, AFTER the transcript commit so a fold-back hiccup never loses it.
-        if att["note_id"] is not None:
+        if note_id_done is not None:
             try:
                 from . import note_analysis
-                note_analysis.request_fold(conn, att["note_id"])
+                note_analysis.request_fold(conn, note_id_done)
             except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the transcript on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        # The daemon's own connection is read-only now (all writes go through submit_write, which
+        # rolls back the writer connection on failure), so there's no local transaction to undo.
         _mark_error(conn, att_id, str(exc)[:500])
     finally:
         # One-shot worker thread: release the connection IT created so the sqlite handle / FD
@@ -521,7 +549,10 @@ def start_transcription(conn, att_id: int, *, force: bool = False) -> dict:
     if row["analysis_status"] == "done" and not force:
         return {"status": "done"}
 
+    # Route the 'pending' write through the single writer and BLOCK on it (.result() inside
+    # _set_status) so the commit is durable BEFORE the daemon spawns — the worker must see
+    # 'pending' when it re-reads the row. The caller (request/worker thread) must hold no open
+    # write txn here, or submit_write's deadlock guard would fire; routes commit before calling.
     _set_status(conn, att_id, "pending")
-    conn.commit()
     threading.Thread(target=transcribe, args=(att_id,), daemon=True).start()
     return {"status": "pending"}

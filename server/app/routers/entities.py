@@ -5,7 +5,7 @@ identity controls (merge / split / alias) that survive every entity_index.rebuil
 from fastapi import APIRouter, Body, HTTPException
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import entity_decisions, entity_index, entity_rebuild
 
 router = APIRouter(prefix="/api/entities", tags=["entities"], dependencies=[CurrentUser])
@@ -87,11 +87,19 @@ def merge_entities(source_id: int = Body(...), into_id: int = Body(...)):
     dst = _entity(conn, into_id)
     if src["id"] == dst["id"]:
         raise HTTPException(status_code=400, detail="Cannot merge an entity into itself")
-    entity_decisions.add(
-        conn, "merge", type=dst["type"], norm_a=src["normalized_key"], canonical=dst["normalized_key"],
-        display_a=src["canonical_name"], display_b=dst["canonical_name"],
-    )
-    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    src_norm, dst_type, dst_norm = src["normalized_key"], dst["type"], dst["normalized_key"]
+    src_name, dst_name = src["canonical_name"], dst["canonical_name"]
+
+    def _write() -> None:
+        """Durably record the merge decision (committed) on the writer connection before the defer."""
+        c = get_conn()
+        entity_decisions.add(
+            c, "merge", type=dst_type, norm_a=src_norm, canonical=dst_norm,
+            display_a=src_name, display_b=dst_name,
+        )
+        c.commit()                      # the DECISION is durable before we defer the rebuild
+
+    submit_write(_write).result()
     entity_rebuild.request_rebuild(conn)
     # The survivor is keyed by (type, normalized_key); its id is stable across rebuilds, so
     # we can return its detail now (its notes reflect the fold only after the deferred pass).
@@ -125,11 +133,19 @@ def split_entities(a_id: int = Body(...), b_id: int = Body(...)):
     b = _entity(conn, b_id)
     if a["id"] == b["id"]:
         raise HTTPException(status_code=400, detail="Cannot split an entity from itself")
-    entity_decisions.add(
-        conn, "split", type=a["type"], norm_a=a["normalized_key"], norm_b=b["normalized_key"],
-        display_a=a["canonical_name"], display_b=b["canonical_name"],
-    )
-    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    a_type, a_norm, b_norm = a["type"], a["normalized_key"], b["normalized_key"]
+    a_name, b_name = a["canonical_name"], b["canonical_name"]
+
+    def _write() -> None:
+        """Durably record the split decision (committed) on the writer connection before the defer."""
+        c = get_conn()
+        entity_decisions.add(
+            c, "split", type=a_type, norm_a=a_norm, norm_b=b_norm,
+            display_a=a_name, display_b=b_name,
+        )
+        c.commit()                      # the DECISION is durable before we defer the rebuild
+
+    submit_write(_write).result()
     entity_rebuild.request_rebuild(conn)
     return {"ok": True, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 
@@ -153,10 +169,17 @@ def add_alias(entity_id: int, display: str = Body(..., embed=True)):
     e = _entity(conn, entity_id)
     if not (display or "").strip():
         raise HTTPException(status_code=422, detail="alias display is required")
-    entity_decisions.add(
-        conn, "alias", type=e["type"], norm_a=display, norm_b=e["normalized_key"], display_a=display,
-    )
-    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    e_type, e_norm = e["type"], e["normalized_key"]
+
+    def _write() -> None:
+        """Durably record the alias decision (committed) on the writer connection before the defer."""
+        c = get_conn()
+        entity_decisions.add(
+            c, "alias", type=e_type, norm_a=display, norm_b=e_norm, display_a=display,
+        )
+        c.commit()                      # the DECISION is durable before we defer the rebuild
+
+    submit_write(_write).result()
     entity_rebuild.request_rebuild(conn)
     out = entity_index.notes_for(conn, entity_id)
     if out is None:
@@ -181,12 +204,19 @@ def remove_alias(entity_id: int, alias_norm: str):
     conn = get_conn()
     e = _entity(conn, entity_id)
     na = entity_index.normalize(alias_norm)
-    for r in conn.execute(
-        "SELECT id FROM entity_decisions WHERE kind='alias' AND type=? AND norm_a=? AND norm_b=?",
-        (e["type"], na, e["normalized_key"]),
-    ).fetchall():
-        entity_decisions.remove(conn, r["id"])
-    conn.commit()                       # the DECISION is durable before we defer the rebuild
+    e_type, e_norm = e["type"], e["normalized_key"]
+
+    def _write() -> None:
+        """Durably remove the matching alias decisions (committed) before the defer."""
+        c = get_conn()
+        for r in c.execute(
+            "SELECT id FROM entity_decisions WHERE kind='alias' AND type=? AND norm_a=? AND norm_b=?",
+            (e_type, na, e_norm),
+        ).fetchall():
+            entity_decisions.remove(c, r["id"])
+        c.commit()                      # the DECISION is durable before we defer the rebuild
+
+    submit_write(_write).result()
     entity_rebuild.request_rebuild(conn)
     return {"ok": True, "rebuilding": entity_rebuild.status(conn)["rebuilding"]}
 

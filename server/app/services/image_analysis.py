@@ -25,7 +25,7 @@ import io
 import re
 import threading
 
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from . import llm, prompts
 
 # Anthropic accepts jpeg/png/gif/webp; we always re-encode to JPEG or PNG. No
@@ -339,18 +339,29 @@ def _set_status(conn, att_id: int, status: str, detail: str | None = None) -> No
     stamping pending, a re-analyze of an old attachment would carry a stale
     done-era timestamp and be reaped instantly.
 
+    The ``conn`` argument is kept for signature compatibility but is NOT used to
+    write: the UPDATE + commit are routed through submit_write so they land on the
+    single dedicated writer connection (callers run on background daemon threads
+    whose own connection is read-only). The fresh ``c = get_conn()`` inside the unit
+    is the writer's connection.
+
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write goes through the single writer).
         att_id: Attachment row ID to update.
         status: New status string ('pending', 'done', or 'error').
         detail: Optional human-readable detail or error message.
     """
-    conn.execute(
-        "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
-        "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
-        "ELSE analyzed_at END WHERE id = ?",
-        (status, detail, status, att_id),
-    )
+    def _unit() -> None:
+        """Run the status UPDATE + commit on the single writer connection."""
+        c = get_conn()
+        c.execute(
+            "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
+            "analyzed_at = CASE WHEN ? IN ('pending','done','error') THEN strftime('%Y-%m-%d %H:%M:%f','now') "
+            "ELSE analyzed_at END WHERE id = ?",
+            (status, detail, status, att_id),
+        )
+        c.commit()
+    submit_write(_unit).result()
 
 
 def analyze(att_id: int) -> None:
@@ -419,28 +430,43 @@ def analyze(att_id: int) -> None:
 
         # Store the summary on the ATTACHMENT (read-only sidecar) + flip status, atomically.
         # No note write-back: the body is left untouched. Only FAST row writes happen inside the
-        # lock now — the slow embed already ran above, outside it.
-        conn.execute("BEGIN IMMEDIATE")
-        att = conn.execute(
-            "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
-        ).fetchone()
-        # Abandon if the row is gone or already in a TERMINAL state: the stale-pending watchdog
-        # reaped a wedged 'pending' to 'error', or another worker already finished it 'done'. The
-        # invariant is "a terminal status is final" — never resurrect one. Re-reading INSIDE BEGIN
-        # IMMEDIATE makes this atomic against the watchdog (which only flips rows WHERE
-        # status='pending'), so exactly one terminal status survives and a slow worker can't
-        # overwrite a reaped row.
-        if not att or att["analysis_status"] in ("error", "done"):
-            conn.rollback()
-            return
-        conn.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
-        # Keep the vision summary (incl. transcribed in-image text) searchable now that
-        # it's not in the note body: keyword via attachments_fts AND semantic via the
-        # attachment chunk vectors, so search_notes' hybrid fusion finds it either way.
-        att_svc._sync_attachment_fts(conn, att_id, att["note_id"], att["filename"], body)
-        embeddings.write_attachment_embeddings(conn, att_id, att["note_id"], chunks, vectors)
-        _set_status(conn, att_id, "done")
-        conn.commit()
+        # unit now — the slow embed already ran above, outside it. The re-read + UPDATE + FTS +
+        # embeddings + status flip are ONE submit_write unit on the single writer connection: this
+        # daemon thread's OWN connection stays read-only, so every write here is serialised through
+        # the writer (no held lock across the vision/embed calls above, no deadlock-guard trip).
+        def _persist_summary() -> int | None:
+            """Persist the vision summary + searchable index + 'done' status on the writer.
+
+            Returns:
+                The owning note_id (or None) when the summary landed; None when the
+                row was gone or already terminal (no write happened).
+            """
+            c = get_conn()
+            att = c.execute(
+                "SELECT note_id, filename, analysis_status FROM attachments WHERE id = ?", (att_id,)
+            ).fetchone()
+            # Abandon if the row is gone or already in a TERMINAL state: the stale-pending watchdog
+            # reaped a wedged 'pending' to 'error', or another worker already finished it 'done'.
+            # The invariant is "a terminal status is final" — never resurrect one. Re-reading on the
+            # single writer connection (serialised against the watchdog, which only flips rows WHERE
+            # status='pending') keeps this atomic, so exactly one terminal status survives and a slow
+            # worker can't overwrite a reaped row.
+            if not att or att["analysis_status"] in ("error", "done"):
+                return None
+            c.execute("UPDATE attachments SET analysis_md = ? WHERE id = ?", (body, att_id))
+            # Keep the vision summary (incl. transcribed in-image text) searchable now that
+            # it's not in the note body: keyword via attachments_fts AND semantic via the
+            # attachment chunk vectors, so search_notes' hybrid fusion finds it either way.
+            att_svc._sync_attachment_fts(c, att_id, att["note_id"], att["filename"], body)
+            embeddings.write_attachment_embeddings(c, att_id, att["note_id"], chunks, vectors)
+            c.execute(
+                "UPDATE attachments SET analysis_status = ?, analysis_detail = ?, "
+                "analyzed_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?",
+                ("done", None, att_id),
+            )
+            c.commit()
+            return att["note_id"]
+        note_id_done = submit_write(_persist_summary).result()
         # The summary changes the note's analyzable content — refresh its AI analysis so the
         # gist/facts/entities fold in what's in the image (parity with the audio/video transcript
         # path). DEFER to a per-note coalescing worker: N images landing together would otherwise
@@ -448,17 +474,15 @@ def analyze(att_id: int) -> None:
         # and could race the last summary out of the final run. request_fold coalesces to ~one run
         # that includes all summaries; gated + hash-guarded inside. AFTER the summary commit, in its
         # own try/except, so a fold-back hiccup never loses the summary.
-        if att["note_id"] is not None:
+        if note_id_done is not None:
             try:
                 from . import note_analysis
-                note_analysis.request_fold(conn, att["note_id"])
+                note_analysis.request_fold(conn, note_id_done)
             except Exception:  # noqa: BLE001 — fold-back is a bonus; never fail the summary on it
                 pass
     except Exception as exc:  # never let the worker thread die silently
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        # The daemon's own connection is read-only now (all writes go through submit_write, which
+        # rolls back the writer connection on failure), so there's no local transaction to undo.
         _mark_error(conn, att_id, str(exc)[:500])
     finally:
         # One-shot worker thread: release the connection IT created so the sqlite handle / FD
@@ -469,16 +493,18 @@ def analyze(att_id: int) -> None:
 
 
 def _mark_error(conn, att_id: int, detail: str) -> None:
-    """Set an attachment's analysis status to 'error' and commit, ignoring failures.
+    """Set an attachment's analysis status to 'error', ignoring failures.
+
+    The write (and its commit) is routed through the single writer by _set_status,
+    so ``conn`` is unused here — the daemon's own connection stays read-only.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (unused; the write goes through the single writer).
         att_id: Attachment row ID to mark as errored.
         detail: Error description to store.
     """
     try:
         _set_status(conn, att_id, "error", detail)
-        conn.commit()
     except Exception:
         pass
 
@@ -510,8 +536,11 @@ def start_analysis(conn, att_id: int, *, force: bool = False) -> dict:
     if not llm.has_credentials():
         return {"status": "error", "detail": "No LLM key configured."}
 
+    # Route the 'pending' write through the single writer and BLOCK on it (.result() inside
+    # _set_status) so the commit is durable BEFORE the daemon spawns — the worker must see
+    # 'pending' when it re-reads the row. The caller (request/worker thread) must hold no open
+    # write txn here, or submit_write's deadlock guard would fire; routes commit before calling.
     _set_status(conn, att_id, "pending")
-    conn.commit()
     threading.Thread(target=analyze, args=(att_id,), daemon=True).start()
     return {"status": "pending"}
 

@@ -17,7 +17,7 @@ import json
 import threading
 
 from ..config import get_settings
-from ..db import get_conn, get_meta, set_meta
+from ..db import get_conn, get_meta, set_meta, submit_write
 from . import reviews as reviews_svc
 
 _PRIV_META = "vapid_private_pem"   # holds the raw base64url private scalar (legacy name)
@@ -93,30 +93,42 @@ def upsert_subscription(conn, endpoint: str, p256dh: str, auth: str, ua: str | N
     """Insert or update a push subscription by endpoint.
 
     Args:
-        conn: SQLite connection (commits internally).
+        conn: Unused — the write is serialised through ``submit_write`` on the dedicated
+            writer connection. Kept for caller compatibility.
         endpoint: Push endpoint URL, used as the unique key.
         p256dh: Client public key (ECDH P-256, base64url).
         auth: Client auth secret (base64url).
         ua: User-agent string for display, or None.
     """
-    conn.execute(
-        "INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth, "
-        "ua=excluded.ua, last_seen_at=datetime('now')",
-        (endpoint, p256dh, auth, ua),
-    )
-    conn.commit()
+    def _write() -> None:
+        """Upsert the subscription on the dedicated writer connection."""
+        conn = get_conn()
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth, "
+            "ua=excluded.ua, last_seen_at=datetime('now')",
+            (endpoint, p256dh, auth, ua),
+        )
+        conn.commit()
+
+    submit_write(_write).result()
 
 
 def delete_subscription(conn, endpoint: str) -> None:
     """Remove a push subscription by endpoint.
 
     Args:
-        conn: SQLite connection (commits internally).
+        conn: Unused — the write is serialised through ``submit_write`` on the dedicated
+            writer connection. Kept for caller compatibility.
         endpoint: Push endpoint URL to remove.
     """
-    conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
-    conn.commit()
+    def _write() -> None:
+        """Delete the subscription on the dedicated writer connection."""
+        conn = get_conn()
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        conn.commit()
+
+    submit_write(_write).result()
 
 
 # --- Sending ----------------------------------------------------------------
@@ -194,10 +206,14 @@ def _send_all(conn, title: str, body: str, url: str = "/shares", tag: str = "jbr
     """Send a Web Push notification to every active subscription.
 
     Logs each attempt to stdout (visible in ``docker compose logs api``) and prunes
-    dead endpoints (HTTP 404/410). Never raises.
+    dead endpoints (HTTP 404/410). Never raises. The ``webpush`` network sends run
+    OUTSIDE any write unit; only the dead-endpoint prune is serialised through
+    ``submit_write``.
 
     Args:
-        conn: SQLite connection used to read subscriptions and prune dead ones.
+        conn: SQLite connection used to READ subscriptions and the pending count (the
+            dead-endpoint prune is serialised through ``submit_write`` on the writer
+            connection, not this one).
         title: Notification title.
         body: Notification body text.
         url: Deep-link URL included in the payload.
@@ -246,8 +262,15 @@ def _send_all(conn, title: str, body: str, url: str = "/shares", tag: str = "jbr
                 errors.append(str(exc)[:180])
                 print(f"[push] ERROR {exc!r} -> {ep[:64]}", flush=True)
         if dead:
-            conn.executemany("DELETE FROM push_subscriptions WHERE id = ?", [(i,) for i in dead])
-            conn.commit()
+            dead_ids = [(i,) for i in dead]
+
+            def _prune() -> None:
+                """Delete dead (404/410) endpoints on the dedicated writer connection."""
+                conn = get_conn()
+                conn.executemany("DELETE FROM push_subscriptions WHERE id = ?", dead_ids)
+                conn.commit()
+
+            submit_write(_prune).result()
         print(f"[push] done: sent={sent} failed={failed}", flush=True)
         return {"sent": sent, "failed": failed, "errors": errors[:5]}
     except Exception as exc:

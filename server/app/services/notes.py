@@ -11,6 +11,7 @@ import re
 import sqlite3
 import threading
 
+from ..db import on_writer_reset
 from . import embeddings, wikilinks
 
 log = logging.getLogger("jbrain")
@@ -24,6 +25,19 @@ MAX_VERSIONS_PER_NOTE = 50
 # (not a module global) because sync request handlers run on a shared threadpool,
 # each with its own DB connection — a global flag would leak across requests.
 _state = threading.local()
+
+
+@on_writer_reset
+def _reset_pending_entry_events() -> None:
+    """Clear this thread's deferred entry_created list before each submit_write unit runs.
+
+    The writer is one shared persistent thread; a unit that recorded a pending event (via
+    ``upsert_note(fire_events=False)``) but raised before draining it — or a future route that
+    forgets to drain — would otherwise leave the event to misfire on the NEXT unit's note (a ghost
+    enrichment on a rolled-back id). Registered with the writer layer so the reset is automatic and
+    every unit starts with a clean pending list; the recording route still drains its own on success.
+    """
+    _state.pending = []
 
 
 def set_tags(conn, note_id: int, tags: list[str]) -> list[str]:
@@ -73,15 +87,39 @@ def _fire_entry_created(conn, note_id: int, title: str, *, commit: bool = False)
         _state.suppress = False
 
 
+def drain_pending_entry_events() -> list[tuple[int, str]]:
+    """Pop and return this thread's deferred entry_created (note_id, title) pairs.
+
+    ``upsert_note(fire_events=False)`` records pending events in a thread-local list.
+    When the upsert ran on the single DB-writer thread (inside a ``submit_write`` unit),
+    the request thread can't see that list, so the unit drains it here and hands the pairs
+    back to the request thread, which fires them post-commit via ``fire_entry_events``.
+
+    Returns:
+        The pending ``(note_id, title)`` pairs, with the thread-local list cleared.
+    """
+    pending = getattr(_state, "pending", None) or []
+    _state.pending = []
+    return pending
+
+
+def fire_entry_events(conn, pairs: list[tuple[int, str]]) -> None:
+    """Fire entry_created for the given (note_id, title) pairs, each committing itself.
+
+    Args:
+        conn: SQLite connection to run the (post-commit) workflow event on.
+        pairs: The deferred ``(note_id, title)`` pairs from ``drain_pending_entry_events``.
+    """
+    for note_id, title in pairs:
+        _fire_entry_created(conn, note_id, title, commit=True)
+
+
 def flush_entry_events(conn) -> None:
     """Fire entry_created for notes created with fire_events=False, AFTER the
     caller has committed. Run post-commit so a slow (LLM-backed) workflow doesn't
     hold the note's write transaction open and block other writers.
     """
-    pending = getattr(_state, "pending", None) or []
-    _state.pending = []
-    for note_id, title in pending:
-        _fire_entry_created(conn, note_id, title, commit=True)
+    fire_entry_events(conn, drain_pending_entry_events())
 
 
 def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int) -> None:

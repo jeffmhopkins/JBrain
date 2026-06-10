@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, require_capture_writer
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import clock, diffing, wikilinks
 from ..services import notes as notes_svc
 
@@ -379,16 +379,24 @@ def add_talk(slug: str, body: TalkIn):
     Raises:
         HTTPException: 404 if the article does not exist.
     """
-    conn = get_conn()
     from ..services import article_talk, corrections
-    article_title = _note_title(conn, slug)
-    tid = article_talk.add(conn, article_title, body.kind, body.body, author="user")
-    promoted = None
-    if tid is not None and body.kind == "correction":
-        promoted = corrections.maybe_promote(conn, tid, article_title, body.body)
-    conn.commit()
+
+    def _write() -> tuple[int | None, dict | None, list]:
+        """Add the talk item (promoting a correction) atomically on the writer connection."""
+        c = get_conn()
+        article_title = _note_title(c, slug)
+        tid = article_talk.add(c, article_title, body.kind, body.body, author="user")
+        promoted = None
+        if tid is not None and body.kind == "correction":
+            promoted = corrections.maybe_promote(c, tid, article_title, body.body)
+        c.commit()
+        # Drain deferred entry_created events queued by a correction's promoted note so the
+        # request thread can fire them post-commit, off the write lock.
+        return tid, promoted, notes_svc.drain_pending_entry_events()
+
+    tid, promoted, pending = submit_write(_write).result()
     if promoted:
-        notes_svc.flush_entry_events(conn)  # fire analysis/auto-tag AFTER commit
+        notes_svc.fire_entry_events(get_conn(), pending)  # fire analysis/auto-tag AFTER commit
     return {"id": tid, "promoted": promoted}
 
 
@@ -436,11 +444,17 @@ def reply_talk(slug: str, talk_id: int, body: TalkReplyIn):
         HTTPException: 400 if the reply body is empty.
         HTTPException: 404 if the article or talk item does not exist.
     """
-    conn = get_conn()
     from ..services import article_talk
-    _talk_row(conn, slug, talk_id)
-    rid = article_talk.reply(conn, talk_id, body.body, author="user")
-    conn.commit()
+
+    def _write() -> int | None:
+        """Validate ownership and append the reply atomically on the writer connection."""
+        c = get_conn()
+        _talk_row(c, slug, talk_id)
+        rid = article_talk.reply(c, talk_id, body.body, author="user")
+        c.commit()
+        return rid
+
+    rid = submit_write(_write).result()
     if rid is None:
         raise HTTPException(status_code=400, detail="Empty reply")
     return {"id": rid}
@@ -466,17 +480,22 @@ def dismiss_talk(slug: str, talk_id: int, body: TalkDismissIn):
         HTTPException: 409 if the talk item is a correction (cannot be dismissed).
         HTTPException: 404 if the article or talk item does not exist.
     """
-    conn = get_conn()
     from ..services import article_talk
-    row = _talk_row(conn, slug, talk_id)
-    if row["kind"] == "correction":
-        raise HTTPException(
-            status_code=409,
-            detail="A correction can't be dismissed — it's a source-of-truth fact. "
-                   "Delete the truth note it created to undo it.")
-    ok = article_talk.dismiss(conn, talk_id, body.reason)
-    conn.commit()
-    return {"ok": ok}
+
+    def _write() -> bool:
+        """Validate ownership/kind and dismiss the talk item atomically on the writer connection."""
+        c = get_conn()
+        row = _talk_row(c, slug, talk_id)
+        if row["kind"] == "correction":
+            raise HTTPException(
+                status_code=409,
+                detail="A correction can't be dismissed — it's a source-of-truth fact. "
+                       "Delete the truth note it created to undo it.")
+        ok = article_talk.dismiss(c, talk_id, body.reason)
+        c.commit()
+        return ok
+
+    return {"ok": submit_write(_write).result()}
 
 
 @router.post("/{slug}/talk/maintain-now")
@@ -525,16 +544,19 @@ def create_or_update(body: NoteIn):
     Returns:
         Dict with id, title, and slug of the upserted note.
     """
-    conn = get_conn()
-    try:
-        note_id = notes_svc.upsert_note(conn, body.title, body.content_md, fire_events=False)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    notes_svc.flush_entry_events(conn)  # fire entry_created AFTER commit
-    row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
-    return dict(row)
+    def _write() -> tuple[dict, list]:
+        """Upsert the note atomically on the writer connection, returning its row + deferred events."""
+        c = get_conn()
+        note_id = notes_svc.upsert_note(c, body.title, body.content_md, fire_events=False)
+        c.commit()
+        row = c.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
+        # Drain the deferred entry_created events HERE (they were queued on the writer thread's
+        # thread-local) so the request thread can fire them post-commit, off the write lock.
+        return dict(row), notes_svc.drain_pending_entry_events()
+
+    row, pending = submit_write(_write).result()
+    notes_svc.fire_entry_events(get_conn(), pending)  # fire entry_created AFTER commit
+    return row
 
 
 @router.put("/{slug}")
@@ -556,24 +578,24 @@ def update_note(slug: str, body: NoteIn):
         HTTPException: 422 if the new title is empty.
         HTTPException: 404 if the note does not exist.
     """
-    conn = get_conn()
-    note = _note_by_slug(conn, slug, include_deleted=True)
     new_title = body.title.strip()
     if not new_title:
         raise HTTPException(status_code=422, detail="Title cannot be empty")
-    try:
-        note_id = notes_svc.upsert_note(
-            conn, new_title, body.content_md, note_id=note["id"], source="user",
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="A note with that title already exists.")
-    except Exception:
-        conn.rollback()
-        raise
-    row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
-    return dict(row)
+
+    def _write() -> dict:
+        """Resolve the note and upsert it in place atomically on the writer connection."""
+        c = get_conn()
+        note = _note_by_slug(c, slug, include_deleted=True)
+        try:
+            note_id = notes_svc.upsert_note(
+                c, new_title, body.content_md, note_id=note["id"], source="user",
+            )
+            c.commit()
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="A note with that title already exists.")
+        return dict(c.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone())
+
+    return submit_write(_write).result()
 
 
 class TagsIn(BaseModel):
@@ -599,13 +621,15 @@ def set_note_tags(slug: str, body: TagsIn):
     Raises:
         HTTPException: 404 if the note does not exist.
     """
-    conn = get_conn()
-    note = _note_by_slug(conn, slug)
-    if note is None:
-        raise HTTPException(status_code=404, detail="No such note")
-    tags = notes_svc.set_tags(conn, note["id"], body.tags)
-    conn.commit()
-    return {"tags": tags}
+    def _write() -> dict:
+        """Replace the note's tags atomically on the writer connection."""
+        c = get_conn()
+        note = _note_by_slug(c, slug)
+        tags = notes_svc.set_tags(c, note["id"], body.tags)
+        c.commit()
+        return {"tags": tags}
+
+    return submit_write(_write).result()
 
 
 class FlagsIn(BaseModel):
@@ -642,27 +666,31 @@ def set_note_flags(slug: str, body: FlagsIn):
         HTTPException: 404 if the note does not exist.
         HTTPException: 422 if the requested state is incoherent (kb_ingest=1, tool_access=0).
     """
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT id, kb_ingest, tool_access FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
-    ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="No such note")
-    kb = row["kb_ingest"] if body.kb_ingest is None else int(body.kb_ingest)
-    tool = row["tool_access"] if body.tool_access is None else int(body.tool_access)
-    if kb == 1 and tool == 0:
-        raise HTTPException(
-            status_code=422,
-            detail="A note kept in the Knowledge Base must stay readable by the assistant.")
-    conn.execute("UPDATE notes SET kb_ingest = ?, tool_access = ? WHERE id = ?",
-                 (kb, tool, row["id"]))
-    # Re-enabling KB ingestion (0→1) clears the per-entry 'already evaluated / promoted'
-    # markers so the next synthesis pass reconsiders this entry instead of skipping it.
-    if row["kb_ingest"] == 0 and kb == 1:
-        conn.execute("DELETE FROM meta WHERE key IN (?, ?)",
-                     (f"wiki_synth:evaluated:{row['id']}", f"chatter_promoted:{row['id']}"))
-    conn.commit()
-    return {"kb_ingest": bool(kb), "tool_access": bool(tool)}
+    def _write() -> dict:
+        """Validate coherence and apply the note's governance flags atomically on the writer connection."""
+        c = get_conn()
+        row = c.execute(
+            "SELECT id, kb_ingest, tool_access FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such note")
+        kb = row["kb_ingest"] if body.kb_ingest is None else int(body.kb_ingest)
+        tool = row["tool_access"] if body.tool_access is None else int(body.tool_access)
+        if kb == 1 and tool == 0:
+            raise HTTPException(
+                status_code=422,
+                detail="A note kept in the Knowledge Base must stay readable by the assistant.")
+        c.execute("UPDATE notes SET kb_ingest = ?, tool_access = ? WHERE id = ?",
+                  (kb, tool, row["id"]))
+        # Re-enabling KB ingestion (0→1) clears the per-entry 'already evaluated / promoted'
+        # markers so the next synthesis pass reconsiders this entry instead of skipping it.
+        if row["kb_ingest"] == 0 and kb == 1:
+            c.execute("DELETE FROM meta WHERE key IN (?, ?)",
+                      (f"wiki_synth:evaluated:{row['id']}", f"chatter_promoted:{row['id']}"))
+        c.commit()
+        return {"kb_ingest": bool(kb), "tool_access": bool(tool)}
+
+    return submit_write(_write).result()
 
 
 @entry_router.post("/entry")
@@ -688,7 +716,6 @@ def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
     Raises:
         HTTPException: 422 if both text and title are empty.
     """
-    conn = get_conn()
     text = body.text.strip()
     explicit = (body.title or "").strip()
     if not text and not explicit:
@@ -707,32 +734,41 @@ def create_entry(body: EntryIn, writer=Depends(require_capture_writer)):
     capture_root = (body.root or notes_svc._MED_ROOT).strip().lower()
     if capture_root not in notes_svc.CAPTURE_ROOTS:
         capture_root = notes_svc._MED_ROOT
-    if explicit:
-        # An explicit title (the assisted-attachment path) keeps its own name —
-        # "assisted notes can go somewhere else". The first line is NOT a title.
-        title = notes_svc._unique_title(conn, notes_svc.root_title(explicit, "notes"))
-    elif dest:
-        # Entry sub-selector capture: file under the chosen destination, notes/<root>/<dest>/NN,
-        # so medical/financial captures land in their own browsable folder (not the daily tree).
-        title = notes_svc._unique_title(conn, notes_svc.next_capture_title(conn, capture_root, dest))
-    else:
-        # Pure Entry capture: no title. File chronologically under the standard flat
-        # dated tree as notes/YYYY/MM/DD/NN; the whole text is the body. Day boundary
-        # is the app timezone (same TZ the scheduler uses for midnight).
-        title = notes_svc.next_dated_title(conn, clock.today_local())
-    try:
+
+    def _write() -> tuple[dict, list]:
+        """Pick a unique title and upsert the capture atomically on the writer connection.
+
+        Title selection reads next_*_title/_unique_title (DB scans) and feeds the upsert, so
+        it folds into the unit to stay race-free under the single writer.
+        """
+        c = get_conn()
+        if explicit:
+            # An explicit title (the assisted-attachment path) keeps its own name —
+            # "assisted notes can go somewhere else". The first line is NOT a title.
+            title = notes_svc._unique_title(c, notes_svc.root_title(explicit, "notes"))
+        elif dest:
+            # Entry sub-selector capture: file under the chosen destination, notes/<root>/<dest>/NN,
+            # so medical/financial captures land in their own browsable folder (not the daily tree).
+            title = notes_svc._unique_title(c, notes_svc.next_capture_title(c, capture_root, dest))
+        else:
+            # Pure Entry capture: no title. File chronologically under the standard flat
+            # dated tree as notes/YYYY/MM/DD/NN; the whole text is the body. Day boundary
+            # is the app timezone (same TZ the scheduler uses for midnight).
+            title = notes_svc.next_dated_title(c, clock.today_local())
         note_id = notes_svc.upsert_note(
-            conn, title, text, source=source, lat=body.lat, lon=body.lon, fire_events=False,
+            c, title, text, source=source, lat=body.lat, lon=body.lon, fire_events=False,
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()  # don't leave a half-written note on the pooled connection
-        raise
+        c.commit()
+        row = c.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
+        # Drain deferred entry_created events queued on the writer thread so the request
+        # thread can fire them post-commit, off the write lock (keeps the no-LLM Send fast).
+        return dict(row), notes_svc.drain_pending_entry_events()
+
+    row, pending = submit_write(_write).result()
     # Fire entry_created AFTER commit so an (optional, LLM-backed) auto-tag
     # workflow doesn't hold the note's write lock or freeze the "no-LLM" Send.
-    notes_svc.flush_entry_events(conn)
-    row = conn.execute("SELECT id, title, slug FROM notes WHERE id = ?", (note_id,)).fetchone()
-    return dict(row)
+    notes_svc.fire_entry_events(get_conn(), pending)
+    return row
 
 
 @router.delete("/{slug}")
@@ -753,17 +789,22 @@ def delete_note(slug: str):
         HTTPException: 503 if the database is locked; the caller should retry.
         HTTPException: 500 for other unexpected failures.
     """
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Note not found")
+    def _write() -> None:
+        """Resolve the note and soft-delete it atomically on the writer connection."""
+        c = get_conn()
+        row = c.execute(
+            "SELECT id FROM notes WHERE slug = ? AND deleted_at IS NULL", (slug,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Note not found")
+        notes_svc.soft_delete(c, row["id"])
+        c.commit()
+
     try:
-        notes_svc.soft_delete(conn, row["id"])
-        conn.commit()
+        submit_write(_write).result()
+    except HTTPException:
+        raise  # a 404 from inside the unit propagates unchanged
     except Exception as exc:  # noqa: BLE001 — surface the REAL reason, don't return an opaque 500
-        conn.rollback()
         logging.getLogger("jbrain").exception("delete_note failed for %s", slug)
         msg = str(exc) or exc.__class__.__name__
         # A transient write-lock (e.g. background note-analysis is mid-write) is retryable —

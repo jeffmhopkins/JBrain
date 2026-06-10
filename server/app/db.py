@@ -1,9 +1,12 @@
 """SQLite connection, sqlite-vec loading, schema init, and admin seeding."""
+import logging
 import os
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable, TypeVar
 
 import sqlite_vec
 
@@ -12,32 +15,151 @@ from .config import get_settings
 _local = threading.local()
 _init_lock = threading.Lock()
 _initialized = False
+_jlog = logging.getLogger("jbrain")
+_T = TypeVar("_T")
 
-# Dedicated thread pool for INTERACTIVE DB writes (chat-turn persists). Isolated from the default
-# asyncio (to_thread) and anyio pools so a saturated batch/warmer/tool workload there can never queue
-# ahead of an interactive reply's commit — the "first chats after boot freeze behind the re-embed"
-# symptom. Reset by init_db() so each test's fresh DB gets fresh worker threads (a worker caches a
+# THE single DB-writer pool. ONE worker (max_workers=1) → exactly one connection ever holds
+# SQLite's write lock, so writers can never contend ("database is locked" between writers becomes
+# structurally impossible). Also isolated from the default asyncio (to_thread) and anyio pools, so a
+# saturated batch/warmer/tool workload there can't queue ahead of an interactive reply's commit —
+# the "first chats after boot freeze behind the re-embed" symptom. Use submit_write() to run a write
+# unit here. Reset by init_db() so each test's fresh DB gets a fresh worker (a worker caches a
 # thread-local connection to the DB_PATH it first saw, which would go stale when the path changes
 # between tests); a one-time no-op at production boot, where the path never changes.
 _persist_executor: ThreadPoolExecutor | None = None
 _persist_executor_lock = threading.Lock()
 
+# Callbacks run (on the writer thread) at the START of every submit_write unit to reset SHARED
+# writer-thread-local state. A service that stashes per-call state in a thread-local registers here
+# so a straggler can't leak onto the single persistent writer thread and misfire on the next unit.
+_writer_reset_hooks: list[Callable[[], None]] = []
 
-def persist_executor() -> ThreadPoolExecutor:
-    """Return the dedicated thread pool for interactive DB writes, creating it on first use.
 
-    Keeps chat-turn persists off the shared asyncio/anyio executors so batch jobs, the boot
-    warmers, and tool dispatch cannot queue ahead of an interactive reply's commit.
+def on_writer_reset(fn: Callable[[], None]) -> Callable[[], None]:
+    """Register a callback to reset writer-thread-local state before each submit_write unit.
+
+    Args:
+        fn: Zero-argument callback invoked on the writer thread before every unit runs.
 
     Returns:
-        The process-wide persist ThreadPoolExecutor.
+        The registered callback (so this can be used as a decorator).
+    """
+    _writer_reset_hooks.append(fn)
+    return fn
+
+# A write unit slower than this almost certainly holds the writer across a non-DB call
+# (LLM/network/sleep) — the exact hazard this layer exists to prevent (the long-held-lock freeze).
+# We don't block it (the caller may need the result) but log loudly so the offending path is found
+# and its slow work moved BEFORE the submit. SQLite writes themselves are sub-millisecond.
+_WRITE_SLOW_WARN_S = 5.0
+
+
+def persist_executor() -> ThreadPoolExecutor:
+    """Return the single-worker DB-writer pool, creating it on first use.
+
+    One worker means one writer connection, so writes are globally serialised and never contend
+    for SQLite's write lock. Kept off the shared asyncio/anyio executors so batch jobs, the boot
+    warmers, and tool dispatch cannot queue ahead of an interactive reply's commit. Prefer
+    submit_write() over submitting to this pool directly.
+
+    Returns:
+        The process-wide single-worker writer ThreadPoolExecutor.
     """
     global _persist_executor
     if _persist_executor is None:
         with _persist_executor_lock:
             if _persist_executor is None:
-                _persist_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jbrain-persist")
+                _persist_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jbrain-persist")
     return _persist_executor
+
+
+def _on_writer_thread() -> bool:
+    """Return True if the calling thread is the dedicated DB-writer worker.
+
+    submit_write() uses this to detect a NESTED write (a write unit that itself calls
+    submit_write): the writer pool has a single worker, so enqueuing-and-waiting from inside it
+    would deadlock the worker on itself. Such calls run inline instead.
+
+    Returns:
+        True when running on a ``jbrain-persist`` worker thread.
+    """
+    return threading.current_thread().name.startswith("jbrain-persist")
+
+
+def submit_write(fn: Callable[[], _T]) -> "Future[_T]":
+    """Run a write unit on the single dedicated writer connection and return its result Future.
+
+    Serialises every write through one connection so writers never contend for SQLite's write
+    lock. ``fn`` takes no arguments and must obtain its connection with ``get_conn()`` and do ALL
+    of its reads, writes, and ``commit()`` inside the call: on the single writer thread ``get_conn()``
+    returns the one dedicated connection, so reads see the unit's own uncommitted writes and the
+    result (e.g. ``cursor.lastrowid``) is returned to the caller through the Future.
+
+    ``fn`` MUST NOT do slow work (LLM/network/sleep): it blocks every other write behind it
+    (see ``_WRITE_SLOW_WARN_S``). Do that work first, then submit a quick write.
+
+    A nested call (``fn`` itself calling submit_write) runs INLINE on the writer thread rather than
+    enqueuing, since the single-worker pool would otherwise deadlock waiting on itself.
+
+    Args:
+        fn: Zero-argument callable performing the write unit; its return value resolves the Future.
+
+    Returns:
+        A Future resolving to fn's return value (or re-raising fn's exception).
+    """
+    def _run() -> _T:
+        # Reset SHARED writer-thread-local state before the unit runs. A service may stash per-call
+        # state in a thread-local (e.g. notes' deferred entry_created list); the writer is ONE
+        # persistent thread, so a straggler from a prior unit that recorded-but-didn't-drain (or
+        # raised before its drain) would misfire on THIS unit. The hooks wipe any such leak.
+        for _hook in _writer_reset_hooks:
+            try:
+                _hook()
+            except Exception:  # noqa: BLE001 — a reset hook must never break the write
+                pass
+        t0 = time.monotonic()
+        try:
+            return fn()
+        except BaseException:
+            # A unit that raises mid-transaction must not leak an open transaction onto the SHARED
+            # writer connection — the next unit would inherit it (a stale snapshot, or its commit
+            # silently flushing this unit's partial writes). Roll back before propagating. Units are
+            # still expected to commit themselves on success; this only cleans up the failure path.
+            wc = getattr(_local, "conn", None)
+            if wc is not None and wc.in_transaction:
+                try:
+                    wc.rollback()
+                except Exception:  # noqa: BLE001 — best-effort; the original exception is re-raised
+                    pass
+            raise
+        finally:
+            dt = time.monotonic() - t0
+            if dt > _WRITE_SLOW_WARN_S:
+                _jlog.warning(
+                    "submit_write unit held the writer for %.1fs — move slow work BEFORE the submit", dt)
+
+    if _on_writer_thread():
+        # Re-entrant write: run now on this (the writer's) thread to avoid deadlocking the
+        # single worker on itself. Return an already-resolved Future for a uniform caller contract.
+        fut: "Future[_T]" = Future()
+        try:
+            fut.set_result(_run())
+        except BaseException as exc:  # noqa: BLE001 — mirror the pool: propagate via the Future
+            fut.set_exception(exc)
+        return fut
+    # A caller that ALREADY holds an open write transaction on its own connection would deadlock
+    # the single writer: the writer blocks on the SQLite write lock this thread holds, while this
+    # thread blocks in .result() waiting for the writer (a 60s busy_timeout hang, then "database is
+    # locked"). Fail fast with a clear error instead. Reads don't open a transaction in the default
+    # isolation mode, so this fires only on an uncommitted WRITE — always a bug under the single-writer
+    # model: commit/rollback the prior write first, or fold it into this unit (one writer connection).
+    caller_conn = getattr(_local, "conn", None)
+    if caller_conn is not None and caller_conn.in_transaction:
+        raise sqlite3.ProgrammingError(
+            "submit_write() called while the calling thread holds an open write transaction on its "
+            "own connection — this would deadlock the single writer. Commit or roll back the prior "
+            "write first, or fold it into this submit_write unit.")
+    return persist_executor().submit(_run)
 
 
 def _reset_persist_executor() -> None:

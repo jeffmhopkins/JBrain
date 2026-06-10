@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import secrets
 
+from ..db import get_conn, submit_write
 from . import share as share_svc
 
 
@@ -147,23 +148,44 @@ def session_for(conn, link_id: int, secret: str):
         (link_id, secret)).fetchone()
 
 
-def start_session(conn, link_id: int, *, name=None, client_ip=None) -> tuple[int, str]:
-    """Create a recipient session and return its ID and cookie secret.
+def start_session(conn, link_id: int, *, name=None, client_ip=None,
+                  claim_bind: bool = False) -> tuple[int, str, str | None]:
+    """Create a recipient session, optionally claiming a bind link, in one write unit.
+
+    Runs the bind-claim (when ``claim_bind`` is set), the session INSERT, and the
+    link ``touch`` together on the dedicated writer connection so the route holds no
+    write across them. The caller passes only reads beforehand; cookies are set from
+    the returned secrets.
 
     Args:
-        conn: Database connection.
+        conn: Database connection (request conn; reads only — the writes happen on the
+            writer connection inside the unit).
         link_id: Share link ID.
         name: Optional recipient display name.
         client_ip: Optional client IP address for audit.
+        claim_bind: When True, mint and store a bind secret to lock this link to the
+            calling browser (an unclaimed bind link).
 
     Returns:
-        Tuple of (session_id, cookie_secret).
+        Tuple of (session_id, session_secret, bind_secret) where bind_secret is the
+        newly minted bind token when ``claim_bind`` is True, else None.
     """
-    secret = secrets.token_urlsafe(32)
-    cur = conn.execute(
-        "INSERT INTO labshare_sessions (share_link_id, secret, name, client_ip, last_at) "
-        "VALUES (?,?,?,?, datetime('now'))", (link_id, secret, name, client_ip))
-    return cur.lastrowid, secret
+    def _unit() -> tuple[int, str, str | None]:
+        c = get_conn()
+        bind_secret = None
+        if claim_bind:
+            bind_secret = share_svc.mint_token()
+            c.execute("UPDATE share_links SET bind_secret=?, bound_at=datetime('now') WHERE id=?",
+                      (bind_secret, link_id))
+        secret = secrets.token_urlsafe(32)
+        cur = c.execute(
+            "INSERT INTO labshare_sessions (share_link_id, secret, name, client_ip, last_at) "
+            "VALUES (?,?,?,?, datetime('now'))", (link_id, secret, name, client_ip))
+        c.execute("UPDATE share_links SET last_used_at = datetime('now') WHERE id = ?", (link_id,))
+        c.commit()
+        return cur.lastrowid, secret, bind_secret
+
+    return submit_write(_unit).result()
 
 
 def record_turn(conn, session_id: int, *, transcript_json: str, charted: list[str] | None = None,

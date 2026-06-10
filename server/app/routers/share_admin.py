@@ -8,7 +8,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import chat_relay
 from ..services import chat_share as chat_svc
 from ..services import labshare as labshare_svc
@@ -65,14 +65,19 @@ def mint(body: MintIn):
     """
     if body.scope not in ("view", "edit"):
         raise HTTPException(status_code=400, detail="scope must be 'view' or 'edit'")
-    conn = get_conn()
-    note = notes_svc.get_by_title(conn, body.title.strip())
-    if note is None:
-        raise HTTPException(status_code=404, detail=f"No note titled '{body.title}'")
-    token = share_svc.create_link(conn, note["id"], body.scope, body.label, body.ttl_days, body.bind)
-    conn.commit()
-    return {"token": token, "url": share_svc.share_url(token), "scope": body.scope,
-            "note_title": note["title"], "note_slug": note["slug"]}
+
+    def _write() -> dict:
+        """Resolve the note and mint the link on the writer connection, returning the response."""
+        c = get_conn()
+        note = notes_svc.get_by_title(c, body.title.strip())
+        if note is None:
+            raise HTTPException(status_code=404, detail=f"No note titled '{body.title}'")
+        token = share_svc.create_link(c, note["id"], body.scope, body.label, body.ttl_days, body.bind)
+        c.commit()
+        return {"token": token, "url": share_svc.share_url(token), "scope": body.scope,
+                "note_title": note["title"], "note_slug": note["slug"]}
+
+    return submit_write(_write).result()
 
 
 @router.get("")
@@ -282,18 +287,22 @@ def guided_reopen(sid: int):
     Raises:
         HTTPException: 404 if the session does not exist.
     """
-    conn = get_conn()
-    s = conn.execute("SELECT share_link_id, review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    share_svc.reactivate_link(conn, s["share_link_id"])
-    if s["review_item_id"]:
-        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
-                     (s["review_item_id"],))
-    # Retain the transcript as an archived record — reopening re-enables the link; a new
-    # visit starts a fresh session. (Use "Delete conversation" to purge deliberately.)
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Reactivate the link and dismiss the ended session's review item on the writer connection."""
+        c = get_conn()
+        s = c.execute("SELECT share_link_id, review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        share_svc.reactivate_link(c, s["share_link_id"])
+        if s["review_item_id"]:
+            c.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                      (s["review_item_id"],))
+        # Retain the transcript as an archived record — reopening re-enables the link; a new
+        # visit starts a fresh session. (Use "Delete conversation" to purge deliberately.)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.post("/guided/sessions/{sid}/acknowledge")
@@ -311,15 +320,19 @@ def guided_acknowledge(sid: int):
     Raises:
         HTTPException: 404 if the session does not exist.
     """
-    conn = get_conn()
-    s = conn.execute("SELECT review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    if s["review_item_id"]:
-        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
-                     (s["review_item_id"],))
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Dismiss the auto-ended session's review item on the writer connection."""
+        c = get_conn()
+        s = c.execute("SELECT review_item_id FROM guided_sessions WHERE id=?", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        if s["review_item_id"]:
+            c.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                      (s["review_item_id"],))
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.delete("/guided/sessions/{sid}")
@@ -338,12 +351,16 @@ def guided_delete_session(sid: int):
     Raises:
         HTTPException: 404 if the session does not exist.
     """
-    conn = get_conn()
-    if conn.execute("SELECT 1 FROM guided_sessions WHERE id=?", (sid,)).fetchone() is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    conn.execute("UPDATE guided_sessions SET transcript_json='[]', document_md=NULL WHERE id=?", (sid,))
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Purge the session's transcript and drafted artifact on the writer connection."""
+        c = get_conn()
+        if c.execute("SELECT 1 FROM guided_sessions WHERE id=?", (sid,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        c.execute("UPDATE guided_sessions SET transcript_json='[]', document_md=NULL WHERE id=?", (sid,))
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 class GuidedOptionsIn(BaseModel):
@@ -364,11 +381,16 @@ def guided_options(link_id: int, body: GuidedOptionsIn):
     Returns:
         Dict with key 'ok': True on success.
     """
-    conn = get_conn()
     from ..services import guided as guided_svc
-    guided_svc.set_options(conn, link_id, bind=body.bind, single_use=body.single_use)
-    conn.commit()
-    return {"ok": True}
+
+    def _write() -> dict:
+        """Apply the guided link options on the writer connection."""
+        c = get_conn()
+        guided_svc.set_options(c, link_id, bind=body.bind, single_use=body.single_use)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.post("/guided/{link_id}/reset-bind")
@@ -381,11 +403,16 @@ def guided_reset_bind(link_id: int):
     Returns:
         Dict with key 'ok': True on success.
     """
-    conn = get_conn()
     from ..services import guided as guided_svc
-    guided_svc.reset_bind(conn, link_id)
-    conn.commit()
-    return {"ok": True}
+
+    def _write() -> dict:
+        """Forget the guided link's bound device on the writer connection."""
+        c = get_conn()
+        guided_svc.reset_bind(c, link_id)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 class GuidedDetailsIn(BaseModel):
@@ -415,17 +442,22 @@ def guided_set_details(link_id: int, body: GuidedDetailsIn):
         HTTPException: 400 if the text matches the sensitive-content guard.
         HTTPException: 422 if sub_prompt is empty.
     """
-    conn = get_conn()
     from ..services import guided as guided_svc
     bad = guided_svc.sensitive_reason(f"{body.goal}\n{body.intro}\n{body.sub_prompt}")
     if bad:
         raise HTTPException(status_code=400, detail=f"Can't ask for sensitive info (matched “{bad}”).")
     if not body.sub_prompt.strip():
         raise HTTPException(status_code=422, detail="The interview instructions can't be empty.")
-    guided_svc.set_details(conn, link_id, goal=body.goal, intro=body.intro, sub_prompt=body.sub_prompt)
-    _set_link_expiry(conn, link_id, body.ttl_days)
-    conn.commit()
-    return {"ok": True}
+
+    def _write() -> dict:
+        """Apply the guided brief edit and expiry on the writer connection."""
+        c = get_conn()
+        guided_svc.set_details(c, link_id, goal=body.goal, intro=body.intro, sub_prompt=body.sub_prompt)
+        _set_link_expiry(c, link_id, body.ttl_days)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.post("/guided/{link_id}/activate")
@@ -438,11 +470,16 @@ def guided_activate(link_id: int):
     Returns:
         Dict with key 'ok': True on success.
     """
-    conn = get_conn()
     from ..services import guided as guided_svc
-    guided_svc.activate_spec(conn, link_id)
-    conn.commit()
-    return {"ok": True}
+
+    def _write() -> dict:
+        """Activate the draft guided spec on the writer connection."""
+        c = get_conn()
+        guided_svc.activate_spec(c, link_id)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.post("/guided/sessions/{sid}/accept")
@@ -463,43 +500,52 @@ def guided_accept(sid: int):
         HTTPException: 404 if no submitted session is found.
         HTTPException: 409 if the destination note no longer exists.
     """
-    conn = get_conn()
-    s = conn.execute(
-        "SELECT s.*, sl.note_id, gs.goal, gs.dest_title FROM guided_sessions s "
-        "JOIN share_links sl ON sl.id=s.share_link_id "
-        "JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
-        "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
-    if not s:
-        raise HTTPException(status_code=404, detail="No submitted guided response found.")
-    who = s["name"] or "a recipient"
-    vn = f"guided intake from {who}"
-    # Provenance: record WHO contributed so the analyzer treats them as a person entity
-    # (a recipe "from mom" links mom into People) and the source is never lost.
-    doc = s["document_md"] or ""
-    if s["name"] and "_Contributed by" not in doc:
-        doc = doc.rstrip() + f"\n\n---\n_Contributed by {s['name']} via guided intake._\n"
-    if s["note_id"]:
-        # Legacy link that pre-created its note: update it in place.
-        note = conn.execute("SELECT title FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
-        if note is None:
-            raise HTTPException(status_code=409, detail="The destination note no longer exists.")
-        notes_svc.upsert_note(conn, note["title"], doc, note_id=s["note_id"],
-                              source="shared", version_note=vn)
-        note_id = s["note_id"]
-    else:
-        # No page existed until now — create it from the spec's destination title.
-        title = notes_svc.root_title(s["dest_title"] or f"Intake — {s['goal']}", "notes")
-        note_id = notes_svc.upsert_note(conn, title, doc, create_only=True,
-                                        source="shared", version_note=vn)
-        conn.execute("UPDATE share_links SET note_id=? WHERE id=?", (note_id, s["share_link_id"]))
-    note = conn.execute("SELECT slug FROM notes WHERE id=?", (note_id,)).fetchone()
-    if s["review_item_id"]:
-        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
-                     (s["review_item_id"],))
-    # Approved: the conversation + draft are KEPT as a record. The saved note (note_slug)
-    # is the canonical artifact going forward; the session keeps the draft-as-submitted.
-    conn.commit()
-    return {"ok": True, "note_slug": note["slug"]}
+    def _write() -> str:
+        """Write the guided doc to its dest note + dismiss the review atomically on the writer conn.
+
+        No LLM here — the draft was synthesized earlier; this only persists it. upsert_note
+        re-embeds the dest note INSIDE the unit (local + fast — the accepted tradeoff). The
+        candidate reads (session row, dest title, resulting slug) fold in. Returns the note slug.
+        """
+        c = get_conn()
+        s = c.execute(
+            "SELECT s.*, sl.note_id, gs.goal, gs.dest_title FROM guided_sessions s "
+            "JOIN share_links sl ON sl.id=s.share_link_id "
+            "JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
+            "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="No submitted guided response found.")
+        who = s["name"] or "a recipient"
+        vn = f"guided intake from {who}"
+        # Provenance: record WHO contributed so the analyzer treats them as a person entity
+        # (a recipe "from mom" links mom into People) and the source is never lost.
+        doc = s["document_md"] or ""
+        if s["name"] and "_Contributed by" not in doc:
+            doc = doc.rstrip() + f"\n\n---\n_Contributed by {s['name']} via guided intake._\n"
+        if s["note_id"]:
+            # Legacy link that pre-created its note: update it in place.
+            note = c.execute("SELECT title FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
+            if note is None:
+                raise HTTPException(status_code=409, detail="The destination note no longer exists.")
+            notes_svc.upsert_note(c, note["title"], doc, note_id=s["note_id"],
+                                  source="shared", version_note=vn)
+            note_id = s["note_id"]
+        else:
+            # No page existed until now — create it from the spec's destination title.
+            title = notes_svc.root_title(s["dest_title"] or f"Intake — {s['goal']}", "notes")
+            note_id = notes_svc.upsert_note(c, title, doc, create_only=True,
+                                            source="shared", version_note=vn)
+            c.execute("UPDATE share_links SET note_id=? WHERE id=?", (note_id, s["share_link_id"]))
+        note = c.execute("SELECT slug FROM notes WHERE id=?", (note_id,)).fetchone()
+        if s["review_item_id"]:
+            c.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                      (s["review_item_id"],))
+        # Approved: the conversation + draft are KEPT as a record. The saved note (note_slug)
+        # is the canonical artifact going forward; the session keeps the draft-as-submitted.
+        c.commit()
+        return note["slug"]
+
+    return {"ok": True, "note_slug": submit_write(_write).result()}
 
 
 @router.post("/guided/sessions/{sid}/reject")
@@ -574,20 +620,25 @@ def create_lab_share(body: LabShareIn):
     Raises:
         HTTPException: 400 if analytes is empty or activation fails.
     """
-    conn = get_conn()
     analytes = [a for a in (body.analytes or []) if a]
     if not analytes:
         raise HTTPException(status_code=400, detail="Select at least one result to share.")
-    token, link_id = labshare_svc.create(
-        conn, analytes=analytes, window_from=body.window_from, window_to=body.window_to,
-        allow_chat=False, intro=(body.intro or "").strip()[:1000],   # data-only: chat moved to assisted links
-        label=(body.label or "").strip()[:80] or None, ttl_days=max(1, body.ttl_days),
-        bind=body.bind, single_use=body.single_use,
-        max_turns=body.max_turns, max_total_replies=body.max_total_replies)
-    if not labshare_svc.activate(conn, link_id):
-        raise HTTPException(status_code=400, detail="Couldn't activate (need at least one result).")
-    conn.commit()
-    return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
+
+    def _write() -> dict:
+        """Create and activate the lab-share link on the writer connection, returning the response."""
+        c = get_conn()
+        token, link_id = labshare_svc.create(
+            c, analytes=analytes, window_from=body.window_from, window_to=body.window_to,
+            allow_chat=False, intro=(body.intro or "").strip()[:1000],   # data-only: chat moved to assisted links
+            label=(body.label or "").strip()[:80] or None, ttl_days=max(1, body.ttl_days),
+            bind=body.bind, single_use=body.single_use,
+            max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+        if not labshare_svc.activate(c, link_id):
+            raise HTTPException(status_code=400, detail="Couldn't activate (need at least one result).")
+        c.commit()
+        return {"token": token, "link_id": link_id, "url": share_svc.share_url(token)}
+
+    return submit_write(_write).result()
 
 
 @router.get("/labs/{link_id}/audit")
@@ -650,22 +701,37 @@ def research_mint(body: MintResearchIn):
     Raises:
         HTTPException: 400 if no folder prefixes are provided.
     """
-    conn = get_conn()
     scope = _clean_scope(body.prefixes, body.kinds)
     if not scope["prefixes"]:
         raise HTTPException(status_code=400, detail="Pick at least one folder to scope the link.")
     label = (body.label or scope["prefixes"][0]).strip()[:80]
-    title = notes_svc.root_title(f"Research — {label}", "notes")
-    note_id = notes_svc.upsert_note(
-        conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
-        source="user", version_note="research link anchor", fire_events=False)
-    token, link_id = share_svc.create_research_link(conn, note_id, label=label, ttl_days=body.ttl_days, bind=body.bind)
-    research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=body.persona_voice,
-                             intro=body.intro, bind=body.bind, single_use=body.single_use,
-                             max_turns=body.max_turns, max_total_replies=body.max_total_replies)
-    conn.commit()
-    return {"link_id": link_id, "token": token, "url": share_svc.share_url(token),
-            "candidates": research_svc.list_candidates(conn, link_id)}
+
+    def _write() -> dict:
+        """Mint the anchor note + research link + spec atomically on the writer connection.
+
+        All three helpers (upsert_note, create_research_link, create_spec) are conn-based, so
+        this is one atomic unit. upsert_note embeds the anchor note INSIDE the unit (local + fast
+        — the accepted tradeoff). The list_candidates response read folds in to reflect the write.
+        """
+        c = get_conn()
+        title = notes_svc.root_title(f"Research — {label}", "notes")
+        note_id = notes_svc.upsert_note(
+            c, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
+            source="user", version_note="research link anchor", fire_events=False)
+        token, link_id = share_svc.create_research_link(c, note_id, label=label, ttl_days=body.ttl_days, bind=body.bind)
+        research_svc.create_spec(c, link_id, scope_json=scope, persona_voice=body.persona_voice,
+                                 intro=body.intro, bind=body.bind, single_use=body.single_use,
+                                 max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+        c.commit()
+        # The anchor is a system placeholder, not a user entry — discard its deferred
+        # entry_created event (drain it here so it can't leak onto the shared writer thread and
+        # fire on a later unit). This matches the pre-conversion behaviour (research_mint never
+        # flushed entry events).
+        notes_svc.drain_pending_entry_events()
+        return {"link_id": link_id, "token": token, "url": share_svc.share_url(token),
+                "candidates": research_svc.list_candidates(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 @router.get("/research/{link_id}")
@@ -748,12 +814,16 @@ def research_delete_session(link_id: int, sid: int):
     Raises:
         HTTPException: 404 if the session does not exist under this link.
     """
-    conn = get_conn()
-    if conn.execute("SELECT 1 FROM research_sessions WHERE id=? AND share_link_id=?", (sid, link_id)).fetchone() is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    conn.execute("UPDATE research_sessions SET transcript_json='[]' WHERE id=?", (sid,))
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Purge the research session's transcript on the writer connection."""
+        c = get_conn()
+        if c.execute("SELECT 1 FROM research_sessions WHERE id=? AND share_link_id=?", (sid, link_id)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        c.execute("UPDATE research_sessions SET transcript_json='[]' WHERE id=?", (sid,))
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 class ResearchScopeIn(BaseModel):
@@ -774,10 +844,14 @@ def research_set_scope(link_id: int, body: ResearchScopeIn):
     Returns:
         Dict with 'ok': True and the updated candidate note list.
     """
-    conn = get_conn()
-    research_svc.set_scope(conn, link_id, _clean_scope(body.prefixes, body.kinds))
-    conn.commit()
-    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id)}
+    def _write() -> dict:
+        """Apply the scope update and read back candidates on the writer connection."""
+        c = get_conn()
+        research_svc.set_scope(c, link_id, _clean_scope(body.prefixes, body.kinds))
+        c.commit()
+        return {"ok": True, "candidates": research_svc.list_candidates(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 class ResearchLabsIn(BaseModel):
@@ -806,13 +880,17 @@ def research_set_labs(link_id: int, body: ResearchLabsIn):
     Raises:
         HTTPException: 404 if the research spec does not exist.
     """
-    conn = get_conn()
-    if research_svc.get_spec(conn, link_id) is None:
-        raise HTTPException(status_code=404, detail="Not found.")
-    research_svc.set_lab_scope(conn, link_id, analytes=body.analytes,
-                               window_from=body.window_from, window_to=body.window_to)
-    conn.commit()
-    return {"ok": True, "labs": sorted({str(a).strip() for a in body.analytes if str(a).strip()})}
+    def _write() -> dict:
+        """Validate the spec exists, then apply the labs allow-list on the writer connection."""
+        c = get_conn()
+        if research_svc.get_spec(c, link_id) is None:
+            raise HTTPException(status_code=404, detail="Not found.")
+        research_svc.set_lab_scope(c, link_id, analytes=body.analytes,
+                                   window_from=body.window_from, window_to=body.window_to)
+        c.commit()
+        return {"ok": True, "labs": sorted({str(a).strip() for a in body.analytes if str(a).strip()})}
+
+    return submit_write(_write).result()
 
 
 class ResearchDetailsIn(BaseModel):
@@ -841,13 +919,17 @@ def research_set_details(link_id: int, body: ResearchDetailsIn):
     Returns:
         Dict with key 'ok': True on success.
     """
-    conn = get_conn()
-    research_svc.set_details(conn, link_id, persona_voice=body.persona_voice, topics=body.topics,
-                             intro=body.intro, bind=body.bind, single_use=body.single_use,
-                             max_turns=body.max_turns, max_total_replies=body.max_total_replies)
-    _set_link_expiry(conn, link_id, body.ttl_days)   # reset the clock on each save (0 = never)
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Apply the research details edit and expiry on the writer connection."""
+        c = get_conn()
+        research_svc.set_details(c, link_id, persona_voice=body.persona_voice, topics=body.topics,
+                                 intro=body.intro, bind=body.bind, single_use=body.single_use,
+                                 max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+        _set_link_expiry(c, link_id, body.ttl_days)   # reset the clock on each save (0 = never)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 @router.post("/research/{link_id}/reset-bind")
@@ -864,11 +946,15 @@ def research_reset_bind(link_id: int):
     Returns:
         Dict with key 'ok': True on success.
     """
-    conn = get_conn()
-    conn.execute("UPDATE research_sessions SET status='ended' "
-                 "WHERE share_link_id=? AND status='active'", (link_id,))
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """End active sessions to release the research link's device bind on the writer connection."""
+        c = get_conn()
+        c.execute("UPDATE research_sessions SET status='ended' "
+                  "WHERE share_link_id=? AND status='active'", (link_id,))
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 class IdsIn(BaseModel):
@@ -888,11 +974,15 @@ def research_approve(link_id: int, body: IdsIn):
     Returns:
         Dict with 'ok': True, updated candidates list, and updated approved list.
     """
-    conn = get_conn()
-    research_svc.approve(conn, link_id, body.ids)
-    conn.commit()
-    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id),
-            "approved": research_svc.list_approved(conn, link_id)}
+    def _write() -> dict:
+        """Approve the note ids and read back candidates/approved on the writer connection."""
+        c = get_conn()
+        research_svc.approve(c, link_id, body.ids)
+        c.commit()
+        return {"ok": True, "candidates": research_svc.list_candidates(c, link_id),
+                "approved": research_svc.list_approved(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 @router.post("/research/{link_id}/dismiss")
@@ -906,10 +996,14 @@ def research_dismiss(link_id: int, body: IdsIn):
     Returns:
         Dict with 'ok': True and the updated candidates list.
     """
-    conn = get_conn()
-    research_svc.dismiss(conn, link_id, body.ids)
-    conn.commit()
-    return {"ok": True, "candidates": research_svc.list_candidates(conn, link_id)}
+    def _write() -> dict:
+        """Dismiss the candidate ids and read back candidates on the writer connection."""
+        c = get_conn()
+        research_svc.dismiss(c, link_id, body.ids)
+        c.commit()
+        return {"ok": True, "candidates": research_svc.list_candidates(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 @router.post("/research/{link_id}/remove")
@@ -923,10 +1017,14 @@ def research_remove(link_id: int, body: IdsIn):
     Returns:
         Dict with 'ok': True and the updated approved list.
     """
-    conn = get_conn()
-    research_svc.remove_approved(conn, link_id, body.ids)
-    conn.commit()
-    return {"ok": True, "approved": research_svc.list_approved(conn, link_id)}
+    def _write() -> dict:
+        """Remove the approved ids and read back the approved list on the writer connection."""
+        c = get_conn()
+        research_svc.remove_approved(c, link_id, body.ids)
+        c.commit()
+        return {"ok": True, "approved": research_svc.list_approved(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 @router.post("/research/{link_id}/activate")
@@ -946,15 +1044,19 @@ def research_activate(link_id: int):
         HTTPException: 404 if the spec does not exist.
         HTTPException: 400 if no notes or lab results have been approved yet.
     """
-    conn = get_conn()
-    spec = research_svc.get_spec(conn, link_id)
-    if not spec:
-        raise HTTPException(status_code=404, detail="Not found.")
-    if not research_svc.scope.approved_ids(spec) and not research_svc.lab_allowed(spec):
-        raise HTTPException(status_code=400, detail="Approve at least one note or lab result before activating.")
-    research_svc.activate_spec(conn, link_id)
-    conn.commit()
-    return {"ok": True}
+    def _write() -> dict:
+        """Validate approvals exist, then activate the research spec on the writer connection."""
+        c = get_conn()
+        spec = research_svc.get_spec(c, link_id)
+        if not spec:
+            raise HTTPException(status_code=404, detail="Not found.")
+        if not research_svc.scope.approved_ids(spec) and not research_svc.lab_allowed(spec):
+            raise HTTPException(status_code=400, detail="Approve at least one note or lab result before activating.")
+        research_svc.activate_spec(c, link_id)
+        c.commit()
+        return {"ok": True}
+
+    return submit_write(_write).result()
 
 
 # --- Encrypted chat (kind='chat') — owner side --------------------------------

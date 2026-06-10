@@ -18,6 +18,7 @@ import re
 import secrets
 from datetime import date, timedelta
 
+from ..db import get_conn, submit_write
 from . import labshare, lab_share_scope as sc, llm
 
 MAX_QUESTION_CHARS = 1500
@@ -166,6 +167,44 @@ def _charts_for(conn, question, allowed, wfrom, wto) -> list[dict]:
     return charts
 
 
+def _pre_turn_guard(spec, session) -> dict | None:
+    """Bill one reply against the per-link and global caps as a single write unit; gate the turn.
+
+    Ends the session on the per-session turn cap, atomically bills ONE reply against the
+    per-link cap, then checks the global daily backstop — all on the dedicated writer
+    connection, committing BEFORE any LLM call so the writer is never held across the model
+    round-trip.
+
+    Args:
+        spec: The labshare_specs row.
+        session: The labshare_sessions row.
+
+    Returns:
+        An early-exit response dict if a cap is hit, or None to proceed with the turn.
+    """
+    # Runs as its OWN write unit on the dedicated writer connection and commits BEFORE any LLM
+    # call — the writer is never held across the (up to 120s) model round-trip, which would make
+    # every other writer wait out busy_timeout (60s) and wedge the single-worker server. The
+    # per-link increment, the meta-backstop write (_global_budget_ok, run on the same writer conn),
+    # and the conditional commit/rollback all live inside the unit so they share one connection.
+    def _budget_unit() -> dict | None:
+        c = get_conn()
+        if session["turn_count"] >= spec["max_turns"]:
+            return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!", "charts": []}
+        if c.execute("UPDATE labshare_specs SET reply_count=reply_count+1 "
+                     "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
+            c.rollback()  # release the (empty) write txn the no-op UPDATE opened
+            return {"phase": "ended", "message": "This link has reached its usage limit.", "charts": []}
+        if not _global_budget_ok(c):
+            c.commit()
+            return {"phase": "answer",
+                    "message": "The assistant is busy right now — please try again later.", "charts": []}
+        c.commit()
+        return None
+
+    return submit_write(_budget_unit).result()
+
+
 def answer(conn, link, spec, session, question: str) -> dict:
     """Handle one Q&A turn for a lab-share recipient.
 
@@ -186,14 +225,9 @@ def answer(conn, link, spec, session, question: str) -> dict:
         return {"phase": "answer", "message": _UNAVAILABLE, "charts": []}
     q = _CTRL_RE.sub("", (question or "")[:MAX_QUESTION_CHARS]).strip()
 
-    if session["turn_count"] >= spec["max_turns"]:
-        return {"phase": "ended", "message": "We’ve reached the end of this session. Thanks!", "charts": []}
-    if conn.execute("UPDATE labshare_specs SET reply_count=reply_count+1 "
-                    "WHERE id=? AND reply_count < max_total_replies", (spec["id"],)).rowcount != 1:
-        return {"phase": "ended", "message": "This link has reached its usage limit.", "charts": []}
-    if not _global_budget_ok(conn):
-        conn.commit()
-        return {"phase": "answer", "message": "The assistant is busy right now — please try again later.", "charts": []}
+    guard = _pre_turn_guard(spec, session)
+    if guard is not None:
+        return guard
 
     allowed = labshare.allowed_analytes(spec)
     wfrom = spec["window_from"] if "window_from" in spec.keys() else None
@@ -259,8 +293,17 @@ def _record(conn, session, question, reply, charted) -> None:
     import json
     transcript = _transcript(session) + [{"role": "user", "content": question},
                                          {"role": "assistant", "content": reply}]
-    labshare.record_turn(conn, session["id"], transcript_json=json.dumps(transcript), charted=charted)
-    conn.commit()
+    transcript_json = json.dumps(transcript)
+
+    # Persist the in-memory transcript + audit as its OWN write unit, AFTER the LLM call. The
+    # conn-based record_turn runs INSIDE this unit on the writer connection (it must NOT self-commit);
+    # the commit that closes the turn lives here. No re-read — the transcript was built in memory above.
+    def _unit() -> None:
+        c = get_conn()
+        labshare.record_turn(c, session["id"], transcript_json=transcript_json, charted=charted)
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 def _global_budget_ok(conn) -> bool:

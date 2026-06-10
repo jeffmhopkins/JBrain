@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from ..config import get_settings
-from ..db import get_conn, persist_executor
+from ..db import get_conn, submit_write
 from . import clock
 from . import embeddings
 from . import geo
@@ -3702,13 +3702,13 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
             (conversation_id, user_text, loc.get("lat"), loc.get("lon"), loc.get("location_label")),
         )
         tconn.commit()
-    # Offload the DB write off the single event loop. A background image/audio worker may briefly
-    # hold the WAL write lock; a synchronous commit here would block the loop (busy_timeout, up to
-    # 60s under contention) and freeze EVERY other request/stream. The closure uses its own
-    # thread-local connection, so two concurrent turns offloading writes never share one connection.
-    # Runs on the dedicated persist pool — never the shared to_thread pool — so a saturated batch /
-    # warmer / tool workload can't queue ahead of this interactive write.
-    await asyncio.get_running_loop().run_in_executor(persist_executor(), _persist_user_turn)
+    # Offload the DB write off the single event loop onto the single-writer pool (submit_write). A
+    # background image/audio worker may briefly hold the WAL write lock; a synchronous commit here
+    # would block the loop (busy_timeout, up to 60s under contention) and freeze EVERY other
+    # request/stream. The closure uses its own thread-local connection (the writer's), so two
+    # concurrent turns offloading writes never share one connection — and serialising through the
+    # one writer means a saturated batch/warmer/tool workload can't queue ahead of this write.
+    await asyncio.wrap_future(submit_write(_persist_user_turn))
 
     system = _system_prompt(settings.brain_name, mode, conn)
     tools = _tools_for(mode)
@@ -3889,7 +3889,7 @@ async def run(conversation_id: int, user_text: str, location: dict | None = None
                 )
             tconn.commit()
             return mid
-        # Offload off the event loop onto the dedicated persist pool (see _persist_user_turn) — the
+        # Offload off the event loop onto the single-writer pool (see _persist_user_turn) — the
         # lock-contention freeze otherwise surfaces exactly here, when the model finishes and commits.
-        message_id = await asyncio.get_running_loop().run_in_executor(persist_executor(), _persist_reply)
+        message_id = await asyncio.wrap_future(submit_write(_persist_reply))
     yield {"type": "done"}

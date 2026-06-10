@@ -1,7 +1,7 @@
 """LLM token metering — a per-call ledger for in-app cost awareness.
 
-Rows are written on a DEDICATED connection (WAL serialises writers, busy_timeout
-waits) so recording never touches — or commits — the caller's transaction. Token
+Rows are written through the single-writer serialization layer (``submit_write``)
+so recording never touches — or commits — the caller's transaction. Token
 counts are EXACT; the dollar figure is an ESTIMATE from a static price table and
 will NOT match the Anthropic console (prompt-cache/batch pricing, rounding, or any
 usage on a shared key are not reflected). Boundaries are the owner's local day/month
@@ -68,7 +68,7 @@ def _cost(model: str, i: int, o: int, cr: int, cw: int) -> float:
 
 def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
            cache_read: int = 0, cache_write: int = 0, context: str | None = None) -> None:
-    """Log one LLM call to the usage ledger on a dedicated connection.
+    """Log one LLM call to the usage ledger via the single-writer layer.
 
     Never raises — metering must never break a generation.
 
@@ -83,17 +83,26 @@ def record(model: str, input_tokens: int = 0, output_tokens: int = 0,
     if not model or not (input_tokens or output_tokens or cache_read or cache_write):
         return
     try:
-        from ..db import _connect
-        conn = _connect()
-        try:
+        from ..db import get_conn, submit_write
+        i, o, cr, cw = int(input_tokens), int(output_tokens), int(cache_read), int(cache_write)
+
+        def _write() -> None:
+            """Insert one usage row on the dedicated writer connection."""
+            conn = get_conn()
             conn.execute(
                 "INSERT INTO llm_usage (model, input_tokens, output_tokens, "
                 "cache_read_tokens, cache_write_tokens, context) VALUES (?, ?, ?, ?, ?, ?)",
-                (model, int(input_tokens), int(output_tokens), int(cache_read), int(cache_write), context),
+                (model, i, o, cr, cw, context),
             )
             conn.commit()
-        finally:
-            conn.close()
+
+        # Block until the row is committed (.result()) so a caller that reads usage back in the
+        # same flow sees it — /api/system/stats records then immediately re-reads the meter. Both
+        # callers (_record_usage / _record_openai_usage) run on an asyncio.to_thread worker, off the
+        # event loop, so blocking here is safe and keeps the "write completes before the turn ends"
+        # ordering the offload was designed for. On the writer thread itself, submit_write runs the
+        # unit inline, so .result() returns immediately (no deadlock).
+        submit_write(_write).result()
     except Exception:  # noqa: BLE001
         pass
 

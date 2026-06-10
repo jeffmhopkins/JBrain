@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 
+from ..db import get_conn, submit_write
 from . import embeddings
 
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024  # 100 MB (audio/video can be large)
@@ -294,8 +295,15 @@ def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: byt
     Returns a metadata dict with the same shape whether this was a new insert or a
     deduplicated existing record; the ``duplicate`` key distinguishes the two cases.
 
+    The blob INSERT, FTS sync, embedding row writes, and commit are routed through
+    submit_write so they land on the single dedicated writer connection — this
+    function self-serialises and the ``conn`` argument is used only for the (read-only)
+    dedup probe. The slow halves — text extraction and embedding inference — run
+    BEFORE the unit so the writer is never held across CPU-bound work.
+
     Args:
-        conn: SQLite connection (caller owns commit).
+        conn: SQLite connection (used only for the read-only dedup probe; the write
+            self-serialises through the single writer, so the caller need not commit).
         note_id: Owning note id, or None for an orphan/global attachment.
         filename: Original client filename.
         mime: Resolved MIME type (from resolve_mime).
@@ -319,15 +327,31 @@ def add_attachment(conn, note_id: int | None, filename: str, mime: str, raw: byt
             "has_text": bool(existing["content_text"]), "duplicate": True,
         }
 
+    # Slow halves OUTSIDE the unit: PDF/text extraction is CPU-bound and the embed is
+    # multi-second fastembed inference. Hoisting both keeps the single WAL write lock
+    # held only for the fast row writes below (parity with the analyzer write paths).
     content_text = extract_text(raw, mime, filename)
-    cur = conn.execute(
-        "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (note_id, filename, mime, content_text, raw, len(raw), sha),
-    )
-    att_id = cur.lastrowid
-    _sync_attachment_fts(conn, att_id, note_id, filename, content_text)
-    embeddings.upsert_attachment_embeddings(conn, att_id, note_id, chunk_text(content_text))
+    chunks = chunk_text(content_text)
+    vectors = embeddings.embed_attachment_chunks(chunks)
+
+    def _unit() -> int:
+        """Insert the attachment row + FTS + precomputed chunk vectors on the writer.
+
+        Returns:
+            The new attachments.id.
+        """
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO attachments (note_id, filename, mime, content_text, content_blob, byte_size, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (note_id, filename, mime, content_text, raw, len(raw), sha),
+        )
+        new_id = cur.lastrowid
+        _sync_attachment_fts(c, new_id, note_id, filename, content_text)
+        embeddings.write_attachment_embeddings(c, new_id, note_id, chunks, vectors)
+        c.commit()
+        return new_id
+    att_id = submit_write(_unit).result()
     return {
         "id": att_id, "note_id": note_id, "filename": filename, "mime": mime,
         "byte_size": len(raw), "has_text": bool(content_text), "duplicate": False,
@@ -341,33 +365,43 @@ def delete_attachment(conn, att_id: int) -> None:
     block is stripped from the note (versioned) before deletion so there is no dangling
     reference.
 
+    The reads, the (versioned) summary strip, the FTS/embedding/row DELETEs, and the
+    commit all run inside one submit_write unit on the single dedicated writer
+    connection, so this function self-serialises and the ``conn`` argument is unused —
+    the caller need not commit.
+
     Args:
-        conn: SQLite connection (caller owns commit).
+        conn: SQLite connection (unused; the write self-serialises through the single writer).
         att_id: Attachment primary key to delete.
     """
-    # If this attachment had an AI image summary appended to its note, strip that
-    # block (versioned) so deleting the image cleanly removes its summary.
-    row = conn.execute(
-        "SELECT note_id, analyzed_at FROM attachments WHERE id = ?", (att_id,)
-    ).fetchone()
-    if row and row["analyzed_at"] and row["note_id"] is not None:
-        from . import image_analysis  # lazy import: avoids a service import cycle
-        from . import notes as notes_svc
-        note = conn.execute(
-            "SELECT title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
-            (row["note_id"],),
+    def _unit() -> None:
+        """Strip any summary block, then delete the attachment's rows on the writer."""
+        c = get_conn()
+        # If this attachment had an AI image summary appended to its note, strip that
+        # block (versioned) so deleting the image cleanly removes its summary.
+        row = c.execute(
+            "SELECT note_id, analyzed_at FROM attachments WHERE id = ?", (att_id,)
         ).fetchone()
-        if note:
-            stripped = image_analysis.strip_summary_block(note["content_md"], att_id)
-            if stripped != note["content_md"]:
-                notes_svc.upsert_note(
-                    conn, note["title"], stripped, note_id=row["note_id"],
-                    source="image-analysis",
-                    version_note="strip AI summary (attachment deleted)",
-                )
-    conn.execute("DELETE FROM attachments_fts WHERE attachment_id = ?", (att_id,))
-    embeddings.delete_attachment_embeddings(conn, att_id)
-    conn.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
+        if row and row["analyzed_at"] and row["note_id"] is not None:
+            from . import image_analysis  # lazy import: avoids a service import cycle
+            from . import notes as notes_svc
+            note = c.execute(
+                "SELECT title, content_md FROM notes WHERE id = ? AND deleted_at IS NULL",
+                (row["note_id"],),
+            ).fetchone()
+            if note:
+                stripped = image_analysis.strip_summary_block(note["content_md"], att_id)
+                if stripped != note["content_md"]:
+                    notes_svc.upsert_note(
+                        c, note["title"], stripped, note_id=row["note_id"],
+                        source="image-analysis",
+                        version_note="strip AI summary (attachment deleted)",
+                    )
+        c.execute("DELETE FROM attachments_fts WHERE attachment_id = ?", (att_id,))
+        embeddings.delete_attachment_embeddings(c, att_id)
+        c.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
+        c.commit()
+    submit_write(_unit).result()
 
 
 def _att_label(mime: str | None, filename: str | None) -> str:

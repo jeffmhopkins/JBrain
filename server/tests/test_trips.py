@@ -42,6 +42,32 @@ def conn():
     c.close()
 
 
+@pytest.fixture()
+def writer_on(conn, monkeypatch):
+    """Route the trips single-writer seam at this isolated in-memory ``conn``.
+
+    ``run_detection``/``reattribute`` now persist through ``submit_write`` on the
+    dedicated writer connection (``db.get_conn()`` on the writer thread). These
+    tests inject their own ``:memory:`` connection with no app bootstrap, so the
+    real writer would open an unrelated file DB. Patch the module seams to run the
+    write unit inline against the test ``conn`` instead, preserving the test's
+    isolation while exercising the refactored code path.
+    """
+    from concurrent.futures import Future
+
+    def _inline(fn):
+        f: Future = Future()
+        try:
+            f.set_result(fn())
+        except BaseException as exc:  # noqa: BLE001 — mirror submit_write's contract
+            f.set_exception(exc)
+        return f
+
+    monkeypatch.setattr(trips, "get_conn", lambda: conn)
+    monkeypatch.setattr(trips, "submit_write", _inline)
+    return conn
+
+
 def _person_id(conn) -> int:
     return conn.execute("SELECT id FROM people WHERE is_default=1").fetchone()["id"]
 
@@ -417,7 +443,7 @@ def test_detect_for_person_skips_zero_length_inter_stay_gap(conn):
     assert trips.query_trips(conn, person_id=pid) == []
 
 
-def test_run_detection_all_people(conn):
+def test_run_detection_all_people(conn, writer_on):
     pid = _person_id(conn)
     _seed_two_stays_one_closed_trip(conn, pid)
     total = trips.run_detection(conn)
@@ -425,7 +451,7 @@ def test_run_detection_all_people(conn):
     assert conn.execute("SELECT COUNT(*) c FROM trips").fetchone()["c"] == 1
 
 
-def test_run_detection_respects_max_people(conn):
+def test_run_detection_respects_max_people(conn, writer_on):
     # A second person exists; max_people=0 means process nobody.
     conn.execute("INSERT INTO people (name, aliases) VALUES ('Other', 'phone')")
     pid = _person_id(conn)
@@ -461,7 +487,7 @@ def test_query_trips_without_person_filter(conn):
     assert len(trips.query_trips(conn)) == 1
 
 
-def test_run_detection_swallows_per_person_error(conn, monkeypatch):
+def test_run_detection_swallows_per_person_error(conn, writer_on, monkeypatch):
     # One person's bad data must not wedge the rest: detect raises -> rollback, total 0.
     _person_id(conn)
 
@@ -493,7 +519,7 @@ def test_trip_detail_with_crossing_and_missing(conn):
 # reattribute
 # --------------------------------------------------------------------------- #
 
-def test_reattribute_resolves_and_rewinds(conn):
+def test_reattribute_resolves_and_rewinds(conn, writer_on):
     pid = _person_id(conn)
     trips.ensure_cursor(conn, pid)
     conn.execute("UPDATE trip_cursor SET watermark='2026-06-01 00:00:00' WHERE person_id=?", (pid,))

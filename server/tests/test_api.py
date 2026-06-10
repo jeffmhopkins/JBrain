@@ -411,8 +411,8 @@ def test_labshare_ai_scopes_charts_blocks_injection_and_audits(client, monkeypat
     add("hiv_ab", "HIV Ab", "2026-01-01", "0.1", 0.1, "index", 0.0, 1.0)         # sensitive, NOT shared
     token, link_id = labshare.create(conn, analytes=["creatinine"])
     labshare.activate(conn, link_id)
-    sid, secret = labshare.start_session(conn, link_id)
-    conn.commit()
+    conn.commit()  # commit owner-side setup before start_session runs on the writer thread
+    sid, secret, _bind = labshare.start_session(conn, link_id)
     link = conn.execute("SELECT * FROM share_links WHERE id=?", (link_id,)).fetchone()
     spec = labshare.get_spec(conn, link_id)
 
@@ -464,6 +464,36 @@ def test_labshare_public_recipient_flow_is_scoped(client):
     assert client.get(f"/api/share/{token}/labs/series?analyte=hiv_ab").status_code == 404
     # Chat is disabled on this link.
     assert client.post(f"/api/share/{token}/labs/turn", json={"message": "hi"}).status_code == 403
+
+
+def test_labshare_bind_locks_to_first_browser(client):
+    # A bind labs link claims the FIRST browser; a second device (no bind cookie) is locked out (403).
+    # The claim, session INSERT, and link touch now run inside start_session's single write unit —
+    # this guards that PHI-protecting path against regression.
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('mb','notes/medical/N/labs','b') "
+                       "RETURNING id").fetchone()["id"]
+    conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,"
+                 "ref_low,ref_high,collected_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (nid, "Creatinine", "creatinine", "1.0", 1.0, "mg/dL", 0.6, 1.2, "2026-01-02"))
+    conn.commit()
+    from fastapi.testclient import TestClient
+    from app.main import app
+    # Bind link: the first browser to start claims it (mints + stores a bind secret, sets the cookie).
+    token = client.post("/api/shares/labs",
+                        json={"analytes": ["creatinine"], "bind": True, "allow_chat": False}).json()["token"]
+    first = TestClient(app)
+    assert first.post(f"/api/share/{token}/labs/start", json={"name": "Dr Smith"}).status_code == 200
+    # Same browser (carries the bind cookie) may re-land.
+    assert first.post(f"/api/share/{token}/labs/start", json={"name": "Dr Smith"}).status_code == 200
+    # A DIFFERENT browser (no bind cookie) is locked out.
+    assert TestClient(app).post(f"/api/share/{token}/labs/start", json={"name": "Stranger"}).status_code == 403
+    # A NON-bind link never locks: two fresh browsers can both start.
+    token2 = client.post("/api/shares/labs",
+                         json={"analytes": ["creatinine"], "bind": False, "allow_chat": False}).json()["token"]
+    assert TestClient(app).post(f"/api/share/{token2}/labs/start", json={"name": "A"}).status_code == 200
+    assert TestClient(app).post(f"/api/share/{token2}/labs/start", json={"name": "B"}).status_code == 200
 
 
 def test_labshare_create_honors_standard_options(client):
@@ -4917,6 +4947,53 @@ def test_research_link_endpoints(client, monkeypatch):
     assert detail["sessions"][0]["turn_count"] == 1 and detail["sessions"][0]["retrieved"] == 1
 
 
+def test_research_admin_scope_dismiss_remove_routes(client):
+    # Cover the owner-admin set_scope/dismiss/remove routes — single-writer units whose responses
+    # fold a read-your-writes candidate/approved list read on the writer connection.
+    import sqlite_vec
+    from app.db import get_conn
+    from app.services import embeddings
+    client.post("/api/notes", json={"title": "notes/Medical/Allergies", "content_md": "penicillin allergy"})
+    client.post("/api/notes", json={"title": "notes/Medical/Meds", "content_md": "daily aspirin"})
+    conn = get_conn()
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM notes WHERE title IN ('notes/Medical/Allergies','notes/Medical/Meds') ORDER BY id")]
+    for nid in ids:
+        conn.execute("INSERT INTO vec_notes (note_id, embedding) VALUES (?, ?)",
+                     (nid, sqlite_vec.serialize_float32([1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1))))
+    conn.commit()
+    lid = client.post("/api/shares/research/mint",
+                      json={"label": "Med", "prefixes": ["notes/Medical"]}).json()["link_id"]
+    # set_scope returns refreshed candidates read INSIDE the write unit.
+    sc = client.post(f"/api/shares/research/{lid}/scope",
+                     json={"prefixes": ["notes/Medical"], "kinds": []}).json()
+    cand = {c["id"] for c in sc["candidates"]}
+    assert sc["ok"] is True and ids[0] in cand and ids[1] in cand
+    # dismiss one -> it leaves the candidate list (folded read).
+    dz = client.post(f"/api/shares/research/{lid}/dismiss", json={"ids": [ids[0]]}).json()
+    assert dz["ok"] is True and ids[0] not in {c["id"] for c in dz["candidates"]}
+    # approve the other, then remove it -> approved list shrinks (folded read).
+    client.post(f"/api/shares/research/{lid}/approve", json={"ids": [ids[1]]})
+    rm = client.post(f"/api/shares/research/{lid}/remove", json={"ids": [ids[1]]}).json()
+    assert rm["ok"] is True and ids[1] not in {a["id"] for a in rm["approved"]}
+
+
+def test_guided_reset_bind_route(client):
+    # Cover the owner-admin guided reset-bind route (a single-writer unit): it abandons the
+    # in-progress session so a locked link can be started fresh.
+    from app.db import get_conn
+    from app.services import share as share_svc, guided as guided_svc, notes as notes_svc
+    conn = get_conn()
+    nid = notes_svc.upsert_note(conn, "notes/Bindable", "# x", source="user", fire_events=False)
+    _token, lid = share_svc.create_guided_link(conn, nid)
+    guided_svc.create_spec(conn, lid, goal="g", intro="i", sub_prompt="p", bind=True)
+    conn.execute("INSERT INTO guided_sessions (share_link_id, secret, status) VALUES (?, 'sek', 'active')", (lid,))
+    conn.commit()   # release the test conn's write lock before the route's writer unit runs
+    assert client.post(f"/api/shares/guided/{lid}/reset-bind").json()["ok"] is True
+    assert conn.execute("SELECT status FROM guided_sessions WHERE share_link_id=?",
+                        (lid,)).fetchone()["status"] == "abandoned"
+
+
 def test_create_research_share_tool(client):
     """The assisted-chat tool mints a DRAFT research link (nothing approved/active),
     previews the candidate count, and refuses a root/whole-brain scope."""
@@ -6586,7 +6663,7 @@ def test_guided_intake_full_flow(client, monkeypatch):
     token, link_id = share_svc.create_guided_link(conn, nid, label="med hx", ttl_days=14)
     guided_svc.create_spec(conn, link_id, goal="medical history", intro="Hi from your son",
                            sub_prompt="Gather conditions, medications, allergies.")
-    conn.commit()
+    conn.commit()   # commit the link+spec setup before the HTTP flow uses the single writer
 
     from fastapi.testclient import TestClient
     from app.main import app
@@ -6633,6 +6710,7 @@ def test_guided_spend_cap_is_atomic(client, monkeypatch):
     conn = get_conn()
     nid = notes_svc.upsert_note(conn, "notes/Capped", "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p")
     conn.execute("UPDATE guided_specs SET max_total_replies=2, status='active' WHERE share_link_id=?", (link_id,))
     conn.commit()
@@ -6658,6 +6736,7 @@ def test_guided_single_use_and_bind(client, monkeypatch):
     conn = get_conn()
     nid = notes_svc.upsert_note(conn, "notes/Once", "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal="g", intro="i", sub_prompt="p",
                            bind=True, single_use=True)
     conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id=?", (link_id,))
@@ -6694,6 +6773,7 @@ def _guided_link(conn, title="notes/Safeguard", goal="history"):
     from app.services import notes as notes_svc
     nid = notes_svc.upsert_note(conn, title, "# x", source="user", fire_events=False)
     token, link_id = share_svc.create_guided_link(conn, nid)
+    conn.commit()   # release the test conn's write lock before create_spec's serialized writer runs
     guided_svc.create_spec(conn, link_id, goal=goal, intro="hi", sub_prompt="ask things")
     conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id=?", (link_id,))
     conn.commit()

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
+from ..db import get_conn, submit_write
 from . import chat_relay
 from . import notes as notes_svc
 from . import push
@@ -50,7 +51,8 @@ def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp
     here — owner_wrap/guest_wrap are sealed client-side.
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         owner_wrap: Owner's sealed copy of the channel key.
         guest_wrap: Guest's sealed copy of the channel key.
         persist: Retain encrypted message history after the session.
@@ -63,21 +65,26 @@ def create_channel(conn, *, owner_wrap: str, guest_wrap: str, persist: bool, otp
     Returns:
         A (token, link_id) tuple for the new share link.
     """
-    token = share_svc.mint_token()
-    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
-    cur = conn.execute(
-        "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
-        "VALUES (?, NULL, 'view', 'chat', ?, 1, " + ("datetime('now', ?))" if exp else "NULL)"),
-        (token, label) + ((exp,) if exp else ()),
-    )
-    link_id = cur.lastrowid
-    conn.execute(
-        "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, owner_name) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (link_id, 1 if persist else 0, 1 if otp_required else 0, owner_wrap, guest_wrap,
-         (owner_name or "").strip()[:80] or None),
-    )
-    return token, link_id
+    def _unit() -> tuple[str, int]:
+        c = get_conn()
+        token = share_svc.mint_token()
+        exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+        cur = c.execute(
+            "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
+            "VALUES (?, NULL, 'view', 'chat', ?, 1, " + ("datetime('now', ?))" if exp else "NULL)"),
+            (token, label) + ((exp,) if exp else ()),
+        )
+        link_id = cur.lastrowid
+        c.execute(
+            "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, owner_name) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (link_id, 1 if persist else 0, 1 if otp_required else 0, owner_wrap, guest_wrap,
+             (owner_name or "").strip()[:80] or None),
+        )
+        c.commit()
+        return token, link_id
+
+    return submit_write(_unit).result()
 
 
 def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: str | None,
@@ -89,7 +96,8 @@ def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: st
     draft→activate. A pending link is inert to recipients (no key exists yet).
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         persist: Retain encrypted message history after the session.
         otp_required: Require a one-time passcode before the guest can connect.
         label: Optional human-readable label for the Shares page.
@@ -99,20 +107,25 @@ def create_pending_channel(conn, *, persist: bool, otp_required: bool, label: st
     Returns:
         A (token, link_id) tuple for the new share link.
     """
-    token = share_svc.mint_token()
-    exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
-    cur = conn.execute(
-        "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
-        "VALUES (?, NULL, 'view', 'chat', ?, 1, " + ("datetime('now', ?))" if exp else "NULL)"),
-        (token, label) + ((exp,) if exp else ()),
-    )
-    link_id = cur.lastrowid
-    conn.execute(
-        "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, "
-        "owner_name, pending_setup) VALUES (?, ?, ?, '', '', ?, 1)",
-        (link_id, 1 if persist else 0, 1 if otp_required else 0, (owner_name or "").strip()[:80] or None),
-    )
-    return token, link_id
+    def _unit() -> tuple[str, int]:
+        c = get_conn()
+        token = share_svc.mint_token()
+        exp = f"+{int(ttl_days)} days" if (ttl_days and int(ttl_days) > 0) else None
+        cur = c.execute(
+            "INSERT INTO share_links (token, note_id, scope, kind, label, bind, expires_at) "
+            "VALUES (?, NULL, 'view', 'chat', ?, 1, " + ("datetime('now', ?))" if exp else "NULL)"),
+            (token, label) + ((exp,) if exp else ()),
+        )
+        link_id = cur.lastrowid
+        c.execute(
+            "INSERT INTO chat_channels (share_link_id, persist, otp_required, owner_wrap, guest_wrap, "
+            "owner_name, pending_setup) VALUES (?, ?, ?, '', '', ?, 1)",
+            (link_id, 1 if persist else 0, 1 if otp_required else 0, (owner_name or "").strip()[:80] or None),
+        )
+        c.commit()
+        return token, link_id
+
+    return submit_write(_unit).result()
 
 
 def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) -> None:
@@ -121,7 +134,8 @@ def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) ->
     Clears pending_setup so the link becomes usable. No-op-safe if already finalized.
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         link_id: The share_links.id to finalize.
         owner_wrap: Owner's sealed copy of the channel key.
         guest_wrap: Guest's sealed copy of the channel key.
@@ -129,12 +143,17 @@ def finalize_channel(conn, link_id: int, *, owner_wrap: str, guest_wrap: str) ->
     Raises:
         HTTPException: 404 if the channel does not exist.
     """
-    ch = get_channel(conn, link_id)
-    if ch is None:
-        raise HTTPException(status_code=404, detail="Chat not found.")
-    conn.execute(
-        "UPDATE chat_channels SET owner_wrap=?, guest_wrap=?, pending_setup=0 WHERE share_link_id=?",
-        (owner_wrap, guest_wrap, link_id))
+    def _unit() -> None:
+        c = get_conn()
+        ch = get_channel(c, link_id)
+        if ch is None:
+            raise HTTPException(status_code=404, detail="Chat not found.")
+        c.execute(
+            "UPDATE chat_channels SET owner_wrap=?, guest_wrap=?, pending_setup=0 WHERE share_link_id=?",
+            (owner_wrap, guest_wrap, link_id))
+        c.commit()
+
+    submit_write(_unit).result()
 
 
 def get_channel(conn, link_id: int):
@@ -185,7 +204,8 @@ def append_message(conn, link_id: int, sender: str, iv: str, ciphertext: str) ->
     """Allocate the next sequence number, optionally persist, and fan out the message event.
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         link_id: The share_links.id for the channel.
         sender: 'owner' or 'guest'.
         iv: AES-GCM initialization vector (hex/base64, max 64 chars).
@@ -198,25 +218,29 @@ def append_message(conn, link_id: int, sender: str, iv: str, ciphertext: str) ->
         HTTPException: 409 if the channel has ended.
         HTTPException: 413 if iv or ciphertext exceeds size limits.
     """
-    ch = get_channel(conn, link_id)
-    if ch is None or ch["status"] != "active":
-        raise HTTPException(status_code=409, detail="This chat has ended.")
-    if len(iv) > 64 or len(ciphertext) > 700_000:        # ~512 KB plaintext ceiling per message
-        raise HTTPException(status_code=413, detail="Message too large.")
-    seq = chat_relay.next_seq(
-        link_id,
-        lambda: conn.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM chat_messages WHERE share_link_id = ?",
-                             (link_id,)).fetchone()["m"],
-    )
-    at = _utcnow()
-    if ch["persist"]:
-        conn.execute(
-            "INSERT INTO chat_messages (share_link_id, seq, sender, iv, ciphertext) VALUES (?, ?, ?, ?, ?)",
-            (link_id, seq, sender, iv, ciphertext))
-    col = "last_owner_at" if sender == "owner" else "last_guest_at"
-    conn.execute(f"UPDATE chat_channels SET {col} = ? WHERE share_link_id = ?", (at, link_id))
-    conn.commit()
-    event = {"type": "message", "seq": seq, "sender": sender, "iv": iv, "ct": ciphertext, "at": at}
+    def _unit() -> dict:
+        c = get_conn()
+        ch = get_channel(c, link_id)
+        if ch is None or ch["status"] != "active":
+            raise HTTPException(status_code=409, detail="This chat has ended.")
+        if len(iv) > 64 or len(ciphertext) > 700_000:    # ~512 KB plaintext ceiling per message
+            raise HTTPException(status_code=413, detail="Message too large.")
+        seq = chat_relay.next_seq(
+            link_id,
+            lambda: c.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM chat_messages WHERE share_link_id = ?",
+                              (link_id,)).fetchone()["m"],
+        )
+        at = _utcnow()
+        if ch["persist"]:
+            c.execute(
+                "INSERT INTO chat_messages (share_link_id, seq, sender, iv, ciphertext) VALUES (?, ?, ?, ?, ?)",
+                (link_id, seq, sender, iv, ciphertext))
+        col = "last_owner_at" if sender == "owner" else "last_guest_at"
+        c.execute(f"UPDATE chat_channels SET {col} = ? WHERE share_link_id = ?", (at, link_id))
+        c.commit()
+        return {"type": "message", "seq": seq, "sender": sender, "iv": iv, "ct": ciphertext, "at": at}
+
+    event = submit_write(_unit).result()
     chat_relay.publish(link_id, event)
     return event
 
@@ -249,7 +273,8 @@ def store_file(conn, link_id: int, iv: str, blob: bytes) -> int:
     MIME type never reach the server.
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         link_id: The share_links.id for the channel.
         iv: AES-GCM initialization vector.
         blob: Raw encrypted file bytes (max 100 MB + 4096).
@@ -261,16 +286,20 @@ def store_file(conn, link_id: int, iv: str, blob: bytes) -> int:
         HTTPException: 409 if the channel has ended.
         HTTPException: 413 if the blob exceeds MAX_CHAT_FILE_BYTES.
     """
-    ch = get_channel(conn, link_id)
-    if ch is None or ch["status"] != "active":
-        raise HTTPException(status_code=409, detail="This chat has ended.")
-    if len(blob) > MAX_CHAT_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (100 MB max).")
-    cur = conn.execute(
-        "INSERT INTO chat_files (share_link_id, iv, blob, byte_size) VALUES (?, ?, ?, ?)",
-        (link_id, iv, blob, len(blob)))
-    conn.commit()
-    return cur.lastrowid
+    def _unit() -> int:
+        c = get_conn()
+        ch = get_channel(c, link_id)
+        if ch is None or ch["status"] != "active":
+            raise HTTPException(status_code=409, detail="This chat has ended.")
+        if len(blob) > MAX_CHAT_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File too large (100 MB max).")
+        cur = c.execute(
+            "INSERT INTO chat_files (share_link_id, iv, blob, byte_size) VALUES (?, ?, ?, ?)",
+            (link_id, iv, blob, len(blob)))
+        c.commit()
+        return cur.lastrowid
+
+    return submit_write(_unit).result()
 
 
 def get_file(conn, link_id: int, file_id: int):
@@ -330,23 +359,28 @@ def close_channel(conn, link_id: int) -> None:
     """End the chat: mark it closed, revoke the link, purge ephemeral blobs, and notify both sides.
 
     Args:
-        conn: Database connection.
+        conn: Superseded by the single-writer connection; the whole write runs in a
+            ``submit_write`` unit on its own connection.
         link_id: The share_links.id for the channel to close.
 
     Raises:
         HTTPException: 404 if the channel does not exist.
     """
-    ch = get_channel(conn, link_id)
-    if ch is None:
-        raise HTTPException(status_code=404, detail="Chat not found.")
-    if ch["status"] != "closed":
-        conn.execute("UPDATE chat_channels SET status = 'closed', closed_at = datetime('now') "
-                     "WHERE share_link_id = ?", (link_id,))
-        share_svc.revoke_link(conn, link_id)
-        if not ch["persist"]:                       # ephemeral: nothing is kept after close
-            conn.execute("DELETE FROM chat_messages WHERE share_link_id = ?", (link_id,))
-            conn.execute("DELETE FROM chat_files WHERE share_link_id = ?", (link_id,))
-        conn.commit()
+    def _unit() -> None:
+        c = get_conn()
+        ch = get_channel(c, link_id)
+        if ch is None:
+            raise HTTPException(status_code=404, detail="Chat not found.")
+        if ch["status"] != "closed":
+            c.execute("UPDATE chat_channels SET status = 'closed', closed_at = datetime('now') "
+                      "WHERE share_link_id = ?", (link_id,))
+            share_svc.revoke_link(c, link_id)
+            if not ch["persist"]:                   # ephemeral: nothing is kept after close
+                c.execute("DELETE FROM chat_messages WHERE share_link_id = ?", (link_id,))
+                c.execute("DELETE FROM chat_files WHERE share_link_id = ?", (link_id,))
+            c.commit()
+
+    submit_write(_unit).result()
     chat_relay.publish(link_id, {"type": "closed"})
 
 
@@ -388,23 +422,52 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
     body = (transcript_md or "").strip() or "_(no messages)_"
     if "_Encrypted chat" not in body:                # provenance footer → entity extraction links the person
         body = body.rstrip() + f"\n\n---\n_Encrypted chat with {who}._\n"
-    note_id = notes_svc.upsert_note(conn, note_title, body, create_only=True,
-                                    source="shared", version_note=f"encrypted chat with {who}")
-    # Saved chats default to Research-only: the assistant may read them when asked
-    # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
-    # evergreen KB articles. The owner can opt a chat back into the KB per-note.
-    conn.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (note_id,))
+    # Decode the attachment blobs BEFORE the write unit (cheap, but keeps base64 work
+    # off the writer) and drop empties; the note + its attachments + the channel pointer
+    # commit together so a re-save short-circuits cleanly.
+    import base64
+    files: list[tuple[str, str, bytes]] = []
     for a in (attachments or []):
         try:
-            import base64
             raw = base64.b64decode(a.get("data") or "")
-            if raw:
-                att_svc.add_attachment(conn, note_id, (a.get("name") or "file")[:200],
-                                       a.get("mime") or "application/octet-stream", raw)
         except Exception:                            # noqa: BLE001 — one bad file never loses the transcript
             continue
-    conn.execute("UPDATE chat_channels SET saved_note_id = ? WHERE share_link_id = ?", (note_id, link_id))
-    conn.commit()
+        if raw:
+            files.append(((a.get("name") or "file")[:200],
+                          a.get("mime") or "application/octet-stream", raw))
+
+    def _unit() -> int:
+        """Create the saved-chat note + channel pointer on the writer, atomically.
+
+        The note, its Research-only flag, and the channel's saved_note_id pointer commit in ONE
+        transaction, so a retry short-circuits via ``already_saved`` and never creates a duplicate
+        note. Attachments are NOT written here — a nested self-committing add_attachment would
+        flush this note mid-unit and break that atomicity (see below).
+
+        Returns:
+            The new/owning notes.id for the saved transcript.
+        """
+        c = get_conn()
+        nid = notes_svc.upsert_note(c, note_title, body, create_only=True,
+                                    source="shared", version_note=f"encrypted chat with {who}")
+        # Saved chats default to Research-only: the assistant may read them when asked
+        # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
+        # evergreen KB articles. The owner can opt a chat back into the KB per-note.
+        c.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (nid,))
+        c.execute("UPDATE chat_channels SET saved_note_id = ? WHERE share_link_id = ?", (nid, link_id))
+        c.commit()
+        return nid
+    note_id = submit_write(_unit).result()
+    # Attachments are added AFTER the note + pointer are durable, best-effort: add_attachment
+    # self-commits in its OWN writer unit, and one bad file never loses the saved transcript. They
+    # are intentionally outside the note's unit — nesting a self-committing add_attachment would
+    # flush the note mid-transaction, so a failure between the two could orphan saved_note_id and
+    # (with create_only) duplicate the note on retry.
+    for name, mime, raw in files:
+        try:
+            att_svc.add_attachment(get_conn(), note_id, name, mime, raw)
+        except Exception:                            # noqa: BLE001 — one bad file never loses the transcript
+            continue
     row = conn.execute("SELECT slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return {"note_slug": row["slug"], "already_saved": False}
 

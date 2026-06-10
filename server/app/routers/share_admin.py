@@ -500,43 +500,52 @@ def guided_accept(sid: int):
         HTTPException: 404 if no submitted session is found.
         HTTPException: 409 if the destination note no longer exists.
     """
-    conn = get_conn()
-    s = conn.execute(
-        "SELECT s.*, sl.note_id, gs.goal, gs.dest_title FROM guided_sessions s "
-        "JOIN share_links sl ON sl.id=s.share_link_id "
-        "JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
-        "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
-    if not s:
-        raise HTTPException(status_code=404, detail="No submitted guided response found.")
-    who = s["name"] or "a recipient"
-    vn = f"guided intake from {who}"
-    # Provenance: record WHO contributed so the analyzer treats them as a person entity
-    # (a recipe "from mom" links mom into People) and the source is never lost.
-    doc = s["document_md"] or ""
-    if s["name"] and "_Contributed by" not in doc:
-        doc = doc.rstrip() + f"\n\n---\n_Contributed by {s['name']} via guided intake._\n"
-    if s["note_id"]:
-        # Legacy link that pre-created its note: update it in place.
-        note = conn.execute("SELECT title FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
-        if note is None:
-            raise HTTPException(status_code=409, detail="The destination note no longer exists.")
-        notes_svc.upsert_note(conn, note["title"], doc, note_id=s["note_id"],
-                              source="shared", version_note=vn)
-        note_id = s["note_id"]
-    else:
-        # No page existed until now — create it from the spec's destination title.
-        title = notes_svc.root_title(s["dest_title"] or f"Intake — {s['goal']}", "notes")
-        note_id = notes_svc.upsert_note(conn, title, doc, create_only=True,
-                                        source="shared", version_note=vn)
-        conn.execute("UPDATE share_links SET note_id=? WHERE id=?", (note_id, s["share_link_id"]))
-    note = conn.execute("SELECT slug FROM notes WHERE id=?", (note_id,)).fetchone()
-    if s["review_item_id"]:
-        conn.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
-                     (s["review_item_id"],))
-    # Approved: the conversation + draft are KEPT as a record. The saved note (note_slug)
-    # is the canonical artifact going forward; the session keeps the draft-as-submitted.
-    conn.commit()
-    return {"ok": True, "note_slug": note["slug"]}
+    def _write() -> str:
+        """Write the guided doc to its dest note + dismiss the review atomically on the writer conn.
+
+        No LLM here — the draft was synthesized earlier; this only persists it. upsert_note
+        re-embeds the dest note INSIDE the unit (local + fast — the accepted tradeoff). The
+        candidate reads (session row, dest title, resulting slug) fold in. Returns the note slug.
+        """
+        c = get_conn()
+        s = c.execute(
+            "SELECT s.*, sl.note_id, gs.goal, gs.dest_title FROM guided_sessions s "
+            "JOIN share_links sl ON sl.id=s.share_link_id "
+            "JOIN guided_specs gs ON gs.share_link_id=s.share_link_id "
+            "WHERE s.id=? AND s.status='submitted'", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="No submitted guided response found.")
+        who = s["name"] or "a recipient"
+        vn = f"guided intake from {who}"
+        # Provenance: record WHO contributed so the analyzer treats them as a person entity
+        # (a recipe "from mom" links mom into People) and the source is never lost.
+        doc = s["document_md"] or ""
+        if s["name"] and "_Contributed by" not in doc:
+            doc = doc.rstrip() + f"\n\n---\n_Contributed by {s['name']} via guided intake._\n"
+        if s["note_id"]:
+            # Legacy link that pre-created its note: update it in place.
+            note = c.execute("SELECT title FROM notes WHERE id=? AND deleted_at IS NULL", (s["note_id"],)).fetchone()
+            if note is None:
+                raise HTTPException(status_code=409, detail="The destination note no longer exists.")
+            notes_svc.upsert_note(c, note["title"], doc, note_id=s["note_id"],
+                                  source="shared", version_note=vn)
+            note_id = s["note_id"]
+        else:
+            # No page existed until now — create it from the spec's destination title.
+            title = notes_svc.root_title(s["dest_title"] or f"Intake — {s['goal']}", "notes")
+            note_id = notes_svc.upsert_note(c, title, doc, create_only=True,
+                                            source="shared", version_note=vn)
+            c.execute("UPDATE share_links SET note_id=? WHERE id=?", (note_id, s["share_link_id"]))
+        note = c.execute("SELECT slug FROM notes WHERE id=?", (note_id,)).fetchone()
+        if s["review_item_id"]:
+            c.execute("UPDATE review_items SET status='dismissed', dismissed_at=datetime('now') WHERE id=?",
+                      (s["review_item_id"],))
+        # Approved: the conversation + draft are KEPT as a record. The saved note (note_slug)
+        # is the canonical artifact going forward; the session keeps the draft-as-submitted.
+        c.commit()
+        return note["slug"]
+
+    return {"ok": True, "note_slug": submit_write(_write).result()}
 
 
 @router.post("/guided/sessions/{sid}/reject")
@@ -692,22 +701,37 @@ def research_mint(body: MintResearchIn):
     Raises:
         HTTPException: 400 if no folder prefixes are provided.
     """
-    conn = get_conn()
     scope = _clean_scope(body.prefixes, body.kinds)
     if not scope["prefixes"]:
         raise HTTPException(status_code=400, detail="Pick at least one folder to scope the link.")
     label = (body.label or scope["prefixes"][0]).strip()[:80]
-    title = notes_svc.root_title(f"Research — {label}", "notes")
-    note_id = notes_svc.upsert_note(
-        conn, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
-        source="user", version_note="research link anchor", fire_events=False)
-    token, link_id = share_svc.create_research_link(conn, note_id, label=label, ttl_days=body.ttl_days, bind=body.bind)
-    research_svc.create_spec(conn, link_id, scope_json=scope, persona_voice=body.persona_voice,
-                             intro=body.intro, bind=body.bind, single_use=body.single_use,
-                             max_turns=body.max_turns, max_total_replies=body.max_total_replies)
-    conn.commit()
-    return {"link_id": link_id, "token": token, "url": share_svc.share_url(token),
-            "candidates": research_svc.list_candidates(conn, link_id)}
+
+    def _write() -> dict:
+        """Mint the anchor note + research link + spec atomically on the writer connection.
+
+        All three helpers (upsert_note, create_research_link, create_spec) are conn-based, so
+        this is one atomic unit. upsert_note embeds the anchor note INSIDE the unit (local + fast
+        — the accepted tradeoff). The list_candidates response read folds in to reflect the write.
+        """
+        c = get_conn()
+        title = notes_svc.root_title(f"Research — {label}", "notes")
+        note_id = notes_svc.upsert_note(
+            c, title, f"# {title.split('/')[-1]}\n\n_Anchor for a scoped Q&A research link._\n",
+            source="user", version_note="research link anchor", fire_events=False)
+        token, link_id = share_svc.create_research_link(c, note_id, label=label, ttl_days=body.ttl_days, bind=body.bind)
+        research_svc.create_spec(c, link_id, scope_json=scope, persona_voice=body.persona_voice,
+                                 intro=body.intro, bind=body.bind, single_use=body.single_use,
+                                 max_turns=body.max_turns, max_total_replies=body.max_total_replies)
+        c.commit()
+        # The anchor is a system placeholder, not a user entry — discard its deferred
+        # entry_created event (drain it here so it can't leak onto the shared writer thread and
+        # fire on a later unit). This matches the pre-conversion behaviour (research_mint never
+        # flushed entry events).
+        notes_svc.drain_pending_entry_events()
+        return {"link_id": link_id, "token": token, "url": share_svc.share_url(token),
+                "candidates": research_svc.list_candidates(c, link_id)}
+
+    return submit_write(_write).result()
 
 
 @router.get("/research/{link_id}")

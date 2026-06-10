@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..auth import CurrentUser
-from ..db import get_conn
+from ..db import get_conn, submit_write
 from ..services import notes as notes_svc
 from ..services import places as places_svc
 
@@ -81,23 +81,27 @@ def add_place(body: PlaceIn):
     name = body.name.strip()[:80]
     if not name:
         raise HTTPException(status_code=422, detail="Name required")
-    conn = get_conn()
-    # Names are the place's identity (they map 1:1 to a loc/<name> note), so keep them
-    # unique (case-insensitive) — otherwise two places fight over one note.
-    if conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
-        raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
-    cur = conn.execute(
-        "INSERT INTO places (name, lat, lon, radius_m, note_slug) VALUES (?, ?, ?, ?, ?)",
-        (name, body.lat, body.lon, max(20, min(int(body.radius_m), 20000)), body.note_slug),
-    )
-    # Back every place with its loc/<name> note so it shows in the Wiki "Places" tab.
-    try:
-        places_svc.ensure_note(conn, cur.lastrowid)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return {"id": cur.lastrowid, "name": name}
+
+    def _write() -> int:
+        """Insert the place + back it with its loc/ note atomically on the writer connection."""
+        c = get_conn()
+        # Names are the place's identity (they map 1:1 to a loc/<name> note), so keep them
+        # unique (case-insensitive) — otherwise two places fight over one note.
+        if c.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+            raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
+        cur = c.execute(
+            "INSERT INTO places (name, lat, lon, radius_m, note_slug) VALUES (?, ?, ?, ?, ?)",
+            (name, body.lat, body.lon, max(20, min(int(body.radius_m), 20000)), body.note_slug),
+        )
+        # Back every place with its loc/<name> note so it shows in the Wiki "Places" tab.
+        # ensure_note embeds the loc/ note INSIDE the unit (local + fast, the accepted tradeoff);
+        # the layer rolls the writer conn back on any exception, so the prior explicit rollback is gone.
+        places_svc.ensure_note(c, cur.lastrowid)
+        c.commit()
+        return cur.lastrowid
+
+    new_id = submit_write(_write).result()
+    return {"id": new_id, "name": name}
 
 
 class PlacePatch(BaseModel):
@@ -125,39 +129,45 @@ def update_place(place_id: int, body: PlacePatch):
         HTTPException: 409 if renaming would conflict with another existing place or note.
         HTTPException: 422 if an explicit blank name is provided.
     """
-    conn = get_conn()
-    place = conn.execute("SELECT name, note_slug, radius_m FROM places WHERE id = ?", (place_id,)).fetchone()
-    if place is None:
-        raise HTTPException(status_code=404, detail="No such place")
     name = body.name.strip()[:80] if body.name is not None else None
     if body.name is not None and not name:
         raise HTTPException(status_code=422, detail="Name required")
-    renaming = name is not None and name.lower() != place["name"].lower()
-    if renaming and conn.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
-                                 (name, place_id)).fetchone():
-        raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
-    try:
-        if renaming:
-            conn.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
-            # Keep the linked loc/ note's title in sync so the place and its page stay paired.
-            if place["note_slug"]:
-                note = _note_by_slug(conn, place["note_slug"])
-                if note is not None:
-                    notes_svc.upsert_note(conn, _loc_title(name), note["content_md"],
-                                          note_id=note["id"], source="user", kind="place")
-                    new = conn.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
-                    conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
-        if body.radius_m is not None:
-            radius = max(20, min(int(body.radius_m), 20000))
-            conn.execute("UPDATE places SET radius_m = ? WHERE id = ?", (radius, place_id))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="A place note with that name already exists.")
-    except Exception:
-        conn.rollback()
-        raise
-    return {"ok": True, "name": name or place["name"]}
+
+    def _write() -> str:
+        """Rename/resize the place and sync its loc/ note title atomically on the writer connection.
+
+        Returns the effective name after the update.
+        """
+        c = get_conn()
+        place = c.execute("SELECT name, note_slug, radius_m FROM places WHERE id = ?", (place_id,)).fetchone()
+        if place is None:
+            raise HTTPException(status_code=404, detail="No such place")
+        renaming = name is not None and name.lower() != place["name"].lower()
+        if renaming and c.execute("SELECT 1 FROM places WHERE name = ? COLLATE NOCASE AND id <> ?",
+                                  (name, place_id)).fetchone():
+            raise HTTPException(status_code=409, detail=f"A place named “{name}” already exists.")
+        try:
+            if renaming:
+                c.execute("UPDATE places SET name = ? WHERE id = ?", (name, place_id))
+                # Keep the linked loc/ note's title in sync so the place and its page stay paired.
+                # upsert_note re-embeds the loc/ note INSIDE the unit (local + fast — accepted tradeoff).
+                if place["note_slug"]:
+                    note = _note_by_slug(c, place["note_slug"])
+                    if note is not None:
+                        notes_svc.upsert_note(c, _loc_title(name), note["content_md"],
+                                              note_id=note["id"], source="user", kind="place")
+                        new = c.execute("SELECT slug FROM notes WHERE id = ?", (note["id"],)).fetchone()
+                        c.execute("UPDATE places SET note_slug = ? WHERE id = ?", (new["slug"], place_id))
+            if body.radius_m is not None:
+                radius = max(20, min(int(body.radius_m), 20000))
+                c.execute("UPDATE places SET radius_m = ? WHERE id = ?", (radius, place_id))
+            c.commit()
+        except sqlite3.IntegrityError:
+            # The layer rolls back the writer conn before this propagates; map to 409.
+            raise HTTPException(status_code=409, detail="A place note with that name already exists.")
+        return name or place["name"]
+
+    return {"ok": True, "name": submit_write(_write).result()}
 
 
 @router.post("/{place_id}/note")
@@ -177,26 +187,33 @@ def ensure_place_note(place_id: int):
         HTTPException: 404 if the place is not found.
         HTTPException: 409 if the place note could not be created or adopted.
     """
-    conn = get_conn()
-    place = conn.execute("SELECT name FROM places WHERE id = ?", (place_id,)).fetchone()
-    if place is None:
-        raise HTTPException(status_code=404, detail="No such place")
-    try:
-        slug = places_svc.ensure_note(conn, place_id)
-        conn.commit()
-    except sqlite3.IntegrityError:
-        # Lost a create race — the note exists now; adopt it (idempotent "ensure").
-        conn.rollback()
-        existing = notes_svc.get_by_title(conn, _loc_title(place["name"]))
-        if existing is None:
-            raise HTTPException(status_code=409, detail="Couldn't create the place note.")
-        conn.execute("UPDATE places SET note_slug = ? WHERE id = ?", (existing["slug"], place_id))
-        conn.commit()
-        return {"slug": existing["slug"]}
-    except Exception:
-        conn.rollback()
-        raise
-    return {"slug": slug}
+    def _write() -> str:
+        """Ensure (create/find/adopt) the place's loc/ note atomically on the writer connection.
+
+        ensure_note may embed a freshly-created loc/ note INSIDE the unit (local + fast — the
+        accepted tradeoff). Returns the backing note's slug.
+        """
+        c = get_conn()
+        place = c.execute("SELECT name FROM places WHERE id = ?", (place_id,)).fetchone()
+        if place is None:
+            raise HTTPException(status_code=404, detail="No such place")
+        try:
+            slug = places_svc.ensure_note(c, place_id)
+            c.commit()
+            return slug
+        except sqlite3.IntegrityError:
+            # Lost a create race — the note exists now; adopt it (idempotent "ensure").
+            # Roll back the failed sub-transaction on THIS (writer) conn before re-writing,
+            # then commit the adoption within the same unit.
+            c.rollback()
+            existing = notes_svc.get_by_title(c, _loc_title(place["name"]))
+            if existing is None:
+                raise HTTPException(status_code=409, detail="Couldn't create the place note.")
+            c.execute("UPDATE places SET note_slug = ? WHERE id = ?", (existing["slug"], place_id))
+            c.commit()
+            return existing["slug"]
+
+    return {"slug": submit_write(_write).result()}
 
 
 @router.delete("/{place_id}")
@@ -209,8 +226,12 @@ def delete_place(place_id: int):
     Returns:
         Dict with key 'ok' set to True.
     """
-    conn = get_conn()
-    conn.execute("DELETE FROM places WHERE id = ?", (place_id,))
-    conn.execute("DELETE FROM location_state WHERE place_id = ?", (place_id,))
-    conn.commit()
+    def _write() -> None:
+        """Delete the place and its location state atomically on the writer connection."""
+        c = get_conn()
+        c.execute("DELETE FROM places WHERE id = ?", (place_id,))
+        c.execute("DELETE FROM location_state WHERE place_id = ?", (place_id,))
+        c.commit()
+
+    submit_write(_write).result()
     return {"ok": True}

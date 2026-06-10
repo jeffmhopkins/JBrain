@@ -73,15 +73,39 @@ def _fire_entry_created(conn, note_id: int, title: str, *, commit: bool = False)
         _state.suppress = False
 
 
+def drain_pending_entry_events() -> list[tuple[int, str]]:
+    """Pop and return this thread's deferred entry_created (note_id, title) pairs.
+
+    ``upsert_note(fire_events=False)`` records pending events in a thread-local list.
+    When the upsert ran on the single DB-writer thread (inside a ``submit_write`` unit),
+    the request thread can't see that list, so the unit drains it here and hands the pairs
+    back to the request thread, which fires them post-commit via ``fire_entry_events``.
+
+    Returns:
+        The pending ``(note_id, title)`` pairs, with the thread-local list cleared.
+    """
+    pending = getattr(_state, "pending", None) or []
+    _state.pending = []
+    return pending
+
+
+def fire_entry_events(conn, pairs: list[tuple[int, str]]) -> None:
+    """Fire entry_created for the given (note_id, title) pairs, each committing itself.
+
+    Args:
+        conn: SQLite connection to run the (post-commit) workflow event on.
+        pairs: The deferred ``(note_id, title)`` pairs from ``drain_pending_entry_events``.
+    """
+    for note_id, title in pairs:
+        _fire_entry_created(conn, note_id, title, commit=True)
+
+
 def flush_entry_events(conn) -> None:
     """Fire entry_created for notes created with fire_events=False, AFTER the
     caller has committed. Run post-commit so a slow (LLM-backed) workflow doesn't
     hold the note's write transaction open and block other writers.
     """
-    pending = getattr(_state, "pending", None) or []
-    _state.pending = []
-    for note_id, title in pending:
-        _fire_entry_created(conn, note_id, title, commit=True)
+    fire_entry_events(conn, drain_pending_entry_events())
 
 
 def _rename_inbound_links(conn, old_title: str, new_title: str, renamed_id: int) -> None:

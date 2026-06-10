@@ -422,23 +422,46 @@ def save_to_brain(conn, link_id: int, *, transcript_md: str, title: str | None,
     body = (transcript_md or "").strip() or "_(no messages)_"
     if "_Encrypted chat" not in body:                # provenance footer → entity extraction links the person
         body = body.rstrip() + f"\n\n---\n_Encrypted chat with {who}._\n"
-    note_id = notes_svc.upsert_note(conn, note_title, body, create_only=True,
-                                    source="shared", version_note=f"encrypted chat with {who}")
-    # Saved chats default to Research-only: the assistant may read them when asked
-    # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
-    # evergreen KB articles. The owner can opt a chat back into the KB per-note.
-    conn.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (note_id,))
+    # Decode the attachment blobs BEFORE the write unit (cheap, but keeps base64 work
+    # off the writer) and drop empties; the note + its attachments + the channel pointer
+    # commit together so a re-save short-circuits cleanly.
+    import base64
+    files: list[tuple[str, str, bytes]] = []
     for a in (attachments or []):
         try:
-            import base64
             raw = base64.b64decode(a.get("data") or "")
-            if raw:
-                att_svc.add_attachment(conn, note_id, (a.get("name") or "file")[:200],
-                                       a.get("mime") or "application/octet-stream", raw)
         except Exception:                            # noqa: BLE001 — one bad file never loses the transcript
             continue
-    conn.execute("UPDATE chat_channels SET saved_note_id = ? WHERE share_link_id = ?", (note_id, link_id))
-    conn.commit()
+        if raw:
+            files.append(((a.get("name") or "file")[:200],
+                          a.get("mime") or "application/octet-stream", raw))
+
+    def _unit() -> int:
+        """Create the saved-chat note + its attachments + channel pointer on the writer.
+
+        Returns:
+            The new/owning notes.id for the saved transcript.
+        """
+        c = get_conn()
+        nid = notes_svc.upsert_note(c, note_title, body, create_only=True,
+                                    source="shared", version_note=f"encrypted chat with {who}")
+        # Saved chats default to Research-only: the assistant may read them when asked
+        # (tool_access stays 1), but an outsider-co-authored transcript is NOT folded into
+        # evergreen KB articles. The owner can opt a chat back into the KB per-note.
+        c.execute("UPDATE notes SET kb_ingest = 0 WHERE id = ?", (nid,))
+        # add_attachment self-serialises via submit_write; called from inside this writer-thread
+        # unit it runs INLINE (the re-entrant path), so the attachment rows land on this same
+        # connection within this transaction rather than tripping the deadlock guard. One bad
+        # file is swallowed so it never loses the transcript (parity with the prior loop).
+        for name, mime, raw in files:
+            try:
+                att_svc.add_attachment(c, nid, name, mime, raw)
+            except Exception:                        # noqa: BLE001 — one bad file never loses the transcript
+                continue
+        c.execute("UPDATE chat_channels SET saved_note_id = ? WHERE share_link_id = ?", (nid, link_id))
+        c.commit()
+        return nid
+    note_id = submit_write(_unit).result()
     row = conn.execute("SELECT slug FROM notes WHERE id = ?", (note_id,)).fetchone()
     return {"note_slug": row["slug"], "already_saved": False}
 

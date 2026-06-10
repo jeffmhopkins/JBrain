@@ -179,11 +179,22 @@ def test_force_restarts_a_stale_pending(dbenv, monkeypatch):
     # Don't actually run a worker — just prove force gets past the pending short-circuit.
     spawned = {"n": 0}
 
+    import threading
+
     class _NoThread:
         def __init__(self, *a, **k): pass
         def start(self): spawned["n"] += 1
 
-    monkeypatch.setattr(ia.threading, "Thread", _NoThread)
+    # Intercept ONLY the Thread lookup start_analysis does (start_analysis calls
+    # `threading.Thread(...)`), via a thin proxy over the real module. Patching the real
+    # `threading.Thread` attribute directly would also disable the single-writer pool's
+    # worker spawn — _set_status now routes its write through submit_write — and the
+    # blocking .result() would hang forever waiting on a worker that never started.
+    class _ThreadingProxy:
+        Thread = _NoThread
+        def __getattr__(self, name): return getattr(threading, name)
+
+    monkeypatch.setattr(ia, "threading", _ThreadingProxy())
 
     # Without force: short-circuits, no restart.
     assert ia.start_analysis(conn, aid, force=False) == {"status": "pending"}

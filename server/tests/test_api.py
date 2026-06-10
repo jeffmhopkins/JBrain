@@ -466,6 +466,36 @@ def test_labshare_public_recipient_flow_is_scoped(client):
     assert client.post(f"/api/share/{token}/labs/turn", json={"message": "hi"}).status_code == 403
 
 
+def test_labshare_bind_locks_to_first_browser(client):
+    # A bind labs link claims the FIRST browser; a second device (no bind cookie) is locked out (403).
+    # The claim, session INSERT, and link touch now run inside start_session's single write unit —
+    # this guards that PHI-protecting path against regression.
+    from app.db import get_conn
+    conn = get_conn()
+    nid = conn.execute("INSERT INTO notes (slug,title,content_md) VALUES ('mb','notes/medical/N/labs','b') "
+                       "RETURNING id").fetchone()["id"]
+    conn.execute("INSERT INTO lab_results (note_id,test_name,analyte_key,value_text,value_num,unit,"
+                 "ref_low,ref_high,collected_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (nid, "Creatinine", "creatinine", "1.0", 1.0, "mg/dL", 0.6, 1.2, "2026-01-02"))
+    conn.commit()
+    from fastapi.testclient import TestClient
+    from app.main import app
+    # Bind link: the first browser to start claims it (mints + stores a bind secret, sets the cookie).
+    token = client.post("/api/shares/labs",
+                        json={"analytes": ["creatinine"], "bind": True, "allow_chat": False}).json()["token"]
+    first = TestClient(app)
+    assert first.post(f"/api/share/{token}/labs/start", json={"name": "Dr Smith"}).status_code == 200
+    # Same browser (carries the bind cookie) may re-land.
+    assert first.post(f"/api/share/{token}/labs/start", json={"name": "Dr Smith"}).status_code == 200
+    # A DIFFERENT browser (no bind cookie) is locked out.
+    assert TestClient(app).post(f"/api/share/{token}/labs/start", json={"name": "Stranger"}).status_code == 403
+    # A NON-bind link never locks: two fresh browsers can both start.
+    token2 = client.post("/api/shares/labs",
+                         json={"analytes": ["creatinine"], "bind": False, "allow_chat": False}).json()["token"]
+    assert TestClient(app).post(f"/api/share/{token2}/labs/start", json={"name": "A"}).status_code == 200
+    assert TestClient(app).post(f"/api/share/{token2}/labs/start", json={"name": "B"}).status_code == 200
+
+
 def test_labshare_create_honors_standard_options(client):
     # The standardized share options (lock-to-browser, single-use, expiry, reply caps) flow
     # through to the link/spec — but a finite TTL is still enforced for PHI (no permanent link).

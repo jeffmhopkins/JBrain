@@ -213,13 +213,10 @@ def set_options(conn, link_id: int, *, bind: bool, single_use: bool) -> None:
         bind: Lock the link to the first browser that uses it.
         single_use: Prevent a second session after the first submission.
     """
-    def _unit() -> None:
-        c = get_conn()
-        c.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
-                  (1 if bind else 0, 1 if single_use else 0, link_id))
-        c.commit()
-
-    submit_write(_unit).result()
+    # Conn-based (no commit): the calling route wraps this in its own submit_write unit so the
+    # edit can compose atomically with neighbouring writes (e.g. _set_link_expiry). See research.set_*.
+    conn.execute("UPDATE guided_specs SET bind=?, single_use=? WHERE share_link_id=?",
+                 (1 if bind else 0, 1 if single_use else 0, link_id))
 
 
 def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -> None:
@@ -232,13 +229,10 @@ def set_details(conn, link_id: int, *, goal: str, intro: str, sub_prompt: str) -
         intro: Updated recipient intro text.
         sub_prompt: Updated task instructions for the interview AI.
     """
-    def _unit() -> None:
-        c = get_conn()
-        c.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
-                  ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
-        c.commit()
-
-    submit_write(_unit).result()
+    # Conn-based (no commit): the route wraps this + _set_link_expiry in ONE submit_write unit so
+    # the brief edit and the expiry change commit atomically together.
+    conn.execute("UPDATE guided_specs SET goal=?, intro=?, sub_prompt=? WHERE share_link_id=?",
+                 ((goal or "").strip()[:200], (intro or "").strip()[:1000], (sub_prompt or "").strip(), link_id))
 
 
 def reset_bind(conn, link_id: int) -> None:
@@ -250,13 +244,9 @@ def reset_bind(conn, link_id: int) -> None:
         conn: Database connection.
         link_id: The share_links.id whose in-progress sessions to abandon.
     """
-    def _unit() -> None:
-        c = get_conn()
-        c.execute("UPDATE guided_sessions SET status='abandoned' "
-                  "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
-        c.commit()
-
-    submit_write(_unit).result()
+    # Conn-based (no commit): the calling route owns the transaction (its submit_write unit).
+    conn.execute("UPDATE guided_sessions SET status='abandoned' "
+                 "WHERE share_link_id=? AND status IN ('active','drafting')", (link_id,))
 
 
 def get_spec(conn, link_id: int):
@@ -279,12 +269,8 @@ def activate_spec(conn, link_id: int) -> None:
         conn: Database connection.
         link_id: The share_links.id whose spec to activate.
     """
-    def _unit() -> None:
-        c = get_conn()
-        c.execute("UPDATE guided_specs SET status='active' WHERE share_link_id = ?", (link_id,))
-        c.commit()
-
-    submit_write(_unit).result()
+    # Conn-based (no commit): the calling route owns the transaction (its submit_write unit).
+    conn.execute("UPDATE guided_specs SET status='active' WHERE share_link_id = ?", (link_id,))
 
 
 # --- recipient sessions -----------------------------------------------------

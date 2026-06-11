@@ -19,4 +19,4 @@ the "GUI / UX changes" section in the repo root `CLAUDE.md` for the full rule.
 
 | File | Change it explores |
 | --- | --- |
-| [`swipe-right-hide.html`](./swipe-right-hide.html) | Swipe-right to hide an entry card from the chat view (view-only, no DB write). Compares four styles: **A** instant hide (as shipped), **B** slide-out + fade, **C** live drag + reveal, and **D** an optional "Undo" toast that layers on any of them. Drag a card to the right; **Reset** restores them. |
+| [`swipe-right-hide.html`](./swipe-right-hide.html) | Swipe-right to hide an entry card from the chat view (view-only, no DB write). Compares four styles: **A** instant hide, **B** slide-out + fade, **C** live drag + reveal, and **D** an optional "Undo" toast that layers on any of them. Drag a card to the right; **Reset** restores them. **Shipped: option C** (live finger-tracking over a "Hide" panel, then slide-off + collapse) — see `web/src/components/SwipeCard.tsx`. |

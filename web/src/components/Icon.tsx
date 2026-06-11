@@ -31,6 +31,8 @@ const PATHS: Record<string, string> = {
   // Vertical kebab — three dots (round caps render the zero-length segments as dots).
   dots: "M12 5h.01 M12 12h.01 M12 19h.01",
   trash: "M3 6h18 M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6",
+  // Eye with a slash — "hide from view".
+  eyeOff: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94 M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 M1 1l22 22 M9.88 9.88a3 3 0 1 0 4.24 4.24",
 };
 
 export function Icon({ name, size = 19, className }: { name: keyof typeof PATHS | string; size?: number; className?: string }) {

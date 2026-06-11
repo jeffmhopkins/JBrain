@@ -1,4 +1,4 @@
-import { FormEvent, TouchEvent as ReactTouchEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { approveExternalLookup, createEntry, denyExternalLookup, extractLabs, get, getFinancialDests, getMedicalDests, MAX_ATTACHMENT_BYTES, post, setFinancialDests, setMedicalDests, streamChat, uploadAttachment } from "../api";
@@ -12,8 +12,8 @@ import { useCapability } from "../capabilities";
 import { showToast, explainError } from "../toast";
 import { toolLabel } from "../toolLabels";
 import ToolHistory from "../components/ToolHistory";
+import SwipeCard from "../components/SwipeCard";
 import { clearConversationSteps } from "../api";
-import { shouldOpenHistoryOnSwipe } from "../swipeGesture";
 
 // 'event' rows are persisted approval records (✓ applied X), kept in the chat
 // but excluded from the LLM history server-side. `id` (when present) tags an
@@ -156,19 +156,15 @@ export default function Chat() {
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set());
   const toggleSteps = (id: number) =>
     setOpenSteps((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const swipeRef = useRef<{ x: number; y: number } | null>(null);
-  function bubbleTouchStart(e: ReactTouchEvent<HTMLDivElement>) {
-    const t = e.touches[0];
-    swipeRef.current = { x: t.clientX, y: t.clientY };
-  }
-  function bubbleTouchEnd(e: ReactTouchEvent<HTMLDivElement>, dbId?: number) {
-    const s = swipeRef.current; swipeRef.current = null;
-    if (!s || dbId == null) return;
-    const t = e.changedTouches[0];
-    const selLen = window.getSelection?.()?.toString().length ?? 0;
-    if (!shouldOpenHistoryOnSwipe(s, { x: t.clientX, y: t.clientY }, window.innerWidth, selLen)) return;
-    setOpenSteps((set) => (set.has(dbId) ? set : new Set(set).add(dbId)));   // open (don't toggle shut)
-  }
+  // Cards swiped right are hidden from the current view only (keyed by a stable per-card string;
+  // see `hideKey` below). The note's DB row is untouched — a thread reload brings them back. The
+  // swipe gesture itself lives in <SwipeCard/>; here we just drop the card from the view.
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const hideCard = (key: string) =>
+    setHidden((s) => { const n = new Set(s); n.add(key); return n; });
+  // Left-swipe on an assistant reply opens its tool-call history (open, don't toggle shut).
+  const openHistory = (id: number) =>
+    setOpenSteps((set) => (set.has(id) ? set : new Set(set).add(id)));
   // `pending` entries are the optimistic user bubble shown the instant Send is hit (entry/
   // medical have no streamed reply, so this is their only immediate feedback). The save
   // resolves the matching `id` in place (fills title/slug → "Saved:" chip) or drops it on
@@ -412,6 +408,7 @@ export default function Chat() {
       // the now-discarded conversation, so dropping them in would resurrect a cleared chat.
       if (gen !== loadGenRef.current) return;
       setMessages(rows.map((r) => ({ role: r.role, content: r.content, dbId: r.id, stepCount: r.step_count })));
+      setHidden(new Set());   // index-keyed view-hides don't survive a repaint of a different thread
     } catch { /* keep what we have */ }
   }
 
@@ -428,7 +425,7 @@ export default function Chat() {
   // /clear and friends: start a brand-new thread AND wipe the current view.
   async function newConversation(): Promise<number> {
     loadGenRef.current++;   // invalidate any in-flight loadMessages so it can't repaint the cleared thread
-    setMessages([]); setApplied([]); setCharts([]); setUndone(new Set());
+    setMessages([]); setApplied([]); setCharts([]); setUndone(new Set()); setHidden(new Set());
     // Forget the OLD thread immediately. createConversation() can't adopt the new id until
     // its POST resolves, and until then convIdRef still points at the just-cleared thread —
     // so a send fired right behind /clear would have ensureConversation() hand back the old
@@ -783,6 +780,8 @@ export default function Chat() {
           </div>
         )}
         {messages.map((m, i) => {
+          const hideKey = `m${i}`;
+          if (hidden.has(hideKey)) return null;   // swiped-away (view-only)
           if (m.role === "event") {
             let ev: { summary?: string; undo_id?: number; chart?: any };
             try { ev = JSON.parse(m.content); } catch { ev = { summary: m.content }; }
@@ -802,37 +801,40 @@ export default function Chat() {
           const isAsst = m.role === "assistant";
           const hasHistory = isAsst && m.dbId != null && (m.stepCount ?? 0) > 0;
           return (
-            <div key={i} className={`msg ${m.role}`}
-                 onTouchStart={isAsst ? bubbleTouchStart : undefined}
-                 onTouchEnd={isAsst ? (e) => bubbleTouchEnd(e, m.dbId) : undefined}>
-              {isAsst ? (
-                <>
-                  <div className="md msg-md">
-                    <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(linkifyAddresses(m.content))}</ReactMarkdown>
-                  </div>
-                  {hasHistory && (
-                    <ToolHistory messageId={m.dbId!} count={m.stepCount!} open={openSteps.has(m.dbId!)}
-                                 onToggle={() => toggleSteps(m.dbId!)} navigate={navigate} />
-                  )}
-                </>
-              ) : (
-                m.content
-              )}
-            </div>
+            <SwipeCard key={i} onHide={() => hideCard(hideKey)}
+                       onSwipeLeft={isAsst && m.dbId != null ? () => openHistory(m.dbId!) : undefined}>
+              <div className={`msg ${m.role}`}>
+                {isAsst ? (
+                  <>
+                    <div className="md msg-md">
+                      <ReactMarkdown components={{ a: makeChatLinkRenderer(navigate) }}>{renderWikiLinks(linkifyAddresses(m.content))}</ReactMarkdown>
+                    </div>
+                    {hasHistory && (
+                      <ToolHistory messageId={m.dbId!} count={m.stepCount!} open={openSteps.has(m.dbId!)}
+                                   onToggle={() => toggleSteps(m.dbId!)} navigate={navigate} />
+                    )}
+                  </>
+                ) : (
+                  m.content
+                )}
+              </div>
+            </SwipeCard>
           );
         })}
         {/* Entry saves (this session): a user bubble + a link to the saved note. */}
         {entries.map((en) => {
+          const hideKey = `en${en.id}`;
+          if (hidden.has(hideKey)) return null;   // swiped-away (view-only)
           const label = en.title.startsWith("notes/daily/")
             ? ((en.text.split("\n").find((l) => l.trim()) || "entry").trim().slice(0, 40) || "entry")
             : en.title.replace(/^notes\//, "");
           return (
-            <div key={`en${en.id}`} style={{ display: "contents" }}>
+            <SwipeCard key={hideKey} onHide={() => hideCard(hideKey)}>
               {en.text && <div className="msg user">{en.text}</div>}
               {en.pending
                 ? <span className="saved-chip" style={{ opacity: 0.55 }}><Icon name="check" size={14} /> Saving…</span>
                 : <Link to={`/note/${en.slug}`} className="saved-chip"><Icon name="check" size={14} /> Saved: {label}</Link>}
-            </div>
+            </SwipeCard>
           );
         })}
         {charts.map((c, i) => <LabChartCard key={`ch${i}`} spec={c} />)}

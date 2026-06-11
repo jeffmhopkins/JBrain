@@ -54,6 +54,24 @@ A change is not "done" until:
 `android` — each enforcing its own coverage floor and reporting pass/fail. Read the
 results before merging; a red check means the Definition of Done isn't met yet.
 
+## GUI / UX changes — mock it up first
+Any change to how the app **looks or feels** — a gesture, animation, layout, new
+control, the visual treatment of a state — gets an **interactive HTML mockup, with
+options, reviewed and signed off BEFORE it's implemented**. The reviewer has to be
+able to *feel* the interaction; a static screenshot or an ASCII sketch doesn't
+convey timing, drag, or spring. This is a hard requirement, not a nicety:
+- **Interactive, not a picture.** A real `.html` you can click/drag/touch — not a
+  PNG, not a prose description. Drive it with the actual thresholds/tokens so the
+  feel is honest (mirror the real values; don't import app code).
+- **Show the alternatives.** Present 2–4 distinct treatments side by side (or via a
+  mode switch in one file) so the choice is informed. Mark which one, if any, is the
+  current/shipped behaviour.
+- **Get sign-off, then build.** Wait for the pick before writing production code. If
+  you've already coded one approach, say so — but still offer the mockup to confirm.
+- **Where they live:** `docs/mockups/*.html`, one self-contained file per change,
+  catalogued in `docs/mockups/README.md`. They're design aids, not shipped code (no
+  build step, no tests, no import from `web/`).
+
 ## Conventions
 - **Bump the version on every PR.** Patch-increment the synced version in all of:
   `server/app/version.py` (`APP_VERSION`), `web/package.json`, and `web/package-lock.json`

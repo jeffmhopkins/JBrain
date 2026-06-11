@@ -699,6 +699,17 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 }
 .saved-chip:hover { text-decoration: none; border-color: var(--accent); color: var(--text); }
 .saved-chip .icon { color: var(--ok); }
+
+/* ---- Swipe-to-hide (SwipeCard) ------------------------------------------ */
+/* A swipeable row: the .swipe-body holds the card's bubble(s) and slides under the finger on a
+   right-swipe, uncovering the stationary .swipe-reveal "Hide" panel behind it. Body keeps the
+   page background so the reveal stays hidden until the drag exposes it. */
+.swipe-wrap { position: relative; }
+.swipe-body { position: relative; z-index: 1; background: var(--bg); display: flex; flex-direction: column;
+  gap: 12px; touch-action: pan-y; }
+.swipe-reveal { position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; gap: 8px;
+  padding-left: 16px; color: var(--accent); font-size: 13px; font-weight: 600;
+  background: var(--accent-soft); border: 1px solid var(--accent); border-radius: var(--radius); }
 .composer { display: flex; gap: 8px; padding: 12px 0; position: sticky; bottom: 0; background: var(--bg); }
 .has-tabbar .composer { bottom: var(--tabbar-h); }
 

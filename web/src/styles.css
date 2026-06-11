@@ -678,7 +678,8 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
   width: 100%; max-width: 860px; margin: 0 auto; padding: 0 16px;
 }
 .messages {
-  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: contain;
+  display: flex; flex-direction: column; gap: 12px;
   padding: 8px 8px 8px 0;                 /* right inset so bubbles clear the scrollbar */
   scrollbar-width: thin; scrollbar-color: transparent transparent;   /* hidden until scrolling */
 }
@@ -704,7 +705,7 @@ a.tree-label:hover { text-decoration: none; color: var(--accent); }
 /* A swipeable row: the .swipe-body holds the card's bubble(s) and slides under the finger on a
    right-swipe, uncovering the stationary .swipe-reveal "Hide" panel behind it. Body keeps the
    page background so the reveal stays hidden until the drag exposes it. */
-.swipe-wrap { position: relative; }
+.swipe-wrap { position: relative; overflow: hidden; }
 .swipe-body { position: relative; z-index: 1; background: var(--bg); display: flex; flex-direction: column;
   gap: 12px; touch-action: pan-y; }
 .swipe-reveal { position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; gap: 8px;

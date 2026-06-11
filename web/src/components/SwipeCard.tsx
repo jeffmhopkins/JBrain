@@ -5,7 +5,12 @@
 //
 // The two thresholds live in `swipeGesture.ts` and are unit-tested there; this component is
 // the live wiring (transform during the drag, spring-back below threshold, animated dismissal).
-import { useRef, useState, type ReactNode, type TouchEvent } from "react";
+//
+// `touchmove` is bound natively with `{ passive: false }` so the handler can call
+// `preventDefault()` once the gesture commits to horizontal — React's synthetic `onTouchMove`
+// is passive, so a leftover browser pan/back-swipe would `touchcancel` our drag and the hide
+// would silently never fire.
+import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { Icon } from "./Icon";
 import { shouldHideOnSwipe, shouldOpenHistoryOnSwipe } from "../swipeGesture";
 
@@ -36,25 +41,32 @@ export default function SwipeCard({ onHide, onSwipeLeft, children }: SwipeCardPr
     el.style.opacity = "1";
   }
 
+  // Native, non-passive touchmove: track the rightward drag AND stop the browser from turning
+  // it into a horizontal pan / back-navigation (which would cancel the gesture before touchend).
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    function onMove(e: globalThis.TouchEvent) {
+      const s = start.current;
+      if (!s) return;
+      const t = e.touches[0];
+      const dx = t.clientX - s.x;
+      const dy = t.clientY - s.y;
+      if (!horizontal.current && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) horizontal.current = true;
+      if (!horizontal.current) return;   // still ambiguous / vertical → leave scrolling alone
+      e.preventDefault();                // committed horizontal → it's ours, not the browser's
+      // Only the rightward (hide) drag tracks the finger; a leftward (open-history) swipe has no
+      // drag visual, matching how that gesture has always behaved.
+      if (dx > 0) { setRevealed(true); moveBody(dx, false); }
+    }
+    el.addEventListener("touchmove", onMove, { passive: false });
+    return () => el.removeEventListener("touchmove", onMove);
+  }, []);
+
   function onTouchStart(e: TouchEvent<HTMLDivElement>) {
     const t = e.touches[0];
     start.current = { x: t.clientX, y: t.clientY };
     horizontal.current = false;
-  }
-
-  function onTouchMove(e: TouchEvent<HTMLDivElement>) {
-    const s = start.current;
-    if (!s) return;
-    const t = e.touches[0];
-    const dx = t.clientX - s.x;
-    const dy = t.clientY - s.y;
-    if (!horizontal.current && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) horizontal.current = true;
-    // Only the rightward (hide) drag tracks the finger; a leftward (open-history) swipe has no
-    // drag visual, matching how that gesture has always behaved.
-    if (horizontal.current && dx > 0) {
-      if (!revealed) setRevealed(true);
-      moveBody(dx, false);
-    }
   }
 
   function dismiss() {
@@ -82,9 +94,10 @@ export default function SwipeCard({ onHide, onSwipeLeft, children }: SwipeCardPr
     }, SLIDE_MS);
   }
 
-  function onTouchEnd(e: TouchEvent<HTMLDivElement>) {
+  function settle(e: TouchEvent<HTMLDivElement>) {
     const s = start.current;
     start.current = null;
+    horizontal.current = false;
     if (!s) return;
     const t = e.changedTouches[0];
     const end = { x: t.clientX, y: t.clientY };
@@ -98,6 +111,13 @@ export default function SwipeCard({ onHide, onSwipeLeft, children }: SwipeCardPr
     moveBody(0, true);   // spring back
   }
 
+  function onTouchCancel() {
+    start.current = null;
+    horizontal.current = false;
+    setRevealed(false);
+    moveBody(0, true);   // a cancelled drag must not leave the body stuck off to the side
+  }
+
   return (
     <div className="swipe-wrap" ref={wrapRef}>
       {revealed && (
@@ -106,7 +126,7 @@ export default function SwipeCard({ onHide, onSwipeLeft, children }: SwipeCardPr
         </div>
       )}
       <div className="swipe-body" ref={bodyRef}
-           onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+           onTouchStart={onTouchStart} onTouchEnd={settle} onTouchCancel={onTouchCancel}>
         {children}
       </div>
     </div>

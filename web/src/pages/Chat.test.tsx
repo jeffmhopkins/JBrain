@@ -9,7 +9,7 @@
 // ingestVerify() — Chat reads them through useCapability(), not over the wire.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
-import { renderWithProviders, screen, waitFor, cleanup } from "../test/render";
+import { renderWithProviders, screen, waitFor, cleanup, fireEvent } from "../test/render";
 import { server } from "../test/server";
 import type { ChatEvent } from "../api";
 
@@ -172,6 +172,40 @@ describe("Chat — Entry mode send", () => {
     expect(screen.queryByText(/Saving…/i)).not.toBeInTheDocument();
     // Entry mode is a pure write — it must never drive the chat/stream path.
     expect(streamCalls).toHaveLength(0);
+  });
+
+  it("hides a saved entry card from view on a right-swipe (no DB call)", async () => {
+    const { user } = renderWithProviders(<Chat />);
+    await user.click(screen.getByRole("button", { name: /^Entry$/i }));
+    await user.type(screen.getByPlaceholderText(/Write an entry/i), "Buy milk");
+    await user.click(screen.getByRole("button", { name: /^Send$/i }));
+    await screen.findByText(/Saved:/i);
+
+    const before = entryUrls().length;   // one POST for the save itself
+    const card = screen.getByText("Buy milk");
+    // A clear, horizontal-dominant rightward drag, clear of the left OS edge zone.
+    fireEvent.touchStart(card, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 220, clientY: 104 }] });
+
+    // The card (bubble + chip) leaves the view…
+    await waitFor(() => expect(screen.queryByText("Buy milk")).not.toBeInTheDocument());
+    expect(screen.queryByText(/Saved:/i)).not.toBeInTheDocument();
+    // …and hiding is view-only: it never hits the entry endpoint again.
+    expect(entryUrls()).toHaveLength(before);
+  });
+
+  it("leaves the card in place when the swipe is too short to count", async () => {
+    const { user } = renderWithProviders(<Chat />);
+    await user.click(screen.getByRole("button", { name: /^Entry$/i }));
+    await user.type(screen.getByPlaceholderText(/Write an entry/i), "Buy milk");
+    await user.click(screen.getByRole("button", { name: /^Send$/i }));
+    await screen.findByText(/Saved:/i);
+
+    const card = screen.getByText("Buy milk");
+    fireEvent.touchStart(card, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 110, clientY: 100 }] }); // dx=10, below threshold
+
+    expect(screen.getByText("Buy milk")).toBeInTheDocument();
   });
 
   it("rolls back and toasts when the entry POST fails", async () => {

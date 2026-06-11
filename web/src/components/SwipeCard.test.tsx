@@ -61,6 +61,15 @@ describe("SwipeCard", () => {
     expect(onSwipeLeft).not.toHaveBeenCalled();
   });
 
+  it("does not hide when the drag is cancelled mid-swipe", async () => {
+    const { onHide, card } = setup();
+    fireEvent.touchStart(card, { touches: [at(100)] });
+    fireEvent.touchMove(card, { touches: [at(190)] });   // past threshold, but…
+    fireEvent.touchCancel(card);                          // …the browser/OS takes the gesture
+    await new Promise((r) => setTimeout(r, 400));
+    expect(onHide).not.toHaveBeenCalled();
+  });
+
   it("ignores the left-swipe when no onSwipeLeft is provided", async () => {
     const onHide = vi.fn();
     render(
